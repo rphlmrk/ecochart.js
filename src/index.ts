@@ -255,6 +255,7 @@ export class EcoChart {
 
     public async switchTimeframe(newInterval: string) {
         this.currentInterval = newInterval;
+        this.renderer.currentInterval = newInterval;
         this.network.disconnect();
         this.dataStore.clear();
         this.isDirty = true;
@@ -301,10 +302,18 @@ export class EcoChart {
             }
         });
 
+        // Sync timeframe to renderer
+        this.renderer.currentInterval = this.currentInterval;
+
         // Initial Snap on load
         const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
         const initialMaxScroll = (this.dataStore.length * actualSpacing) - window.innerWidth;
         this.renderer.cameraX = initialMaxScroll + 150;
+
+        // 1-Second heartbeat to update candle countdown timer smoothly
+        setInterval(() => {
+            this.isDirty = true;
+        }, 1000);
 
         const loop = () => {
             if (this.isDirty) {

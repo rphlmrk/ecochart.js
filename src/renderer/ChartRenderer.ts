@@ -10,6 +10,10 @@ export class ChartRenderer {
     private candlesGraphics!: Graphics;
     private uiGraphics!: Graphics; // Axes & Crosshair lines
     private textContainer!: Container; // Axis labels
+    private liveBadgeGraphics!: Graphics;
+    private liveBadgeText!: Container;
+    private crosshairBadgeGraphics!: Graphics; // Sits on top of live badge
+    private crosshairBadgeText!: Container;     // Topmost layer
 
     // Viewport Math
     public cameraX = 0;
@@ -29,6 +33,20 @@ export class ChartRenderer {
 
     // Chart Render Style ('candles' | 'line')
     public chartMode: 'candles' | 'line' = 'candles';
+
+    // Current Timeframe for countdown & extrapolation
+    public currentInterval: string = '1m';
+
+    private parseIntervalMs(tf: string): number {
+        const unit = tf.slice(-1).toLowerCase();
+        const val = parseInt(tf.slice(0, -1), 10) || 1;
+        if (unit === 's') return val * 1000;
+        if (unit === 'm') return val * 60 * 1000;
+        if (unit === 'h') return val * 60 * 60 * 1000;
+        if (unit === 'd') return val * 24 * 60 * 60 * 1000;
+        if (unit === 'w') return val * 7 * 24 * 60 * 60 * 1000;
+        return 60 * 1000;
+    }
 
     public isAutoScale = true;
     public currentMinPrice = 0;
@@ -57,10 +75,19 @@ export class ChartRenderer {
         this.uiGraphics = new Graphics();
         this.textContainer = new Container();
 
+        this.liveBadgeGraphics = new Graphics();
+        this.liveBadgeText = new Container();
+        this.crosshairBadgeGraphics = new Graphics();
+        this.crosshairBadgeText = new Container();
+
         this.app.stage.addChild(this.gridGraphics);
         this.app.stage.addChild(this.candlesGraphics);
         this.app.stage.addChild(this.uiGraphics);
         this.app.stage.addChild(this.textContainer);
+        this.app.stage.addChild(this.liveBadgeGraphics);      // 1. Live Badge Background
+        this.app.stage.addChild(this.liveBadgeText);          // 2. Live Badge Text
+        this.app.stage.addChild(this.crosshairBadgeGraphics); // 3. Crosshair Background (Covers Live Badge & Text!)
+        this.app.stage.addChild(this.crosshairBadgeText);     // 4. Crosshair Text (On the very top)
     }
 
     public renderFrame() {
@@ -72,7 +99,11 @@ export class ChartRenderer {
         this.candlesGraphics.clear();
         this.gridGraphics.clear();
         this.uiGraphics.clear();
-        this.textContainer.removeChildren(); // Clear old text
+        this.liveBadgeGraphics.clear();
+        this.crosshairBadgeGraphics.clear();
+        this.textContainer.removeChildren();
+        this.liveBadgeText.removeChildren();
+        this.crosshairBadgeText.removeChildren();
 
         // Layout Constants
         const width = this.app.screen.width;
@@ -207,38 +238,107 @@ export class ChartRenderer {
         this.uiGraphics.rect(0, chartHeight, width, this.timeAxisHeight).fill(this.bgColor);
         this.uiGraphics.moveTo(0, chartHeight).lineTo(width, chartHeight).stroke({ color: this.gridColor, width: 1 });
 
-        // --- 4. DRAW CROSSHAIR ---
-        if (this.isCrosshairVisible && this.crosshairX < chartWidth && this.crosshairY < chartHeight) {
-            // Lines
-            this.uiGraphics.moveTo(0, this.crosshairY).lineTo(chartWidth, this.crosshairY).stroke({ color: 0x787B86, width: 1 });
-            this.uiGraphics.moveTo(this.crosshairX, 0).lineTo(this.crosshairX, chartHeight).stroke({ color: 0x787B86, width: 1 });
+        // --- 4. DRAW LIVE PRICE LINE & COUNTDOWN BADGE ---
+        const lastIdx = this.dataStore.length - 1;
+        const lastBase = lastIdx * 6;
+        const lastOpen = this.dataStore.data[lastBase + 1];
+        const lastClose = this.dataStore.data[lastBase + 4];
+        const lastTime = this.dataStore.data[lastBase];
 
-            // Y-Axis Price Badge
+        const liveY = priceToY(lastClose);
+        const isBullish = lastClose >= lastOpen;
+        const liveColor = isBullish ? 0x26A69A : 0xEF5350;
+
+        // A. Horizontal Live Price Line across chart
+        if (liveY >= 0 && liveY <= chartHeight) {
+            this.uiGraphics.moveTo(0, liveY).lineTo(chartWidth, liveY).stroke({ color: liveColor, width: 1, alpha: 0.75 });
+
+            // B. Calculate Candle Remaining Time
+            const intervalMs = this.parseIntervalMs(this.currentInterval);
+            const nextCloseMs = lastTime + intervalMs;
+            const remainingMs = Math.max(0, nextCloseMs - Date.now());
+
+            const totalSeconds = Math.floor(remainingMs / 1000);
+            const hours = Math.floor(totalSeconds / 3600);
+            const mins = Math.floor((totalSeconds % 3600) / 60);
+            const secs = totalSeconds % 60;
+
+            let countdownStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            if (hours > 0) {
+                countdownStr = `${hours}:${countdownStr}`;
+            }
+
+            // C. Stacked Live Badge (Expanded to 36px height for clearer numbers)
+            const badgeH = 36;
+            const badgeY = Math.max(0, Math.min(chartHeight - badgeH, liveY - 18));
+            this.liveBadgeGraphics.rect(chartWidth, badgeY, this.priceAxisWidth, badgeH).fill(liveColor);
+
+            const livePriceText = new Text({
+                text: lastClose.toFixed(2),
+                style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold', fill: 0xffffff }
+            });
+            livePriceText.x = chartWidth + 5;
+            livePriceText.y = badgeY + 3;
+            this.liveBadgeText.addChild(livePriceText);
+
+            // Larger countdown text (increased from 9px to 11px)
+            const countdownText = new Text({
+                text: countdownStr,
+                style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: '500', fill: 0xffffff }
+            });
+            countdownText.alpha = 0.9;
+            countdownText.x = chartWidth + 5;
+            countdownText.y = badgeY + 18;
+            this.liveBadgeText.addChild(countdownText);
+        }
+
+        // --- 5. DRAW CROSSHAIR & POSITIONED BADGES ---
+        if (this.isCrosshairVisible && this.crosshairX >= 0 && this.crosshairX < chartWidth && this.crosshairY >= 0 && this.crosshairY < chartHeight) {
+            // Dashed-look crosshair lines
+            this.uiGraphics.moveTo(0, this.crosshairY).lineTo(chartWidth, this.crosshairY).stroke({ color: 0x9598A1, width: 1, alpha: 0.5 });
+            this.uiGraphics.moveTo(this.crosshairX, 0).lineTo(this.crosshairX, chartHeight).stroke({ color: 0x9598A1, width: 1, alpha: 0.5 });
+
+            // Y-Axis Price Badge (Draws on crosshair layer: occludes live price AND countdown)
             const hoverPrice = yToPrice(this.crosshairY);
-            this.uiGraphics.rect(chartWidth, this.crosshairY - 10, this.priceAxisWidth, 20).fill(0x2A2E39);
+            const hoverPriceY = Math.max(0, Math.min(chartHeight - 20, this.crosshairY - 10));
+            this.crosshairBadgeGraphics.rect(chartWidth, hoverPriceY, this.priceAxisWidth, 20).fill(0x363A45);
+
             const priceText = new Text({
                 text: hoverPrice.toFixed(2),
-                style: { fontFamily: 'sans-serif', fontSize: 11, fill: 0xffffff }
+                style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold', fill: 0xffffff }
             });
             priceText.x = chartWidth + 5;
-            priceText.y = this.crosshairY - 6;
-            this.textContainer.addChild(priceText);
+            priceText.y = hoverPriceY + 3;
+            this.crosshairBadgeText.addChild(priceText);
 
             // X-Axis Time Badge
             const logicalIndex = Math.round((this.crosshairX + this.cameraX) / actualSpacing);
-            if (logicalIndex >= 0 && logicalIndex < this.dataStore.length) {
-                const ts = this.dataStore.data[logicalIndex * 6]; // Timestamp
-                const dateStr = new Date(ts).toLocaleTimeString(); // Basic format for now
+            const intervalMs = this.parseIntervalMs(this.currentInterval);
 
-                this.uiGraphics.rect(this.crosshairX - 35, chartHeight, 70, this.timeAxisHeight).fill(0x2A2E39);
-                const timeText = new Text({
-                    text: dateStr,
-                    style: { fontFamily: 'sans-serif', fontSize: 11, fill: 0xffffff }
-                });
-                timeText.x = this.crosshairX - 30;
-                timeText.y = chartHeight + 5;
-                this.textContainer.addChild(timeText);
+            let hoverTimeMs = 0;
+            if (logicalIndex >= 0 && logicalIndex < this.dataStore.length) {
+                hoverTimeMs = this.dataStore.data[logicalIndex * 6];
+            } else if (logicalIndex >= this.dataStore.length) {
+                hoverTimeMs = lastTime + (logicalIndex - lastIdx) * intervalMs;
+            } else {
+                const firstTime = this.dataStore.data[0];
+                hoverTimeMs = firstTime + logicalIndex * intervalMs;
             }
+
+            const d = new Date(hoverTimeMs);
+            const dateBadgeStr = `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+
+            const badgeW = 105;
+            const badgeX = Math.max(0, Math.min(chartWidth - badgeW, this.crosshairX - (badgeW / 2)));
+            this.crosshairBadgeGraphics.rect(badgeX, chartHeight, badgeW, this.timeAxisHeight).fill(0x363A45);
+
+            const timeText = new Text({
+                text: dateBadgeStr,
+                style: { fontFamily: 'sans-serif', fontSize: 11, fill: 0xffffff }
+            });
+            timeText.x = badgeX + 6;
+            timeText.y = chartHeight + 5;
+            this.crosshairBadgeText.addChild(timeText);
         }
     }
 }
