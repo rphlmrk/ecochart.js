@@ -31,6 +31,11 @@ export class EcoChart {
     private lastMouseY = 0;
     private isLockedToEdge = true;
 
+    // Mobile Multi-Touch State
+    private activeTouches = new Map<number, { x: number; y: number }>();
+    private initialPinchDist = 0;
+    private initialPinchZoom = 1;
+
     // Active Symbol & Timeframe State
     public currentSymbol = 'BTCUSDT';
     public currentInterval = '1m';
@@ -182,8 +187,9 @@ export class EcoChart {
     public themeManager = themeManager;
 
     private setupInteractions() {
-        // --- AXIS DETECTION & PANNING ---
+        // --- AXIS DETECTION & PANNING (Desktop / Mouse Only) ---
         this.canvas.addEventListener('pointerdown', (e) => {
+            if (e.pointerType === 'touch') return; // Let touch listeners handle mobile
             const rect = this.canvas.getBoundingClientRect();
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
@@ -209,6 +215,7 @@ export class EcoChart {
         });
 
         this.canvas.addEventListener('pointermove', (e) => {
+            if (e.pointerType === 'touch') return; // Prevent double-speed drag & thumb crosshair
             const rect = this.canvas.getBoundingClientRect();
             this.renderer.crosshairX = e.clientX - rect.left;
             this.renderer.crosshairY = e.clientY - rect.top;
@@ -270,6 +277,7 @@ export class EcoChart {
         });
 
         const stopDragging = (e: PointerEvent) => {
+            if (e.pointerType === 'touch') return;
             this.isDraggingChart = false;
             this.isDraggingPriceAxis = false;
             this.isDraggingTimeAxis = false;
@@ -330,6 +338,106 @@ export class EcoChart {
 
             this.isDirty = true;
         }, { passive: false });
+
+        // ==========================================================
+        // 📱 MOBILE MULTI-TOUCH ENGINE (Pinch-to-Zoom & 1-Finger Pan)
+        // ==========================================================
+        this.canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            WorkspaceManager.setActiveChart(this); // Activate pane on tap
+            const rect = this.canvas.getBoundingClientRect();
+
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                const t = e.changedTouches[i];
+                this.activeTouches.set(t.identifier, { x: t.clientX - rect.left, y: t.clientY - rect.top });
+            }
+
+            // 2-Finger Pinch Gesture Start
+            if (this.activeTouches.size === 2) {
+                const points = Array.from(this.activeTouches.values());
+                const dist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+                if (dist > 5) {
+                    this.initialPinchDist = dist;
+                    this.initialPinchZoom = this.renderer.zoom;
+                }
+                this.renderer.isCrosshairVisible = false;
+                this.isCrosshairDirty = true;
+            } else if (this.activeTouches.size === 1) {
+                const t = e.touches[0];
+                this.lastMouseX = t.clientX;
+                this.lastMouseY = t.clientY;
+                this.renderer.isCrosshairVisible = false;
+                this.isCrosshairDirty = true;
+            }
+        }, { passive: false });
+
+        this.canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const rect = this.canvas.getBoundingClientRect();
+
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                const t = e.changedTouches[i];
+                this.activeTouches.set(t.identifier, { x: t.clientX - rect.left, y: t.clientY - rect.top });
+            }
+
+            // Case A: 2-Finger Pinch-to-Zoom (anchored between fingers)
+            if (this.activeTouches.size === 2) {
+                const points = Array.from(this.activeTouches.values());
+                const currentDist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+
+                if (this.initialPinchDist > 5) {
+                    const pinchCenterX = (points[0].x + points[1].x) / 2;
+                    const worldBaseX = (pinchCenterX + this.renderer.cameraX) / this.renderer.zoom;
+
+                    const scaleFactor = currentDist / this.initialPinchDist;
+                    const newZoom = Math.max(0.1, Math.min(this.initialPinchZoom * scaleFactor, 50));
+
+                    this.renderer.zoom = newZoom;
+                    this.renderer.cameraX = (worldBaseX * this.renderer.zoom) - pinchCenterX;
+
+                    this.isLockedToEdge = false;
+                    this.isDirty = true;
+                }
+            // Case B: 1-Finger Smooth Panning
+            } else if (this.activeTouches.size === 1) {
+                const t = e.touches[0];
+                const deltaX = t.clientX - this.lastMouseX;
+                const deltaY = t.clientY - this.lastMouseY;
+
+                if (deltaX !== 0) {
+                    this.renderer.cameraX -= deltaX;
+                    this.isLockedToEdge = false;
+                }
+                if (!this.renderer.isAutoScale && deltaY !== 0) {
+                    this.renderer.cameraY += deltaY;
+                }
+
+                this.lastMouseX = t.clientX;
+                this.lastMouseY = t.clientY;
+                this.isDirty = true;
+            }
+        }, { passive: false });
+
+        const endTouch = (e: TouchEvent) => {
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                this.activeTouches.delete(e.changedTouches[i].identifier);
+            }
+
+            if (this.activeTouches.size < 2) {
+                this.initialPinchDist = 0;
+            }
+
+            // CRITICAL FIX: Synchronize anchor when lifting 1 finger during pinch
+            if (this.activeTouches.size === 1 && e.touches.length > 0) {
+                this.lastMouseX = e.touches[0].clientX;
+                this.lastMouseY = e.touches[0].clientY;
+            } else if (this.activeTouches.size === 0) {
+                this.activeTouches.clear();
+            }
+        };
+
+        this.canvas.addEventListener('touchend', endTouch);
+        this.canvas.addEventListener('touchcancel', endTouch);
 
         // When clicking inside this chart, make it the focused pane
         this.canvas.addEventListener('pointerdown', () => {
