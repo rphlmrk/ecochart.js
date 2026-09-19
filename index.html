@@ -19,6 +19,28 @@
       width: 100vw;
       height: 100vh;
     }
+
+    /* Reactive Navigation Bar Buttons */
+    .nav-btn {
+      background: var(--chart-panel-bg, #1e222d);
+      color: var(--chart-text, #D1D4DC);
+      border: 1px solid var(--chart-grid, #363A45);
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      padding: 0;
+      transition: all 0.15s ease;
+    }
+
+    .nav-btn:hover {
+      border-color: var(--chart-accent, #2962FF);
+      color: var(--chart-accent, #2962FF);
+    }
   </style>
 </head>
 
@@ -83,25 +105,20 @@
         </button>
       </div>
 
-      <!-- Bottom-Right Auto-Fit Button -->
+      <!-- Bottom-Right Auto-Fit Button (Theme-reactive) -->
       <button id="btn-auto-fit"
-        style="pointer-events: auto; position: absolute; right: 8px; bottom: 28px; background: #1E222D; color: #2962FF; border: 1px solid #2A2E39; border-radius: 3px; font-size: 11px; font-weight: 700; padding: 2px 6px; cursor: pointer; text-transform: uppercase;">
+        style="pointer-events: auto; position: absolute; right: 8px; bottom: 28px; background: var(--chart-panel-bg, #1E222D); color: var(--chart-accent, #2962FF); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 3px; font-size: 11px; font-weight: 700; padding: 2px 6px; cursor: pointer; text-transform: uppercase;">
         auto
       </button>
 
-      <!-- Bottom Floating Navigation Bar -->
+      <!-- Bottom Floating Navigation Bar (Theme-reactive container & buttons) -->
       <div id="nav-bar"
-        style="pointer-events: auto; position: absolute; bottom: 32px; left: 50%; transform: translateX(-50%); display: flex; gap: 3px; z-index: 10; user-select: none;">
-        <button class="nav-btn" id="btn-nav-zoom-out" title="Zoom Out"
-          style="background: #2A2E39; color: #D1D4DC; border: 1px solid #363A45; width: 22px; height: 22px; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; padding: 0;">−</button>
-        <button class="nav-btn" id="btn-nav-zoom-in" title="Zoom In"
-          style="background: #2A2E39; color: #D1D4DC; border: 1px solid #363A45; width: 22px; height: 22px; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; padding: 0;">+</button>
-        <button class="nav-btn" id="btn-nav-scroll-left" title="Scroll Left"
-          style="background: #2A2E39; color: #D1D4DC; border: 1px solid #363A45; width: 22px; height: 22px; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; padding: 0;">‹</button>
-        <button class="nav-btn" id="btn-nav-scroll-right" title="Scroll Right"
-          style="background: #2A2E39; color: #D1D4DC; border: 1px solid #363A45; width: 22px; height: 22px; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; padding: 0;">›</button>
-        <button class="nav-btn" id="btn-nav-reset" title="Reset / Jump to Live"
-          style="background: #2A2E39; color: #D1D4DC; border: 1px solid #363A45; width: 22px; height: 22px; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 11px; padding: 0;">↺</button>
+        style="pointer-events: auto; position: absolute; bottom: 32px; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; z-index: 10; user-select: none; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 6px; padding: 3px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);">
+        <button class="nav-btn" id="btn-nav-zoom-out" title="Zoom Out">−</button>
+        <button class="nav-btn" id="btn-nav-zoom-in" title="Zoom In">+</button>
+        <button class="nav-btn" id="btn-nav-scroll-left" title="Scroll Left">‹</button>
+        <button class="nav-btn" id="btn-nav-scroll-right" title="Scroll Right">›</button>
+        <button class="nav-btn" id="btn-nav-reset" title="Reset / Jump to Live" style="color: var(--chart-accent, #2962FF);">↺</button>
       </div>
 
     </div>

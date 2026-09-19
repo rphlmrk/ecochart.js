@@ -49,10 +49,14 @@ export class EcoChart {
             this.renderer.applyTheme(theme);
             const accent = themeManager.getResolvedAccentColor();
 
-            // 1. Update Auto Button
+            // 1. Update Auto Button & Reset Icon with active accent
             const btnAuto = document.getElementById('btn-auto-fit');
             if (btnAuto) {
-                btnAuto.style.color = this.renderer.isAutoScale ? accent : '#787B86';
+                btnAuto.style.color = this.renderer.isAutoScale ? accent : 'var(--chart-text, #787B86)';
+            }
+            const btnReset = document.getElementById('btn-nav-reset');
+            if (btnReset) {
+                btnReset.style.color = accent;
             }
 
             // 2. Update Active Timeframe Button
@@ -131,7 +135,7 @@ export class EcoChart {
                 // Dragging the price scale explicitly breaks auto-scale
                 this.renderer.isAutoScale = false;
                 const btnAuto = document.getElementById('btn-auto-fit');
-                if (btnAuto) btnAuto.style.color = '#787B86';
+                if (btnAuto) btnAuto.style.color = 'var(--chart-text, #787B86)';
 
                 const priceRange = this.renderer.currentMaxPrice - this.renderer.currentMinPrice;
                 const stretchFactor = deltaY * (priceRange / chartHeight) * 2;
@@ -447,7 +451,7 @@ export class EcoChart {
 
         const btnAuto = document.getElementById('btn-auto-fit');
         if (btnAuto) {
-            btnAuto.style.color = this.renderer.isAutoScale ? themeManager.getResolvedAccentColor() : '#787B86';
+            btnAuto.style.color = this.renderer.isAutoScale ? themeManager.getResolvedAccentColor() : 'var(--chart-text, #787B86)';
         }
     }
 
