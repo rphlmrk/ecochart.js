@@ -440,16 +440,23 @@ export class ChartRenderer {
             const d = new Date(hoverTimeMs);
             const dateBadgeStr = `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 
-            const badgeW = 105;
-            const badgeX = Math.max(0, Math.min(chartWidth - badgeW, this.crosshairX - (badgeW / 2)));
-            this.crosshairBadgeGraphics.rect(badgeX, chartHeight, badgeW, this.timeAxisHeight).fill(0x363A45);
-
+            // 1. Create text first to measure its exact width
             const timeText = new Text({
                 text: dateBadgeStr,
                 style: { fontFamily: 'sans-serif', fontSize: 11, fill: 0xffffff }
             });
-            timeText.x = badgeX + 6;
-            timeText.y = chartHeight + 5;
+
+            // 2. Make badge tightly fit the text (with 16px padding) instead of hardcoding a huge box
+            const badgeW = timeText.width + 16;
+            const badgeX = Math.max(0, Math.min(chartWidth - badgeW, this.crosshairX - (badgeW / 2)));
+
+            this.crosshairBadgeGraphics.rect(badgeX, chartHeight, badgeW, this.timeAxisHeight).fill(0x363A45);
+
+            // 3. Center the text perfectly inside the badge both horizontally and vertically
+            timeText.anchor.set(0.5);
+            timeText.x = badgeX + (badgeW / 2);
+            timeText.y = chartHeight + (this.timeAxisHeight / 2);
+
             this.crosshairBadgeText.addChild(timeText);
         }
     }
