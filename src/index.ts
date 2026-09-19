@@ -225,6 +225,24 @@ export class EcoChart {
         WorkspaceManager.syncTopBar();
     }
 
+    public zoomAtCenter(factor: number) {
+        const screenWidth = this.renderer.app?.screen?.width || this.canvas.clientWidth;
+        const chartWidth = screenWidth - this.renderer.priceAxisWidth;
+        const centerX = chartWidth / 2;
+        const worldBaseX = (centerX + this.renderer.cameraX) / this.renderer.zoom;
+
+        this.renderer.zoom = Math.max(0.1, Math.min(this.renderer.zoom * factor, 50));
+        this.renderer.cameraX = (worldBaseX * this.renderer.zoom) - centerX;
+        this.isLockedToEdge = false;
+        this.isDirty = true;
+    }
+
+    public scrollHorizontal(pixels: number) {
+        this.renderer.cameraX += pixels;
+        this.isLockedToEdge = false;
+        this.isDirty = true;
+    }
+
     public jumpToLive() {
         this.renderer.isAutoScale = true;
         this.renderer.cameraY = 0;
@@ -460,34 +478,21 @@ export class WorkspaceManager {
             this.activeChart?.toggleAutoScale();
         });
 
-        // Floating Nav Controls
+        // Floating Nav Controls (Centered Zoom & Edge-Unlocked Scrolling)
         document.getElementById('btn-nav-zoom-in')?.addEventListener('click', () => {
-            if (this.activeChart) {
-                this.activeChart.renderer.zoom = Math.min(50, this.activeChart.renderer.zoom * 1.25);
-                this.activeChart.isDirty = true;
-            }
+            this.activeChart?.zoomAtCenter(1.25);
         });
 
         document.getElementById('btn-nav-zoom-out')?.addEventListener('click', () => {
-            if (this.activeChart) {
-                this.activeChart.renderer.zoom = Math.max(0.1, this.activeChart.renderer.zoom * 0.8);
-                this.activeChart.isDirty = true;
-            }
+            this.activeChart?.zoomAtCenter(0.8);
         });
 
         document.getElementById('btn-nav-scroll-left')?.addEventListener('click', () => {
-            if (this.activeChart) {
-                this.activeChart.renderer.cameraX -= 250;
-                this.activeChart.renderer.isAutoScale = false;
-                this.activeChart.isDirty = true;
-            }
+            this.activeChart?.scrollHorizontal(-250);
         });
 
         document.getElementById('btn-nav-scroll-right')?.addEventListener('click', () => {
-            if (this.activeChart) {
-                this.activeChart.renderer.cameraX += 250;
-                this.activeChart.isDirty = true;
-            }
+            this.activeChart?.scrollHorizontal(250);
         });
 
         document.getElementById('btn-nav-reset')?.addEventListener('click', () => {
