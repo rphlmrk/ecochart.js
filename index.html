@@ -59,13 +59,41 @@
       background: rgba(41, 98, 255, 0.15);
       border-left-color: var(--chart-accent, #2962FF);
     }
+
+    /* Multi-Pane Grid Layouts */
+    #charts-grid {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      width: 100vw;
+      height: 100vh;
+      box-sizing: border-box;
+      background: var(--chart-bg, #131722);
+    }
+    .chart-pane {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      border: 1px solid var(--chart-grid, #2A2E39);
+      box-sizing: border-box;
+    }
+    .chart-pane.active-pane {
+      border: 1.5px solid var(--chart-accent, #2962FF);
+      z-index: 2;
+    }
+
+    .layout-1 { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+    .layout-2v { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
+    .layout-2h { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+    .layout-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
   </style>
 </head>
 
 <body>
   <div id="chart-wrapper" style="position: relative; width: 100vw; height: 100vh;">
-    <!-- Layer 1: The WebGL Canvas -->
-    <div id="chart-container" style="position: absolute; inset: 0;"></div>
+    <!-- Layer 1: The Multi-Pane WebGL Workspace -->
+    <div id="charts-grid" class="layout-1"></div>
 
     <!-- Layer 2: The HTML UI Shell -->
     <div id="ui-layer"
@@ -123,6 +151,29 @@
             style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">🏔️</button>
           <button class="mode-btn" data-mode="heikinAshi" title="Heikin-Ashi"
             style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; font-weight: 700;">HA</button>
+        </div>
+
+        <!-- Layout Selector Button & Dropdown -->
+        <div style="position: relative;">
+          <button id="btn-layout" title="Select Layout"
+            style="background: transparent; color: #D1D4DC; border: none; padding: 4px 6px; font-size: 14px; cursor: pointer; border-radius: 4px;">
+            ⊞
+          </button>
+          <div id="layout-menu"
+            style="display: none; position: absolute; top: 32px; left: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 130px;">
+            <button class="layout-opt-btn" data-layout="1" style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 6px 10px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+              <span>⏹</span> 1 Chart
+            </button>
+            <button class="layout-opt-btn" data-layout="2v" style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 6px 10px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+              <span>◫</span> 2 Columns
+            </button>
+            <button class="layout-opt-btn" data-layout="2h" style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 6px 10px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+              <span>⊟</span> 2 Rows
+            </button>
+            <button class="layout-opt-btn" data-layout="4" style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 6px 10px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+              <span>⊞</span> 4 Grid
+            </button>
+          </div>
         </div>
 
         <div style="width: 1px; height: 18px; background: #2A2E39; margin: 0 4px;"></div>
@@ -383,9 +434,8 @@
   </dialog>
 
   <script type="module">
-    import { EcoChart } from '/src/index.ts';
-    const chart = new EcoChart('chart-container');
-    chart.startLiveBinance('BTCUSDT', '1m'); 
+    import { WorkspaceManager } from '/src/index.ts';
+    WorkspaceManager.init();
   </script>
 </body>
 

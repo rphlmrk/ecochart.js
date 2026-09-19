@@ -295,29 +295,35 @@ export class ChartRenderer {
 
             // MODE 2: AREA CHART
         } else if (this.chartMode === 'area') {
-            let startX = 0;
-            let endX = 0;
+            if (visEnd > visStart) {
+                const firstX = (visStart * actualSpacing) - this.cameraX + (candleWidth / 2);
+                const lastX = ((visEnd - 1) * actualSpacing) - this.cameraX + (candleWidth / 2);
 
-            for (let i = visStart; i < visEnd; i++) {
-                const c = this.dataStore.data[i * 6 + 4];
-                const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
-                const y = priceToY(c);
-
-                if (i === visStart) {
-                    startX = x;
-                    this.candlesGraphics.moveTo(x, y);
-                } else {
+                // 1. Draw the filled area polygon under the curve
+                this.candlesGraphics.moveTo(firstX, chartHeight);
+                for (let i = visStart; i < visEnd; i++) {
+                    const c = this.dataStore.data[i * 6 + 4];
+                    const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
+                    const y = priceToY(c);
                     this.candlesGraphics.lineTo(x, y);
                 }
-                endX = x;
-            }
-            this.candlesGraphics.stroke({ color: this.accentColor, width: this.mainLineWidth });
-
-            if (visEnd > visStart) {
-                this.candlesGraphics.lineTo(endX, chartHeight);
-                this.candlesGraphics.lineTo(startX, chartHeight);
+                this.candlesGraphics.lineTo(lastX, chartHeight);
                 this.candlesGraphics.closePath();
                 this.candlesGraphics.fill({ color: this.accentColor, alpha: 0.2 });
+
+                // 2. Draw the top boundary line
+                for (let i = visStart; i < visEnd; i++) {
+                    const c = this.dataStore.data[i * 6 + 4];
+                    const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
+                    const y = priceToY(c);
+
+                    if (i === visStart) {
+                        this.candlesGraphics.moveTo(x, y);
+                    } else {
+                        this.candlesGraphics.lineTo(x, y);
+                    }
+                }
+                this.candlesGraphics.stroke({ color: this.accentColor, width: this.mainLineWidth });
             }
 
             // MODE 3: OHLC BARS
@@ -568,6 +574,12 @@ export class ChartRenderer {
             timeText.y = chartHeight + (this.timeAxisHeight / 2);
 
             this.crosshairBadgeText.addChild(timeText);
+        }
+    }
+
+    public destroy() {
+        if (this.app) {
+            this.app.destroy(true, { children: true, texture: true });
         }
     }
 }

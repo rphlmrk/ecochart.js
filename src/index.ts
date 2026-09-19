@@ -7,11 +7,13 @@ import { colorPicker } from './ui/ColorPicker';
 import type { ChartTheme, LineStyle, AccentSource } from './theme/types';
 
 export class EcoChart {
-    private dataStore: DataStore;
+    public dataStore: DataStore;
     public renderer: ChartRenderer;
-    private network: BinanceClient;
-    private isDirty = true;
-    private canvas: HTMLCanvasElement;
+    public network: BinanceClient;
+    public isDirty = true;
+    public canvas: HTMLCanvasElement;
+    public container: HTMLElement;
+    public isRunning = true;
 
     // Interaction State
     private isDraggingChart = false;
@@ -27,54 +29,36 @@ export class EcoChart {
     public currentSymbol = 'BTCUSDT';
     public currentInterval = '1m';
 
-    constructor(containerId: string) {
-        const container = document.getElementById(containerId);
-        if (!container) throw new Error("Container not found");
-
-        container.innerHTML = "";
+    constructor(target: string | HTMLElement) {
+        const el = typeof target === 'string' ? document.getElementById(target) : target;
+        if (!el) throw new Error("Container element not found");
+        this.container = el;
+        this.container.innerHTML = "";
 
         this.canvas = document.createElement('canvas');
         this.canvas.style.width = '100%';
         this.canvas.style.height = '100%';
         this.canvas.style.display = 'block';
         this.canvas.style.touchAction = 'none';
-        container.appendChild(this.canvas);
+        this.container.appendChild(this.canvas);
 
         this.dataStore = new DataStore();
         this.renderer = new ChartRenderer(this.dataStore);
         this.network = new BinanceClient(this.dataStore);
 
-        // Reactive theme listener: updates renderer, canvas, and active top-bar UI buttons
         themeManager.subscribe((theme) => {
             this.renderer.applyTheme(theme);
-            const accent = themeManager.getResolvedAccentColor();
-
-            // 1. Update Auto Button & Reset Icon with active accent
-            const btnAuto = document.getElementById('btn-auto-fit');
-            if (btnAuto) {
-                btnAuto.style.color = this.renderer.isAutoScale ? accent : 'var(--chart-text, #787B86)';
-            }
-            const btnReset = document.getElementById('btn-nav-reset');
-            if (btnReset) {
-                btnReset.style.color = accent;
-            }
-
-            // 2. Update Active Timeframe Button
-            const activeTfBtn = document.querySelector(`.tf-btn[data-tf="${this.currentInterval}"]`) as HTMLElement;
-            if (activeTfBtn) {
-                activeTfBtn.style.color = accent;
-            }
-
-            // 3. Update Active Chart Mode Button
-            const activeModeBtn = document.querySelector(`.mode-btn[data-mode="${this.renderer.chartMode}"]`) as HTMLElement;
-            if (activeModeBtn) {
-                activeModeBtn.style.color = accent;
-            }
-
             this.isDirty = true;
         });
 
         this.setupInteractions();
+    }
+
+    public destroy() {
+        this.isRunning = false;
+        this.network.disconnect();
+        this.renderer.destroy();
+        this.canvas.remove();
     }
 
     public themeManager = themeManager;
@@ -749,6 +733,7 @@ export class EcoChart {
         }, 1000);
 
         const loop = () => {
+            if (!this.isRunning) return;
             if (this.isDirty) {
                 this.renderer.renderFrame();
                 this.isDirty = false;
