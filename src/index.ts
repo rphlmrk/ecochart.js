@@ -359,11 +359,11 @@ export class EcoChart {
 
                         btnGrid.dataset.color = fullHex;
                         btnGrid.style.backgroundColor = fullHex;
-                        
+
                         themeManager.updateColor('gridLines', fullHex);
                         if (res.thickness) themeManager.updateColor('gridThickness' as any, res.thickness as any);
                         if (res.style) themeManager.updateColor('gridStyle' as any, res.style as any);
-                        
+
                         this.isDirty = true;
                     }
                 });
@@ -470,15 +470,166 @@ export class EcoChart {
             });
         });
 
-        // 2. Symbol Switcher (Quick Prompt)
-        const btnSymbol = document.getElementById('btn-symbol');
-        btnSymbol?.addEventListener('click', () => {
-            const sym = prompt('Enter Binance Symbol:', this.currentSymbol);
-            if (sym && sym.toUpperCase() !== this.currentSymbol) {
-                this.switchSymbol(sym.toUpperCase());
-                const symLabel = btnSymbol.querySelector('span');
-                if (symLabel) symLabel.textContent = this.currentSymbol;
+        // Custom Timeframe Controller
+        const btnCustomTf = document.getElementById('btn-custom-tf');
+        const modalCustomTf = document.getElementById('custom-tf-modal') as HTMLDialogElement;
+        const btnCloseCustomTf = document.getElementById('btn-close-custom-tf');
+        const btnApplyCustomTf = document.getElementById('btn-apply-custom-tf');
+        const inputTfVal = document.getElementById('input-custom-tf-val') as HTMLInputElement;
+        const selectTfUnit = document.getElementById('select-custom-tf-unit') as HTMLSelectElement;
+
+        btnCustomTf?.addEventListener('click', () => {
+            modalCustomTf?.showModal();
+            inputTfVal?.focus();
+        });
+
+        btnCloseCustomTf?.addEventListener('click', () => modalCustomTf?.close());
+        modalCustomTf?.addEventListener('click', (e) => {
+            if (e.target === modalCustomTf) modalCustomTf.close();
+        });
+
+        // Preset quick-click buttons
+        document.querySelectorAll('.preset-tf-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                if (inputTfVal) inputTfVal.value = (btn as HTMLElement).dataset.val || '45';
+                if (selectTfUnit) selectTfUnit.value = (btn as HTMLElement).dataset.unit || 'm';
+            });
+        });
+
+        const applyCustomTimeframe = () => {
+            const val = parseInt(inputTfVal?.value || '1', 10);
+            const unit = selectTfUnit?.value || 'm';
+            if (val > 0) {
+                const newTf = `${val}${unit}`;
+                
+                // Clear active states on standard buttons
+                tfButtons.forEach((b) => {
+                    (b as HTMLElement).style.background = 'transparent';
+                    (b as HTMLElement).style.color = '#787B86';
+                });
+
+                // Highlight custom button with active interval label
+                if (btnCustomTf) {
+                    btnCustomTf.textContent = newTf;
+                    btnCustomTf.style.background = 'var(--chart-grid)';
+                    btnCustomTf.style.color = themeManager.getResolvedAccentColor();
+                    btnCustomTf.style.borderStyle = 'solid';
+                }
+
+                modalCustomTf?.close();
+                this.switchTimeframe(newTf);
             }
+        };
+
+        btnApplyCustomTf?.addEventListener('click', applyCustomTimeframe);
+        inputTfVal?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') applyCustomTimeframe();
+        });
+
+        // --- 2. Direct Binance Symbol Search Modal ---
+        const btnSymbol = document.getElementById('btn-symbol');
+        const modalSymbol = document.getElementById('symbol-modal') as HTMLDialogElement;
+        const inputSearch = document.getElementById('symbol-search-input') as HTMLInputElement;
+        const listContainer = document.getElementById('symbol-list');
+        const btnCloseSymbol = document.getElementById('btn-symbol-modal-close');
+
+        let allSymbols: Array<{ symbol: string; baseAsset: string; quoteAsset: string }> = [];
+        let filteredSymbols: Array<{ symbol: string; baseAsset: string; quoteAsset: string }> = [];
+        let selectedIndex = 0;
+
+        const renderSymbolList = () => {
+            if (!listContainer) return;
+            listContainer.innerHTML = '';
+
+            if (filteredSymbols.length === 0) {
+                listContainer.innerHTML = '<div style="padding: 18px; text-align: center; color: #787B86; font-size: 12px;">No matching USDT pairs found</div>';
+                return;
+            }
+
+            // Render top 50 matches for maximum performance
+            const limit = Math.min(filteredSymbols.length, 50);
+            for (let i = 0; i < limit; i++) {
+                const item = filteredSymbols[i];
+                const row = document.createElement('div');
+                row.className = `symbol-item ${i === selectedIndex ? 'selected' : ''}`;
+                row.innerHTML = `
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="font-weight: 700; color: var(--chart-text, #D1D4DC);">${item.symbol}</span>
+                        <span style="font-size: 11px; color: var(--chart-text, #787B86); opacity: 0.65;">${item.baseAsset}</span>
+                    </div>
+                    <span style="font-size: 11px; background: var(--chart-grid, rgba(0,0,0,0.08)); padding: 2px 6px; border-radius: 4px; color: var(--chart-text, #787B86); font-weight: 600;">${item.quoteAsset}</span>
+                `;
+                row.addEventListener('click', () => selectSymbol(item.symbol));
+                listContainer.appendChild(row);
+            }
+        };
+
+        const selectSymbol = (sym: string) => {
+            if (sym !== this.currentSymbol) {
+                this.switchSymbol(sym);
+                const symLabel = btnSymbol?.querySelector('span');
+                if (symLabel) symLabel.textContent = sym;
+            }
+            modalSymbol?.close();
+        };
+
+        const filterSymbols = (query: string) => {
+            const clean = query.trim().toUpperCase();
+            if (!clean) {
+                filteredSymbols = allSymbols.slice(0, 50);
+            } else {
+                filteredSymbols = allSymbols.filter(s =>
+                    s.symbol.includes(clean) || s.baseAsset.toUpperCase().includes(clean)
+                ).slice(0, 50);
+            }
+            selectedIndex = 0;
+            renderSymbolList();
+        };
+
+        btnSymbol?.addEventListener('click', async () => {
+            modalSymbol?.showModal();
+            inputSearch.value = '';
+            inputSearch.focus();
+
+            if (allSymbols.length === 0) {
+                if (listContainer) listContainer.innerHTML = '<div style="padding: 18px; text-align: center; color: #787B86; font-size: 12px;">Loading Binance USDT directory...</div>';
+                allSymbols = await this.network.fetchTradableSymbols();
+            }
+            filterSymbols('');
+        });
+
+        inputSearch?.addEventListener('input', (e) => {
+            filterSymbols((e.target as HTMLInputElement).value);
+        });
+
+        // Keyboard Navigation (Arrow Keys + Enter)
+        inputSearch?.addEventListener('keydown', (e) => {
+            const count = Math.min(filteredSymbols.length, 50);
+            if (count === 0) return;
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                selectedIndex = (selectedIndex + 1) % count;
+                renderSymbolList();
+                const activeEl = listContainer?.children[selectedIndex] as HTMLElement;
+                activeEl?.scrollIntoView({ block: 'nearest' });
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                selectedIndex = (selectedIndex - 1 + count) % count;
+                renderSymbolList();
+                const activeEl = listContainer?.children[selectedIndex] as HTMLElement;
+                activeEl?.scrollIntoView({ block: 'nearest' });
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (filteredSymbols[selectedIndex]) {
+                    selectSymbol(filteredSymbols[selectedIndex].symbol);
+                }
+            }
+        });
+
+        btnCloseSymbol?.addEventListener('click', () => modalSymbol?.close());
+        modalSymbol?.addEventListener('click', (e) => {
+            if (e.target === modalSymbol) modalSymbol.close();
         });
 
         // 3. Chart Mode Toggle (Candles vs Line)
