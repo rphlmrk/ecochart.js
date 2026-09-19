@@ -31,6 +31,14 @@ export class ChartRenderer {
     public gridColor = 0x2A2E39;
     public axisTextColor = 0xD1D4DC;
 
+    // Symbol / Candlestick Styling
+    public bullColor = 0x26A69A;
+    public bearColor = 0xEF5350;
+    public bullWickColor = 0x26A69A;
+    public bearWickColor = 0xEF5350;
+    public bullBorderColor = 0x26A69A;
+    public bearBorderColor = 0xEF5350;
+
     // Chart Render Style ('candles' | 'line')
     public chartMode: 'candles' | 'line' = 'candles';
 
@@ -224,10 +232,20 @@ export class ChartRenderer {
                 const x = (i * actualSpacing) - this.cameraX;
                 const yH = priceToY(h), yL = priceToY(l), yO = priceToY(o), yC = priceToY(c);
 
-                const color = c >= o ? 0x26A69A : 0xEF5350;
+                const isBull = c >= o;
+                const bodyColor = isBull ? this.bullColor : this.bearColor;
+                const wickColor = isBull ? this.bullWickColor : this.bearWickColor;
+                const borderColor = isBull ? this.bullBorderColor : this.bearBorderColor;
 
-                this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, yL - yH).fill(color);
-                this.candlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC))).fill(color);
+                // Wick
+                this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, yL - yH).fill(wickColor);
+
+                // Body & Border
+                const bodyTop = Math.min(yO, yC);
+                const bodyHeight = Math.max(1, Math.abs(yO - yC));
+                this.candlesGraphics.rect(x, bodyTop, candleWidth, bodyHeight)
+                    .fill(bodyColor)
+                    .stroke({ color: borderColor, width: 1 });
             }
         }
 
@@ -247,7 +265,7 @@ export class ChartRenderer {
 
         const liveY = priceToY(lastClose);
         const isBullish = lastClose >= lastOpen;
-        const liveColor = isBullish ? 0x26A69A : 0xEF5350;
+        const liveColor = isBullish ? this.bullColor : this.bearColor;
 
         // A. Horizontal Live Price Line across chart
         if (liveY >= 0 && liveY <= chartHeight) {

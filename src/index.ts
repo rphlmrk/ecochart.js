@@ -79,7 +79,7 @@ export class EcoChart {
             const deltaX = e.clientX - this.lastMouseX;
             const deltaY = e.clientY - this.lastMouseY;
 
-            // Change cursor based on hover zone (like TradingView)
+            // Change cursor based on hover zone
             const chartWidth = this.renderer.app.screen.width - this.renderer.priceAxisWidth;
             const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
             if (this.renderer.crosshairX > chartWidth) this.canvas.style.cursor = 'ns-resize';
@@ -166,10 +166,64 @@ export class EcoChart {
         btnSettings?.addEventListener('click', () => modalSettings?.showModal());
 
         btnCloseSettings?.addEventListener('click', () => {
+            // 1. Canvas Colors
             this.renderer.bgColor = parseInt(inputBg.value.replace('#', '0x'), 16);
             this.renderer.gridColor = parseInt(inputGrid.value.replace('#', '0x'), 16);
+
+            // 2. Candlestick Symbol Colors
+            const bullBody = document.getElementById('input-bull-body') as HTMLInputElement;
+            const bearBody = document.getElementById('input-bear-body') as HTMLInputElement;
+            const bullWick = document.getElementById('input-bull-wick') as HTMLInputElement;
+            const bearWick = document.getElementById('input-bear-wick') as HTMLInputElement;
+            const bullBorder = document.getElementById('input-bull-border') as HTMLInputElement;
+            const bearBorder = document.getElementById('input-bear-border') as HTMLInputElement;
+
+            if (bullBody) this.renderer.bullColor = parseInt(bullBody.value.replace('#', '0x'), 16);
+            if (bearBody) this.renderer.bearColor = parseInt(bearBody.value.replace('#', '0x'), 16);
+            if (bullWick) this.renderer.bullWickColor = parseInt(bullWick.value.replace('#', '0x'), 16);
+            if (bearWick) this.renderer.bearWickColor = parseInt(bearWick.value.replace('#', '0x'), 16);
+            if (bullBorder) this.renderer.bullBorderColor = parseInt(bullBorder.value.replace('#', '0x'), 16);
+            if (bearBorder) this.renderer.bearBorderColor = parseInt(bearBorder.value.replace('#', '0x'), 16);
+
+            // 3. Navigation Bar Visibility Toggle
+            const checkNav = document.getElementById('check-show-nav') as HTMLInputElement;
+            const navBar = document.getElementById('nav-bar');
+            if (navBar && checkNav) {
+                navBar.style.display = checkNav.checked ? 'flex' : 'none';
+            }
+
             this.isDirty = true;
             modalSettings?.close();
+        });
+
+        // --- BOTTOM NAVIGATION BAR CONTROLS ---
+        const zoomAtScreenCenter = (factor: number) => {
+            const chartWidth = this.renderer.app.screen.width - this.renderer.priceAxisWidth;
+            const centerX = chartWidth / 2;
+            const worldBaseX = (centerX + this.renderer.cameraX) / this.renderer.zoom;
+
+            this.renderer.zoom = Math.max(0.1, Math.min(this.renderer.zoom * factor, 50));
+            this.renderer.cameraX = (worldBaseX * this.renderer.zoom) - centerX;
+            this.isLockedToEdge = false;
+            this.isDirty = true;
+        };
+
+        document.getElementById('btn-nav-zoom-in')?.addEventListener('click', () => zoomAtScreenCenter(1.25));
+        document.getElementById('btn-nav-zoom-out')?.addEventListener('click', () => zoomAtScreenCenter(0.8));
+
+        document.getElementById('btn-nav-scroll-left')?.addEventListener('click', () => {
+            this.renderer.cameraX -= 250;
+            this.isLockedToEdge = false;
+            this.isDirty = true;
+        });
+
+        document.getElementById('btn-nav-scroll-right')?.addEventListener('click', () => {
+            this.renderer.cameraX += 250;
+            this.isDirty = true;
+        });
+
+        document.getElementById('btn-nav-reset')?.addEventListener('click', () => {
+            this.jumpToLive();
         });
 
         // 1. Timeframe Switchers

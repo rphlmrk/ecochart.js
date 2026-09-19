@@ -31,7 +31,7 @@
     <div id="ui-layer"
       style="position: absolute; inset: 0; pointer-events: none; font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;">
 
-      <!-- Top Toolbar (TradingView Dark Theme Style) -->
+      <!-- Top Toolbar -->
       <div id="top-bar"
         style="pointer-events: auto; position: absolute; top: 0; left: 0; right: 0; height: 38px; background: #131722; border-bottom: 1px solid #2A2E39; display: flex; align-items: center; padding: 0 8px; gap: 4px; user-select: none;">
 
@@ -83,35 +83,98 @@
         </button>
       </div>
 
-      <!-- Bottom-Right Auto-Fit Button (TradingView Style) -->
+      <!-- Bottom-Right Auto-Fit Button -->
       <button id="btn-auto-fit"
         style="pointer-events: auto; position: absolute; right: 8px; bottom: 28px; background: #1E222D; color: #2962FF; border: 1px solid #2A2E39; border-radius: 3px; font-size: 11px; font-weight: 700; padding: 2px 6px; cursor: pointer; text-transform: uppercase;">
         auto
       </button>
 
+      <!-- Bottom Floating Navigation Bar -->
+      <div id="nav-bar"
+        style="pointer-events: auto; position: absolute; bottom: 32px; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; z-index: 10; user-select: none;">
+        <button class="nav-btn" id="btn-nav-zoom-out" title="Zoom Out"
+          style="background: #2A2E39; color: #D1D4DC; border: 1px solid #363A45; width: 30px; height: 30px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 15px;">−</button>
+        <button class="nav-btn" id="btn-nav-zoom-in" title="Zoom In"
+          style="background: #2A2E39; color: #D1D4DC; border: 1px solid #363A45; width: 30px; height: 30px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 15px;">+</button>
+        <button class="nav-btn" id="btn-nav-scroll-left" title="Scroll Left"
+          style="background: #2A2E39; color: #D1D4DC; border: 1px solid #363A45; width: 30px; height: 30px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 15px;">‹</button>
+        <button class="nav-btn" id="btn-nav-scroll-right" title="Scroll Right"
+          style="background: #2A2E39; color: #D1D4DC; border: 1px solid #363A45; width: 30px; height: 30px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 15px;">›</button>
+        <button class="nav-btn" id="btn-nav-reset" title="Reset / Jump to Live"
+          style="background: #2A2E39; color: #D1D4DC; border: 1px solid #363A45; width: 30px; height: 30px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px;">↺</button>
+      </div>
+
     </div>
   </div>
 
-  <!-- Layer 3: Native Settings Modal -->
+  <!-- Layer 3: Comprehensive Settings Modal -->
   <dialog id="settings-modal"
-    style="background: #131722; color: #D1D4DC; border: 1px solid #434651; border-radius: 8px; padding: 20px; font-family: sans-serif;">
-    <h3 style="margin-top: 0;">Chart Settings</h3>
+    style="background: #131722; color: #D1D4DC; border: 1px solid #434651; border-radius: 8px; padding: 20px; font-family: sans-serif; width: 380px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);">
+    <h3 style="margin-top: 0; margin-bottom: 15px; border-bottom: 1px solid #2A2E39; padding-bottom: 8px;">Chart
+      Settings</h3>
 
-    <label style="display: block; margin-bottom: 10px;">
-      Background Color:
-      <input type="color" id="input-bg-color" value="#131722"
-        style="background: transparent; border: none; cursor: pointer;">
-    </label>
+    <!-- Section 1: Symbol / Candles -->
+    <div style="margin-bottom: 15px;">
+      <span style="font-weight: bold; font-size: 12px; color: #787B86; text-transform: uppercase;">Candlestick
+        Colors</span>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
+        <label style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+          Bull Body: <input type="color" id="input-bull-body" value="#26A69A"
+            style="border:none; background:none; cursor:pointer;">
+        </label>
+        <label style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+          Bear Body: <input type="color" id="input-bear-body" value="#EF5350"
+            style="border:none; background:none; cursor:pointer;">
+        </label>
+        <label style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+          Bull Wick: <input type="color" id="input-bull-wick" value="#26A69A"
+            style="border:none; background:none; cursor:pointer;">
+        </label>
+        <label style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+          Bear Wick: <input type="color" id="input-bear-wick" value="#EF5350"
+            style="border:none; background:none; cursor:pointer;">
+        </label>
+        <label style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+          Bull Border: <input type="color" id="input-bull-border" value="#26A69A"
+            style="border:none; background:none; cursor:pointer;">
+        </label>
+        <label style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+          Bear Border: <input type="color" id="input-bear-border" value="#EF5350"
+            style="border:none; background:none; cursor:pointer;">
+        </label>
+      </div>
+    </div>
 
-    <label style="display: block; margin-bottom: 20px;">
-      Grid Color:
-      <input type="color" id="input-grid-color" value="#2A2E39"
-        style="background: transparent; border: none; cursor: pointer;">
-    </label>
+    <!-- Section 2: Canvas -->
+    <div style="margin-bottom: 15px;">
+      <span style="font-weight: bold; font-size: 12px; color: #787B86; text-transform: uppercase;">Canvas
+        Appearance</span>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
+        <label style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+          Background: <input type="color" id="input-bg-color" value="#131722"
+            style="border:none; background:none; cursor:pointer;">
+        </label>
+        <label style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+          Grid Lines: <input type="color" id="input-grid-color" value="#2A2E39"
+            style="border:none; background:none; cursor:pointer;">
+        </label>
+      </div>
+    </div>
+
+    <!-- Section 3: Navigation Options -->
+    <div style="margin-bottom: 20px;">
+      <span style="font-weight: bold; font-size: 12px; color: #787B86; text-transform: uppercase;">Navigation</span>
+      <div style="margin-top: 8px;">
+        <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+          <input type="checkbox" id="check-show-nav" checked style="cursor: pointer;">
+          Show Bottom Navigation Bar
+        </label>
+      </div>
+    </div>
 
     <div style="text-align: right;">
       <button id="btn-close-settings"
-        style="background: #2962FF; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer;">Apply
+        style="background: #2962FF; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; font-weight: bold;">Apply
         & Close</button>
     </div>
   </dialog>
