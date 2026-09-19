@@ -91,15 +91,16 @@ export class EcoChart {
                     this.renderer.cameraX -= deltaX;
                     this.isLockedToEdge = false;
                 }
-                if (deltaY !== 0) {
+                // Only pan vertically on the chart body if auto-scale was manually turned off
+                if (!this.renderer.isAutoScale && deltaY !== 0) {
                     this.renderer.cameraY += deltaY;
-                    this.renderer.isAutoScale = false;
-                    const btnAuto = document.getElementById('btn-auto-fit');
-                    if (btnAuto) btnAuto.style.color = '#787B86';
                 }
             } else if (this.isDraggingPriceAxis) {
-                // Compress/Expand Price Scale
+                // Dragging the price scale explicitly breaks auto-scale
                 this.renderer.isAutoScale = false;
+                const btnAuto = document.getElementById('btn-auto-fit');
+                if (btnAuto) btnAuto.style.color = '#787B86';
+
                 const priceRange = this.renderer.currentMaxPrice - this.renderer.currentMinPrice;
                 const stretchFactor = deltaY * (priceRange / chartHeight) * 2;
 
@@ -137,14 +138,8 @@ export class EcoChart {
         this.canvas.addEventListener('pointercancel', stopDragging);
 
         this.canvas.addEventListener('dblclick', () => {
-            this.renderer.isAutoScale = true;
-            this.renderer.cameraY = 0;
-            this.isLockedToEdge = true;
-
-            const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
-            const maxScroll = (this.dataStore.length * actualSpacing) - window.innerWidth;
-            this.renderer.cameraX = maxScroll + 150;
-            this.isDirty = true;
+            // Re-enables auto-scaling without moving the timeline
+            this.toggleAutoScale(true);
         });
 
         this.canvas.addEventListener('wheel', (e) => {
@@ -232,14 +227,28 @@ export class EcoChart {
             this.isDirty = true;
         });
 
-        // 4. Auto-Fit Button
+        // 4. Auto-Fit Button: Toggles vertical scaling without moving cameraX
         const btnAuto = document.getElementById('btn-auto-fit');
         btnAuto?.addEventListener('click', () => {
-            this.resetView();
+            this.toggleAutoScale();
         });
     }
 
-    public resetView() {
+    public toggleAutoScale(forceState?: boolean) {
+        this.renderer.isAutoScale = forceState !== undefined ? forceState : !this.renderer.isAutoScale;
+        if (this.renderer.isAutoScale) {
+            this.renderer.cameraY = 0;
+        }
+        this.isDirty = true;
+
+        const btnAuto = document.getElementById('btn-auto-fit');
+        if (btnAuto) {
+            btnAuto.style.color = this.renderer.isAutoScale ? '#2962FF' : '#787B86';
+        }
+    }
+
+    // Dedicated method for the upcoming navigation bar
+    public jumpToLive() {
         this.renderer.isAutoScale = true;
         this.renderer.cameraY = 0;
         this.isLockedToEdge = true;
@@ -268,7 +277,7 @@ export class EcoChart {
                 this.renderer.cameraX = maxScroll + 150;
             }
         });
-        this.resetView();
+        this.jumpToLive();
     }
 
     public async switchSymbol(newSymbol: string) {
@@ -285,7 +294,7 @@ export class EcoChart {
                 this.renderer.cameraX = maxScroll + 150;
             }
         });
-        this.resetView();
+        this.jumpToLive();
     }
 
     public async startLiveBinance(symbol: string, interval: string) {
