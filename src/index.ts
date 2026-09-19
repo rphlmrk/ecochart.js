@@ -13,11 +13,15 @@ export class EcoChart {
     private isDraggingChart = false;
     private isDraggingPriceAxis = false;
     private isDraggingTimeAxis = false;
-    private timeAxisAnchorX = 0; // Fixed screen X anchor
-    private timeAxisWorldX = 0;  // Fixed world coordinate
+    private timeAxisAnchorX = 0;
+    private timeAxisWorldX = 0;
     private lastMouseX = 0;
     private lastMouseY = 0;
     private isLockedToEdge = true;
+
+    // Active Symbol & Timeframe State
+    public currentSymbol = 'BTCUSDT';
+    public currentInterval = '1m';
 
     constructor(containerId: string) {
         const container = document.getElementById(containerId);
@@ -90,6 +94,8 @@ export class EcoChart {
                 if (deltaY !== 0) {
                     this.renderer.cameraY += deltaY;
                     this.renderer.isAutoScale = false;
+                    const btnAuto = document.getElementById('btn-auto-fit');
+                    if (btnAuto) btnAuto.style.color = '#787B86';
                 }
             } else if (this.isDraggingPriceAxis) {
                 // Compress/Expand Price Scale
@@ -165,12 +171,120 @@ export class EcoChart {
         btnSettings?.addEventListener('click', () => modalSettings?.showModal());
 
         btnCloseSettings?.addEventListener('click', () => {
-            // Parse Hex to PixiJS numeric color (e.g., "#131722" -> 0x131722)
             this.renderer.bgColor = parseInt(inputBg.value.replace('#', '0x'), 16);
             this.renderer.gridColor = parseInt(inputGrid.value.replace('#', '0x'), 16);
             this.isDirty = true;
             modalSettings?.close();
         });
+
+        // 1. Timeframe Switchers
+        const tfButtons = document.querySelectorAll('.tf-btn');
+        tfButtons.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const tf = (btn as HTMLElement).dataset.tf;
+                if (!tf || tf === this.currentInterval) return;
+
+                tfButtons.forEach((b) => {
+                    (b as HTMLElement).style.background = 'transparent';
+                    (b as HTMLElement).style.color = '#787B86';
+                });
+                (btn as HTMLElement).style.background = '#2A2E39';
+                (btn as HTMLElement).style.color = '#2962FF';
+
+                this.switchTimeframe(tf);
+            });
+        });
+
+        // 2. Symbol Switcher (Quick Prompt)
+        const btnSymbol = document.getElementById('btn-symbol');
+        btnSymbol?.addEventListener('click', () => {
+            const sym = prompt('Enter Binance Symbol:', this.currentSymbol);
+            if (sym && sym.toUpperCase() !== this.currentSymbol) {
+                this.switchSymbol(sym.toUpperCase());
+                const symLabel = btnSymbol.querySelector('span');
+                if (symLabel) symLabel.textContent = this.currentSymbol;
+            }
+        });
+
+        // 3. Chart Mode Toggle (Candles vs Line)
+        const btnCandles = document.getElementById('btn-mode-candles');
+        const btnLine = document.getElementById('btn-mode-line');
+
+        btnCandles?.addEventListener('click', () => {
+            this.renderer.chartMode = 'candles';
+            btnCandles.style.background = '#2A2E39';
+            btnCandles.style.color = '#2962FF';
+            if (btnLine) {
+                btnLine.style.background = 'transparent';
+                btnLine.style.color = '#787B86';
+            }
+            this.isDirty = true;
+        });
+
+        btnLine?.addEventListener('click', () => {
+            this.renderer.chartMode = 'line';
+            btnLine.style.background = '#2A2E39';
+            btnLine.style.color = '#2962FF';
+            if (btnCandles) {
+                btnCandles.style.background = 'transparent';
+                btnCandles.style.color = '#787B86';
+            }
+            this.isDirty = true;
+        });
+
+        // 4. Auto-Fit Button
+        const btnAuto = document.getElementById('btn-auto-fit');
+        btnAuto?.addEventListener('click', () => {
+            this.resetView();
+        });
+    }
+
+    public resetView() {
+        this.renderer.isAutoScale = true;
+        this.renderer.cameraY = 0;
+        this.isLockedToEdge = true;
+
+        const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+        const maxScroll = (this.dataStore.length * actualSpacing) - window.innerWidth;
+        this.renderer.cameraX = maxScroll + 150;
+        this.isDirty = true;
+
+        const btnAuto = document.getElementById('btn-auto-fit');
+        if (btnAuto) btnAuto.style.color = '#2962FF';
+    }
+
+    public async switchTimeframe(newInterval: string) {
+        this.currentInterval = newInterval;
+        this.network.disconnect();
+        this.dataStore.clear();
+        this.isDirty = true;
+
+        await this.network.connect(this.currentSymbol, this.currentInterval, () => {
+            this.isDirty = true;
+            if (this.isLockedToEdge) {
+                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+                const maxScroll = (this.dataStore.length * actualSpacing) - window.innerWidth;
+                this.renderer.cameraX = maxScroll + 150;
+            }
+        });
+        this.resetView();
+    }
+
+    public async switchSymbol(newSymbol: string) {
+        this.currentSymbol = newSymbol;
+        this.network.disconnect();
+        this.dataStore.clear();
+        this.isDirty = true;
+
+        await this.network.connect(this.currentSymbol, this.currentInterval, () => {
+            this.isDirty = true;
+            if (this.isLockedToEdge) {
+                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+                const maxScroll = (this.dataStore.length * actualSpacing) - window.innerWidth;
+                this.renderer.cameraX = maxScroll + 150;
+            }
+        });
+        this.resetView();
     }
 
     public async startLiveBinance(symbol: string, interval: string) {

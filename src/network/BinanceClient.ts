@@ -61,4 +61,14 @@ export class BinanceClient {
             }
         };
     }
+
+    public disconnect() {
+        this.isReconnecting = true; // Prevent automatic reconnect loops during manual switches
+        if (this.ws) {
+            this.ws.onclose = null; // Suppress reconnect callbacks
+            this.ws.close();
+            this.ws = null;
+        }
+        this.isReconnecting = false;
+    }
 }

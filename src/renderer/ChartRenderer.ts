@@ -27,6 +27,9 @@ export class ChartRenderer {
     public gridColor = 0x2A2E39;
     public axisTextColor = 0xD1D4DC;
 
+    // Chart Render Style ('candles' | 'line')
+    public chartMode: 'candles' | 'line' = 'candles';
+
     public isAutoScale = true;
     public currentMinPrice = 0;
     public currentMaxPrice = 1;
@@ -164,22 +167,37 @@ export class ChartRenderer {
             }
         }
 
-        // --- 2. DRAW CANDLES ---
-        const candleWidth = Math.max(1, actualSpacing * 0.8);
-        for (let i = visStart; i < visEnd; i++) {
-            const base = i * 6;
-            const o = this.dataStore.data[base + 1];
-            const h = this.dataStore.data[base + 2];
-            const l = this.dataStore.data[base + 3];
-            const c = this.dataStore.data[base + 4];
+        // --- 2. DRAW CANDLES OR LINE ---
+        if (this.chartMode === 'line') {
+            for (let i = visStart; i < visEnd; i++) {
+                const c = this.dataStore.data[i * 6 + 4];
+                const x = (i * actualSpacing) - this.cameraX;
+                const y = priceToY(c);
 
-            const x = (i * actualSpacing) - this.cameraX;
-            const yH = priceToY(h), yL = priceToY(l), yO = priceToY(o), yC = priceToY(c);
+                if (i === visStart) {
+                    this.candlesGraphics.moveTo(x, y);
+                } else {
+                    this.candlesGraphics.lineTo(x, y);
+                }
+            }
+            this.candlesGraphics.stroke({ color: 0x2962FF, width: 2 });
+        } else {
+            const candleWidth = Math.max(1, actualSpacing * 0.8);
+            for (let i = visStart; i < visEnd; i++) {
+                const base = i * 6;
+                const o = this.dataStore.data[base + 1];
+                const h = this.dataStore.data[base + 2];
+                const l = this.dataStore.data[base + 3];
+                const c = this.dataStore.data[base + 4];
 
-            const color = c >= o ? 0x26A69A : 0xEF5350;
+                const x = (i * actualSpacing) - this.cameraX;
+                const yH = priceToY(h), yL = priceToY(l), yO = priceToY(o), yC = priceToY(c);
 
-            this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, yL - yH).fill(color);
-            this.candlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC))).fill(color);
+                const color = c >= o ? 0x26A69A : 0xEF5350;
+
+                this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, yL - yH).fill(color);
+                this.candlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC))).fill(color);
+            }
         }
 
         // --- 3. DRAW AXIS BACKGROUNDS (Covers overflowing candles) ---

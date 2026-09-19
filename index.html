@@ -26,41 +26,100 @@
   <div id="chart-wrapper" style="position: relative; width: 100vw; height: 100vh;">
     <!-- Layer 1: The WebGL Canvas -->
     <div id="chart-container" style="position: absolute; inset: 0;"></div>
-    
+
     <!-- Layer 2: The HTML UI Shell -->
-    <div id="ui-layer" style="position: absolute; inset: 0; pointer-events: none;">
-      
-      <!-- Top Left Settings Button -->
-      <button id="btn-settings" style="pointer-events: auto; position: absolute; top: 15px; left: 15px; background: #2A2E39; color: #D1D4DC; border: 1px solid #434651; padding: 6px 12px; cursor: pointer; border-radius: 4px; font-family: sans-serif;">
-        ⚙️ Settings
+    <div id="ui-layer"
+      style="position: absolute; inset: 0; pointer-events: none; font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;">
+
+      <!-- Top Toolbar (TradingView Dark Theme Style) -->
+      <div id="top-bar"
+        style="pointer-events: auto; position: absolute; top: 0; left: 0; right: 0; height: 38px; background: #131722; border-bottom: 1px solid #2A2E39; display: flex; align-items: center; padding: 0 8px; gap: 4px; user-select: none;">
+
+        <!-- Symbol Selector -->
+        <button id="btn-symbol"
+          style="background: transparent; color: #F0F3FA; border: 1px solid transparent; padding: 4px 8px; font-weight: 700; font-size: 13px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 4px;">
+          <span>BTCUSDT</span>
+          <span style="font-size: 9px; color: #787B86;">▼</span>
+        </button>
+
+        <div style="width: 1px; height: 18px; background: #2A2E39; margin: 0 4px;"></div>
+
+        <!-- Timeframe Pills -->
+        <div id="tf-group" style="display: flex; gap: 2px;">
+          <button class="tf-btn" data-tf="1s"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1s</button>
+          <button class="tf-btn active-btn" data-tf="1m"
+            style="background: #2A2E39; color: #2962FF; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1m</button>
+          <button class="tf-btn" data-tf="3m"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">3m</button>
+          <button class="tf-btn" data-tf="5m"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">5m</button>
+          <button class="tf-btn" data-tf="15m"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">15m</button>
+          <button class="tf-btn" data-tf="30m"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">30m</button>
+          <button class="tf-btn" data-tf="1h"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1h</button>
+          <button class="tf-btn" data-tf="4h"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">4h</button>
+          <button class="tf-btn" data-tf="1d"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">D</button>
+        </div>
+
+        <div style="width: 1px; height: 18px; background: #2A2E39; margin: 0 4px;"></div>
+
+        <!-- Chart Mode Toggle (Candles / Line) -->
+        <button id="btn-mode-candles"
+          style="background: #2A2E39; color: #2962FF; border: none; padding: 4px 8px; font-size: 13px; cursor: pointer; border-radius: 4px;">🕯️</button>
+        <button id="btn-mode-line"
+          style="background: transparent; color: #787B86; border: none; padding: 4px 8px; font-size: 13px; cursor: pointer; border-radius: 4px;">📈</button>
+
+        <div style="width: 1px; height: 18px; background: #2A2E39; margin: 0 4px;"></div>
+
+        <!-- Settings Button -->
+        <button id="btn-settings"
+          style="background: transparent; color: #D1D4DC; border: none; padding: 4px 8px; font-size: 14px; cursor: pointer; border-radius: 4px;">
+          ⚙️
+        </button>
+      </div>
+
+      <!-- Bottom-Right Auto-Fit Button (TradingView Style) -->
+      <button id="btn-auto-fit"
+        style="pointer-events: auto; position: absolute; right: 8px; bottom: 28px; background: #1E222D; color: #2962FF; border: 1px solid #2A2E39; border-radius: 3px; font-size: 11px; font-weight: 700; padding: 2px 6px; cursor: pointer; text-transform: uppercase;">
+        auto
       </button>
 
     </div>
   </div>
 
   <!-- Layer 3: Native Settings Modal -->
-  <dialog id="settings-modal" style="background: #131722; color: #D1D4DC; border: 1px solid #434651; border-radius: 8px; padding: 20px; font-family: sans-serif;">
+  <dialog id="settings-modal"
+    style="background: #131722; color: #D1D4DC; border: 1px solid #434651; border-radius: 8px; padding: 20px; font-family: sans-serif;">
     <h3 style="margin-top: 0;">Chart Settings</h3>
-    
+
     <label style="display: block; margin-bottom: 10px;">
       Background Color:
-      <input type="color" id="input-bg-color" value="#131722" style="background: transparent; border: none; cursor: pointer;">
+      <input type="color" id="input-bg-color" value="#131722"
+        style="background: transparent; border: none; cursor: pointer;">
     </label>
 
     <label style="display: block; margin-bottom: 20px;">
       Grid Color:
-      <input type="color" id="input-grid-color" value="#2A2E39" style="background: transparent; border: none; cursor: pointer;">
+      <input type="color" id="input-grid-color" value="#2A2E39"
+        style="background: transparent; border: none; cursor: pointer;">
     </label>
 
     <div style="text-align: right;">
-      <button id="btn-close-settings" style="background: #2962FF; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer;">Apply & Close</button>
+      <button id="btn-close-settings"
+        style="background: #2962FF; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer;">Apply
+        & Close</button>
     </div>
   </dialog>
 
   <script type="module">
     import { EcoChart } from '/src/index.ts';
     const chart = new EcoChart('chart-container');
-    chart.startLiveBinance('BTCUSDT', '1s'); 
+    chart.startLiveBinance('BTCUSDT', '1m'); 
   </script>
 </body>
 

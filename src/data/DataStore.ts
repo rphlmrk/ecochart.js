@@ -10,6 +10,10 @@ export class DataStore {
         this.data = new Float64Array(this.capacity * ITEMS_PER_CANDLE);
     }
 
+    public clear() {
+        this.length = 0;
+    }
+
     // Mirrors your Go `mergeCandles` logic
     public appendOrUpdate(time: number, o: number, h: number, l: number, c: number, v: number): boolean {
         let isNewCandle = false;
@@ -28,7 +32,7 @@ export class DataStore {
             } else if (time > lastTime) {
                 // Resize array if we hit capacity
                 if (this.length >= this.capacity) this.resize();
-                
+
                 // Append new candle
                 this.setCandle(this.length, time, o, h, l, c, v);
                 this.length++;
