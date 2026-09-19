@@ -54,8 +54,18 @@ export class ColorPicker {
     public open(options: ColorPickerOptions) {
         this.close();
         this.currentOptions = options;
-        this.currentColor = options.initialColor.toUpperCase();
-        this.currentOpacity = options.initialOpacity ?? 1;
+
+        let initColor = options.initialColor.toUpperCase();
+        let initOpacity = options.initialOpacity ?? 1;
+
+        // If an 8-character hex is passed (#RRGGBBAA), split it into color and opacity
+        if (initColor.startsWith('#') && initColor.length === 9) {
+            initOpacity = parseInt(initColor.slice(7, 9), 16) / 255;
+            initColor = initColor.slice(0, 7);
+        }
+
+        this.currentColor = initColor;
+        this.currentOpacity = initOpacity;
         this.currentThickness = options.initialThickness ?? 1;
         this.currentStyle = options.initialStyle ?? 'solid';
 

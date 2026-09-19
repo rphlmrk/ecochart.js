@@ -104,7 +104,17 @@ export class ThemeManager {
     }
 
     public static hexToInt(hex: string): number {
-        return parseInt(hex.replace('#', ''), 16);
+        return parseInt(hex.replace('#', '').slice(0, 6), 16);
+    }
+
+    public static hexToColorAndAlpha(hex: string): { color: number; alpha: number } {
+        const clean = hex.replace('#', '');
+        const color = parseInt(clean.slice(0, 6), 16) || 0;
+        let alpha = 1;
+        if (clean.length >= 8) {
+            alpha = parseInt(clean.slice(6, 8), 16) / 255;
+        }
+        return { color, alpha };
     }
 }
 

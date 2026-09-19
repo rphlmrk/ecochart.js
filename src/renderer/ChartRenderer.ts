@@ -31,15 +31,36 @@ export class ChartRenderer {
 
     public applyTheme(theme: ChartTheme) {
         this.bgColor = ThemeManager.hexToInt(theme.background);
-        this.gridColor = ThemeManager.hexToInt(theme.gridLines);
         this.axisTextColor = ThemeManager.hexToInt(theme.axisText);
         this.crosshairColor = ThemeManager.hexToInt(theme.crosshair);
-        this.bullColor = ThemeManager.hexToInt(theme.bullBody);
-        this.bearColor = ThemeManager.hexToInt(theme.bearBody);
-        this.bullWickColor = ThemeManager.hexToInt(theme.bullWick);
-        this.bearWickColor = ThemeManager.hexToInt(theme.bearWick);
-        this.bullBorderColor = ThemeManager.hexToInt(theme.bullBorder);
-        this.bearBorderColor = ThemeManager.hexToInt(theme.bearBorder);
+
+        const grid = ThemeManager.hexToColorAndAlpha(theme.gridLines);
+        this.gridColor = grid.color;
+        this.gridAlpha = grid.alpha;
+
+        const bull = ThemeManager.hexToColorAndAlpha(theme.bullBody);
+        this.bullColor = bull.color;
+        this.bullAlpha = bull.alpha;
+
+        const bear = ThemeManager.hexToColorAndAlpha(theme.bearBody);
+        this.bearColor = bear.color;
+        this.bearAlpha = bear.alpha;
+
+        const bWick = ThemeManager.hexToColorAndAlpha(theme.bullWick);
+        this.bullWickColor = bWick.color;
+        this.bullWickAlpha = bWick.alpha;
+
+        const rWick = ThemeManager.hexToColorAndAlpha(theme.bearWick);
+        this.bearWickColor = rWick.color;
+        this.bearWickAlpha = rWick.alpha;
+
+        const bBorder = ThemeManager.hexToColorAndAlpha(theme.bullBorder);
+        this.bullBorderColor = bBorder.color;
+        this.bullBorderAlpha = bBorder.alpha;
+
+        const rBorder = ThemeManager.hexToColorAndAlpha(theme.bearBorder);
+        this.bearBorderColor = rBorder.color;
+        this.bearBorderAlpha = rBorder.alpha;
     }
 
     // Theming (Controlled by HTML UI)
@@ -47,13 +68,20 @@ export class ChartRenderer {
     public gridColor = 0x2A2E39;
     public axisTextColor = 0xD1D4DC;
 
-    // Symbol / Candlestick Styling
+    // Symbol / Candlestick Styling & Alphas
     public bullColor = 0x26A69A;
+    public bullAlpha = 1;
     public bearColor = 0xEF5350;
+    public bearAlpha = 1;
     public bullWickColor = 0x26A69A;
+    public bullWickAlpha = 1;
     public bearWickColor = 0xEF5350;
+    public bearWickAlpha = 1;
     public bullBorderColor = 0x26A69A;
+    public bullBorderAlpha = 1;
     public bearBorderColor = 0xEF5350;
+    public bearBorderAlpha = 1;
+    public gridAlpha = 1;
 
     // Chart Render Style ('candles' | 'line')
     public chartMode: 'candles' | 'line' = 'candles';
@@ -184,7 +212,7 @@ export class ChartRenderer {
 
         for (let p = firstPrice; p <= visibleMax; p += step) {
             const y = priceToY(p);
-            this.gridGraphics.moveTo(0, y).lineTo(chartWidth, y).stroke({ color: this.gridColor, width: 1 });
+            this.gridGraphics.moveTo(0, y).lineTo(chartWidth, y).stroke({ color: this.gridColor, width: 1, alpha: this.gridAlpha });
 
             const text = new Text({ text: p.toFixed(2), style: { fontFamily: 'sans-serif', fontSize: 11, fill: this.axisTextColor } });
             text.x = chartWidth + 5;
@@ -208,7 +236,7 @@ export class ChartRenderer {
             if (i < 0) continue;
             const x = (i * actualSpacing) - this.cameraX;
 
-            this.gridGraphics.moveTo(x, 0).lineTo(x, chartHeight).stroke({ color: this.gridColor, width: 1 });
+            this.gridGraphics.moveTo(x, 0).lineTo(x, chartHeight).stroke({ color: this.gridColor, width: 1, alpha: this.gridAlpha });
 
             const ts = this.dataStore.data[i * 6];
             if (ts) {
@@ -250,18 +278,22 @@ export class ChartRenderer {
 
                 const isBull = c >= o;
                 const bodyColor = isBull ? this.bullColor : this.bearColor;
+                const bodyAlpha = isBull ? this.bullAlpha : this.bearAlpha;
                 const wickColor = isBull ? this.bullWickColor : this.bearWickColor;
+                const wickAlpha = isBull ? this.bullWickAlpha : this.bearWickAlpha;
                 const borderColor = isBull ? this.bullBorderColor : this.bearBorderColor;
+                const borderAlpha = isBull ? this.bullBorderAlpha : this.bearBorderAlpha;
 
-                // Wick
-                this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, yL - yH).fill(wickColor);
+                // Wick with Alpha
+                this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, yL - yH)
+                    .fill({ color: wickColor, alpha: wickAlpha });
 
-                // Body & Border
+                // Body & Border with Alphas
                 const bodyTop = Math.min(yO, yC);
                 const bodyHeight = Math.max(1, Math.abs(yO - yC));
                 this.candlesGraphics.rect(x, bodyTop, candleWidth, bodyHeight)
-                    .fill(bodyColor)
-                    .stroke({ color: borderColor, width: 1 });
+                    .fill({ color: bodyColor, alpha: bodyAlpha })
+                    .stroke({ color: borderColor, width: 1, alpha: borderAlpha });
             }
         }
 

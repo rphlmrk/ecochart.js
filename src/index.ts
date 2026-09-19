@@ -191,9 +191,13 @@ export class EcoChart {
                     showOpacity: showOpacity,
                     showStrokeOptions: false,
                     onChange: (res) => {
-                        btn.dataset.color = res.color;
-                        btn.style.backgroundColor = res.color;
-                        themeManager.updateColor(themeKey, res.color);
+                        // Encode color and opacity into an 8-digit hex (#RRGGBBAA)
+                        const aHex = Math.round(res.opacity * 255).toString(16).padStart(2, '0');
+                        const fullHex = `${res.color.slice(0, 7)}${aHex}`.toUpperCase();
+
+                        btn.dataset.color = fullHex;
+                        btn.style.backgroundColor = fullHex;
+                        themeManager.updateColor(themeKey, fullHex);
                     }
                 });
             });
