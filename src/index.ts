@@ -391,7 +391,7 @@ export class EcoChart {
                     (b as HTMLElement).style.background = 'transparent';
                     (b as HTMLElement).style.color = '#787B86';
                 });
-                (btn as HTMLElement).style.background = '#2A2E39';
+                (btn as HTMLElement).style.background = 'var(--chart-grid)';
                 (btn as HTMLElement).style.color = themeManager.getResolvedAccentColor();
 
                 this.switchTimeframe(tf);
@@ -415,7 +415,7 @@ export class EcoChart {
 
         btnCandles?.addEventListener('click', () => {
             this.renderer.chartMode = 'candles';
-            btnCandles.style.background = '#2A2E39';
+            btnCandles.style.background = 'var(--chart-grid)';
             btnCandles.style.color = themeManager.getResolvedAccentColor();
             if (btnLine) {
                 btnLine.style.background = 'transparent';
@@ -426,7 +426,7 @@ export class EcoChart {
 
         btnLine?.addEventListener('click', () => {
             this.renderer.chartMode = 'line';
-            btnLine.style.background = '#2A2E39';
+            btnLine.style.background = 'var(--chart-grid)';
             btnLine.style.color = themeManager.getResolvedAccentColor();
             if (btnCandles) {
                 btnCandles.style.background = 'transparent';
