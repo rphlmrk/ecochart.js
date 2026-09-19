@@ -10,6 +10,8 @@ export interface ChartTheme {
     background: string;
     panelBackground: string;
     gridLines: string;
+    gridThickness?: number;
+    gridStyle?: LineStyle;
     axisText: string;
     crosshair: string;
 

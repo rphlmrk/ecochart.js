@@ -184,33 +184,45 @@ export class EcoChart {
             const mouseX = e.clientX - rect.left;
             const mouseY = e.clientY - rect.top;
 
+            // Define our hit zones
+            const chartWidth = this.renderer.app.screen.width - this.renderer.priceAxisWidth;
+            const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
+
+            const isHoveringPrice = mouseX > chartWidth;
+            const isHoveringTime = mouseY > chartHeight;
+            const isHoveringMain = !isHoveringPrice && !isHoveringTime;
+
             const zoomFactor = Math.pow(1.05, -Math.sign(e.deltaY));
 
-            // 1. X-Axis Time Zoom (Always happens)
-            const worldBaseX = (mouseX + this.renderer.cameraX) / this.renderer.zoom;
-            this.renderer.zoom *= zoomFactor;
-            this.renderer.zoom = Math.max(0.1, Math.min(this.renderer.zoom, 50));
-            this.renderer.cameraX = (worldBaseX * this.renderer.zoom) - mouseX;
+            // 1. Time Axis (X) Zoom: Only if hovering Time Axis OR Main Chart
+            if (isHoveringTime || isHoveringMain) {
+                const worldBaseX = (mouseX + this.renderer.cameraX) / this.renderer.zoom;
+                this.renderer.zoom *= zoomFactor;
+                this.renderer.zoom = Math.max(0.1, Math.min(this.renderer.zoom, 50));
+                this.renderer.cameraX = (worldBaseX * this.renderer.zoom) - mouseX;
+                this.isLockedToEdge = false;
+            }
 
-            // 2. Y-Axis Price Zoom (Only happens in Manual Mode)
-            if (!this.renderer.isAutoScale) {
-                const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
-                
-                // Find the exact price under the mouse cursor right now
+            // 2. Price Axis (Y) Zoom: Only if hovering Price Axis OR (Main Chart + Manual Mode)
+            if (isHoveringPrice || (isHoveringMain && !this.renderer.isAutoScale)) {
+                // If scrolling specifically on the price axis, force manual mode
+                if (isHoveringPrice) {
+                    this.renderer.isAutoScale = false;
+                    const btnAuto = document.getElementById('btn-auto-fit');
+                    if (btnAuto) btnAuto.style.color = 'var(--chart-text, #787B86)';
+                }
+
                 const currentRange = this.renderer.currentMaxPrice - this.renderer.currentMinPrice;
                 const localY = mouseY - this.renderer.cameraY;
                 const normY = (chartHeight - localY) / chartHeight;
                 const priceAtMouse = this.renderer.currentMinPrice + (normY * currentRange);
 
-                // Shrink/Expand the price scale
                 const newRange = currentRange / zoomFactor;
 
-                // Adjust min and max so the price under the mouse doesn't move
                 this.renderer.currentMinPrice = priceAtMouse - (normY * newRange);
                 this.renderer.currentMaxPrice = priceAtMouse + ((1 - normY) * newRange);
             }
 
-            this.isLockedToEdge = false;
             this.isDirty = true;
         }, { passive: false });
 
@@ -292,6 +304,9 @@ export class EcoChart {
             const selPrice = document.getElementById('select-live-price-style') as HTMLSelectElement;
             if (selCrosshair) selCrosshair.value = this.renderer.crosshairStyle;
             if (selPrice) selPrice.value = this.renderer.livePriceStyle;
+
+            const selLineWidth = document.getElementById('select-main-line-width') as HTMLSelectElement;
+            if (selLineWidth) selLineWidth.value = this.renderer.mainLineWidth.toString();
         };
 
         btnSettings?.addEventListener('click', () => {
@@ -325,7 +340,36 @@ export class EcoChart {
 
         // Bind all Settings Swatches
         bindSwatch('input-bg-color', 'background', false);
-        bindSwatch('input-grid-color', 'gridLines', true);
+
+        // ADD THIS ADVANCED PICKER FOR THE GRID LINES:
+        const btnGrid = document.getElementById('input-grid-color');
+        if (btnGrid) {
+            btnGrid.addEventListener('click', () => {
+                const current = themeManager.getTheme();
+                colorPicker.open({
+                    anchorElement: btnGrid,
+                    initialColor: btnGrid.dataset.color || current.gridLines,
+                    initialThickness: current.gridThickness || 1,
+                    initialStyle: current.gridStyle || 'solid',
+                    showOpacity: true,
+                    showStrokeOptions: true, // <-- Enables thickness and line style
+                    onChange: (res) => {
+                        const aHex = Math.round(res.opacity * 255).toString(16).padStart(2, '0');
+                        const fullHex = `${res.color.slice(0, 7)}${aHex}`.toUpperCase();
+
+                        btnGrid.dataset.color = fullHex;
+                        btnGrid.style.backgroundColor = fullHex;
+                        
+                        themeManager.updateColor('gridLines', fullHex);
+                        if (res.thickness) themeManager.updateColor('gridThickness' as any, res.thickness as any);
+                        if (res.style) themeManager.updateColor('gridStyle' as any, res.style as any);
+                        
+                        this.isDirty = true;
+                    }
+                });
+            });
+        }
+
         bindSwatch('input-bull-body', 'bullBody', true);
         bindSwatch('input-bear-body', 'bearBody', true);
         bindSwatch('input-bull-wick', 'bullWick', true);
@@ -348,6 +392,12 @@ export class EcoChart {
             const style = (e.target as HTMLSelectElement).value as LineStyle;
             this.renderer.livePriceStyle = style;
             themeManager.updateColor('livePriceLineStyle', style as any);
+            this.isDirty = true;
+        });
+
+        const selectMainLineWidth = document.getElementById('select-main-line-width') as HTMLSelectElement;
+        selectMainLineWidth?.addEventListener('change', (e) => {
+            this.renderer.mainLineWidth = parseInt((e.target as HTMLSelectElement).value, 10);
             this.isDirty = true;
         });
 

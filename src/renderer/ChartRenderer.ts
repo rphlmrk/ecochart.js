@@ -66,6 +66,9 @@ export class ChartRenderer {
 
         if (theme.crosshairLineStyle) this.crosshairStyle = theme.crosshairLineStyle;
         if (theme.livePriceLineStyle) this.livePriceStyle = theme.livePriceLineStyle;
+
+        this.gridThickness = theme.gridThickness || 1;
+        this.gridStyle = theme.gridStyle || 'solid';
     }
 
     // Theming & Line Styles
@@ -99,9 +102,12 @@ export class ChartRenderer {
     public bearBorderColor = 0xEF5350;
     public bearBorderAlpha = 1;
     public gridAlpha = 1;
+    public gridThickness = 1;
+    public gridStyle: LineStyle = 'solid';
 
     // Chart Render Style ('candles' | 'line')
     public chartMode: 'candles' | 'line' = 'candles';
+    public mainLineWidth = 2;
 
     // Current Timeframe for countdown & extrapolation
     public currentInterval: string = '1m';
@@ -229,7 +235,7 @@ export class ChartRenderer {
 
         for (let p = firstPrice; p <= visibleMax; p += step) {
             const y = priceToY(p);
-            this.gridGraphics.moveTo(0, y).lineTo(chartWidth, y).stroke({ color: this.gridColor, width: 1, alpha: this.gridAlpha });
+            StrokeEngine.drawLine(this.gridGraphics, 0, y, chartWidth, y, { color: this.gridColor, width: this.gridThickness, alpha: this.gridAlpha, style: this.gridStyle });
 
             const text = new Text({ text: p.toFixed(2), style: { fontFamily: 'sans-serif', fontSize: 11, fill: this.axisTextColor } });
             text.x = chartWidth + 5;
@@ -253,7 +259,7 @@ export class ChartRenderer {
             if (i < 0) continue;
             const x = (i * actualSpacing) - this.cameraX;
 
-            this.gridGraphics.moveTo(x, 0).lineTo(x, chartHeight).stroke({ color: this.gridColor, width: 1, alpha: this.gridAlpha });
+            StrokeEngine.drawLine(this.gridGraphics, x, 0, x, chartHeight, { color: this.gridColor, width: this.gridThickness, alpha: this.gridAlpha, style: this.gridStyle });
 
             const ts = this.dataStore.data[i * 6];
             if (ts) {
@@ -281,7 +287,7 @@ export class ChartRenderer {
                     this.candlesGraphics.lineTo(x, y);
                 }
             }
-            this.candlesGraphics.stroke({ color: 0x2962FF, width: 2 });
+            this.candlesGraphics.stroke({ color: 0x2962FF, width: this.mainLineWidth });
         } else {
             const candleWidth = Math.max(1, actualSpacing * 0.8);
             for (let i = visStart; i < visEnd; i++) {
