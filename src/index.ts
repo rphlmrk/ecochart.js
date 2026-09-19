@@ -69,6 +69,22 @@ export class EcoChart {
         this.setupInteractions();
     }
 
+    public showNavBar() {
+        if (this.navBar) {
+            this.navBar.style.opacity = '1';
+            this.navBar.style.pointerEvents = 'auto';
+            this.navBar.style.transform = 'translateX(-50%) translateY(0)';
+        }
+    }
+
+    public hideNavBar() {
+        if (this.navBar) {
+            this.navBar.style.opacity = '0';
+            this.navBar.style.pointerEvents = 'none';
+            this.navBar.style.transform = 'translateX(-50%) translateY(6px)';
+        }
+    }
+
     private createPaneControls() {
         const accent = themeManager.getResolvedAccentColor();
 
@@ -91,7 +107,7 @@ export class EcoChart {
         });
         this.container.appendChild(this.autoBtn);
 
-        // 2. Floating navigation bar for this pane
+        // 2. Floating navigation bar for this pane (with smooth transition)
         this.navBar = document.createElement('div');
         this.navBar.className = 'pane-nav-bar';
         this.navBar.style.cssText = `
@@ -101,6 +117,7 @@ export class EcoChart {
             border: 1px solid var(--chart-grid, #2A2E39);
             border-radius: 6px; padding: 3px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1), transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
         `;
 
         this.navBar.innerHTML = `
@@ -124,6 +141,32 @@ export class EcoChart {
 
         this.resetBtn = this.navBar.querySelector('.nav-btn-reset');
         this.container.appendChild(this.navBar);
+
+        // Hide initially if auto-hide is enabled
+        if (WorkspaceManager.isAutoHideNav) {
+            this.hideNavBar();
+        }
+
+        // Proximity detection: show when mouse moves near the bottom center of this pane
+        this.container.addEventListener('pointermove', (e) => {
+            if (!this.navBar || !WorkspaceManager.isAutoHideNav) return;
+            const rect = this.container.getBoundingClientRect();
+            const distFromBottom = rect.bottom - e.clientY;
+            const distFromCenterX = Math.abs(e.clientX - (rect.left + rect.width / 2));
+
+            // Within 120px vertically from bottom, and within 180px horizontally of the nav bar
+            if (distFromBottom >= 0 && distFromBottom <= 120 && distFromCenterX <= 180) {
+                this.showNavBar();
+            } else {
+                this.hideNavBar();
+            }
+        });
+
+        this.container.addEventListener('pointerleave', () => {
+            if (WorkspaceManager.isAutoHideNav) {
+                this.hideNavBar();
+            }
+        });
     }
 
     public destroy() {
@@ -413,6 +456,7 @@ export class EcoChart {
 export class WorkspaceManager {
     private static charts: EcoChart[] = [];
     private static activeChart: EcoChart | null = null;
+    public static isAutoHideNav = true;
 
     public static init() {
         this.setupGlobalControls();
@@ -738,11 +782,25 @@ export class WorkspaceManager {
 
         const closeSettings = () => {
             const checkNav = document.getElementById('check-show-nav') as HTMLInputElement;
+            const checkAutoHide = document.getElementById('check-autohide-nav') as HTMLInputElement;
+
+            if (checkAutoHide) {
+                WorkspaceManager.isAutoHideNav = checkAutoHide.checked;
+                this.charts.forEach((c) => {
+                    if (!WorkspaceManager.isAutoHideNav) {
+                        c.showNavBar();
+                    } else {
+                        c.hideNavBar();
+                    }
+                });
+            }
+
             if (checkNav) {
                 document.querySelectorAll('.pane-nav-bar').forEach((bar) => {
                     (bar as HTMLElement).style.display = checkNav.checked ? 'flex' : 'none';
                 });
             }
+
             colorPicker.close();
             modalSettings?.close();
         };
