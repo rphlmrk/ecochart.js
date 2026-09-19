@@ -210,13 +210,297 @@ export class EcoChart {
             this.isDirty = true;
         }, { passive: false });
 
-        // --- HTML UI BINDINGS & SETTINGS MODAL ---
+        // When clicking inside this chart, make it the focused pane
+        this.canvas.addEventListener('pointerdown', () => {
+            WorkspaceManager.setActiveChart(this);
+        });
+    }
+
+    public toggleAutoScale(forceState?: boolean) {
+        this.renderer.isAutoScale = forceState !== undefined ? forceState : !this.renderer.isAutoScale;
+        if (this.renderer.isAutoScale) {
+            this.renderer.cameraY = 0;
+        }
+        this.isDirty = true;
+        WorkspaceManager.syncTopBar();
+    }
+
+    public jumpToLive() {
+        this.renderer.isAutoScale = true;
+        this.renderer.cameraY = 0;
+        this.isLockedToEdge = true;
+
+        const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+        const maxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
+        this.renderer.cameraX = maxScroll + 150;
+        this.isDirty = true;
+        WorkspaceManager.syncTopBar();
+    }
+
+    public async switchTimeframe(newInterval: string) {
+        this.currentInterval = newInterval;
+        this.renderer.currentInterval = newInterval;
+        this.network.disconnect();
+        this.dataStore.clear();
+        this.isDirty = true;
+
+        await this.network.connect(this.currentSymbol, this.currentInterval, () => {
+            this.isDirty = true;
+            if (this.isLockedToEdge) {
+                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+                const maxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
+                this.renderer.cameraX = maxScroll + 150;
+            }
+        });
+        this.jumpToLive();
+    }
+
+    public async switchSymbol(newSymbol: string) {
+        this.currentSymbol = newSymbol;
+        this.network.disconnect();
+        this.dataStore.clear();
+        this.isDirty = true;
+
+        await this.network.connect(this.currentSymbol, this.currentInterval, () => {
+            this.isDirty = true;
+            if (this.isLockedToEdge) {
+                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+                const maxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
+                this.renderer.cameraX = maxScroll + 150;
+            }
+        });
+        this.jumpToLive();
+    }
+
+    public async startLiveBinance(symbol: string, interval: string) {
+        this.currentSymbol = symbol;
+        this.currentInterval = interval;
+        await this.renderer.init(this.canvas);
+
+        await this.network.connect(symbol, interval, () => {
+            this.isDirty = true;
+            if (this.isLockedToEdge) {
+                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+                const maxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
+                this.renderer.cameraX = maxScroll + 150;
+            }
+        });
+
+        this.renderer.currentInterval = this.currentInterval;
+        const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+        const initialMaxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
+        this.renderer.cameraX = initialMaxScroll + 150;
+
+        setInterval(() => {
+            if (this.isRunning) this.isDirty = true;
+        }, 1000);
+
+        const loop = () => {
+            if (!this.isRunning) return;
+            if (this.isDirty) {
+                this.renderer.renderFrame();
+                this.isDirty = false;
+            }
+            requestAnimationFrame(loop);
+        };
+        requestAnimationFrame(loop);
+    }
+}
+
+// =========================================================================
+// 🚀 WORKSPACE & MULTI-PANE MANAGER
+// =========================================================================
+export class WorkspaceManager {
+    private static charts: EcoChart[] = [];
+    private static activeChart: EcoChart | null = null;
+
+    public static init() {
+        this.setupGlobalControls();
+        this.setLayout('1');
+    }
+
+    public static getActiveChart(): EcoChart | null {
+        return this.activeChart;
+    }
+
+    public static setActiveChart(chart: EcoChart) {
+        if (this.activeChart === chart) return;
+        this.activeChart = chart;
+
+        document.querySelectorAll('.chart-pane').forEach((p) => p.classList.remove('active-pane'));
+        chart.container.classList.add('active-pane');
+        this.syncTopBar();
+    }
+
+    public static syncTopBar() {
+        const chart = this.activeChart;
+        if (!chart) return;
+
+        const accent = themeManager.getResolvedAccentColor();
+
+        // 1. Symbol Button Label
+        const symLabel = document.getElementById('btn-symbol')?.querySelector('span');
+        if (symLabel) symLabel.textContent = chart.currentSymbol;
+
+        // 2. Timeframe Active Button
+        document.querySelectorAll('.tf-btn').forEach((b) => {
+            const btn = b as HTMLElement;
+            const isMatch = btn.dataset.tf === chart.currentInterval;
+            btn.style.background = isMatch ? 'var(--chart-grid, #2A2E39)' : 'transparent';
+            btn.style.color = isMatch ? accent : '#787B86';
+        });
+
+        // 3. Chart Mode Active Button
+        document.querySelectorAll('.mode-btn').forEach((b) => {
+            const btn = b as HTMLElement;
+            const isMatch = btn.dataset.mode === chart.renderer.chartMode;
+            btn.style.background = isMatch ? 'var(--chart-grid, #2A2E39)' : 'transparent';
+            btn.style.color = isMatch ? accent : '#787B86';
+        });
+
+        // 4. Auto-Fit Button
+        const btnAuto = document.getElementById('btn-auto-fit');
+        if (btnAuto) {
+            btnAuto.style.color = chart.renderer.isAutoScale ? accent : 'var(--chart-text, #787B86)';
+        }
+    }
+
+    public static setLayout(layout: string) {
+        const grid = document.getElementById('charts-grid');
+        if (!grid) return;
+
+        // Clean up previous chart instances
+        this.charts.forEach((c) => c.destroy());
+        this.charts = [];
+        grid.innerHTML = '';
+        grid.className = `layout-${layout}`;
+
+        const defaultConfigs = [
+            { symbol: 'BTCUSDT', tf: '1m' },
+            { symbol: 'ETHUSDT', tf: '5m' },
+            { symbol: 'SOLUSDT', tf: '15m' },
+            { symbol: 'BNBUSDT', tf: '1h' },
+        ];
+
+        let count = 1;
+        if (layout === '2v' || layout === '2h') count = 2;
+        if (layout === '3l' || layout === '3r') count = 3;
+        if (layout === '4' || layout === '4v' || layout === '4h') count = 4;
+
+        for (let i = 0; i < count; i++) {
+            const pane = document.createElement('div');
+            pane.className = 'chart-pane';
+            pane.id = `chart-pane-${i}`;
+            grid.appendChild(pane);
+
+            const chart = new EcoChart(pane);
+            const cfg = defaultConfigs[i] || defaultConfigs[0];
+            chart.startLiveBinance(cfg.symbol, cfg.tf);
+            this.charts.push(chart);
+
+            if (i === 0) {
+                this.setActiveChart(chart);
+            }
+        }
+    }
+
+    private static setupGlobalControls() {
+        // Layout Menu Toggle
+        const btnLayout = document.getElementById('btn-layout');
+        const layoutMenu = document.getElementById('layout-menu');
+
+        btnLayout?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (layoutMenu) {
+                layoutMenu.style.display = layoutMenu.style.display === 'flex' ? 'none' : 'flex';
+            }
+        });
+
+        layoutMenu?.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
+
+        document.addEventListener('click', () => {
+            if (layoutMenu) layoutMenu.style.display = 'none';
+        });
+
+        document.querySelectorAll('.layout-opt-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const lay = (btn as HTMLElement).dataset.layout || '1';
+                this.setLayout(lay);
+                if (layoutMenu) layoutMenu.style.display = 'none';
+            });
+        });
+
+        // Timeframe Buttons
+        document.querySelectorAll('.tf-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const tf = (btn as HTMLElement).dataset.tf;
+                if (tf && this.activeChart && tf !== this.activeChart.currentInterval) {
+                    this.activeChart.switchTimeframe(tf);
+                    this.syncTopBar();
+                }
+            });
+        });
+
+        // Mode Buttons
+        document.querySelectorAll('.mode-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const mode = (btn as HTMLElement).dataset.mode as any;
+                if (mode && this.activeChart) {
+                    this.activeChart.renderer.chartMode = mode;
+                    this.activeChart.isDirty = true;
+                    this.syncTopBar();
+                }
+            });
+        });
+
+        // Auto-Fit Button
+        document.getElementById('btn-auto-fit')?.addEventListener('click', () => {
+            this.activeChart?.toggleAutoScale();
+        });
+
+        // Floating Nav Controls
+        document.getElementById('btn-nav-zoom-in')?.addEventListener('click', () => {
+            if (this.activeChart) {
+                this.activeChart.renderer.zoom = Math.min(50, this.activeChart.renderer.zoom * 1.25);
+                this.activeChart.isDirty = true;
+            }
+        });
+
+        document.getElementById('btn-nav-zoom-out')?.addEventListener('click', () => {
+            if (this.activeChart) {
+                this.activeChart.renderer.zoom = Math.max(0.1, this.activeChart.renderer.zoom * 0.8);
+                this.activeChart.isDirty = true;
+            }
+        });
+
+        document.getElementById('btn-nav-scroll-left')?.addEventListener('click', () => {
+            if (this.activeChart) {
+                this.activeChart.renderer.cameraX -= 250;
+                this.activeChart.renderer.isAutoScale = false;
+                this.activeChart.isDirty = true;
+            }
+        });
+
+        document.getElementById('btn-nav-scroll-right')?.addEventListener('click', () => {
+            if (this.activeChart) {
+                this.activeChart.renderer.cameraX += 250;
+                this.activeChart.isDirty = true;
+            }
+        });
+
+        document.getElementById('btn-nav-reset')?.addEventListener('click', () => {
+            this.activeChart?.jumpToLive();
+        });
+
+        // --- Settings Modal & Theme Customization ---
         const btnSettings = document.getElementById('btn-settings');
         const modalSettings = document.getElementById('settings-modal') as HTMLDialogElement;
         const btnCloseSettings = document.getElementById('btn-close-settings');
         const btnModalCloseX = document.getElementById('btn-modal-close-x');
 
-        // Modal Tab Switching
+        // Modal Tabs
         const modalTabs = document.querySelectorAll('.modal-tab-btn');
         modalTabs.forEach((tab) => {
             tab.addEventListener('click', () => {
@@ -236,7 +520,7 @@ export class EcoChart {
             });
         });
 
-        // Populate Preset Theme Cards in Settings
+        // Theme Presets Grid
         const presetGrid = document.getElementById('preset-grid');
         if (presetGrid) {
             presetGrid.innerHTML = '';
@@ -257,7 +541,6 @@ export class EcoChart {
             });
         }
 
-        // Synchronize Swatches & Inputs with the current theme
         const syncModalInputs = () => {
             const current = themeManager.getTheme();
             const setSwatch = (id: string, color: string) => {
@@ -286,34 +569,27 @@ export class EcoChart {
 
             const selCrosshair = document.getElementById('select-crosshair-style') as HTMLSelectElement;
             const selPrice = document.getElementById('select-live-price-style') as HTMLSelectElement;
-            if (selCrosshair) selCrosshair.value = this.renderer.crosshairStyle;
-            if (selPrice) selPrice.value = this.renderer.livePriceStyle;
-
             const selLineWidth = document.getElementById('select-main-line-width') as HTMLSelectElement;
-            if (selLineWidth) selLineWidth.value = this.renderer.mainLineWidth.toString();
+            if (this.activeChart) {
+                if (selCrosshair) selCrosshair.value = this.activeChart.renderer.crosshairStyle;
+                if (selPrice) selPrice.value = this.activeChart.renderer.livePriceStyle;
+                if (selLineWidth) selLineWidth.value = this.activeChart.renderer.mainLineWidth.toString();
+            }
         };
 
-        btnSettings?.addEventListener('click', () => {
-            syncModalInputs();
-            modalSettings?.showModal();
-        });
-
-        // Helper to bind contextual color picker to any swatch trigger button
         const bindSwatch = (btnId: string, themeKey: keyof ChartTheme, showOpacity = true) => {
             const btn = document.getElementById(btnId);
             if (!btn) return;
-
             btn.addEventListener('click', () => {
                 const currentColor = btn.dataset.color || '#26A69A';
                 colorPicker.open({
                     anchorElement: btn,
                     initialColor: currentColor,
-                    showOpacity: showOpacity,
+                    showOpacity,
                     showStrokeOptions: false,
                     onChange: (res) => {
                         const aHex = Math.round(res.opacity * 255).toString(16).padStart(2, '0');
                         const fullHex = `${res.color.slice(0, 7)}${aHex}`.toUpperCase();
-
                         btn.dataset.color = fullHex;
                         btn.style.backgroundColor = fullHex;
                         themeManager.updateColor(themeKey, fullHex);
@@ -322,10 +598,16 @@ export class EcoChart {
             });
         };
 
-        // Bind all Settings Swatches
         bindSwatch('input-bg-color', 'background', false);
+        bindSwatch('input-bull-body', 'bullBody', true);
+        bindSwatch('input-bear-body', 'bearBody', true);
+        bindSwatch('input-bull-wick', 'bullWick', true);
+        bindSwatch('input-bear-wick', 'bearWick', true);
+        bindSwatch('input-bull-border', 'bullBorder', true);
+        bindSwatch('input-bear-border', 'bearBorder', true);
+        bindSwatch('input-custom-accent', 'accentColor', false);
 
-        // ADD THIS ADVANCED PICKER FOR THE GRID LINES:
+        // Advanced Grid Swatch
         const btnGrid = document.getElementById('input-grid-color');
         if (btnGrid) {
             btnGrid.addEventListener('click', () => {
@@ -336,56 +618,50 @@ export class EcoChart {
                     initialThickness: current.gridThickness || 1,
                     initialStyle: current.gridStyle || 'solid',
                     showOpacity: true,
-                    showStrokeOptions: true, // <-- Enables thickness and line style
+                    showStrokeOptions: true,
                     onChange: (res) => {
                         const aHex = Math.round(res.opacity * 255).toString(16).padStart(2, '0');
                         const fullHex = `${res.color.slice(0, 7)}${aHex}`.toUpperCase();
-
                         btnGrid.dataset.color = fullHex;
                         btnGrid.style.backgroundColor = fullHex;
-
                         themeManager.updateColor('gridLines', fullHex);
                         if (res.thickness) themeManager.updateColor('gridThickness' as any, res.thickness as any);
                         if (res.style) themeManager.updateColor('gridStyle' as any, res.style as any);
-
-                        this.isDirty = true;
+                        this.charts.forEach((c) => { c.isDirty = true; });
                     }
                 });
             });
         }
 
-        bindSwatch('input-bull-body', 'bullBody', true);
-        bindSwatch('input-bear-body', 'bearBody', true);
-        bindSwatch('input-bull-wick', 'bullWick', true);
-        bindSwatch('input-bear-wick', 'bearWick', true);
-        bindSwatch('input-bull-border', 'bullBorder', true);
-        bindSwatch('input-bear-border', 'bearBorder', true);
-        bindSwatch('input-custom-accent', 'accentColor', false);
-
-        // Line Style Selectors
         const selectCrosshair = document.getElementById('select-crosshair-style') as HTMLSelectElement;
         selectCrosshair?.addEventListener('change', (e) => {
             const style = (e.target as HTMLSelectElement).value as LineStyle;
-            this.renderer.crosshairStyle = style;
+            this.charts.forEach((c) => {
+                c.renderer.crosshairStyle = style;
+                c.isDirty = true;
+            });
             themeManager.updateColor('crosshairLineStyle', style as any);
-            this.isDirty = true;
         });
 
         const selectLivePrice = document.getElementById('select-live-price-style') as HTMLSelectElement;
         selectLivePrice?.addEventListener('change', (e) => {
             const style = (e.target as HTMLSelectElement).value as LineStyle;
-            this.renderer.livePriceStyle = style;
+            this.charts.forEach((c) => {
+                c.renderer.livePriceStyle = style;
+                c.isDirty = true;
+            });
             themeManager.updateColor('livePriceLineStyle', style as any);
-            this.isDirty = true;
         });
 
         const selectMainLineWidth = document.getElementById('select-main-line-width') as HTMLSelectElement;
         selectMainLineWidth?.addEventListener('change', (e) => {
-            this.renderer.mainLineWidth = parseInt((e.target as HTMLSelectElement).value, 10);
-            this.isDirty = true;
+            const width = parseInt((e.target as HTMLSelectElement).value, 10);
+            this.charts.forEach((c) => {
+                c.renderer.mainLineWidth = width;
+                c.isDirty = true;
+            });
         });
 
-        // Accent Source Radio Group
         document.querySelectorAll('input[name="accent-source"]').forEach((radio) => {
             radio.addEventListener('change', (e) => {
                 const src = (e.target as HTMLInputElement).value as AccentSource;
@@ -393,7 +669,12 @@ export class EcoChart {
             });
         });
 
-        const closeModal = () => {
+        btnSettings?.addEventListener('click', () => {
+            syncModalInputs();
+            modalSettings?.showModal();
+        });
+
+        const closeSettings = () => {
             const checkNav = document.getElementById('check-show-nav') as HTMLInputElement;
             const navBar = document.getElementById('nav-bar');
             if (navBar && checkNav) {
@@ -402,115 +683,10 @@ export class EcoChart {
             colorPicker.close();
             modalSettings?.close();
         };
+        btnCloseSettings?.addEventListener('click', closeSettings);
+        btnModalCloseX?.addEventListener('click', closeSettings);
 
-        btnCloseSettings?.addEventListener('click', closeModal);
-        btnModalCloseX?.addEventListener('click', closeModal);
-
-        // --- BOTTOM NAVIGATION BAR CONTROLS ---
-        const zoomAtScreenCenter = (factor: number) => {
-            const chartWidth = this.renderer.app.screen.width - this.renderer.priceAxisWidth;
-            const centerX = chartWidth / 2;
-            const worldBaseX = (centerX + this.renderer.cameraX) / this.renderer.zoom;
-
-            this.renderer.zoom = Math.max(0.1, Math.min(this.renderer.zoom * factor, 50));
-            this.renderer.cameraX = (worldBaseX * this.renderer.zoom) - centerX;
-            this.isLockedToEdge = false;
-            this.isDirty = true;
-        };
-
-        document.getElementById('btn-nav-zoom-in')?.addEventListener('click', () => zoomAtScreenCenter(1.25));
-        document.getElementById('btn-nav-zoom-out')?.addEventListener('click', () => zoomAtScreenCenter(0.8));
-
-        document.getElementById('btn-nav-scroll-left')?.addEventListener('click', () => {
-            this.renderer.cameraX -= 250;
-            this.isLockedToEdge = false;
-            this.isDirty = true;
-        });
-
-        document.getElementById('btn-nav-scroll-right')?.addEventListener('click', () => {
-            this.renderer.cameraX += 250;
-            this.isDirty = true;
-        });
-
-        document.getElementById('btn-nav-reset')?.addEventListener('click', () => {
-            this.jumpToLive();
-        });
-
-        // 1. Timeframe Switchers
-        const tfButtons = document.querySelectorAll('.tf-btn');
-        tfButtons.forEach((btn) => {
-            btn.addEventListener('click', () => {
-                const tf = (btn as HTMLElement).dataset.tf;
-                if (!tf || tf === this.currentInterval) return;
-
-                tfButtons.forEach((b) => {
-                    (b as HTMLElement).style.background = 'transparent';
-                    (b as HTMLElement).style.color = '#787B86';
-                });
-                (btn as HTMLElement).style.background = 'var(--chart-grid)';
-                (btn as HTMLElement).style.color = themeManager.getResolvedAccentColor();
-
-                this.switchTimeframe(tf);
-            });
-        });
-
-        // Custom Timeframe Controller
-        const btnCustomTf = document.getElementById('btn-custom-tf');
-        const modalCustomTf = document.getElementById('custom-tf-modal') as HTMLDialogElement;
-        const btnCloseCustomTf = document.getElementById('btn-close-custom-tf');
-        const btnApplyCustomTf = document.getElementById('btn-apply-custom-tf');
-        const inputTfVal = document.getElementById('input-custom-tf-val') as HTMLInputElement;
-        const selectTfUnit = document.getElementById('select-custom-tf-unit') as HTMLSelectElement;
-
-        btnCustomTf?.addEventListener('click', () => {
-            modalCustomTf?.showModal();
-            inputTfVal?.focus();
-        });
-
-        btnCloseCustomTf?.addEventListener('click', () => modalCustomTf?.close());
-        modalCustomTf?.addEventListener('click', (e) => {
-            if (e.target === modalCustomTf) modalCustomTf.close();
-        });
-
-        // Preset quick-click buttons
-        document.querySelectorAll('.preset-tf-btn').forEach((btn) => {
-            btn.addEventListener('click', () => {
-                if (inputTfVal) inputTfVal.value = (btn as HTMLElement).dataset.val || '45';
-                if (selectTfUnit) selectTfUnit.value = (btn as HTMLElement).dataset.unit || 'm';
-            });
-        });
-
-        const applyCustomTimeframe = () => {
-            const val = parseInt(inputTfVal?.value || '1', 10);
-            const unit = selectTfUnit?.value || 'm';
-            if (val > 0) {
-                const newTf = `${val}${unit}`;
-
-                // Clear active states on standard buttons
-                tfButtons.forEach((b) => {
-                    (b as HTMLElement).style.background = 'transparent';
-                    (b as HTMLElement).style.color = '#787B86';
-                });
-
-                // Highlight custom button with active interval label
-                if (btnCustomTf) {
-                    btnCustomTf.textContent = newTf;
-                    btnCustomTf.style.background = 'var(--chart-grid)';
-                    btnCustomTf.style.color = themeManager.getResolvedAccentColor();
-                    btnCustomTf.style.borderStyle = 'solid';
-                }
-
-                modalCustomTf?.close();
-                this.switchTimeframe(newTf);
-            }
-        };
-
-        btnApplyCustomTf?.addEventListener('click', applyCustomTimeframe);
-        inputTfVal?.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') applyCustomTimeframe();
-        });
-
-        // --- 2. Direct Binance Symbol Search Modal ---
+        // Symbol Search Modal
         const btnSymbol = document.getElementById('btn-symbol');
         const modalSymbol = document.getElementById('symbol-modal') as HTMLDialogElement;
         const inputSearch = document.getElementById('symbol-search-input') as HTMLInputElement;
@@ -524,13 +700,10 @@ export class EcoChart {
         const renderSymbolList = () => {
             if (!listContainer) return;
             listContainer.innerHTML = '';
-
             if (filteredSymbols.length === 0) {
                 listContainer.innerHTML = '<div style="padding: 18px; text-align: center; color: #787B86; font-size: 12px;">No matching USDT pairs found</div>';
                 return;
             }
-
-            // Render top 50 matches for maximum performance
             const limit = Math.min(filteredSymbols.length, 50);
             for (let i = 0; i < limit; i++) {
                 const item = filteredSymbols[i];
@@ -543,203 +716,58 @@ export class EcoChart {
                     </div>
                     <span style="font-size: 11px; background: var(--chart-grid, rgba(0,0,0,0.08)); padding: 2px 6px; border-radius: 4px; color: var(--chart-text, #787B86); font-weight: 600;">${item.quoteAsset}</span>
                 `;
-                row.addEventListener('click', () => selectSymbol(item.symbol));
+                row.addEventListener('click', () => {
+                    WorkspaceManager.activeChart?.switchSymbol(item.symbol);
+                    WorkspaceManager.syncTopBar();
+                    modalSymbol?.close();
+                });
                 listContainer.appendChild(row);
             }
-        };
-
-        const selectSymbol = (sym: string) => {
-            if (sym !== this.currentSymbol) {
-                this.switchSymbol(sym);
-                const symLabel = btnSymbol?.querySelector('span');
-                if (symLabel) symLabel.textContent = sym;
-            }
-            modalSymbol?.close();
-        };
-
-        const filterSymbols = (query: string) => {
-            const clean = query.trim().toUpperCase();
-            if (!clean) {
-                filteredSymbols = allSymbols.slice(0, 50);
-            } else {
-                filteredSymbols = allSymbols.filter(s =>
-                    s.symbol.includes(clean) || s.baseAsset.toUpperCase().includes(clean)
-                ).slice(0, 50);
-            }
-            selectedIndex = 0;
-            renderSymbolList();
         };
 
         btnSymbol?.addEventListener('click', async () => {
             modalSymbol?.showModal();
             inputSearch.value = '';
             inputSearch.focus();
-
-            if (allSymbols.length === 0) {
-                if (listContainer) listContainer.innerHTML = '<div style="padding: 18px; text-align: center; color: #787B86; font-size: 12px;">Loading Binance USDT directory...</div>';
-                allSymbols = await this.network.fetchTradableSymbols();
+            if (allSymbols.length === 0 && WorkspaceManager.activeChart) {
+                allSymbols = await WorkspaceManager.activeChart.network.fetchTradableSymbols();
             }
-            filterSymbols('');
+            filteredSymbols = allSymbols.slice(0, 50);
+            selectedIndex = 0;
+            renderSymbolList();
         });
 
         inputSearch?.addEventListener('input', (e) => {
-            filterSymbols((e.target as HTMLInputElement).value);
-        });
-
-        // Keyboard Navigation (Arrow Keys + Enter)
-        inputSearch?.addEventListener('keydown', (e) => {
-            const count = Math.min(filteredSymbols.length, 50);
-            if (count === 0) return;
-
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                selectedIndex = (selectedIndex + 1) % count;
-                renderSymbolList();
-                const activeEl = listContainer?.children[selectedIndex] as HTMLElement;
-                activeEl?.scrollIntoView({ block: 'nearest' });
-            } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                selectedIndex = (selectedIndex - 1 + count) % count;
-                renderSymbolList();
-                const activeEl = listContainer?.children[selectedIndex] as HTMLElement;
-                activeEl?.scrollIntoView({ block: 'nearest' });
-            } else if (e.key === 'Enter') {
-                e.preventDefault();
-                if (filteredSymbols[selectedIndex]) {
-                    selectSymbol(filteredSymbols[selectedIndex].symbol);
-                }
-            }
+            const clean = (e.target as HTMLInputElement).value.trim().toUpperCase();
+            filteredSymbols = clean
+                ? allSymbols.filter((s) => s.symbol.includes(clean) || s.baseAsset.includes(clean)).slice(0, 50)
+                : allSymbols.slice(0, 50);
+            selectedIndex = 0;
+            renderSymbolList();
         });
 
         btnCloseSymbol?.addEventListener('click', () => modalSymbol?.close());
-        modalSymbol?.addEventListener('click', (e) => {
-            if (e.target === modalSymbol) modalSymbol.close();
-        });
 
-        // 3. Multi-Mode Chart Toggle
-        const modeButtons = document.querySelectorAll('.mode-btn');
-        modeButtons.forEach((btn) => {
-            btn.addEventListener('click', () => {
-                const mode = (btn as HTMLElement).dataset.mode as any;
-                if (!mode || mode === this.renderer.chartMode) return;
+        // Custom Timeframe Modal
+        const btnCustomTf = document.getElementById('btn-custom-tf');
+        const modalCustomTf = document.getElementById('custom-tf-modal') as HTMLDialogElement;
+        const btnCloseCustomTf = document.getElementById('btn-close-custom-tf');
+        const btnApplyCustomTf = document.getElementById('btn-apply-custom-tf');
+        const inputTfVal = document.getElementById('input-custom-tf-val') as HTMLInputElement;
+        const selectTfUnit = document.getElementById('select-custom-tf-unit') as HTMLSelectElement;
 
-                this.renderer.chartMode = mode;
+        btnCustomTf?.addEventListener('click', () => modalCustomTf?.showModal());
+        btnCloseCustomTf?.addEventListener('click', () => modalCustomTf?.close());
 
-                modeButtons.forEach((b) => {
-                    (b as HTMLElement).style.background = 'transparent';
-                    (b as HTMLElement).style.color = '#787B86';
-                });
-                (btn as HTMLElement).style.background = 'var(--chart-grid)';
-                (btn as HTMLElement).style.color = themeManager.getResolvedAccentColor();
-
-                this.isDirty = true;
-            });
-        });
-
-        // 4. Auto-Fit Button: Toggles vertical scaling without moving cameraX
-        const btnAuto = document.getElementById('btn-auto-fit');
-        btnAuto?.addEventListener('click', () => {
-            this.toggleAutoScale();
-        });
-    }
-
-    public toggleAutoScale(forceState?: boolean) {
-        this.renderer.isAutoScale = forceState !== undefined ? forceState : !this.renderer.isAutoScale;
-        if (this.renderer.isAutoScale) {
-            this.renderer.cameraY = 0;
-        }
-        this.isDirty = true;
-
-        const btnAuto = document.getElementById('btn-auto-fit');
-        if (btnAuto) {
-            btnAuto.style.color = this.renderer.isAutoScale ? themeManager.getResolvedAccentColor() : 'var(--chart-text, #787B86)';
-        }
-    }
-
-    public jumpToLive() {
-        this.renderer.isAutoScale = true;
-        this.renderer.cameraY = 0;
-        this.isLockedToEdge = true;
-
-        const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
-        const maxScroll = (this.dataStore.length * actualSpacing) - window.innerWidth;
-        this.renderer.cameraX = maxScroll + 150;
-        this.isDirty = true;
-
-        const btnAuto = document.getElementById('btn-auto-fit');
-        if (btnAuto) btnAuto.style.color = themeManager.getResolvedAccentColor();
-    }
-
-    public async switchTimeframe(newInterval: string) {
-        this.currentInterval = newInterval;
-        this.renderer.currentInterval = newInterval;
-        this.network.disconnect();
-        this.dataStore.clear();
-        this.isDirty = true;
-
-        await this.network.connect(this.currentSymbol, this.currentInterval, () => {
-            this.isDirty = true;
-            if (this.isLockedToEdge) {
-                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
-                const maxScroll = (this.dataStore.length * actualSpacing) - window.innerWidth;
-                this.renderer.cameraX = maxScroll + 150;
+        btnApplyCustomTf?.addEventListener('click', () => {
+            const val = parseInt(inputTfVal?.value || '1', 10);
+            const unit = selectTfUnit?.value || 'm';
+            if (val > 0 && WorkspaceManager.activeChart) {
+                const newTf = `${val}${unit}`;
+                WorkspaceManager.activeChart.switchTimeframe(newTf);
+                modalCustomTf?.close();
+                WorkspaceManager.syncTopBar();
             }
         });
-        this.jumpToLive();
-    }
-
-    public async switchSymbol(newSymbol: string) {
-        this.currentSymbol = newSymbol;
-        this.network.disconnect();
-        this.dataStore.clear();
-        this.isDirty = true;
-
-        await this.network.connect(this.currentSymbol, this.currentInterval, () => {
-            this.isDirty = true;
-            if (this.isLockedToEdge) {
-                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
-                const maxScroll = (this.dataStore.length * actualSpacing) - window.innerWidth;
-                this.renderer.cameraX = maxScroll + 150;
-            }
-        });
-        this.jumpToLive();
-    }
-
-    public async startLiveBinance(symbol: string, interval: string) {
-        await this.renderer.init(this.canvas);
-
-        await this.network.connect(symbol, interval, () => {
-            this.isDirty = true;
-
-            // Only force camera forward if we haven't broken the lock
-            if (this.isLockedToEdge) {
-                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
-                const maxScroll = (this.dataStore.length * actualSpacing) - window.innerWidth;
-                this.renderer.cameraX = maxScroll + 150;
-            }
-        });
-
-        // Sync timeframe to renderer
-        this.renderer.currentInterval = this.currentInterval;
-
-        // Initial Snap on load
-        const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
-        const initialMaxScroll = (this.dataStore.length * actualSpacing) - window.innerWidth;
-        this.renderer.cameraX = initialMaxScroll + 150;
-
-        // 1-Second heartbeat to update candle countdown timer smoothly
-        setInterval(() => {
-            this.isDirty = true;
-        }, 1000);
-
-        const loop = () => {
-            if (!this.isRunning) return;
-            if (this.isDirty) {
-                this.renderer.renderFrame();
-                this.isDirty = false;
-            }
-            requestAnimationFrame(loop);
-        };
-        requestAnimationFrame(loop);
     }
 }
