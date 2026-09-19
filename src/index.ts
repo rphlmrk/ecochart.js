@@ -66,7 +66,7 @@ export class EcoChart {
             }
 
             // 3. Update Active Chart Mode Button
-            const activeModeBtn = document.getElementById(this.renderer.chartMode === 'candles' ? 'btn-mode-candles' : 'btn-mode-line');
+            const activeModeBtn = document.querySelector(`.mode-btn[data-mode="${this.renderer.chartMode}"]`) as HTMLElement;
             if (activeModeBtn) {
                 activeModeBtn.style.color = accent;
             }
@@ -501,7 +501,7 @@ export class EcoChart {
             const unit = selectTfUnit?.value || 'm';
             if (val > 0) {
                 const newTf = `${val}${unit}`;
-                
+
                 // Clear active states on standard buttons
                 tfButtons.forEach((b) => {
                     (b as HTMLElement).style.background = 'transparent';
@@ -632,30 +632,24 @@ export class EcoChart {
             if (e.target === modalSymbol) modalSymbol.close();
         });
 
-        // 3. Chart Mode Toggle (Candles vs Line)
-        const btnCandles = document.getElementById('btn-mode-candles');
-        const btnLine = document.getElementById('btn-mode-line');
+        // 3. Multi-Mode Chart Toggle
+        const modeButtons = document.querySelectorAll('.mode-btn');
+        modeButtons.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const mode = (btn as HTMLElement).dataset.mode as any;
+                if (!mode || mode === this.renderer.chartMode) return;
 
-        btnCandles?.addEventListener('click', () => {
-            this.renderer.chartMode = 'candles';
-            btnCandles.style.background = 'var(--chart-grid)';
-            btnCandles.style.color = themeManager.getResolvedAccentColor();
-            if (btnLine) {
-                btnLine.style.background = 'transparent';
-                btnLine.style.color = '#787B86';
-            }
-            this.isDirty = true;
-        });
+                this.renderer.chartMode = mode;
 
-        btnLine?.addEventListener('click', () => {
-            this.renderer.chartMode = 'line';
-            btnLine.style.background = 'var(--chart-grid)';
-            btnLine.style.color = themeManager.getResolvedAccentColor();
-            if (btnCandles) {
-                btnCandles.style.background = 'transparent';
-                btnCandles.style.color = '#787B86';
-            }
-            this.isDirty = true;
+                modeButtons.forEach((b) => {
+                    (b as HTMLElement).style.background = 'transparent';
+                    (b as HTMLElement).style.color = '#787B86';
+                });
+                (btn as HTMLElement).style.background = 'var(--chart-grid)';
+                (btn as HTMLElement).style.color = themeManager.getResolvedAccentColor();
+
+                this.isDirty = true;
+            });
         });
 
         // 4. Auto-Fit Button: Toggles vertical scaling without moving cameraX

@@ -105,8 +105,9 @@ export class ChartRenderer {
     public gridThickness = 1;
     public gridStyle: LineStyle = 'solid';
 
-    // Chart Render Style ('candles' | 'line')
-    public chartMode: 'candles' | 'line' = 'candles';
+    // Multi-Mode Chart Styles
+    public chartMode: 'candles' | 'bars' | 'line' | 'area' | 'heikinAshi' = 'candles';
+    public accentColor = 0x2962FF;
     public mainLineWidth = 2;
 
     // Current Timeframe for countdown & extrapolation
@@ -274,11 +275,14 @@ export class ChartRenderer {
             }
         }
 
-        // --- 2. DRAW CANDLES OR LINE ---
+        // --- 2. MULTI-MODE CHART DRAWING ---
+        const candleWidth = Math.max(1, actualSpacing * 0.8);
+
+        // MODE 1: LINE CHART
         if (this.chartMode === 'line') {
             for (let i = visStart; i < visEnd; i++) {
                 const c = this.dataStore.data[i * 6 + 4];
-                const x = (i * actualSpacing) - this.cameraX;
+                const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
                 const y = priceToY(c);
 
                 if (i === visStart) {
@@ -287,9 +291,115 @@ export class ChartRenderer {
                     this.candlesGraphics.lineTo(x, y);
                 }
             }
-            this.candlesGraphics.stroke({ color: 0x2962FF, width: this.mainLineWidth });
+            this.candlesGraphics.stroke({ color: this.accentColor, width: this.mainLineWidth });
+
+            // MODE 2: AREA CHART
+        } else if (this.chartMode === 'area') {
+            let startX = 0;
+            let endX = 0;
+
+            for (let i = visStart; i < visEnd; i++) {
+                const c = this.dataStore.data[i * 6 + 4];
+                const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
+                const y = priceToY(c);
+
+                if (i === visStart) {
+                    startX = x;
+                    this.candlesGraphics.moveTo(x, y);
+                } else {
+                    this.candlesGraphics.lineTo(x, y);
+                }
+                endX = x;
+            }
+            this.candlesGraphics.stroke({ color: this.accentColor, width: this.mainLineWidth });
+
+            if (visEnd > visStart) {
+                this.candlesGraphics.lineTo(endX, chartHeight);
+                this.candlesGraphics.lineTo(startX, chartHeight);
+                this.candlesGraphics.closePath();
+                this.candlesGraphics.fill({ color: this.accentColor, alpha: 0.2 });
+            }
+
+            // MODE 3: OHLC BARS
+        } else if (this.chartMode === 'bars') {
+            const spineWidth = Math.max(1, Math.min(2, Math.floor(candleWidth * 0.2)));
+            const tickWidth = Math.max(2, candleWidth / 2);
+
+            for (let i = visStart; i < visEnd; i++) {
+                const base = i * 6;
+                const o = this.dataStore.data[base + 1];
+                const h = this.dataStore.data[base + 2];
+                const l = this.dataStore.data[base + 3];
+                const c = this.dataStore.data[base + 4];
+
+                const x = (i * actualSpacing) - this.cameraX;
+                const xMid = x + (candleWidth / 2);
+                const yH = priceToY(h), yL = priceToY(l), yO = priceToY(o), yC = priceToY(c);
+
+                const isBull = c >= o;
+                const clr = isBull ? this.bullColor : this.bearColor;
+                const alpha = isBull ? this.bullAlpha : this.bearAlpha;
+
+                // High to Low spine
+                this.candlesGraphics.rect(xMid - (spineWidth / 2), yH, spineWidth, Math.max(1, yL - yH))
+                    .fill({ color: clr, alpha });
+
+                // Open tick (left)
+                this.candlesGraphics.rect(x, yO - (spineWidth / 2), tickWidth, spineWidth)
+                    .fill({ color: clr, alpha });
+
+                // Close tick (right)
+                this.candlesGraphics.rect(xMid, yC - (spineWidth / 2), tickWidth, spineWidth)
+                    .fill({ color: clr, alpha });
+            }
+
+            // MODE 4: HEIKIN-ASHI
+        } else if (this.chartMode === 'heikinAshi') {
+            let prevHaOpen = (this.dataStore.data[1] + this.dataStore.data[4]) / 2;
+            let prevHaClose = (this.dataStore.data[1] + this.dataStore.data[2] + this.dataStore.data[3] + this.dataStore.data[4]) / 4;
+
+            for (let i = 0; i < visEnd; i++) {
+                const base = i * 6;
+                const o = this.dataStore.data[base + 1];
+                const h = this.dataStore.data[base + 2];
+                const l = this.dataStore.data[base + 3];
+                const c = this.dataStore.data[base + 4];
+
+                const haClose = (o + h + l + c) / 4;
+                const haOpen = i === 0 ? prevHaOpen : (prevHaOpen + prevHaClose) / 2;
+                const haHigh = Math.max(h, haOpen, haClose);
+                const haLow = Math.min(l, haOpen, haClose);
+
+                prevHaOpen = haOpen;
+                prevHaClose = haClose;
+
+                if (i >= visStart) {
+                    const x = (i * actualSpacing) - this.cameraX;
+                    const yH = priceToY(haHigh), yL = priceToY(haLow), yO = priceToY(haOpen), yC = priceToY(haClose);
+
+                    const isBull = haClose >= haOpen;
+                    const bodyColor = isBull ? this.bullColor : this.bearColor;
+                    const bodyAlpha = isBull ? this.bullAlpha : this.bearAlpha;
+                    const wickColor = isBull ? this.bullWickColor : this.bearWickColor;
+                    const wickAlpha = isBull ? this.bullWickAlpha : this.bearWickAlpha;
+                    const borderColor = isBull ? this.bullBorderColor : this.bearBorderColor;
+                    const borderAlpha = isBull ? this.bullBorderAlpha : this.bearBorderAlpha;
+
+                    // Wick
+                    this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH))
+                        .fill({ color: wickColor, alpha: wickAlpha });
+
+                    // Body & Border
+                    const bodyTop = Math.min(yO, yC);
+                    const bodyHeight = Math.max(1, Math.abs(yO - yC));
+                    this.candlesGraphics.rect(x, bodyTop, candleWidth, bodyHeight)
+                        .fill({ color: bodyColor, alpha: bodyAlpha })
+                        .stroke({ color: borderColor, width: 1, alpha: borderAlpha });
+                }
+            }
+
+            // MODE 5: STANDARD CANDLESTICKS (DEFAULT)
         } else {
-            const candleWidth = Math.max(1, actualSpacing * 0.8);
             for (let i = visStart; i < visEnd; i++) {
                 const base = i * 6;
                 const o = this.dataStore.data[base + 1];
@@ -308,11 +418,11 @@ export class ChartRenderer {
                 const borderColor = isBull ? this.bullBorderColor : this.bearBorderColor;
                 const borderAlpha = isBull ? this.bullBorderAlpha : this.bearBorderAlpha;
 
-                // Wick with Alpha
-                this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, yL - yH)
+                // Wick
+                this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH))
                     .fill({ color: wickColor, alpha: wickAlpha });
 
-                // Body & Border with Alphas
+                // Body & Border
                 const bodyTop = Math.min(yO, yC);
                 const bodyHeight = Math.max(1, Math.abs(yO - yC));
                 this.candlesGraphics.rect(x, bodyTop, candleWidth, bodyHeight)
