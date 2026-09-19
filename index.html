@@ -392,6 +392,22 @@
             <input type="checkbox" id="check-autohide-nav" checked style="cursor: pointer;">
             Auto-hide Navigation Bar (show when mouse is near)
           </label>
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+            <input type="checkbox" id="check-sync-crosshair" checked style="cursor: pointer;">
+            Synchronize Crosshair Across All Panes
+          </label>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; margin-top: 14px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 14px;">
+          <span>Max Frame Rate (FPS):</span>
+          <select id="select-fps-limit"
+            style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none;">
+            <option value="15">15 FPS (Ultra Eco)</option>
+            <option value="30">30 FPS (Power Saver)</option>
+            <option value="45">45 FPS (Balanced)</option>
+            <option value="60" selected>60 FPS (Default)</option>
+            <option value="120">120 FPS (High Refresh)</option>
+          </select>
         </div>
       </div>
 

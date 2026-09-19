@@ -18,6 +18,15 @@ export class ChartRenderer {
     private crosshairBadgeGraphics!: Graphics; // Sits on top of live badge
     private crosshairBadgeText!: Container;     // Topmost layer
 
+    // Dedicated Crosshair Graphics & Sync State
+    private crosshairGraphics!: Graphics;
+    private syncCrosshairGraphics!: Graphics;
+    public syncHoverTimeMs: number | null = null;
+
+    // Persistent Crosshair Text (Zero GC allocations on mouse move)
+    private persistentPriceBadgeText!: Text;
+    private persistentTimeBadgeText!: Text;
+
     // Viewport Math
     public cameraX = 0;
     public cameraY = 0;
@@ -113,7 +122,7 @@ export class ChartRenderer {
     // Current Timeframe for countdown & extrapolation
     public currentInterval: string = '1m';
 
-    private parseIntervalMs(tf: string): number {
+    public parseIntervalMs(tf: string): number {
         const unit = tf.slice(-1).toLowerCase();
         const val = parseInt(tf.slice(0, -1), 10) || 1;
         if (unit === 's') return val * 1000;
@@ -156,14 +165,37 @@ export class ChartRenderer {
         this.crosshairBadgeGraphics = new Graphics();
         this.crosshairBadgeText = new Container();
 
+        this.crosshairGraphics = new Graphics();
+        this.syncCrosshairGraphics = new Graphics();
+
         this.app.stage.addChild(this.gridGraphics);
         this.app.stage.addChild(this.candlesGraphics);
         this.app.stage.addChild(this.uiGraphics);
         this.app.stage.addChild(this.textContainer);
-        this.app.stage.addChild(this.liveBadgeGraphics);      // 1. Live Badge Background
-        this.app.stage.addChild(this.liveBadgeText);          // 2. Live Badge Text
-        this.app.stage.addChild(this.crosshairBadgeGraphics); // 3. Crosshair Background (Covers Live Badge & Text!)
-        this.app.stage.addChild(this.crosshairBadgeText);     // 4. Crosshair Text (On the very top)
+
+        // Crosshairs sit above grid/candles and beneath badges
+        this.app.stage.addChild(this.syncCrosshairGraphics);
+        this.app.stage.addChild(this.crosshairGraphics);
+
+        this.app.stage.addChild(this.liveBadgeGraphics);
+        this.app.stage.addChild(this.liveBadgeText);
+        this.app.stage.addChild(this.crosshairBadgeGraphics);
+        this.app.stage.addChild(this.crosshairBadgeText);
+
+        // Pre-allocate persistent crosshair labels once
+        this.persistentPriceBadgeText = new Text({
+            text: '',
+            style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold', fill: 0xffffff }
+        });
+        this.persistentTimeBadgeText = new Text({
+            text: '',
+            style: { fontFamily: 'sans-serif', fontSize: 11, fill: 0xffffff }
+        });
+        this.persistentPriceBadgeText.visible = false;
+        this.persistentTimeBadgeText.visible = false;
+
+        this.crosshairBadgeText.addChild(this.persistentPriceBadgeText);
+        this.crosshairBadgeText.addChild(this.persistentTimeBadgeText);
     }
 
     public renderFrame() {
@@ -176,10 +208,8 @@ export class ChartRenderer {
         this.gridGraphics.clear();
         this.uiGraphics.clear();
         this.liveBadgeGraphics.clear();
-        this.crosshairBadgeGraphics.clear();
         this.textContainer.removeChildren();
         this.liveBadgeText.removeChildren();
-        this.crosshairBadgeText.removeChildren();
 
         // Layout Constants
         const width = this.app.screen.width;
@@ -506,10 +536,29 @@ export class ChartRenderer {
             countdownText.y = badgeY + 18;
             this.liveBadgeText.addChild(countdownText);
         }
+    }
 
-        // --- 5. DRAW CROSSHAIR & POSITIONED BADGES ---
+    public renderCrosshair() {
+        if (!this.crosshairGraphics || !this.syncCrosshairGraphics) return;
+
+        // Clear ONLY crosshair specific layers
+        this.crosshairGraphics.clear();
+        this.syncCrosshairGraphics.clear();
+        this.crosshairBadgeGraphics.clear();
+
+        this.persistentPriceBadgeText.visible = false;
+        this.persistentTimeBadgeText.visible = false;
+
+        const width = this.app.screen.width;
+        const height = this.app.screen.height;
+        const chartWidth = width - this.priceAxisWidth;
+        const chartHeight = height - this.timeAxisHeight;
+        const actualSpacing = this.candleSpacing * this.zoom;
+        const intervalMs = this.parseIntervalMs(this.currentInterval);
+
+        // 1. Draw Local Crosshair & Badges
         if (this.isCrosshairVisible && this.crosshairX >= 0 && this.crosshairX < chartWidth && this.crosshairY >= 0 && this.crosshairY < chartHeight) {
-            StrokeEngine.drawLine(this.uiGraphics, 0, this.crosshairY, chartWidth, this.crosshairY, {
+            StrokeEngine.drawLine(this.crosshairGraphics, 0, this.crosshairY, chartWidth, this.crosshairY, {
                 color: this.crosshairColor,
                 width: 1,
                 alpha: 0.6,
@@ -517,7 +566,7 @@ export class ChartRenderer {
                 dashLength: 4,
                 gapLength: 3
             });
-            StrokeEngine.drawLine(this.uiGraphics, this.crosshairX, 0, this.crosshairX, chartHeight, {
+            StrokeEngine.drawLine(this.crosshairGraphics, this.crosshairX, 0, this.crosshairX, chartHeight, {
                 color: this.crosshairColor,
                 width: 1,
                 alpha: 0.6,
@@ -526,54 +575,68 @@ export class ChartRenderer {
                 gapLength: 3
             });
 
-            // Y-Axis Price Badge (Draws on crosshair layer: occludes live price AND countdown)
-            const hoverPrice = yToPrice(this.crosshairY);
+            // Y-Axis Price Badge
+            const range = this.currentMaxPrice - this.currentMinPrice;
+            const localY = this.crosshairY - this.cameraY;
+            const norm = (chartHeight - localY) / chartHeight;
+            const hoverPrice = this.currentMinPrice + (norm * range);
+
             const hoverPriceY = Math.max(0, Math.min(chartHeight - 20, this.crosshairY - 10));
             this.crosshairBadgeGraphics.rect(chartWidth, hoverPriceY, this.priceAxisWidth, 20).fill(0x363A45);
 
-            const priceText = new Text({
-                text: hoverPrice.toFixed(2),
-                style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold', fill: 0xffffff }
-            });
-            priceText.x = chartWidth + 5;
-            priceText.y = hoverPriceY + 3;
-            this.crosshairBadgeText.addChild(priceText);
+            this.persistentPriceBadgeText.text = hoverPrice.toFixed(2);
+            this.persistentPriceBadgeText.x = chartWidth + 5;
+            this.persistentPriceBadgeText.y = hoverPriceY + 3;
+            this.persistentPriceBadgeText.visible = true;
 
             // X-Axis Time Badge
             const logicalIndex = Math.round((this.crosshairX + this.cameraX) / actualSpacing);
-            const intervalMs = this.parseIntervalMs(this.currentInterval);
+            const lastIdx = this.dataStore.length - 1;
+            const lastTime = lastIdx >= 0 ? this.dataStore.data[lastIdx * 6] : 0;
 
             let hoverTimeMs = 0;
             if (logicalIndex >= 0 && logicalIndex < this.dataStore.length) {
                 hoverTimeMs = this.dataStore.data[logicalIndex * 6];
-            } else if (logicalIndex >= this.dataStore.length) {
+            } else if (logicalIndex >= this.dataStore.length && lastIdx >= 0) {
                 hoverTimeMs = lastTime + (logicalIndex - lastIdx) * intervalMs;
-            } else {
+            } else if (this.dataStore.length > 0) {
                 const firstTime = this.dataStore.data[0];
                 hoverTimeMs = firstTime + logicalIndex * intervalMs;
             }
 
-            const d = new Date(hoverTimeMs);
-            const dateBadgeStr = `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+            if (hoverTimeMs > 0) {
+                const d = new Date(hoverTimeMs);
+                const dateBadgeStr = `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 
-            // 1. Create text first to measure its exact width
-            const timeText = new Text({
-                text: dateBadgeStr,
-                style: { fontFamily: 'sans-serif', fontSize: 11, fill: 0xffffff }
-            });
+                this.persistentTimeBadgeText.text = dateBadgeStr;
+                const badgeW = this.persistentTimeBadgeText.width + 16;
+                const badgeX = Math.max(0, Math.min(chartWidth - badgeW, this.crosshairX - (badgeW / 2)));
 
-            // 2. Make badge tightly fit the text (with 16px padding) instead of hardcoding a huge box
-            const badgeW = timeText.width + 16;
-            const badgeX = Math.max(0, Math.min(chartWidth - badgeW, this.crosshairX - (badgeW / 2)));
+                this.crosshairBadgeGraphics.rect(badgeX, chartHeight, badgeW, this.timeAxisHeight).fill(0x363A45);
 
-            this.crosshairBadgeGraphics.rect(badgeX, chartHeight, badgeW, this.timeAxisHeight).fill(0x363A45);
+                this.persistentTimeBadgeText.anchor.set(0.5);
+                this.persistentTimeBadgeText.x = badgeX + (badgeW / 2);
+                this.persistentTimeBadgeText.y = chartHeight + (this.timeAxisHeight / 2);
+                this.persistentTimeBadgeText.visible = true;
+            }
+        }
 
-            // 3. Center the text perfectly inside the badge both horizontally and vertically
-            timeText.anchor.set(0.5);
-            timeText.x = badgeX + (badgeW / 2);
-            timeText.y = chartHeight + (this.timeAxisHeight / 2);
+        // 2. Draw Synchronized Crosshair from other panes
+        if (this.syncHoverTimeMs !== null && this.dataStore.length > 0) {
+            const firstTime = this.dataStore.data[0];
+            const logicalIndex = Math.round((this.syncHoverTimeMs - firstTime) / intervalMs);
+            const syncX = (logicalIndex * actualSpacing) - this.cameraX;
 
-            this.crosshairBadgeText.addChild(timeText);
+            if (syncX >= 0 && syncX < chartWidth) {
+                StrokeEngine.drawLine(this.syncCrosshairGraphics, syncX, 0, syncX, chartHeight, {
+                    color: this.crosshairColor,
+                    width: 1,
+                    alpha: 0.45,
+                    style: this.crosshairStyle,
+                    dashLength: 4,
+                    gapLength: 3
+                });
+            }
         }
     }
 

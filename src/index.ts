@@ -11,6 +11,7 @@ export class EcoChart {
     public renderer: ChartRenderer;
     public network: BinanceClient;
     public isDirty = true;
+    public isCrosshairDirty = false;
     public canvas: HTMLCanvasElement;
     public container: HTMLElement;
     public isRunning = true;
@@ -212,6 +213,16 @@ export class EcoChart {
             this.renderer.crosshairX = e.clientX - rect.left;
             this.renderer.crosshairY = e.clientY - rect.top;
             this.renderer.isCrosshairVisible = true;
+            this.isCrosshairDirty = true; // Mark crosshair dirty only (does not redraw candles)
+
+            // Broadcast time to other panes
+            if (WorkspaceManager.isCrosshairSyncEnabled) {
+                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+                const logicalIndex = Math.round((this.renderer.crosshairX + this.renderer.cameraX) / actualSpacing);
+                const firstTime = this.dataStore.length > 0 ? this.dataStore.data[0] : 0;
+                const intervalMs = this.renderer.parseIntervalMs(this.renderer.currentInterval);
+                WorkspaceManager.broadcastCrosshair(firstTime + (logicalIndex * intervalMs), this);
+            }
 
             const deltaX = e.clientX - this.lastMouseX;
             const deltaY = e.clientY - this.lastMouseY;
@@ -228,41 +239,34 @@ export class EcoChart {
                     this.renderer.cameraX -= deltaX;
                     this.isLockedToEdge = false;
                 }
-                // Only pan vertically on the chart body if auto-scale was manually turned off
                 if (!this.renderer.isAutoScale && deltaY !== 0) {
                     this.renderer.cameraY += deltaY;
                 }
             } else if (this.isDraggingPriceAxis) {
-                // Dragging the price scale explicitly breaks auto-scale
                 this.renderer.isAutoScale = false;
-                const btnAuto = document.getElementById('btn-auto-fit');
-                if (btnAuto) btnAuto.style.color = 'var(--chart-text, #787B86)';
-
                 const priceRange = this.renderer.currentMaxPrice - this.renderer.currentMinPrice;
                 const stretchFactor = deltaY * (priceRange / chartHeight) * 2;
-
                 this.renderer.currentMaxPrice += stretchFactor;
                 this.renderer.currentMinPrice -= stretchFactor;
             } else if (this.isDraggingTimeAxis) {
-                // Smooth, proportional zoom anchored to the grab point
                 const zoomMultiplier = 1 + (deltaX * 0.005);
                 this.renderer.zoom = Math.max(0.1, Math.min(this.renderer.zoom * zoomMultiplier, 50));
-
-                // Recalculate cameraX so the candle under your click never moves on screen
                 this.renderer.cameraX = (this.timeAxisWorldX * this.renderer.zoom) - this.timeAxisAnchorX;
             }
 
             if (this.isDraggingChart || this.isDraggingPriceAxis || this.isDraggingTimeAxis) {
                 this.lastMouseX = e.clientX;
                 this.lastMouseY = e.clientY;
+                this.isDirty = true; // Only redraw full chart when actively panning/zooming
             }
-
-            this.isDirty = true;
         });
 
         this.canvas.addEventListener('pointerleave', () => {
             this.renderer.isCrosshairVisible = false;
-            this.isDirty = true;
+            this.isCrosshairDirty = true;
+            if (WorkspaceManager.isCrosshairSyncEnabled) {
+                WorkspaceManager.broadcastCrosshair(null, this);
+            }
         });
 
         const stopDragging = (e: PointerEvent) => {
@@ -438,11 +442,25 @@ export class EcoChart {
             if (this.isRunning) this.isDirty = true;
         }, 1000);
 
-        const loop = () => {
+        let lastFrameTime = performance.now();
+
+        const loop = (now: number) => {
             if (!this.isRunning) return;
-            if (this.isDirty) {
-                this.renderer.renderFrame();
-                this.isDirty = false;
+            const frameInterval = 1000 / WorkspaceManager.targetFPS;
+            const elapsed = now - lastFrameTime;
+
+            if (elapsed >= frameInterval) {
+                lastFrameTime = now - (elapsed % frameInterval);
+
+                if (this.isDirty) {
+                    this.renderer.renderFrame();
+                    this.renderer.renderCrosshair();
+                    this.isDirty = false;
+                    this.isCrosshairDirty = false;
+                } else if (this.isCrosshairDirty) {
+                    this.renderer.renderCrosshair();
+                    this.isCrosshairDirty = false;
+                }
             }
             requestAnimationFrame(loop);
         };
@@ -457,6 +475,18 @@ export class WorkspaceManager {
     private static charts: EcoChart[] = [];
     private static activeChart: EcoChart | null = null;
     public static isAutoHideNav = true;
+    public static isCrosshairSyncEnabled = true;
+    public static targetFPS = 60;
+
+    public static broadcastCrosshair(timeMs: number | null, source: EcoChart) {
+        if (!this.isCrosshairSyncEnabled) return;
+        for (const chart of this.charts) {
+            if (chart !== source) {
+                chart.renderer.syncHoverTimeMs = timeMs;
+                chart.isCrosshairDirty = true;
+            }
+        }
+    }
 
     public static init() {
         this.setupGlobalControls();
@@ -777,7 +807,18 @@ export class WorkspaceManager {
 
         btnSettings?.addEventListener('click', () => {
             syncModalInputs();
+            const selectFPS = document.getElementById('select-fps-limit') as HTMLSelectElement;
+            if (selectFPS) selectFPS.value = WorkspaceManager.targetFPS.toString();
+            const checkSync = document.getElementById('check-sync-crosshair') as HTMLInputElement;
+            if (checkSync) checkSync.checked = WorkspaceManager.isCrosshairSyncEnabled;
             modalSettings?.showModal();
+        });
+
+        // FPS Limit Listener
+        const selectFPS = document.getElementById('select-fps-limit') as HTMLSelectElement;
+        selectFPS?.addEventListener('change', (e) => {
+            const newFps = parseInt((e.target as HTMLSelectElement).value, 10);
+            if (newFps > 0) WorkspaceManager.targetFPS = newFps;
         });
 
         const closeSettings = () => {
@@ -799,6 +840,14 @@ export class WorkspaceManager {
                 document.querySelectorAll('.pane-nav-bar').forEach((bar) => {
                     (bar as HTMLElement).style.display = checkNav.checked ? 'flex' : 'none';
                 });
+            }
+
+            const checkSync = document.getElementById('check-sync-crosshair') as HTMLInputElement;
+            if (checkSync) {
+                WorkspaceManager.isCrosshairSyncEnabled = checkSync.checked;
+                if (!WorkspaceManager.isCrosshairSyncEnabled) {
+                    WorkspaceManager.broadcastCrosshair(null, null as any);
+                }
             }
 
             colorPicker.close();
