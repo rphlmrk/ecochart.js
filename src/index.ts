@@ -15,6 +15,11 @@ export class EcoChart {
     public container: HTMLElement;
     public isRunning = true;
 
+    // Per-Pane Controls
+    public autoBtn: HTMLButtonElement | null = null;
+    public resetBtn: HTMLElement | null = null;
+    public navBar: HTMLDivElement | null = null;
+
     // Interaction State
     private isDraggingChart = false;
     private isDraggingPriceAxis = false;
@@ -46,18 +51,87 @@ export class EcoChart {
         this.renderer = new ChartRenderer(this.dataStore);
         this.network = new BinanceClient(this.dataStore);
 
+        // Build per-pane Auto button and Navigation Bar
+        this.createPaneControls();
+
         themeManager.subscribe((theme) => {
             this.renderer.applyTheme(theme);
+            const accent = themeManager.getResolvedAccentColor();
+            if (this.autoBtn) {
+                this.autoBtn.style.color = this.renderer.isAutoScale ? accent : 'var(--chart-text, #787B86)';
+            }
+            if (this.resetBtn) {
+                this.resetBtn.style.color = accent;
+            }
             this.isDirty = true;
         });
 
         this.setupInteractions();
     }
 
+    private createPaneControls() {
+        const accent = themeManager.getResolvedAccentColor();
+
+        // 1. Auto-fit button for this pane
+        this.autoBtn = document.createElement('button');
+        this.autoBtn.textContent = 'AUTO';
+        this.autoBtn.title = 'Auto-fit scale';
+        this.autoBtn.style.cssText = `
+            position: absolute; right: 8px; bottom: 28px; z-index: 5;
+            background: var(--chart-panel-bg, #1E222D);
+            color: ${this.renderer.isAutoScale ? accent : 'var(--chart-text, #787B86)'};
+            border: 1px solid var(--chart-grid, #2A2E39); border-radius: 3px;
+            font-size: 11px; font-weight: 700; padding: 2px 6px; cursor: pointer;
+            user-select: none; text-transform: uppercase;
+        `;
+        this.autoBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            WorkspaceManager.setActiveChart(this);
+            this.toggleAutoScale();
+        });
+        this.container.appendChild(this.autoBtn);
+
+        // 2. Floating navigation bar for this pane
+        this.navBar = document.createElement('div');
+        this.navBar.className = 'pane-nav-bar';
+        this.navBar.style.cssText = `
+            position: absolute; bottom: 32px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 4px; z-index: 5; user-select: none;
+            background: var(--chart-panel-bg, #1e222d);
+            border: 1px solid var(--chart-grid, #2A2E39);
+            border-radius: 6px; padding: 3px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        `;
+
+        this.navBar.innerHTML = `
+            <button class="nav-btn nav-btn-out" title="Zoom Out">−</button>
+            <button class="nav-btn nav-btn-in" title="Zoom In">+</button>
+            <button class="nav-btn nav-btn-left" title="Scroll Left">‹</button>
+            <button class="nav-btn nav-btn-right" title="Scroll Right">›</button>
+            <button class="nav-btn nav-btn-reset" title="Reset / Jump to Live" style="color: ${accent};">↺</button>
+        `;
+
+        this.navBar.addEventListener('click', (e) => {
+            e.stopPropagation();
+            WorkspaceManager.setActiveChart(this);
+        });
+
+        this.navBar.querySelector('.nav-btn-out')?.addEventListener('click', () => this.zoomAtCenter(0.8));
+        this.navBar.querySelector('.nav-btn-in')?.addEventListener('click', () => this.zoomAtCenter(1.25));
+        this.navBar.querySelector('.nav-btn-left')?.addEventListener('click', () => this.scrollHorizontal(-250));
+        this.navBar.querySelector('.nav-btn-right')?.addEventListener('click', () => this.scrollHorizontal(250));
+        this.navBar.querySelector('.nav-btn-reset')?.addEventListener('click', () => this.jumpToLive());
+
+        this.resetBtn = this.navBar.querySelector('.nav-btn-reset');
+        this.container.appendChild(this.navBar);
+    }
+
     public destroy() {
         this.isRunning = false;
         this.network.disconnect();
         this.renderer.destroy();
+        this.autoBtn?.remove();
+        this.navBar?.remove();
         this.canvas.remove();
     }
 
@@ -222,6 +296,11 @@ export class EcoChart {
             this.renderer.cameraY = 0;
         }
         this.isDirty = true;
+        if (this.autoBtn) {
+            this.autoBtn.style.color = this.renderer.isAutoScale
+                ? themeManager.getResolvedAccentColor()
+                : 'var(--chart-text, #787B86)';
+        }
         WorkspaceManager.syncTopBar();
     }
 
@@ -252,6 +331,9 @@ export class EcoChart {
         const maxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
         this.renderer.cameraX = maxScroll + 150;
         this.isDirty = true;
+        if (this.autoBtn) {
+            this.autoBtn.style.color = themeManager.getResolvedAccentColor();
+        }
         WorkspaceManager.syncTopBar();
     }
 
@@ -376,10 +458,9 @@ export class WorkspaceManager {
             btn.style.color = isMatch ? accent : '#787B86';
         });
 
-        // 4. Auto-Fit Button
-        const btnAuto = document.getElementById('btn-auto-fit');
-        if (btnAuto) {
-            btnAuto.style.color = chart.renderer.isAutoScale ? accent : 'var(--chart-text, #787B86)';
+        // 4. Auto-Fit Button (Synced directly on the active chart's local button)
+        if (chart.autoBtn) {
+            chart.autoBtn.style.color = chart.renderer.isAutoScale ? accent : 'var(--chart-text, #787B86)';
         }
     }
 
@@ -473,31 +554,7 @@ export class WorkspaceManager {
             });
         });
 
-        // Auto-Fit Button
-        document.getElementById('btn-auto-fit')?.addEventListener('click', () => {
-            this.activeChart?.toggleAutoScale();
-        });
-
-        // Floating Nav Controls (Centered Zoom & Edge-Unlocked Scrolling)
-        document.getElementById('btn-nav-zoom-in')?.addEventListener('click', () => {
-            this.activeChart?.zoomAtCenter(1.25);
-        });
-
-        document.getElementById('btn-nav-zoom-out')?.addEventListener('click', () => {
-            this.activeChart?.zoomAtCenter(0.8);
-        });
-
-        document.getElementById('btn-nav-scroll-left')?.addEventListener('click', () => {
-            this.activeChart?.scrollHorizontal(-250);
-        });
-
-        document.getElementById('btn-nav-scroll-right')?.addEventListener('click', () => {
-            this.activeChart?.scrollHorizontal(250);
-        });
-
-        document.getElementById('btn-nav-reset')?.addEventListener('click', () => {
-            this.activeChart?.jumpToLive();
-        });
+        // (Note: Per-pane Nav Bars and Auto buttons are bound directly inside each EcoChart instance)
 
         // --- Settings Modal & Theme Customization ---
         const btnSettings = document.getElementById('btn-settings');
@@ -681,9 +738,10 @@ export class WorkspaceManager {
 
         const closeSettings = () => {
             const checkNav = document.getElementById('check-show-nav') as HTMLInputElement;
-            const navBar = document.getElementById('nav-bar');
-            if (navBar && checkNav) {
-                navBar.style.display = checkNav.checked ? 'flex' : 'none';
+            if (checkNav) {
+                document.querySelectorAll('.pane-nav-bar').forEach((bar) => {
+                    (bar as HTMLElement).style.display = checkNav.checked ? 'flex' : 'none';
+                });
             }
             colorPicker.close();
             modalSettings?.close();
