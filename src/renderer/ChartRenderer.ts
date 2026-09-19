@@ -261,7 +261,8 @@ export class ChartRenderer {
                 const timeStr = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
 
                 const text = new Text({ text: timeStr, style: { fontFamily: 'sans-serif', fontSize: 11, fill: this.axisTextColor } });
-                text.x = x - (text.width / 2); // Center text over the line
+                text.anchor.x = 0.5; // Tells PixiJS to permanently center the text itself
+                text.x = x;          // Places the exact center on your vertical line
                 text.y = chartHeight + 5;
                 this.textContainer.addChild(text);
             }

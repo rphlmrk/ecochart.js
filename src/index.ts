@@ -180,13 +180,35 @@ export class EcoChart {
 
         this.canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
-            const mouseX = e.clientX - this.canvas.getBoundingClientRect().left;
-            const worldBaseX = (mouseX + this.renderer.cameraX) / this.renderer.zoom;
+            const rect = this.canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
 
             const zoomFactor = Math.pow(1.05, -Math.sign(e.deltaY));
+
+            // 1. X-Axis Time Zoom (Always happens)
+            const worldBaseX = (mouseX + this.renderer.cameraX) / this.renderer.zoom;
             this.renderer.zoom *= zoomFactor;
             this.renderer.zoom = Math.max(0.1, Math.min(this.renderer.zoom, 50));
             this.renderer.cameraX = (worldBaseX * this.renderer.zoom) - mouseX;
+
+            // 2. Y-Axis Price Zoom (Only happens in Manual Mode)
+            if (!this.renderer.isAutoScale) {
+                const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
+                
+                // Find the exact price under the mouse cursor right now
+                const currentRange = this.renderer.currentMaxPrice - this.renderer.currentMinPrice;
+                const localY = mouseY - this.renderer.cameraY;
+                const normY = (chartHeight - localY) / chartHeight;
+                const priceAtMouse = this.renderer.currentMinPrice + (normY * currentRange);
+
+                // Shrink/Expand the price scale
+                const newRange = currentRange / zoomFactor;
+
+                // Adjust min and max so the price under the mouse doesn't move
+                this.renderer.currentMinPrice = priceAtMouse - (normY * newRange);
+                this.renderer.currentMaxPrice = priceAtMouse + ((1 - normY) * newRange);
+            }
 
             this.isLockedToEdge = false;
             this.isDirty = true;
