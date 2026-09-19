@@ -1,5 +1,7 @@
 import { Application, Graphics, Text, Container } from 'pixi.js';
 import { DataStore } from '../data/DataStore';
+import type { ChartTheme } from '../theme/types';
+import { ThemeManager } from '../theme/ThemeManager';
 
 export class ChartRenderer {
     public app: Application;
@@ -25,6 +27,20 @@ export class ChartRenderer {
     public crosshairX = -100;
     public crosshairY = -100;
     public isCrosshairVisible = false;
+    public crosshairColor = 0x9598A1;
+
+    public applyTheme(theme: ChartTheme) {
+        this.bgColor = ThemeManager.hexToInt(theme.background);
+        this.gridColor = ThemeManager.hexToInt(theme.gridLines);
+        this.axisTextColor = ThemeManager.hexToInt(theme.axisText);
+        this.crosshairColor = ThemeManager.hexToInt(theme.crosshair);
+        this.bullColor = ThemeManager.hexToInt(theme.bullBody);
+        this.bearColor = ThemeManager.hexToInt(theme.bearBody);
+        this.bullWickColor = ThemeManager.hexToInt(theme.bullWick);
+        this.bearWickColor = ThemeManager.hexToInt(theme.bearWick);
+        this.bullBorderColor = ThemeManager.hexToInt(theme.bullBorder);
+        this.bearBorderColor = ThemeManager.hexToInt(theme.bearBorder);
+    }
 
     // Theming (Controlled by HTML UI)
     public bgColor = 0x131722;
@@ -312,9 +328,9 @@ export class ChartRenderer {
 
         // --- 5. DRAW CROSSHAIR & POSITIONED BADGES ---
         if (this.isCrosshairVisible && this.crosshairX >= 0 && this.crosshairX < chartWidth && this.crosshairY >= 0 && this.crosshairY < chartHeight) {
-            // Dashed-look crosshair lines
-            this.uiGraphics.moveTo(0, this.crosshairY).lineTo(chartWidth, this.crosshairY).stroke({ color: 0x9598A1, width: 1, alpha: 0.5 });
-            this.uiGraphics.moveTo(this.crosshairX, 0).lineTo(this.crosshairX, chartHeight).stroke({ color: 0x9598A1, width: 1, alpha: 0.5 });
+            // Crosshair lines rendered using active theme color
+            this.uiGraphics.moveTo(0, this.crosshairY).lineTo(chartWidth, this.crosshairY).stroke({ color: this.crosshairColor, width: 1, alpha: 0.6 });
+            this.uiGraphics.moveTo(this.crosshairX, 0).lineTo(this.crosshairX, chartHeight).stroke({ color: this.crosshairColor, width: 1, alpha: 0.6 });
 
             // Y-Axis Price Badge (Draws on crosshair layer: occludes live price AND countdown)
             const hoverPrice = yToPrice(this.crosshairY);

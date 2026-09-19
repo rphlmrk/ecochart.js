@@ -1,6 +1,9 @@
 import { DataStore } from './data/DataStore';
 import { BinanceClient } from './network/BinanceClient';
 import { ChartRenderer } from './renderer/ChartRenderer';
+import { themeManager } from './theme/ThemeManager';
+import { colorPicker } from './ui/ColorPicker';
+import type { ChartTheme } from './theme/types';
 
 export class EcoChart {
     private dataStore: DataStore;
@@ -40,8 +43,20 @@ export class EcoChart {
         this.renderer = new ChartRenderer(this.dataStore);
         this.network = new BinanceClient(this.dataStore);
 
+        // Reactive theme listener: pushes updates to renderer and triggers 60 FPS redraw
+        themeManager.subscribe((theme) => {
+            this.renderer.applyTheme(theme);
+            const btnAuto = document.getElementById('btn-auto-fit');
+            if (btnAuto && this.renderer.isAutoScale) {
+                btnAuto.style.color = themeManager.getResolvedAccentColor();
+            }
+            this.isDirty = true;
+        });
+
         this.setupInteractions();
     }
+
+    public themeManager = themeManager;
 
     private setupInteractions() {
         // --- AXIS DETECTION & PANNING ---
@@ -160,39 +175,47 @@ export class EcoChart {
         const btnSettings = document.getElementById('btn-settings');
         const modalSettings = document.getElementById('settings-modal') as HTMLDialogElement;
         const btnCloseSettings = document.getElementById('btn-close-settings');
-        const inputBg = document.getElementById('input-bg-color') as HTMLInputElement;
-        const inputGrid = document.getElementById('input-grid-color') as HTMLInputElement;
 
         btnSettings?.addEventListener('click', () => modalSettings?.showModal());
 
+        // Helper to bind contextual color picker to any swatch trigger button
+        const bindSwatch = (btnId: string, themeKey: keyof ChartTheme, showOpacity = true) => {
+            const btn = document.getElementById(btnId);
+            if (!btn) return;
+
+            btn.addEventListener('click', () => {
+                const currentColor = btn.dataset.color || '#26A69A';
+                colorPicker.open({
+                    anchorElement: btn,
+                    initialColor: currentColor,
+                    showOpacity: showOpacity,
+                    showStrokeOptions: false,
+                    onChange: (res) => {
+                        btn.dataset.color = res.color;
+                        btn.style.backgroundColor = res.color;
+                        themeManager.updateColor(themeKey, res.color);
+                    }
+                });
+            });
+        };
+
+        // Bind all Settings Swatches
+        bindSwatch('input-bg-color', 'background', false);
+        bindSwatch('input-grid-color', 'gridLines', true);
+        bindSwatch('input-bull-body', 'bullBody', true);
+        bindSwatch('input-bear-body', 'bearBody', true);
+        bindSwatch('input-bull-wick', 'bullWick', true);
+        bindSwatch('input-bear-wick', 'bearWick', true);
+        bindSwatch('input-bull-border', 'bullBorder', true);
+        bindSwatch('input-bear-border', 'bearBorder', true);
+
         btnCloseSettings?.addEventListener('click', () => {
-            // 1. Canvas Colors
-            this.renderer.bgColor = parseInt(inputBg.value.replace('#', '0x'), 16);
-            this.renderer.gridColor = parseInt(inputGrid.value.replace('#', '0x'), 16);
-
-            // 2. Candlestick Symbol Colors
-            const bullBody = document.getElementById('input-bull-body') as HTMLInputElement;
-            const bearBody = document.getElementById('input-bear-body') as HTMLInputElement;
-            const bullWick = document.getElementById('input-bull-wick') as HTMLInputElement;
-            const bearWick = document.getElementById('input-bear-wick') as HTMLInputElement;
-            const bullBorder = document.getElementById('input-bull-border') as HTMLInputElement;
-            const bearBorder = document.getElementById('input-bear-border') as HTMLInputElement;
-
-            if (bullBody) this.renderer.bullColor = parseInt(bullBody.value.replace('#', '0x'), 16);
-            if (bearBody) this.renderer.bearColor = parseInt(bearBody.value.replace('#', '0x'), 16);
-            if (bullWick) this.renderer.bullWickColor = parseInt(bullWick.value.replace('#', '0x'), 16);
-            if (bearWick) this.renderer.bearWickColor = parseInt(bearWick.value.replace('#', '0x'), 16);
-            if (bullBorder) this.renderer.bullBorderColor = parseInt(bullBorder.value.replace('#', '0x'), 16);
-            if (bearBorder) this.renderer.bearBorderColor = parseInt(bearBorder.value.replace('#', '0x'), 16);
-
-            // 3. Navigation Bar Visibility Toggle
             const checkNav = document.getElementById('check-show-nav') as HTMLInputElement;
             const navBar = document.getElementById('nav-bar');
             if (navBar && checkNav) {
                 navBar.style.display = checkNav.checked ? 'flex' : 'none';
             }
-
-            this.isDirty = true;
+            colorPicker.close();
             modalSettings?.close();
         });
 
