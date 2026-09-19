@@ -44,13 +44,29 @@ export class EcoChart {
         this.renderer = new ChartRenderer(this.dataStore);
         this.network = new BinanceClient(this.dataStore);
 
-        // Reactive theme listener: pushes updates to renderer and triggers 60 FPS redraw
+        // Reactive theme listener: updates renderer, canvas, and active top-bar UI buttons
         themeManager.subscribe((theme) => {
             this.renderer.applyTheme(theme);
+            const accent = themeManager.getResolvedAccentColor();
+
+            // 1. Update Auto Button
             const btnAuto = document.getElementById('btn-auto-fit');
-            if (btnAuto && this.renderer.isAutoScale) {
-                btnAuto.style.color = themeManager.getResolvedAccentColor();
+            if (btnAuto) {
+                btnAuto.style.color = this.renderer.isAutoScale ? accent : '#787B86';
             }
+
+            // 2. Update Active Timeframe Button
+            const activeTfBtn = document.querySelector(`.tf-btn[data-tf="${this.currentInterval}"]`) as HTMLElement;
+            if (activeTfBtn) {
+                activeTfBtn.style.color = accent;
+            }
+
+            // 3. Update Active Chart Mode Button
+            const activeModeBtn = document.getElementById(this.renderer.chartMode === 'candles' ? 'btn-mode-candles' : 'btn-mode-line');
+            if (activeModeBtn) {
+                activeModeBtn.style.color = accent;
+            }
+
             this.isDirty = true;
         });
 
@@ -372,7 +388,7 @@ export class EcoChart {
                     (b as HTMLElement).style.color = '#787B86';
                 });
                 (btn as HTMLElement).style.background = '#2A2E39';
-                (btn as HTMLElement).style.color = '#2962FF';
+                (btn as HTMLElement).style.color = themeManager.getResolvedAccentColor();
 
                 this.switchTimeframe(tf);
             });
@@ -396,7 +412,7 @@ export class EcoChart {
         btnCandles?.addEventListener('click', () => {
             this.renderer.chartMode = 'candles';
             btnCandles.style.background = '#2A2E39';
-            btnCandles.style.color = '#2962FF';
+            btnCandles.style.color = themeManager.getResolvedAccentColor();
             if (btnLine) {
                 btnLine.style.background = 'transparent';
                 btnLine.style.color = '#787B86';
@@ -407,7 +423,7 @@ export class EcoChart {
         btnLine?.addEventListener('click', () => {
             this.renderer.chartMode = 'line';
             btnLine.style.background = '#2A2E39';
-            btnLine.style.color = '#2962FF';
+            btnLine.style.color = themeManager.getResolvedAccentColor();
             if (btnCandles) {
                 btnCandles.style.background = 'transparent';
                 btnCandles.style.color = '#787B86';
@@ -431,11 +447,10 @@ export class EcoChart {
 
         const btnAuto = document.getElementById('btn-auto-fit');
         if (btnAuto) {
-            btnAuto.style.color = this.renderer.isAutoScale ? '#2962FF' : '#787B86';
+            btnAuto.style.color = this.renderer.isAutoScale ? themeManager.getResolvedAccentColor() : '#787B86';
         }
     }
 
-    // Dedicated method for the upcoming navigation bar
     public jumpToLive() {
         this.renderer.isAutoScale = true;
         this.renderer.cameraY = 0;
@@ -447,7 +462,7 @@ export class EcoChart {
         this.isDirty = true;
 
         const btnAuto = document.getElementById('btn-auto-fit');
-        if (btnAuto) btnAuto.style.color = '#2962FF';
+        if (btnAuto) btnAuto.style.color = themeManager.getResolvedAccentColor();
     }
 
     public async switchTimeframe(newInterval: string) {

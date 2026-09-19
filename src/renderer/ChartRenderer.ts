@@ -32,6 +32,7 @@ export class ChartRenderer {
 
     public applyTheme(theme: ChartTheme) {
         this.bgColor = ThemeManager.hexToInt(theme.background);
+        this.axisBgColor = ThemeManager.hexToInt(theme.panelBackground);
         this.axisTextColor = ThemeManager.hexToInt(theme.axisText);
         this.crosshairColor = ThemeManager.hexToInt(theme.crosshair);
 
@@ -69,8 +70,18 @@ export class ChartRenderer {
 
     // Theming & Line Styles
     public bgColor = 0x131722;
+    public axisBgColor = 0x161a25; // Distinct shade for axes
     public gridColor = 0x2A2E39;
     public axisTextColor = 0xD1D4DC;
+
+    // Luminance check: Inverts text to dark if badge background is bright
+    private getContrastTextColor(hexColor: number): number {
+        const r = (hexColor >> 16) & 0xff;
+        const g = (hexColor >> 8) & 0xff;
+        const b = hexColor & 0xff;
+        const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        return luminance > 0.6 ? 0x131722 : 0xffffff;
+    }
     public crosshairStyle: LineStyle = 'dashed';
     public livePriceStyle: LineStyle = 'dashed';
 
@@ -303,11 +314,11 @@ export class ChartRenderer {
             }
         }
 
-        // --- 3. DRAW AXIS BACKGROUNDS (Covers overflowing candles) ---
-        this.uiGraphics.rect(chartWidth, 0, this.priceAxisWidth, height).fill(this.bgColor);
+        // --- 3. DRAW AXIS BACKGROUNDS (Distinct shade to separate from chart) ---
+        this.uiGraphics.rect(chartWidth, 0, this.priceAxisWidth, height).fill(this.axisBgColor);
         this.uiGraphics.moveTo(chartWidth, 0).lineTo(chartWidth, height).stroke({ color: this.gridColor, width: 1 });
 
-        this.uiGraphics.rect(0, chartHeight, width, this.timeAxisHeight).fill(this.bgColor);
+        this.uiGraphics.rect(0, chartHeight, width, this.timeAxisHeight).fill(this.axisBgColor);
         this.uiGraphics.moveTo(0, chartHeight).lineTo(width, chartHeight).stroke({ color: this.gridColor, width: 1 });
 
         // --- 4. DRAW LIVE PRICE LINE & COUNTDOWN BADGE ---
@@ -352,18 +363,20 @@ export class ChartRenderer {
             const badgeY = Math.max(0, Math.min(chartHeight - badgeH, liveY - 18));
             this.liveBadgeGraphics.rect(chartWidth, badgeY, this.priceAxisWidth, badgeH).fill(liveColor);
 
+            // Check badge background luminance and select high-contrast text color
+            const badgeTextColor = this.getContrastTextColor(liveColor);
+
             const livePriceText = new Text({
                 text: lastClose.toFixed(2),
-                style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold', fill: 0xffffff }
+                style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold', fill: badgeTextColor }
             });
             livePriceText.x = chartWidth + 5;
             livePriceText.y = badgeY + 3;
             this.liveBadgeText.addChild(livePriceText);
 
-            // Larger countdown text (increased from 9px to 11px)
             const countdownText = new Text({
                 text: countdownStr,
-                style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: '500', fill: 0xffffff }
+                style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: '500', fill: badgeTextColor }
             });
             countdownText.alpha = 0.9;
             countdownText.x = chartWidth + 5;

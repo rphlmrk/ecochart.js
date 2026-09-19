@@ -31,18 +31,18 @@
     <div id="ui-layer"
       style="position: absolute; inset: 0; pointer-events: none; font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;">
 
-      <!-- Top Toolbar -->
+      <!-- Top Toolbar (Fully reactive to active theme variables) -->
       <div id="top-bar"
-        style="pointer-events: auto; position: absolute; top: 0; left: 0; right: 0; height: 38px; background: #131722; border-bottom: 1px solid #2A2E39; display: flex; align-items: center; padding: 0 8px; gap: 4px; user-select: none;">
+        style="pointer-events: auto; position: absolute; top: 0; left: 0; right: 0; height: 38px; background: var(--chart-panel-bg, #131722); border-bottom: 1px solid var(--chart-grid, #2A2E39); display: flex; align-items: center; padding: 0 8px; gap: 4px; user-select: none;">
 
         <!-- Symbol Selector -->
         <button id="btn-symbol"
-          style="background: transparent; color: #F0F3FA; border: 1px solid transparent; padding: 4px 8px; font-weight: 700; font-size: 13px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 4px;">
+          style="background: transparent; color: var(--chart-text, #F0F3FA); border: 1px solid transparent; padding: 4px 8px; font-weight: 700; font-size: 13px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 4px;">
           <span>BTCUSDT</span>
-          <span style="font-size: 9px; color: #787B86;">▼</span>
+          <span style="font-size: 9px; color: var(--chart-accent, #2962FF);">▼</span>
         </button>
 
-        <div style="width: 1px; height: 18px; background: #2A2E39; margin: 0 4px;"></div>
+        <div style="width: 1px; height: 18px; background: var(--chart-grid, #2A2E39); margin: 0 4px;"></div>
 
         <!-- Timeframe Pills -->
         <div id="tf-group" style="display: flex; gap: 2px;">
