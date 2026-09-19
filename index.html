@@ -229,56 +229,59 @@
             style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; font-weight: 700;">HA</button>
         </div>
 
-        <!-- Layout Selector Button & Dropdown -->
-        <div style="position: relative;">
-          <button id="btn-layout" title="Select Layout"
-            style="background: transparent; color: #D1D4DC; border: none; padding: 4px 6px; font-size: 14px; cursor: pointer; border-radius: 4px;">
-            ⊞
-          </button>
-          <div id="layout-menu"
-            style="display: none; position: absolute; top: 32px; left: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 160px;">
-            <button class="layout-opt-btn" data-layout="1"
-              style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
-              <span>⏹</span> 1 Chart
+        <!-- Right-Aligned Controls Group -->
+        <div style="margin-left: auto; display: flex; align-items: center; gap: 4px;">
+          <!-- Layout Selector Button & Dropdown -->
+          <div style="position: relative;">
+            <button id="btn-layout" title="Select Layout"
+              style="background: transparent; color: #D1D4DC; border: none; padding: 4px 6px; font-size: 14px; cursor: pointer; border-radius: 4px;">
+              ⊞
             </button>
-            <button class="layout-opt-btn" data-layout="2v"
-              style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
-              <span>◫</span> 2 Columns
-            </button>
-            <button class="layout-opt-btn" data-layout="2h"
-              style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
-              <span>⊟</span> 2 Rows
-            </button>
-            <button class="layout-opt-btn" data-layout="3l"
-              style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
-              <span>⫿</span> 2 Left, 1 Right
-            </button>
-            <button class="layout-opt-btn" data-layout="3r"
-              style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
-              <span>⫾</span> 1 Left, 2 Right
-            </button>
-            <button class="layout-opt-btn" data-layout="4"
-              style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
-              <span>⊞</span> 4 Grid (2×2)
-            </button>
-            <button class="layout-opt-btn" data-layout="4v"
-              style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
-              <span>▥</span> 4 Columns
-            </button>
-            <button class="layout-opt-btn" data-layout="4h"
-              style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
-              <span>▤</span> 4 Rows
-            </button>
+            <div id="layout-menu"
+              style="display: none; position: absolute; top: 32px; right: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 160px;">
+              <button class="layout-opt-btn" data-layout="1"
+                style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+                <span>⏹</span> 1 Chart
+              </button>
+              <button class="layout-opt-btn" data-layout="2v"
+                style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+                <span>◫</span> 2 Columns
+              </button>
+              <button class="layout-opt-btn" data-layout="2h"
+                style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+                <span>⊟</span> 2 Rows
+              </button>
+              <button class="layout-opt-btn" data-layout="3l"
+                style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+                <span>⫿</span> 2 Left, 1 Right
+              </button>
+              <button class="layout-opt-btn" data-layout="3r"
+                style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+                <span>⫾</span> 1 Left, 2 Right
+              </button>
+              <button class="layout-opt-btn" data-layout="4"
+                style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+                <span>⊞</span> 4 Grid (2×2)
+              </button>
+              <button class="layout-opt-btn" data-layout="4v"
+                style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+                <span>▥</span> 4 Columns
+              </button>
+              <button class="layout-opt-btn" data-layout="4h"
+                style="background: transparent; border: none; color: var(--chart-text, #D1D4DC); padding: 5px 8px; font-size: 12px; cursor: pointer; text-align: left; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+                <span>▤</span> 4 Rows
+              </button>
+            </div>
           </div>
+
+          <div style="width: 1px; height: 18px; background: var(--chart-grid, #2A2E39); margin: 0 4px;"></div>
+
+          <!-- Settings Button -->
+          <button id="btn-settings"
+            style="background: transparent; color: #D1D4DC; border: none; padding: 4px 8px; font-size: 14px; cursor: pointer; border-radius: 4px;">
+            ⚙️
+          </button>
         </div>
-
-        <div style="width: 1px; height: 18px; background: #2A2E39; margin: 0 4px;"></div>
-
-        <!-- Settings Button -->
-        <button id="btn-settings"
-          style="background: transparent; color: #D1D4DC; border: none; padding: 4px 8px; font-size: 14px; cursor: pointer; border-radius: 4px;">
-          ⚙️
-        </button>
       </div>
     </div>
   </div>
@@ -398,7 +401,8 @@
           </label>
         </div>
 
-        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; margin-top: 14px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 14px;">
+        <div
+          style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; margin-top: 14px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 14px;">
           <span>Max Frame Rate (FPS):</span>
           <select id="select-fps-limit"
             style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none;">
