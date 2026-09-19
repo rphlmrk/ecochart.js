@@ -23,15 +23,44 @@
 </head>
 
 <body>
-  <!-- The Chart Div -->
-  <div id="chart-container"></div>
+  <div id="chart-wrapper" style="position: relative; width: 100vw; height: 100vh;">
+    <!-- Layer 1: The WebGL Canvas -->
+    <div id="chart-container" style="position: absolute; inset: 0;"></div>
+    
+    <!-- Layer 2: The HTML UI Shell -->
+    <div id="ui-layer" style="position: absolute; inset: 0; pointer-events: none;">
+      
+      <!-- Top Left Settings Button -->
+      <button id="btn-settings" style="pointer-events: auto; position: absolute; top: 15px; left: 15px; background: #2A2E39; color: #D1D4DC; border: 1px solid #434651; padding: 6px 12px; cursor: pointer; border-radius: 4px; font-family: sans-serif;">
+        ⚙️ Settings
+      </button>
 
-  <!-- Start the Library -->
+    </div>
+  </div>
+
+  <!-- Layer 3: Native Settings Modal -->
+  <dialog id="settings-modal" style="background: #131722; color: #D1D4DC; border: 1px solid #434651; border-radius: 8px; padding: 20px; font-family: sans-serif;">
+    <h3 style="margin-top: 0;">Chart Settings</h3>
+    
+    <label style="display: block; margin-bottom: 10px;">
+      Background Color:
+      <input type="color" id="input-bg-color" value="#131722" style="background: transparent; border: none; cursor: pointer;">
+    </label>
+
+    <label style="display: block; margin-bottom: 20px;">
+      Grid Color:
+      <input type="color" id="input-grid-color" value="#2A2E39" style="background: transparent; border: none; cursor: pointer;">
+    </label>
+
+    <div style="text-align: right;">
+      <button id="btn-close-settings" style="background: #2962FF; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer;">Apply & Close</button>
+    </div>
+  </dialog>
+
   <script type="module">
     import { EcoChart } from '/src/index.ts';
-
     const chart = new EcoChart('chart-container');
-    chart.startLiveBinance('BTCUSDT', '1s'); // Using 1s so you can see it move immediately!
+    chart.startLiveBinance('BTCUSDT', '1s'); 
   </script>
 </body>
 
