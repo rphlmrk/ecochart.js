@@ -24,4 +24,8 @@ export interface ChartTheme {
     // Dynamic Accent
     accentColor: string;
     accentSource: AccentSource;
+
+    // Line Styles
+    crosshairLineStyle?: LineStyle;
+    livePriceLineStyle?: LineStyle;
 }

@@ -1,7 +1,8 @@
 import { Application, Graphics, Text, Container } from 'pixi.js';
 import { DataStore } from '../data/DataStore';
-import type { ChartTheme } from '../theme/types';
+import type { ChartTheme, LineStyle } from '../theme/types';
 import { ThemeManager } from '../theme/ThemeManager';
+import { StrokeEngine } from './StrokeEngine';
 
 export class ChartRenderer {
     public app: Application;
@@ -61,12 +62,17 @@ export class ChartRenderer {
         const rBorder = ThemeManager.hexToColorAndAlpha(theme.bearBorder);
         this.bearBorderColor = rBorder.color;
         this.bearBorderAlpha = rBorder.alpha;
+
+        if (theme.crosshairLineStyle) this.crosshairStyle = theme.crosshairLineStyle;
+        if (theme.livePriceLineStyle) this.livePriceStyle = theme.livePriceLineStyle;
     }
 
-    // Theming (Controlled by HTML UI)
+    // Theming & Line Styles
     public bgColor = 0x131722;
     public gridColor = 0x2A2E39;
     public axisTextColor = 0xD1D4DC;
+    public crosshairStyle: LineStyle = 'dashed';
+    public livePriceStyle: LineStyle = 'dashed';
 
     // Symbol / Candlestick Styling & Alphas
     public bullColor = 0x26A69A;
@@ -317,7 +323,14 @@ export class ChartRenderer {
 
         // A. Horizontal Live Price Line across chart
         if (liveY >= 0 && liveY <= chartHeight) {
-            this.uiGraphics.moveTo(0, liveY).lineTo(chartWidth, liveY).stroke({ color: liveColor, width: 1, alpha: 0.75 });
+            StrokeEngine.drawLine(this.uiGraphics, 0, liveY, chartWidth, liveY, {
+                color: liveColor,
+                width: 1,
+                alpha: 0.75,
+                style: this.livePriceStyle,
+                dashLength: 5,
+                gapLength: 3
+            });
 
             // B. Calculate Candle Remaining Time
             const intervalMs = this.parseIntervalMs(this.currentInterval);
@@ -360,9 +373,22 @@ export class ChartRenderer {
 
         // --- 5. DRAW CROSSHAIR & POSITIONED BADGES ---
         if (this.isCrosshairVisible && this.crosshairX >= 0 && this.crosshairX < chartWidth && this.crosshairY >= 0 && this.crosshairY < chartHeight) {
-            // Crosshair lines rendered using active theme color
-            this.uiGraphics.moveTo(0, this.crosshairY).lineTo(chartWidth, this.crosshairY).stroke({ color: this.crosshairColor, width: 1, alpha: 0.6 });
-            this.uiGraphics.moveTo(this.crosshairX, 0).lineTo(this.crosshairX, chartHeight).stroke({ color: this.crosshairColor, width: 1, alpha: 0.6 });
+            StrokeEngine.drawLine(this.uiGraphics, 0, this.crosshairY, chartWidth, this.crosshairY, {
+                color: this.crosshairColor,
+                width: 1,
+                alpha: 0.6,
+                style: this.crosshairStyle,
+                dashLength: 4,
+                gapLength: 3
+            });
+            StrokeEngine.drawLine(this.uiGraphics, this.crosshairX, 0, this.crosshairX, chartHeight, {
+                color: this.crosshairColor,
+                width: 1,
+                alpha: 0.6,
+                style: this.crosshairStyle,
+                dashLength: 4,
+                gapLength: 3
+            });
 
             // Y-Axis Price Badge (Draws on crosshair layer: occludes live price AND countdown)
             const hoverPrice = yToPrice(this.crosshairY);

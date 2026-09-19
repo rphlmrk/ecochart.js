@@ -2,8 +2,9 @@ import { DataStore } from './data/DataStore';
 import { BinanceClient } from './network/BinanceClient';
 import { ChartRenderer } from './renderer/ChartRenderer';
 import { themeManager } from './theme/ThemeManager';
+import { THEME_PRESETS } from './theme/presets';
 import { colorPicker } from './ui/ColorPicker';
-import type { ChartTheme } from './theme/types';
+import type { ChartTheme, LineStyle, AccentSource } from './theme/types';
 
 export class EcoChart {
     private dataStore: DataStore;
@@ -171,12 +172,90 @@ export class EcoChart {
             this.isDirty = true;
         }, { passive: false });
 
-        // --- HTML UI BINDINGS ---
+        // --- HTML UI BINDINGS & SETTINGS MODAL ---
         const btnSettings = document.getElementById('btn-settings');
         const modalSettings = document.getElementById('settings-modal') as HTMLDialogElement;
         const btnCloseSettings = document.getElementById('btn-close-settings');
+        const btnModalCloseX = document.getElementById('btn-modal-close-x');
 
-        btnSettings?.addEventListener('click', () => modalSettings?.showModal());
+        // Modal Tab Switching
+        const modalTabs = document.querySelectorAll('.modal-tab-btn');
+        modalTabs.forEach((tab) => {
+            tab.addEventListener('click', () => {
+                const target = (tab as HTMLElement).dataset.tab;
+                modalTabs.forEach((t) => {
+                    (t as HTMLElement).style.background = 'transparent';
+                    (t as HTMLElement).style.color = '#787B86';
+                });
+                (tab as HTMLElement).style.background = '#2A2E39';
+                (tab as HTMLElement).style.color = '#2962FF';
+
+                document.querySelectorAll('.modal-tab-content').forEach((c) => {
+                    (c as HTMLElement).style.display = 'none';
+                });
+                const activeContent = document.getElementById(`tab-content-${target}`);
+                if (activeContent) activeContent.style.display = 'block';
+            });
+        });
+
+        // Populate Preset Theme Cards in Settings
+        const presetGrid = document.getElementById('preset-grid');
+        if (presetGrid) {
+            presetGrid.innerHTML = '';
+            Object.values(THEME_PRESETS).forEach((p) => {
+                const card = document.createElement('button');
+                card.type = 'button';
+                card.style.cssText = 'background:#1e222d;border:1px solid #363a45;border-radius:4px;padding:6px 10px;display:flex;align-items:center;gap:8px;cursor:pointer;color:#D1D4DC;font-size:12px;text-align:left;';
+                card.innerHTML = `
+                    <span style="width:12px;height:12px;border-radius:2px;background:${p.bullBody};display:inline-block;"></span>
+                    <span style="width:12px;height:12px;border-radius:2px;background:${p.bearBody};display:inline-block;"></span>
+                    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.name}</span>
+                `;
+                card.onclick = () => {
+                    themeManager.setThemeById(p.id);
+                    syncModalInputs();
+                };
+                presetGrid.appendChild(card);
+            });
+        }
+
+        // Synchronize Swatches & Inputs with the current theme
+        const syncModalInputs = () => {
+            const current = themeManager.getTheme();
+            const setSwatch = (id: string, color: string) => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.dataset.color = color;
+                    el.style.backgroundColor = color;
+                }
+            };
+            setSwatch('input-bull-body', current.bullBody);
+            setSwatch('input-bear-body', current.bearBody);
+            setSwatch('input-bull-wick', current.bullWick);
+            setSwatch('input-bear-wick', current.bearWick);
+            setSwatch('input-bull-border', current.bullBorder);
+            setSwatch('input-bear-border', current.bearBorder);
+            setSwatch('input-bg-color', current.background);
+            setSwatch('input-grid-color', current.gridLines);
+            setSwatch('input-custom-accent', current.accentColor);
+
+            const radioBull = document.getElementById('accent-src-bull') as HTMLInputElement;
+            const radioCustom = document.getElementById('accent-src-custom') as HTMLInputElement;
+            if (radioBull && radioCustom) {
+                radioBull.checked = current.accentSource === 'bull';
+                radioCustom.checked = current.accentSource === 'custom';
+            }
+
+            const selCrosshair = document.getElementById('select-crosshair-style') as HTMLSelectElement;
+            const selPrice = document.getElementById('select-live-price-style') as HTMLSelectElement;
+            if (selCrosshair) selCrosshair.value = this.renderer.crosshairStyle;
+            if (selPrice) selPrice.value = this.renderer.livePriceStyle;
+        };
+
+        btnSettings?.addEventListener('click', () => {
+            syncModalInputs();
+            modalSettings?.showModal();
+        });
 
         // Helper to bind contextual color picker to any swatch trigger button
         const bindSwatch = (btnId: string, themeKey: keyof ChartTheme, showOpacity = true) => {
@@ -191,7 +270,6 @@ export class EcoChart {
                     showOpacity: showOpacity,
                     showStrokeOptions: false,
                     onChange: (res) => {
-                        // Encode color and opacity into an 8-digit hex (#RRGGBBAA)
                         const aHex = Math.round(res.opacity * 255).toString(16).padStart(2, '0');
                         const fullHex = `${res.color.slice(0, 7)}${aHex}`.toUpperCase();
 
@@ -212,8 +290,34 @@ export class EcoChart {
         bindSwatch('input-bear-wick', 'bearWick', true);
         bindSwatch('input-bull-border', 'bullBorder', true);
         bindSwatch('input-bear-border', 'bearBorder', true);
+        bindSwatch('input-custom-accent', 'accentColor', false);
 
-        btnCloseSettings?.addEventListener('click', () => {
+        // Line Style Selectors
+        const selectCrosshair = document.getElementById('select-crosshair-style') as HTMLSelectElement;
+        selectCrosshair?.addEventListener('change', (e) => {
+            const style = (e.target as HTMLSelectElement).value as LineStyle;
+            this.renderer.crosshairStyle = style;
+            themeManager.updateColor('crosshairLineStyle', style as any);
+            this.isDirty = true;
+        });
+
+        const selectLivePrice = document.getElementById('select-live-price-style') as HTMLSelectElement;
+        selectLivePrice?.addEventListener('change', (e) => {
+            const style = (e.target as HTMLSelectElement).value as LineStyle;
+            this.renderer.livePriceStyle = style;
+            themeManager.updateColor('livePriceLineStyle', style as any);
+            this.isDirty = true;
+        });
+
+        // Accent Source Radio Group
+        document.querySelectorAll('input[name="accent-source"]').forEach((radio) => {
+            radio.addEventListener('change', (e) => {
+                const src = (e.target as HTMLInputElement).value as AccentSource;
+                themeManager.setAccentSource(src);
+            });
+        });
+
+        const closeModal = () => {
             const checkNav = document.getElementById('check-show-nav') as HTMLInputElement;
             const navBar = document.getElementById('nav-bar');
             if (navBar && checkNav) {
@@ -221,7 +325,10 @@ export class EcoChart {
             }
             colorPicker.close();
             modalSettings?.close();
-        });
+        };
+
+        btnCloseSettings?.addEventListener('click', closeModal);
+        btnModalCloseX?.addEventListener('click', closeModal);
 
         // --- BOTTOM NAVIGATION BAR CONTROLS ---
         const zoomAtScreenCenter = (factor: number) => {

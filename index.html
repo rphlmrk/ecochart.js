@@ -107,75 +107,123 @@
     </div>
   </div>
 
-  <!-- Layer 3: Comprehensive Settings Modal -->
+  <!-- Layer 3: Tabbed Settings Modal -->
   <dialog id="settings-modal"
-    style="background: #131722; color: #D1D4DC; border: 1px solid #434651; border-radius: 8px; padding: 20px; font-family: sans-serif; width: 380px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); overflow: visible;">
-    <h3 style="margin-top: 0; margin-bottom: 15px; border-bottom: 1px solid #2A2E39; padding-bottom: 8px;">Chart
-      Settings</h3>
-
-    <!-- Section 1: Symbol / Candles -->
-    <div style="margin-bottom: 15px;">
-      <span style="font-weight: bold; font-size: 12px; color: #787B86; text-transform: uppercase;">Candlestick
-        Colors</span>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
-        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
-          Bull Body: <button type="button" class="tv-swatch-trigger" id="input-bull-body" data-color="#26A69A"
-            style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#26A69A;cursor:pointer;"></button>
-        </div>
-        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
-          Bear Body: <button type="button" class="tv-swatch-trigger" id="input-bear-body" data-color="#EF5350"
-            style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#EF5350;cursor:pointer;"></button>
-        </div>
-        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
-          Bull Wick: <button type="button" class="tv-swatch-trigger" id="input-bull-wick" data-color="#26A69A"
-            style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#26A69A;cursor:pointer;"></button>
-        </div>
-        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
-          Bear Wick: <button type="button" class="tv-swatch-trigger" id="input-bear-wick" data-color="#EF5350"
-            style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#EF5350;cursor:pointer;"></button>
-        </div>
-        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
-          Bull Border: <button type="button" class="tv-swatch-trigger" id="input-bull-border" data-color="#26A69A"
-            style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#26A69A;cursor:pointer;"></button>
-        </div>
-        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
-          Bear Border: <button type="button" class="tv-swatch-trigger" id="input-bear-border" data-color="#EF5350"
-            style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#EF5350;cursor:pointer;"></button>
-        </div>
-      </div>
+    style="background: #131722; color: #D1D4DC; border: 1px solid #434651; border-radius: 8px; padding: 0; font-family: sans-serif; width: 480px; box-shadow: 0 12px 32px rgba(0,0,0,0.6); overflow: visible;">
+    
+    <!-- Modal Header -->
+    <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; border-bottom: 1px solid #2A2E39;">
+      <h3 style="margin: 0; font-size: 15px; font-weight: 600;">Chart Settings</h3>
+      <button id="btn-modal-close-x" style="background: none; border: none; color: #787B86; font-size: 16px; cursor: pointer;">✕</button>
     </div>
 
-    <!-- Section 2: Canvas -->
-    <div style="margin-bottom: 15px;">
-      <span style="font-weight: bold; font-size: 12px; color: #787B86; text-transform: uppercase;">Canvas
-        Appearance</span>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
-        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
-          Background: <button type="button" class="tv-swatch-trigger" id="input-bg-color" data-color="#131722"
-            style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#131722;cursor:pointer;"></button>
-        </div>
-        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
-          Grid Lines: <button type="button" class="tv-swatch-trigger" id="input-grid-color" data-color="#2A2E39"
-            style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#2A2E39;cursor:pointer;"></button>
-        </div>
-      </div>
+    <!-- Modal Tabs Bar -->
+    <div id="settings-tabs" style="display: flex; gap: 4px; padding: 6px 18px; background: #161a25; border-bottom: 1px solid #2A2E39;">
+      <button class="modal-tab-btn active-tab" data-tab="themes" style="background: #2A2E39; color: #2962FF; border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer;">Themes</button>
+      <button class="modal-tab-btn" data-tab="candles" style="background: transparent; color: #787B86; border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer;">Candles</button>
+      <button class="modal-tab-btn" data-tab="canvas" style="background: transparent; color: #787B86; border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer;">Canvas</button>
+      <button class="modal-tab-btn" data-tab="lines" style="background: transparent; color: #787B86; border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer;">Line Styles</button>
     </div>
 
-    <!-- Section 3: Navigation Options -->
-    <div style="margin-bottom: 20px;">
-      <span style="font-weight: bold; font-size: 12px; color: #787B86; text-transform: uppercase;">Navigation</span>
-      <div style="margin-top: 8px;">
-        <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
-          <input type="checkbox" id="check-show-nav" checked style="cursor: pointer;">
-          Show Bottom Navigation Bar
-        </label>
+    <div style="padding: 18px; max-height: 380px; overflow-y: auto;">
+      
+      <!-- TAB 1: THEMES -->
+      <div id="tab-content-themes" class="modal-tab-content">
+        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Color Presets</span>
+        <div id="preset-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0 16px 0;"></div>
+
+        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Accent Color Source</span>
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+            <input type="radio" name="accent-source" id="accent-src-bull" value="bull" checked style="cursor: pointer;">
+            Auto-Link to Bullish Candle Color
+          </label>
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+              <input type="radio" name="accent-source" id="accent-src-custom" value="custom" style="cursor: pointer;">
+              Custom Accent Color
+            </label>
+            <button type="button" class="tv-swatch-trigger" id="input-custom-accent" data-color="#2962FF" style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#2962FF;cursor:pointer;"></button>
+          </div>
+        </div>
       </div>
+
+      <!-- TAB 2: CANDLES -->
+      <div id="tab-content-candles" class="modal-tab-content" style="display: none;">
+        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Candlestick Colors</span>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            Bull Body: <button type="button" class="tv-swatch-trigger" id="input-bull-body" data-color="#26A69A" style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#26A69A;cursor:pointer;"></button>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            Bear Body: <button type="button" class="tv-swatch-trigger" id="input-bear-body" data-color="#EF5350" style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#EF5350;cursor:pointer;"></button>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            Bull Wick: <button type="button" class="tv-swatch-trigger" id="input-bull-wick" data-color="#26A69A" style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#26A69A;cursor:pointer;"></button>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            Bear Wick: <button type="button" class="tv-swatch-trigger" id="input-bear-wick" data-color="#EF5350" style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#EF5350;cursor:pointer;"></button>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            Bull Border: <button type="button" class="tv-swatch-trigger" id="input-bull-border" data-color="#26A69A" style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#26A69A;cursor:pointer;"></button>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            Bear Border: <button type="button" class="tv-swatch-trigger" id="input-bear-border" data-color="#EF5350" style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#EF5350;cursor:pointer;"></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 3: CANVAS -->
+      <div id="tab-content-canvas" class="modal-tab-content" style="display: none;">
+        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Canvas Elements</span>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            Background: <button type="button" class="tv-swatch-trigger" id="input-bg-color" data-color="#131722" style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#131722;cursor:pointer;"></button>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            Grid Lines: <button type="button" class="tv-swatch-trigger" id="input-grid-color" data-color="#2A2E39" style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#2A2E39;cursor:pointer;"></button>
+          </div>
+        </div>
+
+        <div style="margin-top: 16px; border-top: 1px solid #2A2E39; padding-top: 14px;">
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+            <input type="checkbox" id="check-show-nav" checked style="cursor: pointer;">
+            Show Bottom Navigation Bar
+          </label>
+        </div>
+      </div>
+
+      <!-- TAB 4: LINE STYLES -->
+      <div id="tab-content-lines" class="modal-tab-content" style="display: none;">
+        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Line Type Customization</span>
+        <div style="display: flex; flex-direction: column; gap: 14px; margin-top: 10px;">
+          
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            <span>Crosshair Line Type:</span>
+            <select id="select-crosshair-style" style="background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none;">
+              <option value="dashed">Dashed (‒ ‒ ‒)</option>
+              <option value="dotted">Dotted (• • •)</option>
+              <option value="solid">Solid (───)</option>
+            </select>
+          </div>
+
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            <span>Live Price Line Type:</span>
+            <select id="select-live-price-style" style="background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none;">
+              <option value="dashed">Dashed (‒ ‒ ‒)</option>
+              <option value="dotted">Dotted (• • •)</option>
+              <option value="solid">Solid (───)</option>
+            </select>
+          </div>
+
+        </div>
+      </div>
+
     </div>
 
-    <div style="text-align: right;">
-      <button id="btn-close-settings"
-        style="background: #2962FF; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; font-weight: bold;">Apply
-        & Close</button>
+    <!-- Modal Footer -->
+    <div style="padding: 12px 18px; border-top: 1px solid #2A2E39; text-align: right; background: #161a25;">
+      <button id="btn-close-settings" style="background: #2962FF; color: white; border: none; padding: 6px 18px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 13px;">Apply & Close</button>
     </div>
   </dialog>
 
