@@ -15,7 +15,8 @@ export class HTFProjectionsIndicator extends BaseIndicator {
             { id: 'gapBars', name: 'Gap Bars', type: 'number', value: 2, min: 1, max: 6 },
             { id: 'offsetBars', name: 'Offset from Live', type: 'number', value: 6, min: 2, max: 20 },
             { id: 'showFifty', name: 'Show 50% Equilibrium', type: 'boolean', value: true },
-            { id: 'showHL', name: 'Show Origin Lines', type: 'boolean', value: true }
+            { id: 'showHL', name: 'Show Origin Lines', type: 'boolean', value: true },
+            { id: 'lineThickness', name: 'Line Thickness', type: 'number', value: 1.5, min: 1, max: 4, step: 0.5 }
         ];
     }
 
@@ -77,6 +78,10 @@ export class HTFProjectionsIndicator extends BaseIndicator {
         const offsetBars = this.getParam<number>('offsetBars', 6);
         const showFifty = this.getParam<boolean>('showFifty', true);
         const showHL = this.getParam<boolean>('showHL', true);
+        const lineThickness = this.getParam<number>('lineThickness', 1.5);
+
+        // Theme-Aware Color: Inverts to dark axis text color on light themes and white on dark themes
+        const helperLineColor = r.isDarkTheme ? 0xFFFFFF : r.axisTextColor;
 
         const sp = r.candleSpacing * r.zoom;
         const drawCandles = this.cachedCandles.slice(-count);
@@ -105,25 +110,28 @@ export class HTFProjectionsIndicator extends BaseIndicator {
             const yH = layout.mainChartHeight - (((d.h - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice)) * layout.mainChartHeight) + r.cameraY;
             const yL = layout.mainChartHeight - (((d.l - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice)) * layout.mainChartHeight) + r.cameraY;
 
-            g.moveTo(xMid, yH).lineTo(xMid, yTop).stroke({ color, width: 1.5, alpha: 0.8 });
-            g.moveTo(xMid, yBot).lineTo(xMid, yL).stroke({ color, width: 1.5, alpha: 0.8 });
+            // Wicks
+            g.moveTo(xMid, yH).lineTo(xMid, yTop).stroke({ color, width: lineThickness, alpha: 0.8 });
+            g.moveTo(xMid, yBot).lineTo(xMid, yL).stroke({ color, width: lineThickness, alpha: 0.8 });
 
             const bodyH = Math.max(1, yBot - yTop);
             g.rect(xLeft, yTop, xRight - xLeft, bodyH).fill({ color, alpha: 0.25 });
-            g.rect(xLeft, yTop, xRight - xLeft, bodyH).stroke({ color, width: 1.5, alpha: 0.8 });
+            g.rect(xLeft, yTop, xRight - xLeft, bodyH).stroke({ color, width: lineThickness, alpha: 0.8 });
 
+            // 50% Equilibrium Line (Theme-Aware: dark on light theme, white on dark theme)
             if (showFifty) {
                 const y50 = (yTop + yBot) / 2;
                 StrokeEngine.drawLine(g, xLeft, y50, xRight, y50, {
-                    color: 0xFFFFFF, width: 1.5, alpha: 0.6, style: 'dashed', dashLength: 3, gapLength: 2
+                    color: helperLineColor, width: lineThickness, alpha: 0.7, style: 'dashed', dashLength: 3, gapLength: 2
                 });
             }
 
+            // Origin Connecting Lines (Theme-Aware)
             if (showHL && (drawCandles.length - 1 - i) < 2) {
                 const xOriginHigh = (d.highIdx * sp) - r.cameraX;
                 const xOriginLow = (d.lowIdx * sp) - r.cameraX;
-                StrokeEngine.drawLine(g, xOriginHigh, yH, xMid, yH, { color: 0xFFFFFF, width: 1, alpha: 0.3, style: 'dotted' });
-                StrokeEngine.drawLine(g, xOriginLow, yL, xMid, yL, { color: 0xFFFFFF, width: 1, alpha: 0.3, style: 'dotted' });
+                StrokeEngine.drawLine(g, xOriginHigh, yH, xMid, yH, { color: helperLineColor, width: Math.max(1, lineThickness - 0.5), alpha: 0.45, style: 'dotted' });
+                StrokeEngine.drawLine(g, xOriginLow, yL, xMid, yL, { color: helperLineColor, width: Math.max(1, lineThickness - 0.5), alpha: 0.45, style: 'dotted' });
             }
         }
     }

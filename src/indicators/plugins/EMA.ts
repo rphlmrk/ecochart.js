@@ -24,7 +24,13 @@ export class EMAIndicator extends BaseIndicator {
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
-        const color = parseColor(this.getParam('color', '#00BCD4'));
+        const rawColor = this.getParam('color', '#00BCD4');
+        
+        // Darken default cyan slightly on light themes for crisp contrast
+        let color = parseColor(rawColor);
+        if (!r.isDarkTheme && String(rawColor).toUpperCase() === '#00BCD4') {
+            color = 0x00838F; // Deep teal for light theme
+        }
         const sp = r.candleSpacing * r.zoom;
         const visStart = Math.max(1, Math.floor(r.cameraX / sp));
         const visEnd = Math.min(r.dataStore.length, Math.floor((r.cameraX + layout.chartWidth) / sp) + 1);
