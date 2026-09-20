@@ -5,11 +5,14 @@ import { themeManager } from './theme/ThemeManager';
 import { THEME_PRESETS } from './theme/presets';
 import { colorPicker } from './ui/ColorPicker';
 import type { ChartTheme, LineStyle, AccentSource } from './theme/types';
+import { IndicatorManager } from './indicators/IndicatorManager';
+import { SMAIndicator, EMAIndicator, VolumeIndicator, ExhaustionIndicator, HTFBoxIndicator } from './indicators/BuiltInIndicators';
 
 export class EcoChart {
     public dataStore: DataStore;
     public renderer: ChartRenderer;
     public network: BinanceClient;
+    public indicatorManager: IndicatorManager;
     public isDirty = true;
     public isCrosshairDirty = false;
     public canvas: HTMLCanvasElement;
@@ -63,6 +66,7 @@ export class EcoChart {
         this.dataStore = new DataStore();
         this.renderer = new ChartRenderer(this.dataStore);
         this.network = new BinanceClient(this.dataStore);
+        this.indicatorManager = new IndicatorManager();
 
         // Build per-pane Auto button and Navigation Bar
         this.createPaneControls();
@@ -632,6 +636,7 @@ export class EcoChart {
         this.isDirty = true;
 
         await this.network.connect(this.currentSymbol, this.currentInterval, () => {
+            this.indicatorManager.update(this.dataStore); // Run Math Engine
             this.isDirty = true;
             if (this.isLockedToEdge) {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
@@ -649,6 +654,7 @@ export class EcoChart {
         this.isDirty = true;
 
         await this.network.connect(this.currentSymbol, this.currentInterval, () => {
+            this.indicatorManager.update(this.dataStore); // Run Math Engine
             this.isDirty = true;
             if (this.isLockedToEdge) {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
@@ -665,6 +671,7 @@ export class EcoChart {
         await this.renderer.init(this.canvas);
 
         await this.network.connect(symbol, interval, () => {
+            this.indicatorManager.update(this.dataStore); // Run Math Engine
             this.isDirty = true;
             if (this.isLockedToEdge) {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
@@ -693,7 +700,17 @@ export class EcoChart {
                 lastFrameTime = now - (elapsed % frameInterval);
 
                 if (this.isDirty) {
+                    // Tell renderer if we need oscillator space
+                    const hasOsc = this.indicatorManager.hasOscillators ? this.indicatorManager.hasOscillators() : false;
+                    this.renderer.indicatorOscGraphics.visible = hasOsc;
+
                     this.renderer.renderFrame();
+
+                    // Render Indicators
+                    this.renderer.indicatorMainGraphics.clear();
+                    this.renderer.indicatorOscGraphics.clear();
+                    this.indicatorManager.render(this.renderer, this.renderer.indicatorMainGraphics, this.renderer.indicatorOscGraphics);
+
                     this.renderer.renderCrosshair();
                     this.isDirty = false;
                     this.isCrosshairDirty = false;
@@ -1223,6 +1240,53 @@ export class WorkspaceManager {
         });
 
         btnCloseSymbol?.addEventListener('click', () => modalSymbol?.close());
+
+        // Indicators Menu
+        const btnIndicators = document.getElementById('btn-indicators');
+        const modalIndicators = document.getElementById('indicators-modal') as HTMLDialogElement;
+        const btnCloseIndicators = document.getElementById('btn-close-indicators');
+        const indicatorsList = document.getElementById('indicators-list');
+
+        const availableIndicators = [
+            { id: 'sma', name: 'SMA (20)', factory: () => new SMAIndicator(20) },
+            { id: 'ema', name: 'EMA (20)', factory: () => new EMAIndicator(20) },
+            { id: 'vol', name: 'Volume', factory: () => new VolumeIndicator() },
+            { id: 'exh', name: 'Exhaustion (CCI)', factory: () => new ExhaustionIndicator() },
+            { id: 'htf', name: 'HTF Box (60m)', factory: () => new HTFBoxIndicator(60) }
+        ];
+
+        btnIndicators?.addEventListener('click', () => {
+            if (indicatorsList && this.activeChart) {
+                indicatorsList.innerHTML = '';
+                availableIndicators.forEach(ind => {
+                    const row = document.createElement('div');
+                    const isActive = this.activeChart!.indicatorManager.activeIndicators.some(i => i.name === ind.name);
+                    
+                    row.className = 'symbol-item';
+                    row.innerHTML = `
+                        <span style="font-weight: 600; color: ${isActive ? '#2962FF' : '#D1D4DC'};">${ind.name}</span>
+                        <span style="font-size: 11px;">${isActive ? 'Remove' : 'Add'}</span>
+                    `;
+                    
+                    row.onclick = () => {
+                        if (isActive) {
+                            const targetId = this.activeChart!.indicatorManager.activeIndicators.find(i => i.name === ind.name)?.id;
+                            if (targetId) this.activeChart!.indicatorManager.removeIndicator(targetId);
+                        } else {
+                            this.activeChart!.indicatorManager.addIndicator(ind.factory());
+                        }
+                        // Force full recalculation
+                        this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
+                        this.activeChart!.isDirty = true;
+                        modalIndicators?.close();
+                    };
+                    indicatorsList.appendChild(row);
+                });
+            }
+            modalIndicators?.showModal();
+        });
+
+        btnCloseIndicators?.addEventListener('click', () => modalIndicators?.close());
 
         // Custom Timeframe Modal
         const btnCustomTf = document.getElementById('btn-custom-tf');

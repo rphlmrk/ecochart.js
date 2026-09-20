@@ -6,7 +6,7 @@ import { StrokeEngine } from './StrokeEngine';
 
 export class ChartRenderer {
     public app: Application;
-    private dataStore: DataStore;
+    public dataStore: DataStore;
 
     // Pixi Layers (Z-Index order)
     private gridGraphics!: Graphics;
@@ -17,6 +17,10 @@ export class ChartRenderer {
     private liveBadgeText!: Container;
     private crosshairBadgeGraphics!: Graphics; // Sits on top of live badge
     private crosshairBadgeText!: Container;     // Topmost layer
+
+    //indicator
+    public indicatorMainGraphics!: Graphics;
+    public indicatorOscGraphics!: Graphics;
 
     // Dedicated Crosshair Graphics & Sync State
     private crosshairGraphics!: Graphics;
@@ -167,6 +171,8 @@ export class ChartRenderer {
         // Initialize Layers in order (Background -> Foreground)
         this.gridGraphics = new Graphics();
         this.candlesGraphics = new Graphics();
+        this.indicatorMainGraphics = new Graphics();
+        this.indicatorOscGraphics = new Graphics();
         this.uiGraphics = new Graphics();
         this.textContainer = new Container();
 
@@ -180,6 +186,8 @@ export class ChartRenderer {
 
         this.app.stage.addChild(this.gridGraphics);
         this.app.stage.addChild(this.candlesGraphics);
+        this.app.stage.addChild(this.indicatorMainGraphics); // Indicators behind crosshair
+        this.app.stage.addChild(this.indicatorOscGraphics);
         this.app.stage.addChild(this.uiGraphics);
         this.app.stage.addChild(this.textContainer);
 
@@ -228,7 +236,12 @@ export class ChartRenderer {
         const width = this.app.screen.width;
         const height = this.app.screen.height;
         const chartWidth = width - this.priceAxisWidth;
-        const chartHeight = height - this.timeAxisHeight;
+        const timeAxisY = height - this.timeAxisHeight; // The strict Y-coordinate where the time axis starts
+        
+        let oscHeight = 0;
+        if (this.indicatorOscGraphics && this.indicatorOscGraphics.visible) oscHeight = 80;
+        
+        const mainChartHeight = timeAxisY - oscHeight; // Chart squishes to fit oscillator above time axis
 
         const actualSpacing = this.candleSpacing * this.zoom;
         const visStart = Math.max(0, Math.floor(this.cameraX / actualSpacing));
@@ -251,20 +264,19 @@ export class ChartRenderer {
         const priceToY = (price: number) => {
             const range = this.currentMaxPrice - this.currentMinPrice;
             const norm = (price - this.currentMinPrice) / range;
-            return chartHeight - (norm * chartHeight) + this.cameraY;
+            return mainChartHeight - (norm * mainChartHeight) + this.cameraY;
         };
 
         const yToPrice = (y: number) => {
             const range = this.currentMaxPrice - this.currentMinPrice;
             const localY = y - this.cameraY;
-            const norm = (chartHeight - localY) / chartHeight;
+            const norm = (mainChartHeight - localY) / mainChartHeight;
             return this.currentMinPrice + (norm * range);
         };
 
         // --- 1. DRAW BACKGROUND GRID & Y-AXIS ---
-        // Calculate dynamic price step
         const visibleMax = yToPrice(0);
-        const visibleMin = yToPrice(chartHeight);
+        const visibleMin = yToPrice(mainChartHeight);
         const range = visibleMax - visibleMin;
 
         let step = range / 8;
@@ -281,7 +293,6 @@ export class ChartRenderer {
             const y = priceToY(p);
             StrokeEngine.drawLine(this.gridGraphics, 0, y, chartWidth, y, { color: this.gridColor, width: this.gridThickness, alpha: this.gridAlpha, style: this.gridStyle });
 
-            // Fetch from pool or create if needed
             let textLabel: Text;
             if (this.activePriceLabels < this.priceLabelPool.length) {
                 textLabel = this.priceLabelPool[this.activePriceLabels];
@@ -299,11 +310,9 @@ export class ChartRenderer {
         }
 
         // --- 1.5 DRAW VERTICAL GRID & X-AXIS ---
-        // Dynamically space vertical lines so they don't overlap
         const minPixelsBetweenLabels = 100;
         let candleStep = Math.max(1, Math.ceil(minPixelsBetweenLabels / actualSpacing));
 
-        // Snap to nice round numbers (e.g., every 5, 10, 30 candles)
         if (candleStep > 1 && candleStep < 5) candleStep = 5;
         else if (candleStep > 5 && candleStep < 10) candleStep = 10;
         else if (candleStep > 10 && candleStep < 30) candleStep = 30;
@@ -314,7 +323,8 @@ export class ChartRenderer {
             if (i < 0) continue;
             const x = (i * actualSpacing) - this.cameraX;
 
-            StrokeEngine.drawLine(this.gridGraphics, x, 0, x, chartHeight, { color: this.gridColor, width: this.gridThickness, alpha: this.gridAlpha, style: this.gridStyle });
+            // Vertical grid lines go all the way down to the Time Axis (covers oscillators)
+            StrokeEngine.drawLine(this.gridGraphics, x, 0, x, timeAxisY, { color: this.gridColor, width: this.gridThickness, alpha: this.gridAlpha, style: this.gridStyle });
 
             const ts = this.dataStore.data[i * 6];
             if (ts) {
@@ -333,13 +343,12 @@ export class ChartRenderer {
                 }
                 
                 textLabel.x = x;          
-                textLabel.y = chartHeight + 5;
+                textLabel.y = timeAxisY + 5;
                 textLabel.visible = true;
                 this.activeTimeLabels++;
             }
         }
 
-        // Hide any labels in the pool that weren't used this frame
         for (let i = this.activePriceLabels; i < this.priceLabelPool.length; i++) {
             this.priceLabelPool[i].visible = false;
         }
@@ -350,99 +359,66 @@ export class ChartRenderer {
         // --- 2. MULTI-MODE CHART DRAWING ---
         const candleWidth = Math.max(1, actualSpacing * 0.8);
 
-        // MODE 1: LINE CHART
         if (this.chartMode === 'line') {
             for (let i = visStart; i < visEnd; i++) {
                 const c = this.dataStore.data[i * 6 + 4];
                 const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
                 const y = priceToY(c);
-
-                if (i === visStart) {
-                    this.candlesGraphics.moveTo(x, y);
-                } else {
-                    this.candlesGraphics.lineTo(x, y);
-                }
+                if (i === visStart) this.candlesGraphics.moveTo(x, y);
+                else this.candlesGraphics.lineTo(x, y);
             }
             this.candlesGraphics.stroke({ color: this.accentColor, width: this.mainLineWidth });
 
-            // MODE 2: AREA CHART
         } else if (this.chartMode === 'area') {
             if (visEnd > visStart) {
                 const firstX = (visStart * actualSpacing) - this.cameraX + (candleWidth / 2);
                 const lastX = ((visEnd - 1) * actualSpacing) - this.cameraX + (candleWidth / 2);
 
-                // 1. Draw the filled area polygon under the curve
-                this.candlesGraphics.moveTo(firstX, chartHeight);
+                this.candlesGraphics.moveTo(firstX, mainChartHeight);
                 for (let i = visStart; i < visEnd; i++) {
                     const c = this.dataStore.data[i * 6 + 4];
                     const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
                     const y = priceToY(c);
                     this.candlesGraphics.lineTo(x, y);
                 }
-                this.candlesGraphics.lineTo(lastX, chartHeight);
+                this.candlesGraphics.lineTo(lastX, mainChartHeight);
                 this.candlesGraphics.closePath();
                 this.candlesGraphics.fill({ color: this.accentColor, alpha: 0.2 });
 
-                // 2. Draw the top boundary line
                 for (let i = visStart; i < visEnd; i++) {
                     const c = this.dataStore.data[i * 6 + 4];
                     const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
                     const y = priceToY(c);
-
-                    if (i === visStart) {
-                        this.candlesGraphics.moveTo(x, y);
-                    } else {
-                        this.candlesGraphics.lineTo(x, y);
-                    }
+                    if (i === visStart) this.candlesGraphics.moveTo(x, y);
+                    else this.candlesGraphics.lineTo(x, y);
                 }
                 this.candlesGraphics.stroke({ color: this.accentColor, width: this.mainLineWidth });
             }
-
-            // MODE 3: OHLC BARS
         } else if (this.chartMode === 'bars') {
             const spineWidth = Math.max(1, Math.min(2, Math.floor(candleWidth * 0.2)));
             const tickWidth = Math.max(2, candleWidth / 2);
 
             for (let i = visStart; i < visEnd; i++) {
                 const base = i * 6;
-                const o = this.dataStore.data[base + 1];
-                const h = this.dataStore.data[base + 2];
-                const l = this.dataStore.data[base + 3];
-                const c = this.dataStore.data[base + 4];
-
+                const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
                 const x = (i * actualSpacing) - this.cameraX;
                 const xMid = x + (candleWidth / 2);
                 const yH = priceToY(h), yL = priceToY(l), yO = priceToY(o), yC = priceToY(c);
-
                 const isBull = c >= o;
                 const clr = isBull ? this.bullColor : this.bearColor;
                 const alpha = isBull ? this.bullAlpha : this.bearAlpha;
 
-                // High to Low spine
-                this.candlesGraphics.rect(xMid - (spineWidth / 2), yH, spineWidth, Math.max(1, yL - yH))
-                    .fill({ color: clr, alpha });
-
-                // Open tick (left)
-                this.candlesGraphics.rect(x, yO - (spineWidth / 2), tickWidth, spineWidth)
-                    .fill({ color: clr, alpha });
-
-                // Close tick (right)
-                this.candlesGraphics.rect(xMid, yC - (spineWidth / 2), tickWidth, spineWidth)
-                    .fill({ color: clr, alpha });
+                this.candlesGraphics.rect(xMid - (spineWidth / 2), yH, spineWidth, Math.max(1, yL - yH)).fill({ color: clr, alpha });
+                this.candlesGraphics.rect(x, yO - (spineWidth / 2), tickWidth, spineWidth).fill({ color: clr, alpha });
+                this.candlesGraphics.rect(xMid, yC - (spineWidth / 2), tickWidth, spineWidth).fill({ color: clr, alpha });
             }
-
-            // MODE 4: HEIKIN-ASHI
         } else if (this.chartMode === 'heikinAshi') {
             let prevHaOpen = (this.dataStore.data[1] + this.dataStore.data[4]) / 2;
             let prevHaClose = (this.dataStore.data[1] + this.dataStore.data[2] + this.dataStore.data[3] + this.dataStore.data[4]) / 4;
 
             for (let i = 0; i < visEnd; i++) {
                 const base = i * 6;
-                const o = this.dataStore.data[base + 1];
-                const h = this.dataStore.data[base + 2];
-                const l = this.dataStore.data[base + 3];
-                const c = this.dataStore.data[base + 4];
-
+                const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
                 const haClose = (o + h + l + c) / 4;
                 const haOpen = i === 0 ? prevHaOpen : (prevHaOpen + prevHaClose) / 2;
                 const haHigh = Math.max(h, haOpen, haClose);
@@ -454,7 +430,6 @@ export class ChartRenderer {
                 if (i >= visStart) {
                     const x = (i * actualSpacing) - this.cameraX;
                     const yH = priceToY(haHigh), yL = priceToY(haLow), yO = priceToY(haOpen), yC = priceToY(haClose);
-
                     const isBull = haClose >= haOpen;
                     const bodyColor = isBull ? this.bullColor : this.bearColor;
                     const bodyAlpha = isBull ? this.bullAlpha : this.bearAlpha;
@@ -463,31 +438,18 @@ export class ChartRenderer {
                     const borderColor = isBull ? this.bullBorderColor : this.bearBorderColor;
                     const borderAlpha = isBull ? this.bullBorderAlpha : this.bearBorderAlpha;
 
-                    // Wick
-                    this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH))
-                        .fill({ color: wickColor, alpha: wickAlpha });
-
-                    // Body & Border
+                    this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH)).fill({ color: wickColor, alpha: wickAlpha });
                     const bodyTop = Math.min(yO, yC);
                     const bodyHeight = Math.max(1, Math.abs(yO - yC));
-                    this.candlesGraphics.rect(x, bodyTop, candleWidth, bodyHeight)
-                        .fill({ color: bodyColor, alpha: bodyAlpha })
-                        .stroke({ color: borderColor, width: 1, alpha: borderAlpha });
+                    this.candlesGraphics.rect(x, bodyTop, candleWidth, bodyHeight).fill({ color: bodyColor, alpha: bodyAlpha }).stroke({ color: borderColor, width: 1, alpha: borderAlpha });
                 }
             }
-
-            // MODE 5: STANDARD CANDLESTICKS (DEFAULT)
         } else {
             for (let i = visStart; i < visEnd; i++) {
                 const base = i * 6;
-                const o = this.dataStore.data[base + 1];
-                const h = this.dataStore.data[base + 2];
-                const l = this.dataStore.data[base + 3];
-                const c = this.dataStore.data[base + 4];
-
+                const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
                 const x = (i * actualSpacing) - this.cameraX;
                 const yH = priceToY(h), yL = priceToY(l), yO = priceToY(o), yC = priceToY(c);
-
                 const isBull = c >= o;
                 const bodyColor = isBull ? this.bullColor : this.bearColor;
                 const bodyAlpha = isBull ? this.bullAlpha : this.bearAlpha;
@@ -496,25 +458,20 @@ export class ChartRenderer {
                 const borderColor = isBull ? this.bullBorderColor : this.bearBorderColor;
                 const borderAlpha = isBull ? this.bullBorderAlpha : this.bearBorderAlpha;
 
-                // Wick
-                this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH))
-                    .fill({ color: wickColor, alpha: wickAlpha });
-
-                // Body & Border
+                this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH)).fill({ color: wickColor, alpha: wickAlpha });
                 const bodyTop = Math.min(yO, yC);
                 const bodyHeight = Math.max(1, Math.abs(yO - yC));
-                this.candlesGraphics.rect(x, bodyTop, candleWidth, bodyHeight)
-                    .fill({ color: bodyColor, alpha: bodyAlpha })
-                    .stroke({ color: borderColor, width: 1, alpha: borderAlpha });
+                this.candlesGraphics.rect(x, bodyTop, candleWidth, bodyHeight).fill({ color: bodyColor, alpha: bodyAlpha }).stroke({ color: borderColor, width: 1, alpha: borderAlpha });
             }
         }
 
-        // --- 3. DRAW AXIS BACKGROUNDS (Distinct shade to separate from chart) ---
+        // --- 3. DRAW AXIS BACKGROUNDS ---
         this.uiGraphics.rect(chartWidth, 0, this.priceAxisWidth, height).fill(this.axisBgColor);
         this.uiGraphics.moveTo(chartWidth, 0).lineTo(chartWidth, height).stroke({ color: this.gridColor, width: 1 });
 
-        this.uiGraphics.rect(0, chartHeight, width, this.timeAxisHeight).fill(this.axisBgColor);
-        this.uiGraphics.moveTo(0, chartHeight).lineTo(width, chartHeight).stroke({ color: this.gridColor, width: 1 });
+        // Draw Time Axis EXACTLY at the bottom of the screen (below oscillators)
+        this.uiGraphics.rect(0, timeAxisY, width, this.timeAxisHeight).fill(this.axisBgColor);
+        this.uiGraphics.moveTo(0, timeAxisY).lineTo(width, timeAxisY).stroke({ color: this.gridColor, width: 1 });
 
         // --- 4. DRAW LIVE PRICE LINE & COUNTDOWN BADGE ---
         const lastIdx = this.dataStore.length - 1;
@@ -527,52 +484,33 @@ export class ChartRenderer {
         const isBullish = lastClose >= lastOpen;
         const liveColor = isBullish ? this.bullColor : this.bearColor;
 
-        // A. Horizontal Live Price Line across chart
-        if (liveY >= 0 && liveY <= chartHeight) {
+        if (liveY >= 0 && liveY <= mainChartHeight) {
             StrokeEngine.drawLine(this.uiGraphics, 0, liveY, chartWidth, liveY, {
-                color: liveColor,
-                width: 1,
-                alpha: 0.75,
-                style: this.livePriceStyle,
-                dashLength: 5,
-                gapLength: 3
+                color: liveColor, width: 1, alpha: 0.75, style: this.livePriceStyle, dashLength: 5, gapLength: 3
             });
 
-            // B. Calculate Candle Remaining Time
             const intervalMs = this.parseIntervalMs(this.currentInterval);
-            const nextCloseMs = lastTime + intervalMs;
-            const remainingMs = Math.max(0, nextCloseMs - Date.now());
-
+            const remainingMs = Math.max(0, (lastTime + intervalMs) - Date.now());
             const totalSeconds = Math.floor(remainingMs / 1000);
             const hours = Math.floor(totalSeconds / 3600);
             const mins = Math.floor((totalSeconds % 3600) / 60);
             const secs = totalSeconds % 60;
 
             let countdownStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-            if (hours > 0) {
-                countdownStr = `${hours}:${countdownStr}`;
-            }
+            if (hours > 0) countdownStr = `${hours}:${countdownStr}`;
 
-            // C. Stacked Live Badge (Expanded to 36px height for clearer numbers)
             const badgeH = 36;
-            const badgeY = Math.max(0, Math.min(chartHeight - badgeH, liveY - 18));
+            const badgeY = Math.max(0, Math.min(mainChartHeight - badgeH, liveY - 18));
             this.liveBadgeGraphics.rect(chartWidth, badgeY, this.priceAxisWidth, badgeH).fill(liveColor);
 
-            // Check badge background luminance and select high-contrast text color
             const badgeTextColor = this.getContrastTextColor(liveColor);
 
-            const livePriceText = new Text({
-                text: lastClose.toFixed(2),
-                style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold', fill: badgeTextColor }
-            });
+            const livePriceText = new Text({ text: lastClose.toFixed(2), style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold', fill: badgeTextColor }});
             livePriceText.x = chartWidth + 5;
             livePriceText.y = badgeY + 3;
             this.liveBadgeText.addChild(livePriceText);
 
-            const countdownText = new Text({
-                text: countdownStr,
-                style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: '500', fill: badgeTextColor }
-            });
+            const countdownText = new Text({ text: countdownStr, style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: '500', fill: badgeTextColor }});
             countdownText.alpha = 0.9;
             countdownText.x = chartWidth + 5;
             countdownText.y = badgeY + 18;
@@ -583,7 +521,6 @@ export class ChartRenderer {
     public renderCrosshair() {
         if (!this.crosshairGraphics || !this.syncCrosshairGraphics) return;
 
-        // Clear ONLY crosshair specific layers
         this.crosshairGraphics.clear();
         this.syncCrosshairGraphics.clear();
         this.crosshairBadgeGraphics.clear();
@@ -594,42 +531,42 @@ export class ChartRenderer {
         const width = this.app.screen.width;
         const height = this.app.screen.height;
         const chartWidth = width - this.priceAxisWidth;
-        const chartHeight = height - this.timeAxisHeight;
+        const timeAxisY = height - this.timeAxisHeight;
+        
+        let oscHeight = 0;
+        if (this.indicatorOscGraphics && this.indicatorOscGraphics.visible) oscHeight = 80;
+        const mainChartHeight = timeAxisY - oscHeight;
+
         const actualSpacing = this.candleSpacing * this.zoom;
         const intervalMs = this.parseIntervalMs(this.currentInterval);
 
         // 1. Draw Local Crosshair & Badges
-        if (this.isCrosshairVisible && this.crosshairX >= 0 && this.crosshairX < chartWidth && this.crosshairY >= 0 && this.crosshairY < chartHeight) {
+        if (this.isCrosshairVisible && this.crosshairX >= 0 && this.crosshairX < chartWidth && this.crosshairY >= 0 && this.crosshairY < timeAxisY) {
+            
+            // Horizontal crosshair across entire width
             StrokeEngine.drawLine(this.crosshairGraphics, 0, this.crosshairY, chartWidth, this.crosshairY, {
-                color: this.crosshairColor,
-                width: 1,
-                alpha: 0.6,
-                style: this.crosshairStyle,
-                dashLength: 4,
-                gapLength: 3
+                color: this.crosshairColor, width: 1, alpha: 0.6, style: this.crosshairStyle, dashLength: 4, gapLength: 3
             });
-            StrokeEngine.drawLine(this.crosshairGraphics, this.crosshairX, 0, this.crosshairX, chartHeight, {
-                color: this.crosshairColor,
-                width: 1,
-                alpha: 0.6,
-                style: this.crosshairStyle,
-                dashLength: 4,
-                gapLength: 3
+            // Vertical crosshair down to the time axis
+            StrokeEngine.drawLine(this.crosshairGraphics, this.crosshairX, 0, this.crosshairX, timeAxisY, {
+                color: this.crosshairColor, width: 1, alpha: 0.6, style: this.crosshairStyle, dashLength: 4, gapLength: 3
             });
 
-            // Y-Axis Price Badge
-            const range = this.currentMaxPrice - this.currentMinPrice;
-            const localY = this.crosshairY - this.cameraY;
-            const norm = (chartHeight - localY) / chartHeight;
-            const hoverPrice = this.currentMinPrice + (norm * range);
+            // Y-Axis Price Badge (Only show if hovering the main chart)
+            if (this.crosshairY <= mainChartHeight) {
+                const range = this.currentMaxPrice - this.currentMinPrice;
+                const localY = this.crosshairY - this.cameraY;
+                const norm = (mainChartHeight - localY) / mainChartHeight;
+                const hoverPrice = this.currentMinPrice + (norm * range);
 
-            const hoverPriceY = Math.max(0, Math.min(chartHeight - 20, this.crosshairY - 10));
-            this.crosshairBadgeGraphics.rect(chartWidth, hoverPriceY, this.priceAxisWidth, 20).fill(0x363A45);
+                const hoverPriceY = Math.max(0, Math.min(mainChartHeight - 20, this.crosshairY - 10));
+                this.crosshairBadgeGraphics.rect(chartWidth, hoverPriceY, this.priceAxisWidth, 20).fill(0x363A45);
 
-            this.persistentPriceBadgeText.text = hoverPrice.toFixed(2);
-            this.persistentPriceBadgeText.x = chartWidth + 5;
-            this.persistentPriceBadgeText.y = hoverPriceY + 3;
-            this.persistentPriceBadgeText.visible = true;
+                this.persistentPriceBadgeText.text = hoverPrice.toFixed(2);
+                this.persistentPriceBadgeText.x = chartWidth + 5;
+                this.persistentPriceBadgeText.y = hoverPriceY + 3;
+                this.persistentPriceBadgeText.visible = true;
+            }
 
             // X-Axis Time Badge
             const logicalIndex = Math.round((this.crosshairX + this.cameraX) / actualSpacing);
@@ -654,11 +591,11 @@ export class ChartRenderer {
                 const badgeW = this.persistentTimeBadgeText.width + 16;
                 const badgeX = Math.max(0, Math.min(chartWidth - badgeW, this.crosshairX - (badgeW / 2)));
 
-                this.crosshairBadgeGraphics.rect(badgeX, chartHeight, badgeW, this.timeAxisHeight).fill(0x363A45);
+                this.crosshairBadgeGraphics.rect(badgeX, timeAxisY, badgeW, this.timeAxisHeight).fill(0x363A45);
 
                 this.persistentTimeBadgeText.anchor.set(0.5);
                 this.persistentTimeBadgeText.x = badgeX + (badgeW / 2);
-                this.persistentTimeBadgeText.y = chartHeight + (this.timeAxisHeight / 2);
+                this.persistentTimeBadgeText.y = timeAxisY + (this.timeAxisHeight / 2);
                 this.persistentTimeBadgeText.visible = true;
             }
         }
@@ -670,13 +607,8 @@ export class ChartRenderer {
             const syncX = (logicalIndex * actualSpacing) - this.cameraX;
 
             if (syncX >= 0 && syncX < chartWidth) {
-                StrokeEngine.drawLine(this.syncCrosshairGraphics, syncX, 0, syncX, chartHeight, {
-                    color: this.crosshairColor,
-                    width: 1,
-                    alpha: 0.45,
-                    style: this.crosshairStyle,
-                    dashLength: 4,
-                    gapLength: 3
+                StrokeEngine.drawLine(this.syncCrosshairGraphics, syncX, 0, syncX, timeAxisY, {
+                    color: this.crosshairColor, width: 1, alpha: 0.45, style: this.crosshairStyle, dashLength: 4, gapLength: 3
                 });
             }
         }
