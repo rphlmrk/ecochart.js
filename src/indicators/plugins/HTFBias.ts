@@ -13,6 +13,10 @@ export class HTFBiasIndicator extends BaseIndicator {
             { id: 'displayMode', name: 'Display Mode', type: 'select', value: 'Top Ribbon', options: ['Top Ribbon', 'Overlay Lines', 'Both'] },
             { id: 'bullColor', name: 'Bull Bias Color', type: 'color', value: '#089981' },
             { id: 'bearColor', name: 'Bear Bias Color', type: 'color', value: '#F23645' },
+            { id: 'showInsideBar', name: 'Show Inside Bar on Ribbon', type: 'boolean', value: true },
+            { id: 'insideColor', name: 'Inside Bar Color', type: 'color', value: '#FFEB3B' },
+            { id: 'showFutureClose', name: 'Show Future Close', type: 'boolean', value: true },
+            { id: 'futureLineWidth', name: 'Future Line Width', type: 'number', value: 1.5, min: 1, max: 4, step: 0.5 },
             { id: 'sweepsOnly', name: 'Sweeps Only', type: 'boolean', value: false }
         ];
     }
@@ -79,8 +83,17 @@ export class HTFBiasIndicator extends BaseIndicator {
         const bearClr = parseColor(this.getParam('bearColor', '#F23645'));
         const sweepsOnly = this.getParam<boolean>('sweepsOnly', false);
 
+        const showInsideBar = this.getParam<boolean>('showInsideBar', true);
+        const insideClr = parseColor(this.getParam('insideColor', '#FFEB3B'));
+        const showFutureClose = this.getParam<boolean>('showFutureClose', true);
+        const futureLineWidth = this.getParam<number>('futureLineWidth', 1.5);
+
         const showRibbon = displayMode === 'Top Ribbon' || displayMode === 'Both';
         const showLines = displayMode === 'Overlay Lines' || displayMode === 'Both';
+
+        const tfMs = this.getEffectiveTfMins() * 60 * 1000;
+        const intervalMs = r.parseIntervalMs(r.currentInterval);
+        const barsPerBlock = Math.max(1, Math.round(tfMs / intervalMs));
 
         const sp = r.candleSpacing * r.zoom;
         const visStart = Math.max(0, Math.floor(r.cameraX / sp));
@@ -94,6 +107,7 @@ export class HTFBiasIndicator extends BaseIndicator {
 
         for (let i = 1; i < htfCandles.length; i++) {
             const curr = htfCandles[i];
+            const isLast = i === htfCandles.length - 1;
             const inView = !(curr.endIdx < visStart || curr.startIdx > visEnd);
             const isInside = curr.h <= mother.h && curr.l >= mother.l;
 
@@ -134,25 +148,68 @@ export class HTFBiasIndicator extends BaseIndicator {
                 mother = curr;
             }
 
-            if (showRibbon && inView && currentBias !== 0) {
+            if (showRibbon && inView) {
                 const x1 = (curr.startIdx * sp) - r.cameraX;
-                const x2 = ((curr.endIdx + 1) * sp) - r.cameraX;
+                // Extend active forming block to where the HTF session actually closes in the future
+                const endBar = (isLast && showFutureClose)
+                    ? (curr.startIdx + barsPerBlock)
+                    : (curr.endIdx + 1);
+                const x2 = (endBar * sp) - r.cameraX;
+
                 const ribbonH = 18;
                 const yTop = 6;
-                const color = currentBias === 1 ? bullClr : bearClr;
 
-                g.rect(x1, yTop, Math.max(1, x2 - x1), ribbonH).fill({ color, alpha: 0.2 });
+                // 1. Inside Bar on Ribbon (Compression state)
+                if (isInside && showInsideBar) {
+                    g.rect(x1, yTop, Math.max(1, x2 - x1), ribbonH).fill({ color: insideClr, alpha: 0.25 });
+                    StrokeEngine.drawLine(g, x1, yTop, x2, yTop, { color: insideClr, width: 1.5, alpha: 0.8 });
+                    StrokeEngine.drawLine(g, x1, yTop + ribbonH, x2, yTop + ribbonH, { color: insideClr, width: 1.5, alpha: 0.8 });
 
-                if (isBearSweep) {
-                    StrokeEngine.drawLine(g, x1, yTop, x2, yTop, { color: bearClr, width: 2.5, alpha: 0.9 });
-                } else if (isBullSweep) {
-                    StrokeEngine.drawLine(g, x1, yTop + ribbonH, x2, yTop + ribbonH, { color: bullClr, width: 2.5, alpha: 0.9 });
+                // 2. Trend Bias (Bull / Bear)
+                } else if (currentBias !== 0) {
+                    const color = currentBias === 1 ? bullClr : bearClr;
+                    g.rect(x1, yTop, Math.max(1, x2 - x1), ribbonH).fill({ color, alpha: 0.2 });
+
+                    if (isBearSweep) {
+                        StrokeEngine.drawLine(g, x1, yTop, x2, yTop, { color: bearClr, width: 2.5, alpha: 0.9 });
+                    } else if (isBullSweep) {
+                        StrokeEngine.drawLine(g, x1, yTop + ribbonH, x2, yTop + ribbonH, { color: bullClr, width: 2.5, alpha: 0.9 });
+                    }
+                }
+
+                // 3. Future Close: Clean vertical dashed line marking the session close time
+                if (isLast && showFutureClose && x2 >= 0 && x1 <= layout.chartWidth) {
+                    const vertLineColor = r.isDarkTheme ? 0xFFFF00 : 0xD97706; // Yellow on dark, Amber on light
+                    StrokeEngine.drawLine(g, x2, 0, x2, layout.mainChartHeight, {
+                        color: vertLineColor,
+                        width: futureLineWidth,
+                        alpha: 0.65,
+                        style: 'dashed',
+                        dashLength: 5,
+                        gapLength: 3
+                    });
                 }
             }
         }
     }
 
     public getValueAt(idx: number, ds: DataStore, _isDark: boolean, _defaultTextClr: number) {
+        const showInsideBar = this.getParam<boolean>('showInsideBar', true);
+        const insideClr = parseColor(this.getParam('insideColor', '#FFEB3B'));
+
+        // If the latest candle is an Inside Bar, reflect it in the telemetry
+        if (this.cachedCandles.length >= 2 && showInsideBar) {
+            const last = this.cachedCandles[this.cachedCandles.length - 1];
+            const mother = this.cachedCandles[this.cachedCandles.length - 2];
+            if (last.h <= mother.h && last.l >= mother.l) {
+                return {
+                    label: this.name,
+                    valueStr: '⚡ Inside Bar',
+                    valueColor: insideClr
+                };
+            }
+        }
+
         const close = (idx >= 0 && idx < ds.length) ? ds.data[idx * 6 + 4] : 0;
         const open = (idx >= 0 && idx < ds.length) ? ds.data[idx * 6 + 1] : 0;
         const isBull = close >= open;

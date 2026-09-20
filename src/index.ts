@@ -13,7 +13,8 @@ import {
     ExhaustionIndicator, 
     HTFBoxIndicator, 
     HTFBiasIndicator, 
-    HTFProjectionsIndicator 
+    HTFProjectionsIndicator,
+    ZigZag123Indicator
 } from './indicators/plugins';
 
 export class EcoChart {
@@ -1400,7 +1401,8 @@ export class WorkspaceManager {
             { type: 'EXHAUST', name: 'Exhaustion (CCI)', factory: () => new ExhaustionIndicator() },
             { type: 'HTF_BOX', name: 'HTF Box', factory: () => new HTFBoxIndicator(60) },
             { type: 'HTF_BIAS', name: 'HTF Bias', factory: () => new HTFBiasIndicator(60) },
-            { type: 'HTF_PROJ', name: 'HTF Projections', factory: () => new HTFProjectionsIndicator(240) }
+            { type: 'HTF_PROJ', name: 'HTF Projections', factory: () => new HTFProjectionsIndicator(240) },
+            { type: 'ZZ123', name: 'ZigZag 1-2-3 Breakout', factory: () => new ZigZag123Indicator(4) }
         ];
 
         const showListView = () => {
