@@ -6,7 +6,15 @@ import { THEME_PRESETS } from './theme/presets';
 import { colorPicker } from './ui/ColorPicker';
 import type { ChartTheme, LineStyle, AccentSource } from './theme/types';
 import { IndicatorManager } from './indicators/IndicatorManager';
-import { SMAIndicator, EMAIndicator, VolumeIndicator, ExhaustionIndicator, HTFBoxIndicator } from './indicators/BuiltInIndicators';
+import { 
+    SMAIndicator, 
+    EMAIndicator, 
+    VolumeIndicator, 
+    ExhaustionIndicator, 
+    HTFBoxIndicator, 
+    HTFBiasIndicator, 
+    HTFProjectionsIndicator 
+} from './indicators/plugins';
 
 export class EcoChart {
     public dataStore: DataStore;
@@ -1390,7 +1398,9 @@ export class WorkspaceManager {
             { type: 'EMA', name: 'EMA', factory: () => new EMAIndicator(20) },
             { type: 'VOL', name: 'Volume', factory: () => new VolumeIndicator() },
             { type: 'EXHAUST', name: 'Exhaustion (CCI)', factory: () => new ExhaustionIndicator() },
-            { type: 'HTF_BOX', name: 'HTF Box', factory: () => new HTFBoxIndicator(60) }
+            { type: 'HTF_BOX', name: 'HTF Box', factory: () => new HTFBoxIndicator(60) },
+            { type: 'HTF_BIAS', name: 'HTF Bias', factory: () => new HTFBiasIndicator(60) },
+            { type: 'HTF_PROJ', name: 'HTF Projections', factory: () => new HTFProjectionsIndicator(240) }
         ];
 
         const showListView = () => {

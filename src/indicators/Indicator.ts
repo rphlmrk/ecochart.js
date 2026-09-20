@@ -1,6 +1,13 @@
 import { Graphics } from 'pixi.js';
 import type { ChartRenderer } from '../renderer/ChartRenderer';
 import type { DataStore } from '../data/DataStore';
+import { ThemeManager } from '../theme/ThemeManager';
+
+export function parseColor(val: string | number): number {
+    if (typeof val === 'number') return val;
+    if (typeof val === 'string') return ThemeManager.hexToInt(val);
+    return 0xffffff;
+}
 
 export type ParamType = 'number' | 'color' | 'boolean' | 'select';
 
