@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>EcoChart Engine</title>
   <style>
     body,
@@ -32,8 +32,53 @@
       display: none;
     }
 
+    /* Responsive Toolbar Breakpoints */
+    .desktop-only {
+      display: flex !important;
+    }
+    .mobile-only {
+      display: none !important;
+    }
+
+    @media (max-width: 767px) {
+      .desktop-only {
+        display: none !important;
+      }
+      .mobile-only {
+        display: flex !important;
+      }
+    }
+
+    /* Clean Dropdown Item Styling */
+    .menu-opt-btn {
+      background: transparent;
+      border: none;
+      color: var(--chart-text, #D1D4DC);
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      text-align: left;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      box-sizing: border-box;
+      transition: background 0.1s ease;
+    }
+    .menu-opt-btn:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
     /* Responsive modal sizing for phones & tablets */
     @media (max-width: 768px) {
+      /* Prevent iOS Safari auto-zoom by forcing 16px on inputs */
+      input[type="text"],
+      input[type="number"],
+      select {
+        font-size: 16px !important;
+      }
+      
       dialog {
         max-width: 94vw !important;
         width: 94vw !important;
@@ -224,45 +269,69 @@
 
         <div style="width: 1px; height: 18px; background: var(--chart-grid, #2A2E39); margin: 0 4px;"></div>
 
-        <!-- Timeframe Pills -->
-        <div id="tf-group" style="display: flex; gap: 2px;">
-          <button class="tf-btn" data-tf="1s"
-            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1s</button>
-          <button class="tf-btn active-btn" data-tf="1m"
-            style="background: #2A2E39; color: #2962FF; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1m</button>
-          <button class="tf-btn" data-tf="3m"
-            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">3m</button>
-          <button class="tf-btn" data-tf="5m"
-            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">5m</button>
-          <button class="tf-btn" data-tf="15m"
-            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">15m</button>
-          <button class="tf-btn" data-tf="30m"
-            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">30m</button>
-          <button class="tf-btn" data-tf="1h"
-            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1h</button>
-          <button class="tf-btn" data-tf="4h"
-            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">4h</button>
-          <button class="tf-btn" data-tf="1d"
-            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">D</button>
-          <button id="btn-custom-tf"
-            style="background: transparent; color: #787B86; border: 1px dashed var(--chart-grid, #363A45); padding: 2px 6px; font-size: 11px; cursor: pointer; border-radius: 4px;"
-            title="Custom Timeframe">+ Custom</button>
+        <!-- 1. DESKTOP/TABLET TIMEFRAME PILLS (Shown on >= 768px) -->
+        <div id="tf-group" class="desktop-only" style="display: flex; gap: 2px;">
+          <button class="tf-btn" data-tf="1s" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1s</button>
+          <button class="tf-btn" data-tf="1m" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1m</button>
+          <button class="tf-btn" data-tf="3m" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">3m</button>
+          <button class="tf-btn" data-tf="5m" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">5m</button>
+          <button class="tf-btn" data-tf="15m" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">15m</button>
+          <button class="tf-btn" data-tf="30m" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">30m</button>
+          <button class="tf-btn" data-tf="1h" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1h</button>
+          <button class="tf-btn" data-tf="4h" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">4h</button>
+          <button class="tf-btn" data-tf="1d" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">D</button>
+          <button id="btn-custom-tf" style="background: transparent; color: #787B86; border: 1px dashed var(--chart-grid, #363A45); padding: 2px 6px; font-size: 11px; cursor: pointer; border-radius: 4px;" title="Custom Timeframe">+ Custom</button>
+        </div>
+
+        <!-- 2. MOBILE TIMEFRAME DROPDOWN (Shown on < 768px) -->
+        <div class="mobile-only" style="position: relative;">
+          <button id="btn-mobile-tf"
+            style="background: transparent; color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #363A45); border-radius: 4px; padding: 3px 6px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+            <span id="mobile-tf-label">1m</span>
+            <span style="font-size: 8px; color: var(--chart-accent, #2962FF);">▼</span>
+          </button>
+          <div id="mobile-tf-menu"
+            style="display: none; position: absolute; top: 32px; left: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 110px;">
+            <button class="tf-btn menu-opt-btn" data-tf="1s">1s</button>
+            <button class="tf-btn menu-opt-btn" data-tf="1m">1m</button>
+            <button class="tf-btn menu-opt-btn" data-tf="3m">3m</button>
+            <button class="tf-btn menu-opt-btn" data-tf="5m">5m</button>
+            <button class="tf-btn menu-opt-btn" data-tf="15m">15m</button>
+            <button class="tf-btn menu-opt-btn" data-tf="30m">30m</button>
+            <button class="tf-btn menu-opt-btn" data-tf="1h">1h</button>
+            <button class="tf-btn menu-opt-btn" data-tf="4h">4h</button>
+            <button class="tf-btn menu-opt-btn" data-tf="1d">1d</button>
+            <div style="height: 1px; background: var(--chart-grid, #2A2E39); margin: 3px 0;"></div>
+            <button id="btn-mobile-custom-tf" class="menu-opt-btn" style="color: var(--chart-accent, #2962FF);">+ Custom</button>
+          </div>
         </div>
 
         <div style="width: 1px; height: 18px; background: #2A2E39; margin: 0 4px;"></div>
 
-        <!-- Multi-Mode Chart Toggles -->
-        <div id="mode-group" style="display: flex; gap: 2px;">
-          <button class="mode-btn" data-mode="candles" title="Candlesticks"
-            style="background: var(--chart-grid, #2A2E39); color: var(--chart-accent, #2962FF); border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">🕯️</button>
-          <button class="mode-btn" data-mode="bars" title="OHLC Bars"
-            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">📊</button>
-          <button class="mode-btn" data-mode="line" title="Line"
-            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">📈</button>
-          <button class="mode-btn" data-mode="area" title="Area"
-            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">🏔️</button>
-          <button class="mode-btn" data-mode="heikinAshi" title="Heikin-Ashi"
-            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; font-weight: 700;">HA</button>
+        <!-- 3. DESKTOP/TABLET CHART MODES (Shown on >= 768px) -->
+        <div id="mode-group" class="desktop-only" style="display: flex; gap: 2px;">
+          <button class="mode-btn" data-mode="candles" title="Candlesticks" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">🕯️</button>
+          <button class="mode-btn" data-mode="bars" title="OHLC Bars" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">📊</button>
+          <button class="mode-btn" data-mode="line" title="Line" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">📈</button>
+          <button class="mode-btn" data-mode="area" title="Area" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">🏔️</button>
+          <button class="mode-btn" data-mode="heikinAshi" title="Heikin-Ashi" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; font-weight: 700;">HA</button>
+        </div>
+
+        <!-- 4. MOBILE CHART MODE DROPDOWN (Shown on < 768px) -->
+        <div class="mobile-only" style="position: relative;">
+          <button id="btn-mobile-mode"
+            style="background: transparent; color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #363A45); border-radius: 4px; padding: 3px 6px; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+            <span id="mobile-mode-label">🕯️</span>
+            <span style="font-size: 8px; color: var(--chart-accent, #2962FF);">▼</span>
+          </button>
+          <div id="mobile-mode-menu"
+            style="display: none; position: absolute; top: 32px; left: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 135px;">
+            <button class="mode-btn menu-opt-btn" data-mode="candles">🕯️ Candles</button>
+            <button class="mode-btn menu-opt-btn" data-mode="bars">📊 Bars</button>
+            <button class="mode-btn menu-opt-btn" data-mode="line">📈 Line</button>
+            <button class="mode-btn menu-opt-btn" data-mode="area">🏔️ Area</button>
+            <button class="mode-btn menu-opt-btn" data-mode="heikinAshi">HA Heikin-Ashi</button>
+          </div>
         </div>
 
         <!-- Right-Aligned Controls Group -->

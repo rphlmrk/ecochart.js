@@ -624,7 +624,7 @@ export class WorkspaceManager {
         const symLabel = document.getElementById('btn-symbol')?.querySelector('span');
         if (symLabel) symLabel.textContent = chart.currentSymbol;
 
-        // 2. Timeframe Active Button
+        // 2. Timeframe Active Button (Syncs both Desktop Pills and Mobile Dropdown Items)
         document.querySelectorAll('.tf-btn').forEach((b) => {
             const btn = b as HTMLElement;
             const isMatch = btn.dataset.tf === chart.currentInterval;
@@ -632,7 +632,13 @@ export class WorkspaceManager {
             btn.style.color = isMatch ? accent : '#787B86';
         });
 
-        // 3. Chart Mode Active Button
+        // 2b. Sync Mobile Timeframe Dropdown Label
+        const mobileTfLabel = document.getElementById('mobile-tf-label');
+        if (mobileTfLabel) {
+            mobileTfLabel.textContent = chart.currentInterval;
+        }
+
+        // 3. Chart Mode Active Button (Syncs both Desktop and Mobile Dropdown Items)
         document.querySelectorAll('.mode-btn').forEach((b) => {
             const btn = b as HTMLElement;
             const isMatch = btn.dataset.mode === chart.renderer.chartMode;
@@ -640,7 +646,20 @@ export class WorkspaceManager {
             btn.style.color = isMatch ? accent : '#787B86';
         });
 
-        // 4. Auto-Fit Button (Synced directly on the active chart's local button)
+        // 3b. Sync Mobile Mode Dropdown Label
+        const mobileModeLabel = document.getElementById('mobile-mode-label');
+        if (mobileModeLabel) {
+            const modeIcons: Record<string, string> = {
+                candles: '🕯️',
+                bars: '📊',
+                line: '📈',
+                area: '🏔️',
+                heikinAshi: 'HA'
+            };
+            mobileModeLabel.textContent = modeIcons[chart.renderer.chartMode] || '🕯️';
+        }
+
+        // 4. Auto-Fit Button
         if (chart.autoBtn) {
             chart.autoBtn.style.color = chart.renderer.isAutoScale ? accent : 'var(--chart-text, #787B86)';
         }
@@ -693,7 +712,10 @@ export class WorkspaceManager {
         btnLayout?.addEventListener('click', (e) => {
             e.stopPropagation();
             if (layoutMenu) {
-                layoutMenu.style.display = layoutMenu.style.display === 'flex' ? 'none' : 'flex';
+                const isOpen = layoutMenu.style.display === 'flex';
+                layoutMenu.style.display = isOpen ? 'none' : 'flex';
+                if (mobileTfMenu) mobileTfMenu.style.display = 'none';
+                if (mobileModeMenu) mobileModeMenu.style.display = 'none';
             }
         });
 
@@ -703,6 +725,8 @@ export class WorkspaceManager {
 
         document.addEventListener('click', () => {
             if (layoutMenu) layoutMenu.style.display = 'none';
+            if (mobileTfMenu) mobileTfMenu.style.display = 'none';
+            if (mobileModeMenu) mobileModeMenu.style.display = 'none';
         });
 
         document.querySelectorAll('.layout-opt-btn').forEach((btn) => {
@@ -733,6 +757,48 @@ export class WorkspaceManager {
                     this.activeChart.isDirty = true;
                     this.syncTopBar();
                 }
+            });
+        });
+
+        // Mobile Timeframe Dropdown
+        const btnMobileTf = document.getElementById('btn-mobile-tf');
+        const mobileTfMenu = document.getElementById('mobile-tf-menu');
+        const btnMobileMode = document.getElementById('btn-mobile-mode');
+        const mobileModeMenu = document.getElementById('mobile-mode-menu');
+
+        btnMobileTf?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (mobileTfMenu) {
+                const isOpen = mobileTfMenu.style.display === 'flex';
+                mobileTfMenu.style.display = isOpen ? 'none' : 'flex';
+                if (mobileModeMenu) mobileModeMenu.style.display = 'none';
+                if (layoutMenu) layoutMenu.style.display = 'none';
+            }
+        });
+
+        // Mobile Mode Dropdown
+        btnMobileMode?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (mobileModeMenu) {
+                const isOpen = mobileModeMenu.style.display === 'flex';
+                mobileModeMenu.style.display = isOpen ? 'none' : 'flex';
+                if (mobileTfMenu) mobileTfMenu.style.display = 'none';
+                if (layoutMenu) layoutMenu.style.display = 'none';
+            }
+        });
+
+        // Close dropdowns when clicking outside (already handled above, but extend here)
+
+        // Close menus when an item is clicked
+        mobileTfMenu?.querySelectorAll('.tf-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                if (mobileTfMenu) mobileTfMenu.style.display = 'none';
+            });
+        });
+
+        mobileModeMenu?.querySelectorAll('.mode-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                if (mobileModeMenu) mobileModeMenu.style.display = 'none';
             });
         });
 
@@ -1046,6 +1112,13 @@ export class WorkspaceManager {
                 modalCustomTf?.close();
                 WorkspaceManager.syncTopBar();
             }
+        });
+
+        // Custom Timeframe from Mobile Dropdown
+        const btnMobileCustomTf = document.getElementById('btn-mobile-custom-tf');
+        btnMobileCustomTf?.addEventListener('click', () => {
+            if (mobileTfMenu) mobileTfMenu.style.display = 'none';
+            modalCustomTf?.showModal();
         });
     }
 }
