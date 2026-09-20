@@ -36,6 +36,13 @@ export class EcoChart {
     private initialPinchDist = 0;
     private initialPinchZoom = 1;
 
+    // Mobile Crosshair State
+    private longPressTimeout: any = null;
+    private isMobileCrosshairActive = false;
+    private touchStartX = 0;
+    private touchStartY = 0;
+    private touchStartTime = 0;
+
     // Active Symbol & Timeframe State
     public currentSymbol = 'BTCUSDT';
     public currentInterval = '1m';
@@ -340,11 +347,11 @@ export class EcoChart {
         }, { passive: false });
 
         // ==========================================================
-        // 📱 MOBILE MULTI-TOUCH ENGINE (Pinch-to-Zoom & 1-Finger Pan)
+        // 📱 MOBILE MULTI-TOUCH ENGINE (Pinch-to-Zoom & Long-Press Crosshair)
         // ==========================================================
         this.canvas.addEventListener('touchstart', (e) => {
             e.preventDefault();
-            WorkspaceManager.setActiveChart(this); // Activate pane on tap
+            WorkspaceManager.setActiveChart(this);
             const rect = this.canvas.getBoundingClientRect();
 
             for (let i = 0; i < e.changedTouches.length; i++) {
@@ -353,7 +360,12 @@ export class EcoChart {
             }
 
             if (this.activeTouches.size === 2) {
-                // 2-Finger Pinch Gesture Start (Reset drag flags)
+                // Cancel crosshair & timers on pinch
+                if (this.longPressTimeout) clearTimeout(this.longPressTimeout);
+                this.isMobileCrosshairActive = false;
+                this.renderer.isCrosshairVisible = false;
+                this.isCrosshairDirty = true;
+                
                 this.isDraggingChart = false;
                 this.isDraggingPriceAxis = false;
                 this.isDraggingTimeAxis = false;
@@ -364,38 +376,59 @@ export class EcoChart {
                     this.initialPinchDist = dist;
                     this.initialPinchZoom = this.renderer.zoom;
                 }
-                this.renderer.isCrosshairVisible = false;
-                this.isCrosshairDirty = true;
-
             } else if (this.activeTouches.size === 1) {
                 const t = e.touches[0];
                 const x = t.clientX - rect.left;
                 const y = t.clientY - rect.top;
 
+                this.touchStartX = x;
+                this.touchStartY = y;
+                this.touchStartTime = Date.now();
+
                 const chartWidth = this.renderer.app.screen.width - this.renderer.priceAxisWidth;
                 const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
 
-                // Detect Touch Hit Zones (Price Axis, Time Axis, or Main Chart)
-                if (x > chartWidth) {
-                    this.isDraggingPriceAxis = true;
-                    this.isDraggingChart = false;
-                    this.isDraggingTimeAxis = false;
-                } else if (y > chartHeight) {
-                    this.isDraggingTimeAxis = true;
+                if (this.isMobileCrosshairActive) {
+                    // Crosshair is already active. Snap it to new touch location immediately.
+                    this.renderer.crosshairX = x;
+                    this.renderer.crosshairY = y;
+                    this.isCrosshairDirty = true;
                     this.isDraggingChart = false;
                     this.isDraggingPriceAxis = false;
-                    this.timeAxisAnchorX = x;
-                    this.timeAxisWorldX = (x + this.renderer.cameraX) / this.renderer.zoom;
+                    this.isDraggingTimeAxis = false;
                 } else {
-                    this.isDraggingChart = true;
-                    this.isDraggingPriceAxis = false;
-                    this.isDraggingTimeAxis = false;
+                    // Detect Touch Hit Zones
+                    if (x > chartWidth) {
+                        this.isDraggingPriceAxis = true;
+                        this.isDraggingChart = false;
+                        this.isDraggingTimeAxis = false;
+                    } else if (y > chartHeight) {
+                        this.isDraggingTimeAxis = true;
+                        this.isDraggingChart = false;
+                        this.isDraggingPriceAxis = false;
+                        this.timeAxisAnchorX = x;
+                        this.timeAxisWorldX = (x + this.renderer.cameraX) / this.renderer.zoom;
+                    } else {
+                        this.isDraggingChart = true;
+                        this.isDraggingPriceAxis = false;
+                        this.isDraggingTimeAxis = false;
+
+                        // Start Long-Press Timer (400ms) to activate mobile crosshair
+                        this.longPressTimeout = setTimeout(() => {
+                            this.isMobileCrosshairActive = true;
+                            this.renderer.isCrosshairVisible = true;
+                            this.renderer.crosshairX = this.touchStartX;
+                            this.renderer.crosshairY = this.touchStartY;
+                            this.isCrosshairDirty = true;
+                            this.isDraggingChart = false; // Stop panning
+                        }, 400);
+                    }
+                    this.renderer.isCrosshairVisible = false;
+                    this.isCrosshairDirty = true;
                 }
 
                 this.lastMouseX = t.clientX;
                 this.lastMouseY = t.clientY;
-                this.renderer.isCrosshairVisible = false;
-                this.isCrosshairDirty = true;
             }
         }, { passive: false });
 
@@ -408,7 +441,7 @@ export class EcoChart {
                 this.activeTouches.set(t.identifier, { x: t.clientX - rect.left, y: t.clientY - rect.top });
             }
 
-            // Case A: 2-Finger Pinch-to-Zoom (anchored between fingers)
+            // Case A: 2-Finger Pinch-to-Zoom
             if (this.activeTouches.size === 2) {
                 const points = Array.from(this.activeTouches.values());
                 const currentDist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
@@ -416,56 +449,103 @@ export class EcoChart {
                 if (this.initialPinchDist > 5) {
                     const pinchCenterX = (points[0].x + points[1].x) / 2;
                     const worldBaseX = (pinchCenterX + this.renderer.cameraX) / this.renderer.zoom;
-
                     const scaleFactor = currentDist / this.initialPinchDist;
                     const newZoom = Math.max(0.1, Math.min(this.initialPinchZoom * scaleFactor, 50));
-
+                    
                     this.renderer.zoom = newZoom;
                     this.renderer.cameraX = (worldBaseX * this.renderer.zoom) - pinchCenterX;
-
                     this.isLockedToEdge = false;
                     this.isDirty = true;
                 }
 
-            // Case B: 1-Finger Interactions (Pan Chart OR Scale Axes)
+            // Case B: 1-Finger Interactions
             } else if (this.activeTouches.size === 1) {
                 const t = e.touches[0];
-                const deltaX = t.clientX - this.lastMouseX;
-                const deltaY = t.clientY - this.lastMouseY;
+                const x = t.clientX - rect.left;
+                const y = t.clientY - rect.top;
 
-                if (this.isDraggingChart) {
-                    if (deltaX !== 0) {
-                        this.renderer.cameraX -= deltaX;
-                        this.isLockedToEdge = false;
+                // Cancel long-press if the user slides their finger (they want to pan, not crosshair)
+                if (!this.isMobileCrosshairActive && this.longPressTimeout) {
+                    if (Math.hypot(x - this.touchStartX, y - this.touchStartY) > 10) {
+                        clearTimeout(this.longPressTimeout);
+                        this.longPressTimeout = null;
                     }
-                    if (!this.renderer.isAutoScale && deltaY !== 0) {
-                        this.renderer.cameraY += deltaY;
-                    }
-                } else if (this.isDraggingPriceAxis) {
-                    // Turn off auto-scale when manually stretching price
-                    this.renderer.isAutoScale = false;
-                    if (this.autoBtn) this.autoBtn.style.color = 'var(--chart-text, #787B86)';
-
-                    const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
-                    const priceRange = this.renderer.currentMaxPrice - this.renderer.currentMinPrice;
-                    const stretchFactor = deltaY * (priceRange / chartHeight) * 2;
-                    
-                    this.renderer.currentMaxPrice += stretchFactor;
-                    this.renderer.currentMinPrice -= stretchFactor;
-                } else if (this.isDraggingTimeAxis) {
-                    const zoomMultiplier = 1 + (deltaX * 0.005);
-                    this.renderer.zoom = Math.max(0.1, Math.min(this.renderer.zoom * zoomMultiplier, 50));
-                    this.renderer.cameraX = (this.timeAxisWorldX * this.renderer.zoom) - this.timeAxisAnchorX;
-                    this.isLockedToEdge = false;
                 }
 
+                if (this.isMobileCrosshairActive) {
+                    // Update Crosshair instead of panning chart
+                    this.renderer.crosshairX = x;
+                    this.renderer.crosshairY = y;
+                    this.isCrosshairDirty = true;
+
+                    // Broadcast crosshair sync to other panes
+                    if (WorkspaceManager.isCrosshairSyncEnabled) {
+                        const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+                        const logicalIndex = Math.round((x + this.renderer.cameraX) / actualSpacing);
+                        const firstTime = this.dataStore.length > 0 ? this.dataStore.data[0] : 0;
+                        const intervalMs = this.renderer.parseIntervalMs(this.renderer.currentInterval);
+                        WorkspaceManager.broadcastCrosshair(firstTime + (logicalIndex * intervalMs), this);
+                    }
+                } else {
+                    // Normal Drag Panning
+                    const deltaX = t.clientX - this.lastMouseX;
+                    const deltaY = t.clientY - this.lastMouseY;
+
+                    if (this.isDraggingChart) {
+                        if (deltaX !== 0) {
+                            this.renderer.cameraX -= deltaX;
+                            this.isLockedToEdge = false;
+                        }
+                        if (!this.renderer.isAutoScale && deltaY !== 0) {
+                            this.renderer.cameraY += deltaY;
+                        }
+                    } else if (this.isDraggingPriceAxis) {
+                        this.renderer.isAutoScale = false;
+                        if (this.autoBtn) this.autoBtn.style.color = 'var(--chart-text, #787B86)';
+                        const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
+                        const priceRange = this.renderer.currentMaxPrice - this.renderer.currentMinPrice;
+                        const stretchFactor = deltaY * (priceRange / chartHeight) * 2;
+                        this.renderer.currentMaxPrice += stretchFactor;
+                        this.renderer.currentMinPrice -= stretchFactor;
+                    } else if (this.isDraggingTimeAxis) {
+                        const zoomMultiplier = 1 + (deltaX * 0.005);
+                        this.renderer.zoom = Math.max(0.1, Math.min(this.renderer.zoom * zoomMultiplier, 50));
+                        this.renderer.cameraX = (this.timeAxisWorldX * this.renderer.zoom) - this.timeAxisAnchorX;
+                        this.isLockedToEdge = false;
+                    }
+                    this.isDirty = true;
+                }
+                
                 this.lastMouseX = t.clientX;
                 this.lastMouseY = t.clientY;
-                this.isDirty = true;
             }
         }, { passive: false });
 
         const endTouch = (e: TouchEvent) => {
+            // Dismiss crosshair if the user does a quick tap anywhere while it's active
+            if (this.activeTouches.size === 1 && this.isMobileCrosshairActive) {
+                const t = e.changedTouches[0];
+                const rect = this.canvas.getBoundingClientRect();
+                const x = t.clientX - rect.left;
+                const y = t.clientY - rect.top;
+                const dist = Math.hypot(x - this.touchStartX, y - this.touchStartY);
+                const duration = Date.now() - this.touchStartTime;
+
+                if (dist < 15 && duration < 300) {
+                    this.isMobileCrosshairActive = false;
+                    this.renderer.isCrosshairVisible = false;
+                    this.isCrosshairDirty = true;
+                    if (WorkspaceManager.isCrosshairSyncEnabled) {
+                        WorkspaceManager.broadcastCrosshair(null, this);
+                    }
+                }
+            }
+
+            if (this.longPressTimeout) {
+                clearTimeout(this.longPressTimeout);
+                this.longPressTimeout = null;
+            }
+
             for (let i = 0; i < e.changedTouches.length; i++) {
                 this.activeTouches.delete(e.changedTouches[i].identifier);
             }
@@ -474,7 +554,6 @@ export class EcoChart {
                 this.initialPinchDist = 0;
             }
 
-            // CRITICAL FIX: Synchronize anchor when lifting 1 finger during pinch
             if (this.activeTouches.size === 1 && e.touches.length > 0) {
                 this.lastMouseX = e.touches[0].clientX;
                 this.lastMouseY = e.touches[0].clientY;
