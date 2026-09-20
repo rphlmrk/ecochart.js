@@ -352,8 +352,12 @@ export class EcoChart {
                 this.activeTouches.set(t.identifier, { x: t.clientX - rect.left, y: t.clientY - rect.top });
             }
 
-            // 2-Finger Pinch Gesture Start
             if (this.activeTouches.size === 2) {
+                // 2-Finger Pinch Gesture Start (Reset drag flags)
+                this.isDraggingChart = false;
+                this.isDraggingPriceAxis = false;
+                this.isDraggingTimeAxis = false;
+
                 const points = Array.from(this.activeTouches.values());
                 const dist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
                 if (dist > 5) {
@@ -362,8 +366,32 @@ export class EcoChart {
                 }
                 this.renderer.isCrosshairVisible = false;
                 this.isCrosshairDirty = true;
+
             } else if (this.activeTouches.size === 1) {
                 const t = e.touches[0];
+                const x = t.clientX - rect.left;
+                const y = t.clientY - rect.top;
+
+                const chartWidth = this.renderer.app.screen.width - this.renderer.priceAxisWidth;
+                const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
+
+                // Detect Touch Hit Zones (Price Axis, Time Axis, or Main Chart)
+                if (x > chartWidth) {
+                    this.isDraggingPriceAxis = true;
+                    this.isDraggingChart = false;
+                    this.isDraggingTimeAxis = false;
+                } else if (y > chartHeight) {
+                    this.isDraggingTimeAxis = true;
+                    this.isDraggingChart = false;
+                    this.isDraggingPriceAxis = false;
+                    this.timeAxisAnchorX = x;
+                    this.timeAxisWorldX = (x + this.renderer.cameraX) / this.renderer.zoom;
+                } else {
+                    this.isDraggingChart = true;
+                    this.isDraggingPriceAxis = false;
+                    this.isDraggingTimeAxis = false;
+                }
+
                 this.lastMouseX = t.clientX;
                 this.lastMouseY = t.clientY;
                 this.renderer.isCrosshairVisible = false;
@@ -398,18 +426,37 @@ export class EcoChart {
                     this.isLockedToEdge = false;
                     this.isDirty = true;
                 }
-            // Case B: 1-Finger Smooth Panning
+
+            // Case B: 1-Finger Interactions (Pan Chart OR Scale Axes)
             } else if (this.activeTouches.size === 1) {
                 const t = e.touches[0];
                 const deltaX = t.clientX - this.lastMouseX;
                 const deltaY = t.clientY - this.lastMouseY;
 
-                if (deltaX !== 0) {
-                    this.renderer.cameraX -= deltaX;
+                if (this.isDraggingChart) {
+                    if (deltaX !== 0) {
+                        this.renderer.cameraX -= deltaX;
+                        this.isLockedToEdge = false;
+                    }
+                    if (!this.renderer.isAutoScale && deltaY !== 0) {
+                        this.renderer.cameraY += deltaY;
+                    }
+                } else if (this.isDraggingPriceAxis) {
+                    // Turn off auto-scale when manually stretching price
+                    this.renderer.isAutoScale = false;
+                    if (this.autoBtn) this.autoBtn.style.color = 'var(--chart-text, #787B86)';
+
+                    const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
+                    const priceRange = this.renderer.currentMaxPrice - this.renderer.currentMinPrice;
+                    const stretchFactor = deltaY * (priceRange / chartHeight) * 2;
+                    
+                    this.renderer.currentMaxPrice += stretchFactor;
+                    this.renderer.currentMinPrice -= stretchFactor;
+                } else if (this.isDraggingTimeAxis) {
+                    const zoomMultiplier = 1 + (deltaX * 0.005);
+                    this.renderer.zoom = Math.max(0.1, Math.min(this.renderer.zoom * zoomMultiplier, 50));
+                    this.renderer.cameraX = (this.timeAxisWorldX * this.renderer.zoom) - this.timeAxisAnchorX;
                     this.isLockedToEdge = false;
-                }
-                if (!this.renderer.isAutoScale && deltaY !== 0) {
-                    this.renderer.cameraY += deltaY;
                 }
 
                 this.lastMouseX = t.clientX;
@@ -431,8 +478,14 @@ export class EcoChart {
             if (this.activeTouches.size === 1 && e.touches.length > 0) {
                 this.lastMouseX = e.touches[0].clientX;
                 this.lastMouseY = e.touches[0].clientY;
+                this.isDraggingChart = false;
+                this.isDraggingPriceAxis = false;
+                this.isDraggingTimeAxis = false;
             } else if (this.activeTouches.size === 0) {
                 this.activeTouches.clear();
+                this.isDraggingChart = false;
+                this.isDraggingPriceAxis = false;
+                this.isDraggingTimeAxis = false;
             }
         };
 
