@@ -583,13 +583,26 @@
   </dialog>
 
   <dialog id="indicators-modal"
-    style="background: #131722; color: #D1D4DC; border: 1px solid #434651; border-radius: 8px; padding: 0; font-family: sans-serif; width: 320px; max-width: 94vw; box-shadow: 0 16px 40px rgba(0,0,0,0.6); outline: none;">
-    <div style="padding: 12px 16px; border-bottom: 1px solid #2A2E39; display: flex; align-items: center; justify-content: space-between;">
-      <h3 style="margin: 0; font-size: 14px; font-weight: 600;">Indicators</h3>
+    style="background: var(--chart-panel-bg, #131722); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 8px; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif; width: 340px; max-width: 94vw; box-shadow: 0 16px 40px rgba(0,0,0,0.6); outline: none; overflow: visible;">
+    
+    <!-- Modal Header -->
+    <div style="padding: 12px 16px; border-bottom: 1px solid var(--chart-grid, #2A2E39); display: flex; align-items: center; justify-content: space-between;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <button id="btn-ind-back" style="display: none; background: transparent; border: none; color: var(--chart-text, #D1D4DC); font-size: 14px; cursor: pointer; padding: 0 4px; font-weight: bold;" title="Back to indicators">←</button>
+        <h3 id="ind-modal-title" style="margin: 0; font-size: 14px; font-weight: 600;">Indicators</h3>
+      </div>
       <button id="btn-close-indicators" style="background: none; border: none; color: #787B86; font-size: 16px; cursor: pointer;">✕</button>
     </div>
-    <div id="indicators-list" style="padding: 8px 0; max-height: 300px; overflow-y: auto;">
-      <!-- Populated via JS -->
+
+    <!-- View 1: Catalog List -->
+    <div id="indicators-list" style="padding: 6px 0; max-height: 340px; overflow-y: auto;"></div>
+
+    <!-- View 2: Dynamic Settings Form -->
+    <div id="indicators-settings-view" style="display: none; padding: 16px; max-height: 340px; overflow-y: auto; flex-direction: column; gap: 14px;">
+      <div id="indicators-settings-fields" style="display: flex; flex-direction: column; gap: 12px;"></div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 12px;">
+        <button id="btn-ind-settings-apply" style="background: var(--chart-accent, #2962FF); color: white; border: none; border-radius: 4px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;">Done</button>
+      </div>
     </div>
   </dialog>
 

@@ -1241,52 +1241,213 @@ export class WorkspaceManager {
 
         btnCloseSymbol?.addEventListener('click', () => modalSymbol?.close());
 
-        // Indicators Menu
+        // ==========================================================
+        // 📊 UNIVERSAL INDICATOR & DYNAMIC SETTINGS ENGINE
+        // ==========================================================
         const btnIndicators = document.getElementById('btn-indicators');
         const modalIndicators = document.getElementById('indicators-modal') as HTMLDialogElement;
         const btnCloseIndicators = document.getElementById('btn-close-indicators');
+        const btnIndBack = document.getElementById('btn-ind-back');
+        const indModalTitle = document.getElementById('ind-modal-title');
         const indicatorsList = document.getElementById('indicators-list');
+        const indSettingsView = document.getElementById('indicators-settings-view');
+        const indSettingsFields = document.getElementById('indicators-settings-fields');
+        const btnIndSettingsApply = document.getElementById('btn-ind-settings-apply');
 
         const availableIndicators = [
-            { id: 'sma', name: 'SMA (20)', factory: () => new SMAIndicator(20) },
-            { id: 'ema', name: 'EMA (20)', factory: () => new EMAIndicator(20) },
-            { id: 'vol', name: 'Volume', factory: () => new VolumeIndicator() },
-            { id: 'exh', name: 'Exhaustion (CCI)', factory: () => new ExhaustionIndicator() },
-            { id: 'htf', name: 'HTF Box (60m)', factory: () => new HTFBoxIndicator(60) }
+            { type: 'SMA', name: 'SMA', factory: () => new SMAIndicator(20) },
+            { type: 'EMA', name: 'EMA', factory: () => new EMAIndicator(20) },
+            { type: 'VOL', name: 'Volume', factory: () => new VolumeIndicator() },
+            { type: 'EXHAUST', name: 'Exhaustion (CCI)', factory: () => new ExhaustionIndicator() },
+            { type: 'HTF_BOX', name: 'HTF Box', factory: () => new HTFBoxIndicator(60) }
         ];
 
-        btnIndicators?.addEventListener('click', () => {
-            if (indicatorsList && this.activeChart) {
-                indicatorsList.innerHTML = '';
-                availableIndicators.forEach(ind => {
-                    const row = document.createElement('div');
-                    const isActive = this.activeChart!.indicatorManager.activeIndicators.some(i => i.name === ind.name);
+        const showListView = () => {
+            if (btnIndBack) btnIndBack.style.display = 'none';
+            if (indModalTitle) indModalTitle.textContent = 'Indicators';
+            if (indicatorsList) indicatorsList.style.display = 'block';
+            if (indSettingsView) indSettingsView.style.display = 'none';
+            renderCatalogList();
+        };
+
+        const showSettingsView = (indicator: any) => {
+            if (!this.activeChart || !indSettingsFields) return;
+            if (btnIndBack) btnIndBack.style.display = 'inline-block';
+            if (indModalTitle) indModalTitle.textContent = `${indicator.name} Settings`;
+            if (indicatorsList) indicatorsList.style.display = 'none';
+            if (indSettingsView) indSettingsView.style.display = 'flex';
+
+            indSettingsFields.innerHTML = '';
+
+            // Dynamically generate form controls for each param
+            indicator.params.forEach((param: any) => {
+                const row = document.createElement('div');
+                row.style.cssText = 'display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px;';
+
+                const label = document.createElement('label');
+                label.textContent = param.name;
+                label.style.color = 'var(--chart-text, #D1D4DC)';
+                row.appendChild(label);
+
+                // Field Type 1: Number
+                if (param.type === 'number') {
+                    const input = document.createElement('input');
+                    input.type = 'number';
+                    input.value = String(param.value);
+                    if (param.min !== undefined) input.min = String(param.min);
+                    if (param.max !== undefined) input.max = String(param.max);
+                    if (param.step !== undefined) input.step = String(param.step);
+                    input.style.cssText = 'background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; width: 75px; font-size: 12px; outline: none; text-align: right;';
                     
-                    row.className = 'symbol-item';
-                    row.innerHTML = `
-                        <span style="font-weight: 600; color: ${isActive ? '#2962FF' : '#D1D4DC'};">${ind.name}</span>
-                        <span style="font-size: 11px;">${isActive ? 'Remove' : 'Add'}</span>
-                    `;
-                    
-                    row.onclick = () => {
-                        if (isActive) {
-                            const targetId = this.activeChart!.indicatorManager.activeIndicators.find(i => i.name === ind.name)?.id;
-                            if (targetId) this.activeChart!.indicatorManager.removeIndicator(targetId);
-                        } else {
-                            this.activeChart!.indicatorManager.addIndicator(ind.factory());
+                    input.oninput = () => {
+                        const num = parseFloat(input.value);
+                        if (!isNaN(num)) {
+                            indicator.updateParams({ [param.id]: num });
+                            this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
+                            this.activeChart!.isDirty = true;
+                            if (indModalTitle) indModalTitle.textContent = `${indicator.name} Settings`;
                         }
-                        // Force full recalculation
+                    };
+                    row.appendChild(input);
+
+                // Field Type 2: Color (Integrated with ColorPicker)
+                } else if (param.type === 'color') {
+                    const swatch = document.createElement('button');
+                    swatch.type = 'button';
+                    swatch.style.cssText = `width: 26px; height: 26px; border-radius: 4px; border: 1px solid var(--chart-grid, #434651); background: ${param.value}; cursor: pointer; padding: 0;`;
+                    
+                    swatch.onclick = (e) => {
+                        e.stopPropagation();
+                        colorPicker.open({
+                            anchorElement: swatch,
+                            initialColor: String(param.value),
+                            showOpacity: false,
+                            onChange: (res) => {
+                                swatch.style.backgroundColor = res.color;
+                                indicator.updateParams({ [param.id]: res.color });
+                                this.activeChart!.isDirty = true;
+                            }
+                        });
+                    };
+                    row.appendChild(swatch);
+
+                // Field Type 3: Boolean Checkbox
+                } else if (param.type === 'boolean') {
+                    const check = document.createElement('input');
+                    check.type = 'checkbox';
+                    check.checked = Boolean(param.value);
+                    check.style.cssText = 'cursor: pointer; width: 16px; height: 16px; accent-color: var(--chart-accent, #2962FF);';
+                    
+                    check.onchange = () => {
+                        indicator.updateParams({ [param.id]: check.checked });
+                        this.activeChart!.isDirty = true;
+                    };
+                    row.appendChild(check);
+
+                // Field Type 4: Select Dropdown
+                } else if (param.type === 'select') {
+                    const select = document.createElement('select');
+                    select.style.cssText = 'background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; outline: none; cursor: pointer;';
+                    
+                    (param.options || []).forEach((opt: string) => {
+                        const optEl = document.createElement('option');
+                        optEl.value = opt;
+                        optEl.textContent = opt;
+                        optEl.selected = String(param.value) === opt;
+                        select.appendChild(optEl);
+                    });
+
+                    select.onchange = () => {
+                        indicator.updateParams({ [param.id]: select.value });
                         this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
                         this.activeChart!.isDirty = true;
-                        modalIndicators?.close();
+                        if (indModalTitle) indModalTitle.textContent = `${indicator.name} Settings`;
                     };
-                    indicatorsList.appendChild(row);
-                });
-            }
+                    row.appendChild(select);
+                }
+
+                indSettingsFields.appendChild(row);
+            });
+        };
+
+        const renderCatalogList = () => {
+            if (!indicatorsList || !this.activeChart) return;
+            indicatorsList.innerHTML = '';
+
+            availableIndicators.forEach(cat => {
+                const activeInstance = this.activeChart!.indicatorManager.activeIndicators.find(
+                    i => i.id.startsWith(cat.type) || i.name.startsWith(cat.name)
+                );
+                const isActive = activeInstance !== undefined;
+
+                const row = document.createElement('div');
+                row.className = 'symbol-item';
+                row.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; cursor: pointer;';
+
+                const nameSpan = document.createElement('span');
+                nameSpan.style.cssText = `font-weight: 600; color: ${isActive ? 'var(--chart-accent, #2962FF)' : 'var(--chart-text, #D1D4DC)'};`;
+                nameSpan.textContent = isActive ? activeInstance.name : cat.name;
+                row.appendChild(nameSpan);
+
+                const actions = document.createElement('div');
+                actions.style.cssText = 'display: flex; align-items: center; gap: 8px;';
+
+                // Settings Gear Button (Only for active indicators)
+                if (isActive) {
+                    const gearBtn = document.createElement('button');
+                    gearBtn.innerHTML = '⚙️';
+                    gearBtn.title = 'Settings';
+                    gearBtn.style.cssText = 'background: transparent; border: none; font-size: 13px; cursor: pointer; padding: 2px 4px; border-radius: 3px;';
+                    gearBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        showSettingsView(activeInstance);
+                    };
+                    actions.appendChild(gearBtn);
+                }
+
+                // Add / Remove Button
+                const toggleBtn = document.createElement('button');
+                toggleBtn.textContent = isActive ? 'Remove' : 'Add';
+                toggleBtn.style.cssText = `background: ${isActive ? 'rgba(239, 83, 80, 0.15)' : 'rgba(41, 98, 255, 0.15)'}; color: ${isActive ? '#EF5350' : 'var(--chart-accent, #2962FF)'}; border: 1px solid ${isActive ? '#EF5350' : 'var(--chart-accent, #2962FF)'}; border-radius: 4px; padding: 3px 8px; font-size: 11px; font-weight: 600; cursor: pointer;`;
+
+                toggleBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    if (isActive) {
+                        this.activeChart!.indicatorManager.removeIndicator(activeInstance.id);
+                    } else {
+                        const newInd = cat.factory();
+                        this.activeChart!.indicatorManager.addIndicator(newInd);
+                    }
+                    this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
+                    this.activeChart!.isDirty = true;
+                    renderCatalogList();
+                };
+
+                actions.appendChild(toggleBtn);
+                row.appendChild(actions);
+                indicatorsList.appendChild(row);
+            });
+        };
+
+        btnIndicators?.addEventListener('click', () => {
+            showListView();
             modalIndicators?.showModal();
         });
 
-        btnCloseIndicators?.addEventListener('click', () => modalIndicators?.close());
+        btnIndBack?.addEventListener('click', () => {
+            colorPicker.close();
+            showListView();
+        });
+
+        btnIndSettingsApply?.addEventListener('click', () => {
+            colorPicker.close();
+            showListView();
+        });
+
+        btnCloseIndicators?.addEventListener('click', () => {
+            colorPicker.close();
+            modalIndicators?.close();
+        });
 
         // Custom Timeframe Modal
         const btnCustomTf = document.getElementById('btn-custom-tf');

@@ -7,6 +7,8 @@ import { StrokeEngine } from './StrokeEngine';
 export class ChartRenderer {
     public app: Application;
     public dataStore: DataStore;
+    // Theme state
+    public isDarkTheme = true;
 
     // Pixi Layers (Z-Index order)
     private gridGraphics!: Graphics;
@@ -50,6 +52,7 @@ export class ChartRenderer {
     public crosshairColor = 0x9598A1;
 
     public applyTheme(theme: ChartTheme) {
+        this.isDarkTheme = theme.isDark; // <-- Store dark/light state
         this.bgColor = ThemeManager.hexToInt(theme.background);
         this.axisBgColor = ThemeManager.hexToInt(theme.panelBackground);
         this.axisTextColor = ThemeManager.hexToInt(theme.axisText);
@@ -465,13 +468,22 @@ export class ChartRenderer {
             }
         }
 
-        // --- 3. DRAW AXIS BACKGROUNDS ---
+        // --- 3. DRAW AXIS BACKGROUNDS & DIVIDERS ---
         this.uiGraphics.rect(chartWidth, 0, this.priceAxisWidth, height).fill(this.axisBgColor);
         this.uiGraphics.moveTo(chartWidth, 0).lineTo(chartWidth, height).stroke({ color: this.gridColor, width: 1 });
 
         // Draw Time Axis EXACTLY at the bottom of the screen (below oscillators)
         this.uiGraphics.rect(0, timeAxisY, width, this.timeAxisHeight).fill(this.axisBgColor);
         this.uiGraphics.moveTo(0, timeAxisY).lineTo(width, timeAxisY).stroke({ color: this.gridColor, width: 1 });
+
+        // Horizontal divider separating Main Chart and Oscillator Pane
+        if (oscHeight > 0) {
+            StrokeEngine.drawLine(this.uiGraphics, 0, mainChartHeight, chartWidth, mainChartHeight, {
+                color: this.gridColor,
+                width: 1,
+                alpha: 1.0
+            });
+        }
 
         // --- 4. DRAW LIVE PRICE LINE & COUNTDOWN BADGE ---
         const lastIdx = this.dataStore.length - 1;
