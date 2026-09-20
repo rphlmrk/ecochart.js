@@ -27,6 +27,12 @@ export class ChartRenderer {
     private persistentPriceBadgeText!: Text;
     private persistentTimeBadgeText!: Text;
 
+    // Axis Label Object Pools (Prevents VRAM Memory Leaks during panning)
+    private priceLabelPool: Text[] = [];
+    private activePriceLabels = 0;
+    private timeLabelPool: Text[] = [];
+    private activeTimeLabels = 0;
+
     // Viewport Math
     public cameraX = 0;
     public cameraY = 0;
@@ -78,6 +84,10 @@ export class ChartRenderer {
 
         this.gridThickness = theme.gridThickness || 1;
         this.gridStyle = theme.gridStyle || 'solid';
+
+        // Update existing pooled labels when theme changes
+        this.priceLabelPool.forEach(l => l.style.fill = this.axisTextColor);
+        this.timeLabelPool.forEach(l => l.style.fill = this.axisTextColor);
     }
 
     // Theming & Line Styles
@@ -208,8 +218,11 @@ export class ChartRenderer {
         this.gridGraphics.clear();
         this.uiGraphics.clear();
         this.liveBadgeGraphics.clear();
-        this.textContainer.removeChildren();
         this.liveBadgeText.removeChildren();
+
+        // Reset pooled axis label counters without tearing down the reused WebGL textures
+        this.activePriceLabels = 0;
+        this.activeTimeLabels = 0;
 
         // Layout Constants
         const width = this.app.screen.width;
@@ -268,10 +281,21 @@ export class ChartRenderer {
             const y = priceToY(p);
             StrokeEngine.drawLine(this.gridGraphics, 0, y, chartWidth, y, { color: this.gridColor, width: this.gridThickness, alpha: this.gridAlpha, style: this.gridStyle });
 
-            const text = new Text({ text: p.toFixed(2), style: { fontFamily: 'sans-serif', fontSize: 11, fill: this.axisTextColor } });
-            text.x = chartWidth + 5;
-            text.y = y - 6;
-            this.textContainer.addChild(text);
+            // Fetch from pool or create if needed
+            let textLabel: Text;
+            if (this.activePriceLabels < this.priceLabelPool.length) {
+                textLabel = this.priceLabelPool[this.activePriceLabels];
+                textLabel.text = p.toFixed(2);
+            } else {
+                textLabel = new Text({ text: p.toFixed(2), style: { fontFamily: 'sans-serif', fontSize: 11, fill: this.axisTextColor } });
+                this.priceLabelPool.push(textLabel);
+                this.textContainer.addChild(textLabel);
+            }
+            
+            textLabel.x = chartWidth + 5;
+            textLabel.y = y - 6;
+            textLabel.visible = true;
+            this.activePriceLabels++;
         }
 
         // --- 1.5 DRAW VERTICAL GRID & X-AXIS ---
@@ -297,12 +321,30 @@ export class ChartRenderer {
                 const date = new Date(ts);
                 const timeStr = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
 
-                const text = new Text({ text: timeStr, style: { fontFamily: 'sans-serif', fontSize: 11, fill: this.axisTextColor } });
-                text.anchor.x = 0.5; // Tells PixiJS to permanently center the text itself
-                text.x = x;          // Places the exact center on your vertical line
-                text.y = chartHeight + 5;
-                this.textContainer.addChild(text);
+                let textLabel: Text;
+                if (this.activeTimeLabels < this.timeLabelPool.length) {
+                    textLabel = this.timeLabelPool[this.activeTimeLabels];
+                    textLabel.text = timeStr;
+                } else {
+                    textLabel = new Text({ text: timeStr, style: { fontFamily: 'sans-serif', fontSize: 11, fill: this.axisTextColor } });
+                    textLabel.anchor.x = 0.5;
+                    this.timeLabelPool.push(textLabel);
+                    this.textContainer.addChild(textLabel);
+                }
+                
+                textLabel.x = x;          
+                textLabel.y = chartHeight + 5;
+                textLabel.visible = true;
+                this.activeTimeLabels++;
             }
+        }
+
+        // Hide any labels in the pool that weren't used this frame
+        for (let i = this.activePriceLabels; i < this.priceLabelPool.length; i++) {
+            this.priceLabelPool[i].visible = false;
+        }
+        for (let i = this.activeTimeLabels; i < this.timeLabelPool.length; i++) {
+            this.timeLabelPool[i].visible = false;
         }
 
         // --- 2. MULTI-MODE CHART DRAWING ---
