@@ -248,7 +248,7 @@
       grid-template-rows: repeat(4, 1fr);
     }
 
-    /* On-Chart Per-Pane Interactive Legend */
+    /* On-Chart Per-Pane Interactive Legend (Fully Theme-Reactive) */
     .chart-legend {
       position: absolute;
       top: 10px;
@@ -257,7 +257,7 @@
       display: flex;
       flex-direction: column;
       gap: 4px;
-      pointer-events: none; /* Let canvas drags pass through gaps */
+      pointer-events: none;
       user-select: none;
       font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif;
     }
@@ -266,32 +266,37 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      background: rgba(19, 23, 34, 0.75);
-      backdrop-filter: blur(4px);
-      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: var(--chart-panel-bg, #1e222d);
+      border: 1px solid var(--chart-grid, #363A45);
       border-radius: 4px;
-      padding: 3px 6px;
+      padding: 3px 7px;
       font-size: 11px;
       color: var(--chart-text, #D1D4DC);
-      pointer-events: auto; /* Buttons are interactive */
-      transition: background 0.15s ease, border-color 0.15s ease;
+      pointer-events: auto;
+      transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
       width: fit-content;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
     }
 
     .legend-item:hover {
-      background: rgba(19, 23, 34, 0.95);
-      border-color: rgba(255, 255, 255, 0.2);
+      border-color: var(--chart-accent, #2962FF);
     }
 
     .legend-item.dimmed {
       opacity: 0.45;
     }
 
+    .legend-val {
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+      margin-left: 2px;
+    }
+
     .legend-btn {
       background: transparent;
       border: none;
-      color: #787B86;
+      color: var(--chart-text, #787B86);
+      opacity: 0.65;
       cursor: pointer;
       padding: 0 2px;
       font-size: 11px;
@@ -299,11 +304,12 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: color 0.15s ease, transform 0.1s ease;
+      transition: color 0.15s ease, opacity 0.15s ease, transform 0.1s ease;
     }
 
     .legend-btn:hover {
       color: var(--chart-accent, #2962FF);
+      opacity: 1;
       transform: scale(1.15);
     }
 

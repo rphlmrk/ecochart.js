@@ -68,6 +68,7 @@ export class EcoChart {
         this.renderer = new ChartRenderer(this.dataStore);
         this.network = new BinanceClient(this.dataStore);
         this.indicatorManager = new IndicatorManager();
+        this.renderer.indicatorManager = this.indicatorManager; // Link reference
 
         // Build per-pane Auto button and Navigation Bar
         this.createPaneControls();
@@ -236,6 +237,14 @@ export class EcoChart {
             title.style.cssText = 'font-weight: 600;';
             item.appendChild(title);
 
+            // Live / Historical Value
+            const data = ind.getValueAt(this.renderer.getHoverIndex(), this.dataStore, this.renderer.isDarkTheme, this.renderer.axisTextColor);
+            const valSpan = document.createElement('span');
+            valSpan.className = 'legend-val';
+            valSpan.textContent = data.valueStr;
+            valSpan.style.color = '#' + data.valueColor.toString(16).padStart(6, '0');
+            item.appendChild(valSpan);
+
             // 👁 / ⊘ Visibility Toggle Button
             const eyeBtn = document.createElement('button');
             eyeBtn.className = 'legend-btn';
@@ -281,6 +290,26 @@ export class EcoChart {
         });
     }
 
+    /**
+     * Fast-path: updates numbers in top-left legend on crosshair move without DOM rebuilds
+     */
+    public updateLegendValues() {
+        if (!this.legendContainer) return;
+        const targetIdx = this.renderer.getHoverIndex();
+
+        this.indicatorManager.activeIndicators.forEach((ind) => {
+            const item = this.legendContainer!.querySelector(`[data-ind-id="${ind.id}"]`);
+            if (item) {
+                const valSpan = item.querySelector('.legend-val') as HTMLElement;
+                if (valSpan) {
+                    const data = ind.getValueAt(targetIdx, this.dataStore, this.renderer.isDarkTheme, this.renderer.axisTextColor);
+                    valSpan.textContent = data.valueStr;
+                    valSpan.style.color = '#' + data.valueColor.toString(16).padStart(6, '0');
+                }
+            }
+        });
+    }
+
     private setupInteractions() {
         // --- AXIS DETECTION & PANNING (Desktop / Mouse Only) ---
         this.canvas.addEventListener('pointerdown', (e) => {
@@ -316,6 +345,7 @@ export class EcoChart {
             this.renderer.crosshairY = e.clientY - rect.top;
             this.renderer.isCrosshairVisible = true;
             this.isCrosshairDirty = true; // Mark crosshair dirty only (does not redraw candles)
+            this.updateLegendValues();
 
             // Broadcast time to other panes
             if (WorkspaceManager.isCrosshairSyncEnabled) {
@@ -366,6 +396,7 @@ export class EcoChart {
         this.canvas.addEventListener('pointerleave', () => {
             this.renderer.isCrosshairVisible = false;
             this.isCrosshairDirty = true;
+            this.updateLegendValues(); // Snaps numbers back to live values
             if (WorkspaceManager.isCrosshairSyncEnabled) {
                 WorkspaceManager.broadcastCrosshair(null, this);
             }
@@ -565,6 +596,7 @@ export class EcoChart {
                     this.renderer.crosshairX = x;
                     this.renderer.crosshairY = y;
                     this.isCrosshairDirty = true;
+                    this.updateLegendValues();
 
                     // Broadcast crosshair sync to other panes
                     if (WorkspaceManager.isCrosshairSyncEnabled) {

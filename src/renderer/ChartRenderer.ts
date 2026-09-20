@@ -46,6 +46,11 @@ export class ChartRenderer {
     private oscLabelPool: Text[] = [];
     private activeOscLabels = 0;
 
+    // Oscillator Panel Header Telemetry (Zero GC Pool)
+    public indicatorManager?: any;
+    private oscHeaderContainer!: Container;
+    private oscHeaderPairPool: { title: Text; val: Text }[] = [];
+
     // Viewport Math
     public cameraX = 0;
     public cameraY = 0;
@@ -103,6 +108,7 @@ export class ChartRenderer {
         this.priceLabelPool.forEach(l => l.style.fill = this.axisTextColor);
         this.timeLabelPool.forEach(l => l.style.fill = this.axisTextColor);
         this.oscLabelPool.forEach(l => l.style.fill = this.axisTextColor);
+        this.oscHeaderPairPool.forEach(p => p.title.style.fill = this.axisTextColor);
     }
 
     // Theming & Line Styles
@@ -195,10 +201,13 @@ export class ChartRenderer {
         this.crosshairGraphics = new Graphics();
         this.syncCrosshairGraphics = new Graphics();
 
+        this.oscHeaderContainer = new Container();
+
         this.app.stage.addChild(this.gridGraphics);
         this.app.stage.addChild(this.candlesGraphics);
         this.app.stage.addChild(this.indicatorMainGraphics); // Indicators behind crosshair
         this.app.stage.addChild(this.indicatorOscGraphics);
+        this.app.stage.addChild(this.oscHeaderContainer); // Bottom panel header text
         this.app.stage.addChild(this.uiGraphics);
         this.app.stage.addChild(this.textContainer);
 
@@ -582,6 +591,9 @@ export class ChartRenderer {
             countdownText.y = badgeY + 18;
             this.liveBadgeText.addChild(countdownText);
         }
+
+        // Render Title & Live/Historical Telemetry for Bottom Panels
+        this.updateOscillatorHeaders();
     }
 
     public renderCrosshair() {
@@ -692,6 +704,86 @@ export class ChartRenderer {
                     color: this.crosshairColor, width: 1, alpha: 0.45, style: this.crosshairStyle, dashLength: 4, gapLength: 3
                 });
             }
+        }
+
+        // Update Bottom Panel Telemetry on crosshair movement
+        this.updateOscillatorHeaders();
+    }
+
+    /**
+     * Resolves candle index under the cursor:
+     * - Over historical candles: returns candle index.
+     * - Beyond live candle to the right: returns live index (lastIdx).
+     * - Crosshair hidden: returns live index (lastIdx).
+     */
+    public getHoverIndex(): number {
+        const lastIdx = this.dataStore.length - 1;
+        if (lastIdx < 0) return 0;
+
+        const chartWidth = this.app.screen.width - this.priceAxisWidth;
+        const actualSpacing = this.candleSpacing * this.zoom;
+        const logicalIndex = Math.round((this.crosshairX + this.cameraX) / actualSpacing);
+
+        if (this.isCrosshairVisible && this.crosshairX >= 0 && this.crosshairX < chartWidth) {
+            if (logicalIndex >= 0 && logicalIndex <= lastIdx) {
+                return logicalIndex;
+            }
+            if (logicalIndex > lastIdx) {
+                return lastIdx;
+            }
+        }
+        return Math.max(0, lastIdx);
+    }
+
+    /**
+     * Draws the Title and Telemetry value for each active bottom panel.
+     */
+    public updateOscillatorHeaders() {
+        if (!this.oscHeaderContainer || !this.indicatorManager) return;
+
+        const targetIdx = this.getHoverIndex();
+        const activeOscs = this.indicatorManager.activeIndicators.filter((i: any) => i.isOscillator && i.visible);
+
+        const timeAxisY = this.app.screen.height - this.timeAxisHeight;
+        let currentOscY = timeAxisY - this.oscHeight;
+        let pairIdx = 0;
+
+        for (const osc of activeOscs) {
+            const data = osc.getValueAt(targetIdx, this.dataStore, this.isDarkTheme, this.axisTextColor);
+
+            let pair: { title: Text; val: Text };
+            if (pairIdx < this.oscHeaderPairPool.length) {
+                pair = this.oscHeaderPairPool[pairIdx];
+            } else {
+                pair = {
+                    title: new Text({ text: '', style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold' } }),
+                    val: new Text({ text: '', style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: '600' } })
+                };
+                this.oscHeaderPairPool.push(pair);
+                this.oscHeaderContainer.addChild(pair.title);
+                this.oscHeaderContainer.addChild(pair.val);
+            }
+
+            pair.title.text = data.label + '  ';
+            pair.title.style.fill = this.axisTextColor;
+            pair.title.alpha = 0.8;
+            pair.title.x = 10;
+            pair.title.y = currentOscY + 6;
+            pair.title.visible = true;
+
+            pair.val.text = data.valueStr;
+            pair.val.style.fill = data.valueColor;
+            pair.val.x = 10 + pair.title.width;
+            pair.val.y = currentOscY + 6;
+            pair.val.visible = true;
+
+            pairIdx++;
+            currentOscY += 80;
+        }
+
+        for (let i = pairIdx; i < this.oscHeaderPairPool.length; i++) {
+            this.oscHeaderPairPool[i].title.visible = false;
+            this.oscHeaderPairPool[i].val.visible = false;
         }
     }
 

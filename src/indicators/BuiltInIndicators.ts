@@ -62,6 +62,14 @@ export class SMAIndicator extends BaseIndicator {
         }
         g.stroke({ color, width: 2 });
     }
+    public getValueAt(idx: number, ds: DataStore, _isDark: boolean, _defaultTextClr: number) {
+        const val = (idx >= 0 && idx < ds.length) ? this.values[idx] : 0;
+        return {
+            label: this.name,
+            valueStr: val > 0 ? val.toFixed(2) : 'n/a',
+            valueColor: parseColor(this.getParam('color', '#FFC107'))
+        };
+    }
 }
 
 // ==========================================
@@ -106,6 +114,15 @@ export class EMAIndicator extends BaseIndicator {
             }
         }
         g.stroke({ color, width: 2 });
+    }
+
+    public getValueAt(idx: number, ds: DataStore, _isDark: boolean, _defaultTextClr: number) {
+        const val = (idx >= 0 && idx < ds.length) ? this.values[idx] : 0;
+        return {
+            label: this.name,
+            valueStr: val > 0 ? val.toFixed(2) : 'n/a',
+            valueColor: parseColor(this.getParam('color', '#00BCD4'))
+        };
     }
 }
 
@@ -164,6 +181,24 @@ export class VolumeIndicator extends BaseIndicator {
             const color = close >= open ? upColor : downColor;
             g.rect(x, y, barW, h).fill({ color, alpha: opacity });
         }
+    }
+    public getValueAt(idx: number, ds: DataStore, _isDark: boolean, _defaultTextClr: number) {
+        const vol = (idx >= 0 && idx < ds.length) ? ds.data[idx * 6 + 5] : 0;
+        const open = (idx >= 0 && idx < ds.length) ? ds.data[idx * 6 + 1] : 0;
+        const close = (idx >= 0 && idx < ds.length) ? ds.data[idx * 6 + 4] : 0;
+        const clr = close >= open 
+            ? parseColor(this.getParam('upColor', '#26A69A')) 
+            : parseColor(this.getParam('downColor', '#EF5350'));
+
+        let volStr = vol.toFixed(0);
+        if (vol >= 1_000_000) volStr = (vol / 1_000_000).toFixed(2) + 'M';
+        else if (vol >= 1_000) volStr = (vol / 1_000).toFixed(1) + 'K';
+
+        return {
+            label: 'Volume',
+            valueStr: volStr,
+            valueColor: clr
+        };
     }
 }
 
@@ -293,6 +328,23 @@ export class ExhaustionIndicator extends BaseIndicator {
             }
         }
         g.stroke({ color: lineColor, width: 1.5 });
+    }
+    public getValueAt(idx: number, ds: DataStore, _isDark: boolean, defaultTextClr: number) {
+        const val = (idx >= 0 && idx < ds.length) ? this.values[idx] : 0;
+        const thresh = this.getParam<number>('threshold', 80);
+        const bullColor = parseColor(this.getParam('bullColor', '#00FFEA'));
+        const bearColor = parseColor(this.getParam('bearColor', '#FF9800'));
+
+        let valueColor = defaultTextClr;
+        if (val >= thresh) valueColor = bullColor;
+        else if (val <= -thresh) valueColor = bearColor;
+
+        const sign = val > 0 ? '+' : '';
+        return {
+            label: `Exhaustion (${this.getParam('length', 20)})`,
+            valueStr: `${sign}${val.toFixed(2)}`,
+            valueColor
+        };
     }
 }
 

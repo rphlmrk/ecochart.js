@@ -78,6 +78,18 @@ export abstract class BaseIndicator {
      */
     protected onParamsUpdated(): void {}
 
+    /**
+     * Retrieves the formatted title and numerical value at a specific candle index.
+     */
+    public getValueAt(idx: number, ds: DataStore, _isDark: boolean, defaultTextClr: number): { label: string; valueStr: string; valueColor: number } {
+        const val = (idx >= 0 && idx < ds.length) ? this.values[idx] : 0;
+        return {
+            label: this.name,
+            valueStr: val.toFixed(2),
+            valueColor: defaultTextClr
+        };
+    }
+
     public update(dataStore: DataStore) {
         if (dataStore.length === 0) {
             this.lastCalculatedIdx = -1;
