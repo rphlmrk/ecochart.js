@@ -19,10 +19,11 @@ export class EcoChart {
     public container: HTMLElement;
     public isRunning = true;
 
-    // Per-Pane Controls
+    // Per-Pane Controls & Legend
     public autoBtn: HTMLButtonElement | null = null;
     public resetBtn: HTMLElement | null = null;
     public navBar: HTMLDivElement | null = null;
+    public legendContainer: HTMLDivElement | null = null; // <-- NEW
 
     // Interaction State
     private isDraggingChart = false;
@@ -105,12 +106,17 @@ export class EcoChart {
     private createPaneControls() {
         const accent = themeManager.getResolvedAccentColor();
 
-        // 1. Auto-fit button for this pane
+        // 1. Interactive On-Chart Legend (Top-Left of this pane)
+        this.legendContainer = document.createElement('div');
+        this.legendContainer.className = 'chart-legend';
+        this.container.appendChild(this.legendContainer);
+
+        // 2. Auto-fit button for this pane (Positioned dynamically at bottom of main price axis)
         this.autoBtn = document.createElement('button');
         this.autoBtn.textContent = 'AUTO';
         this.autoBtn.title = 'Auto-fit scale';
         this.autoBtn.style.cssText = `
-            position: absolute; right: 8px; bottom: 28px; z-index: 5;
+            position: absolute; right: 6px; bottom: 28px; z-index: 5;
             background: var(--chart-panel-bg, #1E222D);
             color: ${this.renderer.isAutoScale ? accent : 'var(--chart-text, #787B86)'};
             border: 1px solid var(--chart-grid, #2A2E39); border-radius: 3px;
@@ -124,7 +130,7 @@ export class EcoChart {
         });
         this.container.appendChild(this.autoBtn);
 
-        // 2. Floating navigation bar for this pane (with smooth transition)
+        // 3. Floating navigation bar for this pane
         this.navBar = document.createElement('div');
         this.navBar.className = 'pane-nav-bar';
         this.navBar.style.cssText = `
@@ -192,10 +198,88 @@ export class EcoChart {
         this.renderer.destroy();
         this.autoBtn?.remove();
         this.navBar?.remove();
+        this.legendContainer?.remove(); // <-- Clean up legend
         this.canvas.remove();
     }
 
     public themeManager = themeManager;
+
+    // Moves the AUTO button to always stay docked to the bottom of the main price axis
+    public updateControlsLayout() {
+        const oscHeight = this.indicatorManager.getTotalOscillatorHeight();
+        const bottomOffset = this.renderer.timeAxisHeight + oscHeight + 4;
+        if (this.autoBtn) {
+            this.autoBtn.style.bottom = `${bottomOffset}px`;
+        }
+    }
+
+    // Re-renders the on-chart top-left legend for this specific pane
+    public updateLegend() {
+        if (!this.legendContainer) return;
+        this.legendContainer.innerHTML = '';
+
+        this.indicatorManager.activeIndicators.forEach((ind) => {
+            const item = document.createElement('div');
+            item.className = `legend-item ${ind.visible ? '' : 'dimmed'}`;
+
+            // Color dot (reads primary color param if available)
+            const colorParam = ind.params.find(p => p.type === 'color');
+            const dotColor = colorParam ? colorParam.value : 'var(--chart-accent, #2962FF)';
+
+            const dot = document.createElement('span');
+            dot.style.cssText = `width: 7px; height: 7px; border-radius: 50%; background: ${dotColor}; display: inline-block;`;
+            item.appendChild(dot);
+
+            // Title
+            const title = document.createElement('span');
+            title.textContent = ind.name;
+            title.style.cssText = 'font-weight: 600;';
+            item.appendChild(title);
+
+            // 👁 / ⊘ Visibility Toggle Button
+            const eyeBtn = document.createElement('button');
+            eyeBtn.className = 'legend-btn';
+            eyeBtn.innerHTML = ind.visible ? '👁' : '⊘';
+            eyeBtn.title = ind.visible ? 'Hide' : 'Show';
+            eyeBtn.onclick = (e) => {
+                e.stopPropagation();
+                ind.visible = !ind.visible;
+                this.indicatorManager.update(this.dataStore);
+                this.updateControlsLayout();
+                this.updateLegend();
+                this.isDirty = true;
+            };
+            item.appendChild(eyeBtn);
+
+            // ⚙️ Settings Button (Opens modal directly into settings for this indicator)
+            const settingsBtn = document.createElement('button');
+            settingsBtn.className = 'legend-btn';
+            settingsBtn.innerHTML = '⚙️';
+            settingsBtn.title = 'Settings';
+            settingsBtn.onclick = (e) => {
+                e.stopPropagation();
+                WorkspaceManager.openIndicatorSettings(this, ind);
+            };
+            item.appendChild(settingsBtn);
+
+            // ✕ Remove Button
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'legend-btn btn-remove';
+            removeBtn.innerHTML = '✕';
+            removeBtn.title = 'Remove';
+            removeBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.indicatorManager.removeIndicator(ind.id);
+                this.indicatorManager.update(this.dataStore);
+                this.updateControlsLayout();
+                this.updateLegend();
+                this.isDirty = true;
+            };
+            item.appendChild(removeBtn);
+
+            this.legendContainer!.appendChild(item);
+        });
+    }
 
     private setupInteractions() {
         // --- AXIS DETECTION & PANNING (Desktop / Mouse Only) ---
@@ -700,10 +784,14 @@ export class EcoChart {
                 lastFrameTime = now - (elapsed % frameInterval);
 
                 if (this.isDirty) {
-                    // Query active oscillator and pass scale to renderer
+                    // Update stacked oscillator height and dock AUTO button
+                    const oscHeight = this.indicatorManager.getTotalOscillatorHeight();
+                    this.renderer.oscHeight = oscHeight;
+                    this.renderer.indicatorOscGraphics.visible = oscHeight > 0;
+                    this.updateControlsLayout();
+
                     const activeOsc = this.indicatorManager.getActiveOscillator();
                     this.renderer.activeOscillatorScale = activeOsc?.oscillatorScale;
-                    this.renderer.indicatorOscGraphics.visible = activeOsc !== undefined;
 
                     this.renderer.renderFrame();
 
@@ -735,6 +823,16 @@ export class WorkspaceManager {
     public static isAutoHideNav = true;
     public static isCrosshairSyncEnabled = true;
     public static targetFPS = 60;
+    public static showIndicatorSettingsFn: ((ind: any) => void) | null = null; // <-- Bridge to settings view
+
+    public static openIndicatorSettings(chart: EcoChart, indicator: any) {
+        this.setActiveChart(chart);
+        const modal = document.getElementById('indicators-modal') as HTMLDialogElement;
+        if (modal && this.showIndicatorSettingsFn) {
+            this.showIndicatorSettingsFn(indicator);
+            modal.showModal();
+        }
+    }
 
     public static broadcastCrosshair(timeMs: number | null, source: EcoChart) {
         if (!this.isCrosshairSyncEnabled) return;
@@ -1305,6 +1403,7 @@ export class WorkspaceManager {
                         if (!isNaN(num)) {
                             indicator.updateParams({ [param.id]: num });
                             this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
+                            this.activeChart!.updateLegend();
                             this.activeChart!.isDirty = true;
                             if (indModalTitle) indModalTitle.textContent = `${indicator.name} Settings`;
                         }
@@ -1326,6 +1425,7 @@ export class WorkspaceManager {
                             onChange: (res) => {
                                 swatch.style.backgroundColor = res.color;
                                 indicator.updateParams({ [param.id]: res.color });
+                                this.activeChart!.updateLegend();
                                 this.activeChart!.isDirty = true;
                             }
                         });
@@ -1341,6 +1441,7 @@ export class WorkspaceManager {
                     
                     check.onchange = () => {
                         indicator.updateParams({ [param.id]: check.checked });
+                        this.activeChart!.updateLegend();
                         this.activeChart!.isDirty = true;
                     };
                     row.appendChild(check);
@@ -1361,6 +1462,7 @@ export class WorkspaceManager {
                     select.onchange = () => {
                         indicator.updateParams({ [param.id]: select.value });
                         this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
+                        this.activeChart!.updateLegend();
                         this.activeChart!.isDirty = true;
                         if (indModalTitle) indModalTitle.textContent = `${indicator.name} Settings`;
                     };
@@ -1370,6 +1472,9 @@ export class WorkspaceManager {
                 indSettingsFields.appendChild(row);
             });
         };
+
+        // Register function bridge so on-chart ⚙️ buttons can open it directly
+        WorkspaceManager.showIndicatorSettingsFn = showSettingsView;
 
         const renderCatalogList = () => {
             if (!indicatorsList || !this.activeChart) return;
@@ -1420,6 +1525,8 @@ export class WorkspaceManager {
                         this.activeChart!.indicatorManager.addIndicator(newInd);
                     }
                     this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
+                    this.activeChart!.updateLegend();
+                    this.activeChart!.updateControlsLayout();
                     this.activeChart!.isDirty = true;
                     renderCatalogList();
                 };

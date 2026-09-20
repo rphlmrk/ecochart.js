@@ -41,6 +41,7 @@ export class ChartRenderer {
     private activeTimeLabels = 0;
 
     // Dedicated Sub-Panel Scale
+    public oscHeight = 0; // <-- Dynamic stacked oscillator height
     public activeOscillatorScale?: OscillatorScale;
     private oscLabelPool: Text[] = [];
     private activeOscLabels = 0;
@@ -249,9 +250,7 @@ export class ChartRenderer {
         const chartWidth = width - this.priceAxisWidth;
         const timeAxisY = height - this.timeAxisHeight; // The strict Y-coordinate where the time axis starts
         
-        let oscHeight = 0;
-        if (this.indicatorOscGraphics && this.indicatorOscGraphics.visible) oscHeight = 80;
-        
+        const oscHeight = this.oscHeight;
         const mainChartHeight = timeAxisY - oscHeight; // Chart squishes to fit oscillator above time axis
 
         const actualSpacing = this.candleSpacing * this.zoom;
@@ -600,8 +599,7 @@ export class ChartRenderer {
         const chartWidth = width - this.priceAxisWidth;
         const timeAxisY = height - this.timeAxisHeight;
         
-        let oscHeight = 0;
-        if (this.indicatorOscGraphics && this.indicatorOscGraphics.visible) oscHeight = 80;
+        const oscHeight = this.oscHeight;
         const mainChartHeight = timeAxisY - oscHeight;
 
         const actualSpacing = this.candleSpacing * this.zoom;

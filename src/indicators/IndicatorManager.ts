@@ -14,12 +14,16 @@ export class IndicatorManager {
         this.activeIndicators = this.activeIndicators.filter(i => i.id !== id);
     }
 
-    // Only reserve space if an oscillator is both present AND visible
-    public hasOscillators(): boolean {
-        return this.activeIndicators.some(i => i.isOscillator && i.visible);
+    // Calculates total stacked height for all active, visible oscillators
+    public getTotalOscillatorHeight(): number {
+        const count = this.activeIndicators.filter(i => i.isOscillator && i.visible).length;
+        return count * 80; // 80px per panel
     }
 
-    // Returns the active oscillator that owns the bottom scale
+    public hasOscillators(): boolean {
+        return this.getTotalOscillatorHeight() > 0;
+    }
+
     public getActiveOscillator(): BaseIndicator | undefined {
         return this.activeIndicators.find(i => i.isOscillator && i.visible);
     }
@@ -33,23 +37,32 @@ export class IndicatorManager {
     }
 
     public render(renderer: ChartRenderer, mainGraphics: Graphics, oscGraphics: Graphics) {
-        const hasOsc = this.hasOscillators();
+        const totalOscH = this.getTotalOscillatorHeight();
         const screenH = renderer.app.screen.height - renderer.timeAxisHeight;
-        const oscHeight = hasOsc ? 80 : 0;
-        
-        const layout = {
-            mainChartHeight: screenH - oscHeight,
-            oscY: screenH - oscHeight,
-            oscHeight: oscHeight,
-            chartWidth: renderer.app.screen.width - renderer.priceAxisWidth
-        };
+        const mainChartHeight = screenH - totalOscH;
+        const chartWidth = renderer.app.screen.width - renderer.priceAxisWidth;
+
+        let currentOscY = mainChartHeight;
 
         for (const ind of this.activeIndicators) {
             if (!ind.visible) continue;
-            
+
             if (ind.isOscillator) {
+                const layout = {
+                    mainChartHeight,
+                    oscY: currentOscY,
+                    oscHeight: 80,
+                    chartWidth
+                };
                 ind.render(renderer, layout, oscGraphics);
+                currentOscY += 80; // Stack downwards
             } else {
+                const layout = {
+                    mainChartHeight,
+                    oscY: 0,
+                    oscHeight: 0,
+                    chartWidth
+                };
                 ind.render(renderer, layout, mainGraphics);
             }
         }
