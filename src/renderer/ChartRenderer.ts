@@ -3,6 +3,7 @@ import { DataStore } from '../data/DataStore';
 import type { ChartTheme, LineStyle } from '../theme/types';
 import { ThemeManager } from '../theme/ThemeManager';
 import { StrokeEngine } from './StrokeEngine';
+import type { OscillatorScale } from '../indicators/Indicator';
 
 export class ChartRenderer {
     public app: Application;
@@ -38,6 +39,11 @@ export class ChartRenderer {
     private activePriceLabels = 0;
     private timeLabelPool: Text[] = [];
     private activeTimeLabels = 0;
+
+    // Dedicated Sub-Panel Scale
+    public activeOscillatorScale?: OscillatorScale;
+    private oscLabelPool: Text[] = [];
+    private activeOscLabels = 0;
 
     // Viewport Math
     public cameraX = 0;
@@ -95,6 +101,7 @@ export class ChartRenderer {
         // Update existing pooled labels when theme changes
         this.priceLabelPool.forEach(l => l.style.fill = this.axisTextColor);
         this.timeLabelPool.forEach(l => l.style.fill = this.axisTextColor);
+        this.oscLabelPool.forEach(l => l.style.fill = this.axisTextColor);
     }
 
     // Theming & Line Styles
@@ -234,6 +241,7 @@ export class ChartRenderer {
         // Reset pooled axis label counters without tearing down the reused WebGL textures
         this.activePriceLabels = 0;
         this.activeTimeLabels = 0;
+        this.activeOscLabels = 0;
 
         // Layout Constants
         const width = this.app.screen.width;
@@ -472,17 +480,64 @@ export class ChartRenderer {
         this.uiGraphics.rect(chartWidth, 0, this.priceAxisWidth, height).fill(this.axisBgColor);
         this.uiGraphics.moveTo(chartWidth, 0).lineTo(chartWidth, height).stroke({ color: this.gridColor, width: 1 });
 
-        // Draw Time Axis EXACTLY at the bottom of the screen (below oscillators)
+        // Draw Time Axis at bottom
         this.uiGraphics.rect(0, timeAxisY, width, this.timeAxisHeight).fill(this.axisBgColor);
         this.uiGraphics.moveTo(0, timeAxisY).lineTo(width, timeAxisY).stroke({ color: this.gridColor, width: 1 });
 
-        // Horizontal divider separating Main Chart and Oscillator Pane
+        // Draw Divider Line across chart AND right axis column
         if (oscHeight > 0) {
-            StrokeEngine.drawLine(this.uiGraphics, 0, mainChartHeight, chartWidth, mainChartHeight, {
+            StrokeEngine.drawLine(this.uiGraphics, 0, mainChartHeight, width, mainChartHeight, {
                 color: this.gridColor,
                 width: 1,
                 alpha: 1.0
             });
+
+            // Draw Independent Oscillator Scale on the right axis
+            if (this.activeOscillatorScale && this.activeOscillatorScale.steps) {
+                const { min, max, steps } = this.activeOscillatorScale;
+                const range = max - min || 1;
+
+                for (const step of steps) {
+                    const norm = (step - min) / range;
+                    const y = timeAxisY - (norm * oscHeight);
+
+                    // Draw tick mark on the axis
+                    StrokeEngine.drawLine(this.gridGraphics, chartWidth, y, chartWidth + 4, y, {
+                        color: this.gridColor,
+                        width: 1,
+                        alpha: 0.8
+                    });
+
+                    // Format string
+                    const labelText = this.activeOscillatorScale.format 
+                        ? this.activeOscillatorScale.format(step) 
+                        : (step > 0 ? `+${step}` : `${step}`);
+
+                    // Fetch from Object Pool (Zero VRAM allocations)
+                    let textLabel: Text;
+                    if (this.activeOscLabels < this.oscLabelPool.length) {
+                        textLabel = this.oscLabelPool[this.activeOscLabels];
+                        textLabel.text = labelText;
+                    } else {
+                        textLabel = new Text({
+                            text: labelText,
+                            style: { fontFamily: 'sans-serif', fontSize: 10, fill: this.axisTextColor }
+                        });
+                        this.oscLabelPool.push(textLabel);
+                        this.textContainer.addChild(textLabel);
+                    }
+
+                    textLabel.x = chartWidth + 6;
+                    textLabel.y = y - 5;
+                    textLabel.visible = true;
+                    this.activeOscLabels++;
+                }
+            }
+        }
+
+        // Hide unused oscillator labels in the pool
+        for (let i = this.activeOscLabels; i < this.oscLabelPool.length; i++) {
+            this.oscLabelPool[i].visible = false;
         }
 
         // --- 4. DRAW LIVE PRICE LINE & COUNTDOWN BADGE ---
@@ -564,8 +619,9 @@ export class ChartRenderer {
                 color: this.crosshairColor, width: 1, alpha: 0.6, style: this.crosshairStyle, dashLength: 4, gapLength: 3
             });
 
-            // Y-Axis Price Badge (Only show if hovering the main chart)
+            // Y-Axis Badge (Dynamic switching between Main Price and Oscillator Scale)
             if (this.crosshairY <= mainChartHeight) {
+                // CASE A: Hovering Main Chart -> Asset Price
                 const range = this.currentMaxPrice - this.currentMinPrice;
                 const localY = this.crosshairY - this.cameraY;
                 const norm = (mainChartHeight - localY) / mainChartHeight;
@@ -575,6 +631,21 @@ export class ChartRenderer {
                 this.crosshairBadgeGraphics.rect(chartWidth, hoverPriceY, this.priceAxisWidth, 20).fill(0x363A45);
 
                 this.persistentPriceBadgeText.text = hoverPrice.toFixed(2);
+                this.persistentPriceBadgeText.x = chartWidth + 5;
+                this.persistentPriceBadgeText.y = hoverPriceY + 3;
+                this.persistentPriceBadgeText.visible = true;
+
+            } else if (this.crosshairY > mainChartHeight && this.crosshairY < timeAxisY && this.activeOscillatorScale) {
+                // CASE B: Hovering Sub-Panel -> Oscillator Reading
+                const localY = this.crosshairY - mainChartHeight;
+                const norm = (oscHeight - localY) / oscHeight;
+                const { min, max } = this.activeOscillatorScale;
+                const oscVal = min + (norm * (max - min));
+
+                const hoverPriceY = Math.max(mainChartHeight, Math.min(timeAxisY - 20, this.crosshairY - 10));
+                this.crosshairBadgeGraphics.rect(chartWidth, hoverPriceY, this.priceAxisWidth, 20).fill(0x363A45);
+
+                this.persistentPriceBadgeText.text = (oscVal > 0 ? `+` : ``) + oscVal.toFixed(1);
                 this.persistentPriceBadgeText.x = chartWidth + 5;
                 this.persistentPriceBadgeText.y = hoverPriceY + 3;
                 this.persistentPriceBadgeText.visible = true;

@@ -180,6 +180,21 @@ export class ExhaustionIndicator extends BaseIndicator {
             { id: 'bearColor', name: 'Bear Extreme Color', type: 'color', value: '#FF9800' },
             { id: 'lineColor', name: 'Line Color', type: 'color', value: '#FFFFFF' }
         ];
+
+        // Define the independent sub-axis scale
+        this.oscillatorScale = {
+            min: -150,
+            max: 150,
+            steps: [threshold, 0, -threshold],
+            format: (v) => (v > 0 ? `+${v}` : `${v}`)
+        };
+    }
+
+    protected onParamsUpdated(): void {
+        const thresh = this.getParam<number>('threshold', 80);
+        if (this.oscillatorScale) {
+            this.oscillatorScale.steps = [thresh, 0, -thresh];
+        }
     }
 
     protected calculate(ds: DataStore) {

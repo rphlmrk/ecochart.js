@@ -14,13 +14,21 @@ export class IndicatorManager {
         this.activeIndicators = this.activeIndicators.filter(i => i.id !== id);
     }
 
+    // Only reserve space if an oscillator is both present AND visible
     public hasOscillators(): boolean {
-        return this.activeIndicators.some(i => i.isOscillator);
+        return this.activeIndicators.some(i => i.isOscillator && i.visible);
+    }
+
+    // Returns the active oscillator that owns the bottom scale
+    public getActiveOscillator(): BaseIndicator | undefined {
+        return this.activeIndicators.find(i => i.isOscillator && i.visible);
     }
 
     public update(dataStore: DataStore) {
         for (const ind of this.activeIndicators) {
-            ind.update(dataStore);
+            if (ind.visible) {
+                ind.update(dataStore);
+            }
         }
     }
 
@@ -37,6 +45,8 @@ export class IndicatorManager {
         };
 
         for (const ind of this.activeIndicators) {
+            if (!ind.visible) continue;
+            
             if (ind.isOscillator) {
                 ind.render(renderer, layout, oscGraphics);
             } else {

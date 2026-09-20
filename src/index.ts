@@ -700,9 +700,10 @@ export class EcoChart {
                 lastFrameTime = now - (elapsed % frameInterval);
 
                 if (this.isDirty) {
-                    // Tell renderer if we need oscillator space
-                    const hasOsc = this.indicatorManager.hasOscillators ? this.indicatorManager.hasOscillators() : false;
-                    this.renderer.indicatorOscGraphics.visible = hasOsc;
+                    // Query active oscillator and pass scale to renderer
+                    const activeOsc = this.indicatorManager.getActiveOscillator();
+                    this.renderer.activeOscillatorScale = activeOsc?.oscillatorScale;
+                    this.renderer.indicatorOscGraphics.visible = activeOsc !== undefined;
 
                     this.renderer.renderFrame();
 

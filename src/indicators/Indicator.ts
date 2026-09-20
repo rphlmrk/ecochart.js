@@ -4,6 +4,13 @@ import type { DataStore } from '../data/DataStore';
 
 export type ParamType = 'number' | 'color' | 'boolean' | 'select';
 
+export interface OscillatorScale {
+    min: number;              // Lower bound (e.g. -150)
+    max: number;              // Upper bound (e.g. +150)
+    steps: number[];          // Target ticks to draw (e.g. [80, 0, -80])
+    format?: (val: number) => string;
+}
+
 export interface ParamDef {
     id: string;
     name: string;
@@ -26,6 +33,8 @@ export abstract class BaseIndicator {
     public id: string;
     public name: string;
     public isOscillator: boolean;
+    public visible = true;                     // <-- NEW: Toggle visibility without clearing calculations
+    public oscillatorScale?: OscillatorScale;  // <-- NEW: Custom scale definition for sub-panels
     public values: Float64Array;
     public params: ParamDef[] = [];
     protected lastCalculatedIdx = -1;
