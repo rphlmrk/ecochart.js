@@ -4,8 +4,8 @@
 
 By utilizing AAA-game-engine techniques like **Object Pooling** and **Delta-Time Rendering**, EcoChart achieves a buttery-smooth 60 to 120 FPS on mobile devices with near-zero Garbage Collection (GC) thrashing and minimal battery drain.
 
-![EcoChart Preview](./assets/preview.png)
-![EcoChart Preview](./assets/preview-2.png)
+<img width="1920" height="913" alt="preview-2" src="https://github.com/user-attachments/assets/4c82eb26-f67d-46e4-aa96-77d2e70786a7" />
+<img width="1920" height="917" alt="preview" src="https://github.com/user-attachments/assets/3929e6b6-149a-4d7f-b157-7f77ab7b6b55" />
 
 ## ✨ Key Features
 
