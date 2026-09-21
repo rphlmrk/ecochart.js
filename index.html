@@ -428,6 +428,13 @@
 
         <!-- Right-Aligned Controls Group -->
         <div style="margin-left: auto; display: flex; align-items: center; gap: 4px;">
+          
+          <!-- Workspace Quick Access Button -->
+          <button id="btn-workspace-modal" title="Manage Workspace"
+            style="background: transparent; color: #D1D4DC; border: none; padding: 4px 6px; font-size: 14px; cursor: pointer; border-radius: 4px;">
+            💾
+          </button>
+
           <!-- Layout Selector Button & Dropdown -->
           <div style="position: relative;">
             <button id="btn-layout" title="Select Layout"
@@ -507,6 +514,8 @@
       <button class="modal-tab-btn" data-tab="lines"
         style="background: transparent; color: #787B86; border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer;">Line
         Styles</button>
+      <button class="modal-tab-btn" data-tab="workspace"
+        style="background: transparent; color: #787B86; border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer;">Workspace</button>
     </div>
 
     <div style="padding: 18px; max-height: 380px; overflow-y: auto;">
@@ -650,6 +659,31 @@
             </select>
           </div>
 
+        </div>
+      </div>
+
+      <!-- TAB 5: WORKSPACE -->
+      <div id="tab-content-workspace" class="modal-tab-content" style="display: none;">
+        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Workspace Data</span>
+        
+        <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 10px;">
+          <div style="font-size: 12px; color: #D1D4DC;">
+            Export your current layout, symbols, timeframes, and indicators to a file, or import an existing setup.
+          </div>
+          
+          <div style="display: flex; gap: 8px;">
+            <button id="btn-export-workspace" style="flex: 1; background: #2A2E39; color: #D1D4DC; border: 1px solid #434651; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">⬇ Export JSON</button>
+            
+            <button id="btn-import-workspace" style="flex: 1; background: #2A2E39; color: #D1D4DC; border: 1px solid #434651; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">⬆ Import JSON</button>
+            <input type="file" id="input-import-workspace" accept=".json" style="display: none;" />
+          </div>
+
+          <div style="margin-top: 16px; border-top: 1px solid #2A2E39; padding-top: 16px;">
+            <span style="font-size: 11px; font-weight: 700; color: #EF5350; text-transform: uppercase;">Danger Zone</span>
+            <div style="margin-top: 10px;">
+              <button id="btn-reset-workspace" style="width: 100%; background: rgba(239, 83, 80, 0.15); color: #EF5350; border: 1px solid #EF5350; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">⚠ Reset Workspace to Defaults</button>
+            </div>
+          </div>
         </div>
       </div>
 

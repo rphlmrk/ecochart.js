@@ -17,16 +17,36 @@ import {
     ZigZag123Indicator
 } from './indicators/plugins';
 
+import { DrawingManager } from './tools/DrawingManager';
+import { IndicatorRegistry, type SavedIndicatorState } from './indicators/IndicatorRegistry';
+
+export interface SavedPaneState {
+    symbol: string;
+    timeframe: string;
+    chartMode: string;
+    isAutoScale: boolean;
+    indicators: SavedIndicatorState[];
+}
+
+export interface SavedWorkspaceState {
+    version: number;
+    layout: string;
+    activePaneIndex: number;
+    panes: SavedPaneState[];
+}
+
 export class EcoChart {
     public dataStore: DataStore;
     public renderer: ChartRenderer;
     public network: BinanceClient;
     public indicatorManager: IndicatorManager;
+     public drawingManager: DrawingManager;
     public isDirty = true;
     public isCrosshairDirty = false;
     public canvas: HTMLCanvasElement;
     public container: HTMLElement;
     public isRunning = true;
+    private themeUnsubscribe: (() => void) | null = null; // <--- ADD THIS
 
     // Per-Pane Controls & Legend
     public autoBtn: HTMLButtonElement | null = null;
@@ -77,12 +97,13 @@ export class EcoChart {
         this.renderer = new ChartRenderer(this.dataStore);
         this.network = new BinanceClient(this.dataStore);
         this.indicatorManager = new IndicatorManager();
+        this.drawingManager = new DrawingManager();
         this.renderer.indicatorManager = this.indicatorManager; // Link reference
 
         // Build per-pane Auto button and Navigation Bar
         this.createPaneControls();
 
-        themeManager.subscribe((theme) => {
+        this.themeUnsubscribe = themeManager.subscribe((theme) => { 
             this.renderer.applyTheme(theme);
             const accent = themeManager.getResolvedAccentColor();
             if (this.autoBtn) {
@@ -204,6 +225,12 @@ export class EcoChart {
 
     public destroy() {
         this.isRunning = false;
+
+        if (this.themeUnsubscribe) {       
+            this.themeUnsubscribe();       
+            this.themeUnsubscribe = null;  
+        }             
+
         this.network.disconnect();
         this.renderer.destroy();
         this.autoBtn?.remove();
@@ -266,6 +293,7 @@ export class EcoChart {
                 this.updateControlsLayout();
                 this.updateLegend();
                 this.isDirty = true;
+                WorkspaceManager.triggerAutoSave();
             };
             item.appendChild(eyeBtn);
 
@@ -292,6 +320,7 @@ export class EcoChart {
                 this.updateControlsLayout();
                 this.updateLegend();
                 this.isDirty = true;
+                WorkspaceManager.triggerAutoSave();
             };
             item.appendChild(removeBtn);
 
@@ -327,6 +356,12 @@ export class EcoChart {
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
 
+            if (this.drawingManager.activeToolType) {
+                this.drawingManager.onPointerDown(this.renderer, x, y);
+                this.isDirty = true;
+                return; // Stop here so we don't trigger panning
+            }
+
             const chartWidth = this.renderer.app.screen.width - this.renderer.priceAxisWidth;
             const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
 
@@ -355,6 +390,11 @@ export class EcoChart {
             this.renderer.isCrosshairVisible = true;
             this.isCrosshairDirty = true; // Mark crosshair dirty only (does not redraw candles)
             this.updateLegendValues();
+
+              if (this.drawingManager.activeToolType) {
+                this.drawingManager.onPointerMove(this.renderer, this.renderer.crosshairX, this.renderer.crosshairY);
+                this.isDirty = true;
+            }
 
             // Broadcast time to other panes
             if (WorkspaceManager.isCrosshairSyncEnabled) {
@@ -717,7 +757,8 @@ export class EcoChart {
                 ? themeManager.getResolvedAccentColor()
                 : 'var(--chart-text, #787B86)';
         }
-        WorkspaceManager.syncTopBar();
+       WorkspaceManager.syncTopBar();
+        WorkspaceManager.triggerAutoSave();
     }
 
     public zoomAtCenter(factor: number) {
@@ -753,6 +794,35 @@ export class EcoChart {
         WorkspaceManager.syncTopBar();
     }
 
+    public serialize(): SavedPaneState {
+        return {
+            symbol: this.currentSymbol,
+            timeframe: this.currentInterval,
+            chartMode: this.renderer.chartMode,
+            isAutoScale: this.renderer.isAutoScale,
+            indicators: this.indicatorManager.activeIndicators.map(i => IndicatorRegistry.serialize(i))
+        };
+    }
+
+    public async deserialize(state: SavedPaneState) {
+        this.currentSymbol = state.symbol || 'BTCUSDT';
+        this.currentInterval = state.timeframe || '1m';
+        this.renderer.chartMode = (state.chartMode as any) || 'candles';
+        this.renderer.isAutoScale = state.isAutoScale ?? true;
+        
+        this.indicatorManager.activeIndicators = [];
+        if (state.indicators) {
+            state.indicators.forEach(indState => {
+                const ind = IndicatorRegistry.deserialize(indState);
+                if (ind) this.indicatorManager.addIndicator(ind);
+            });
+        }
+        
+        await this.startLiveBinance(this.currentSymbol, this.currentInterval);
+        this.updateLegend();
+        this.updateControlsLayout();
+    }
+
     public async switchTimeframe(newInterval: string) {
         this.currentInterval = newInterval;
         this.renderer.currentInterval = newInterval;
@@ -770,6 +840,7 @@ export class EcoChart {
             }
         });
         this.jumpToLive();
+        WorkspaceManager.triggerAutoSave();
     }
 
     public async switchSymbol(newSymbol: string) {
@@ -786,8 +857,9 @@ export class EcoChart {
                 const maxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
                 this.renderer.cameraX = maxScroll + 150;
             }
-        });
+       });
         this.jumpToLive();
+        WorkspaceManager.triggerAutoSave();
     }
 
     public async startLiveBinance(symbol: string, interval: string) {
@@ -841,6 +913,8 @@ export class EcoChart {
                     this.renderer.indicatorOscGraphics.clear();
                     this.indicatorManager.render(this.renderer, this.renderer.indicatorMainGraphics, this.renderer.indicatorOscGraphics);
 
+                    this.drawingManager.render(this.renderer, this.renderer.drawingGraphics);
+
                     this.renderer.renderCrosshair();
                     this.isDirty = false;
                     this.isCrosshairDirty = false;
@@ -866,6 +940,29 @@ export class WorkspaceManager {
     public static targetFPS = 60;
     public static showIndicatorSettingsFn: ((ind: any) => void) | null = null; // <-- Bridge to settings view
 
+    public static currentLayout = '1';
+    private static saveTimeout: any = null;
+
+    public static saveWorkspace() {
+        if (this.charts.length === 0) return;
+        const state: SavedWorkspaceState = {
+            version: 1,
+            layout: this.currentLayout,
+            activePaneIndex: this.activeChart ? this.charts.indexOf(this.activeChart) : 0,
+            panes: this.charts.map(c => c.serialize())
+        };
+        try {
+            localStorage.setItem('ecochart_workspace_v1', JSON.stringify(state));
+        } catch (err) {
+            console.warn('Failed to save workspace', err);
+        }
+    }
+
+    public static triggerAutoSave() {
+        if (this.saveTimeout) clearTimeout(this.saveTimeout);
+        this.saveTimeout = setTimeout(() => this.saveWorkspace(), 500);
+    }
+
     public static openIndicatorSettings(chart: EcoChart, indicator: any) {
         this.setActiveChart(chart);
         const modal = document.getElementById('indicators-modal') as HTMLDialogElement;
@@ -887,7 +984,24 @@ export class WorkspaceManager {
 
     public static init() {
         this.setupGlobalControls();
-        this.setLayout('1');
+        
+        try {
+            const raw = localStorage.getItem('ecochart_workspace_v1');
+            if (raw) {
+                const state = JSON.parse(raw) as SavedWorkspaceState;
+                if (state.version === 1) {
+                    this.setLayout(state.layout, state.panes);
+                    if (state.activePaneIndex >= 0 && state.activePaneIndex < this.charts.length) {
+                        this.setActiveChart(this.charts[state.activePaneIndex]);
+                    }
+                    return;
+                }
+            }
+        } catch (err) {
+            console.warn('Failed to load workspace', err);
+        }
+        
+        this.setLayout('1'); // Fallback if no save exists
     }
 
     public static getActiveChart(): EcoChart | null {
@@ -954,11 +1068,11 @@ export class WorkspaceManager {
         }
     }
 
-    public static setLayout(layout: string) {
+    public static setLayout(layout: string, savedPanes?: SavedPaneState[]) {
+        this.currentLayout = layout;
         const grid = document.getElementById('charts-grid');
         if (!grid) return;
 
-        // Clean up previous chart instances
         this.charts.forEach((c) => c.destroy());
         this.charts = [];
         grid.innerHTML = '';
@@ -983,14 +1097,19 @@ export class WorkspaceManager {
             grid.appendChild(pane);
 
             const chart = new EcoChart(pane);
-            const cfg = defaultConfigs[i] || defaultConfigs[0];
-            chart.startLiveBinance(cfg.symbol, cfg.tf);
-            this.charts.push(chart);
-
-            if (i === 0) {
-                this.setActiveChart(chart);
+            
+            if (savedPanes && savedPanes[i]) {
+                chart.deserialize(savedPanes[i]);
+            } else {
+                const cfg = defaultConfigs[i] || defaultConfigs[0];
+                chart.startLiveBinance(cfg.symbol, cfg.tf);
             }
+            
+            this.charts.push(chart);
+            if (i === 0) this.setActiveChart(chart);
         }
+        
+        this.triggerAutoSave();
     }
 
     private static setupGlobalControls() {
@@ -1045,6 +1164,7 @@ export class WorkspaceManager {
                     this.activeChart.renderer.chartMode = mode;
                     this.activeChart.isDirty = true;
                     this.syncTopBar();
+                    this.triggerAutoSave();
                 }
             });
         });
@@ -1284,6 +1404,91 @@ export class WorkspaceManager {
             if (newFps > 0) WorkspaceManager.targetFPS = newFps;
         });
 
+        // Workspace Reset
+        const btnResetWorkspace = document.getElementById('btn-reset-workspace');
+        btnResetWorkspace?.addEventListener('click', () => {
+            if (confirm("Are you sure you want to reset your workspace? All custom layouts and indicators will be lost.")) {
+                localStorage.removeItem('ecochart_workspace_v1');
+                window.location.reload();
+            }
+        });
+
+        // Workspace Export
+        const btnExportWorkspace = document.getElementById('btn-export-workspace');
+        btnExportWorkspace?.addEventListener('click', () => {
+            WorkspaceManager.saveWorkspace(); // Force save latest state
+            const raw = localStorage.getItem('ecochart_workspace_v1');
+            if (raw) {
+                const blob = new Blob([raw], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `ecochart_workspace_${new Date().toISOString().slice(0,10)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } else {
+                alert("No workspace data found to export.");
+            }
+        });
+
+        // Workspace Import
+        const btnImportWorkspace = document.getElementById('btn-import-workspace');
+        const inputImportWorkspace = document.getElementById('input-import-workspace') as HTMLInputElement;
+        
+        btnImportWorkspace?.addEventListener('click', () => {
+            inputImportWorkspace?.click();
+        });
+
+        inputImportWorkspace?.addEventListener('change', (e) => {
+            const file = (e.target as HTMLInputElement).files?.[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                try {
+                    const content = event.target?.result as string;
+                    const json = JSON.parse(content);
+                    if (json && json.version && json.panes) {
+                        localStorage.setItem('ecochart_workspace_v1', content);
+                        window.location.reload(); // Reload to apply newly imported state
+                    } else {
+                        alert("Invalid workspace file format.");
+                    }
+                } catch (err) {
+                    alert("Failed to parse JSON file.");
+                }
+                inputImportWorkspace.value = ''; // Reset input
+            };
+            reader.readAsText(file);
+        });
+
+        // Workspace Quick Access Icon (Top Toolbar)
+        const btnWorkspaceModal = document.getElementById('btn-workspace-modal');
+        btnWorkspaceModal?.addEventListener('click', () => {
+            syncModalInputs();
+            
+            // Programmatically switch to the Workspace tab
+            document.querySelectorAll('.modal-tab-btn').forEach(t => {
+                (t as HTMLElement).style.background = 'transparent';
+                (t as HTMLElement).style.color = '#787B86';
+            });
+            const wsTab = document.querySelector('.modal-tab-btn[data-tab="workspace"]') as HTMLElement;
+            if (wsTab) {
+                wsTab.style.background = '#2A2E39';
+                wsTab.style.color = '#2962FF';
+            }
+            
+            document.querySelectorAll('.modal-tab-content').forEach(c => {
+                (c as HTMLElement).style.display = 'none';
+            });
+            const wsContent = document.getElementById('tab-content-workspace');
+            if (wsContent) wsContent.style.display = 'block';
+
+            modalSettings?.showModal();
+        });
+
         const closeSettings = () => {
             const checkNav = document.getElementById('check-show-nav') as HTMLInputElement;
             const checkAutoHide = document.getElementById('check-autohide-nav') as HTMLInputElement;
@@ -1450,6 +1655,7 @@ export class WorkspaceManager {
                             this.activeChart!.updateLegend();
                             this.activeChart!.isDirty = true;
                             if (indModalTitle) indModalTitle.textContent = `${indicator.name} Settings`;
+                            WorkspaceManager.triggerAutoSave();
                         }
                     };
                     row.appendChild(input);
@@ -1471,6 +1677,7 @@ export class WorkspaceManager {
                                 indicator.updateParams({ [param.id]: res.color });
                                 this.activeChart!.updateLegend();
                                 this.activeChart!.isDirty = true;
+                                WorkspaceManager.triggerAutoSave();
                             }
                         });
                     };
@@ -1487,6 +1694,7 @@ export class WorkspaceManager {
                         indicator.updateParams({ [param.id]: check.checked });
                         this.activeChart!.updateLegend();
                         this.activeChart!.isDirty = true;
+                        WorkspaceManager.triggerAutoSave();
                     };
                     row.appendChild(check);
 
@@ -1509,6 +1717,7 @@ export class WorkspaceManager {
                         this.activeChart!.updateLegend();
                         this.activeChart!.isDirty = true;
                         if (indModalTitle) indModalTitle.textContent = `${indicator.name} Settings`;
+                        WorkspaceManager.triggerAutoSave();
                     };
                     row.appendChild(select);
                 }
@@ -1573,6 +1782,7 @@ export class WorkspaceManager {
                     this.activeChart!.updateControlsLayout();
                     this.activeChart!.isDirty = true;
                     renderCatalogList();
+                    WorkspaceManager.triggerAutoSave();
                 };
 
                 actions.appendChild(toggleBtn);

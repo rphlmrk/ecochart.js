@@ -24,6 +24,7 @@ export class ChartRenderer {
     //indicator
     public indicatorMainGraphics!: Graphics;
     public indicatorOscGraphics!: Graphics;
+    public drawingGraphics!: Graphics; 
 
     // Dedicated Crosshair Graphics & Sync State
     private crosshairGraphics!: Graphics;
@@ -66,6 +67,12 @@ export class ChartRenderer {
     public applyTheme(theme: ChartTheme) {
         this.isDarkTheme = theme.isDark; // <-- Store dark/light state
         this.bgColor = ThemeManager.hexToInt(theme.background);
+        
+
+        if (this.app && this.app.renderer) {
+            this.app.renderer.background.color = this.bgColor;
+        }
+
         this.axisBgColor = ThemeManager.hexToInt(theme.panelBackground);
         this.axisTextColor = ThemeManager.hexToInt(theme.axisText);
         this.crosshairColor = ThemeManager.hexToInt(theme.crosshair);
@@ -207,6 +214,8 @@ export class ChartRenderer {
         this.app.stage.addChild(this.candlesGraphics);
         this.app.stage.addChild(this.indicatorMainGraphics); // Indicators behind crosshair
         this.app.stage.addChild(this.indicatorOscGraphics);
+        this.drawingGraphics = new Graphics();
+        this.app.stage.addChild(this.drawingGraphics);
         this.app.stage.addChild(this.oscHeaderContainer); // Bottom panel header text
         this.app.stage.addChild(this.uiGraphics);
         this.app.stage.addChild(this.textContainer);
@@ -239,10 +248,8 @@ export class ChartRenderer {
     public renderFrame() {
         if (!this.candlesGraphics || this.dataStore.length === 0) return;
 
-        // Update Theme Background dynamically
-        this.app.renderer.background.color = this.bgColor;
-
         this.candlesGraphics.clear();
+        this.gridGraphics.clear();
         this.gridGraphics.clear();
         this.uiGraphics.clear();
         this.liveBadgeGraphics.clear();
@@ -785,6 +792,78 @@ export class ChartRenderer {
             this.oscHeaderPairPool[i].title.visible = false;
             this.oscHeaderPairPool[i].val.visible = false;
         }
+    }
+
+    public timeToLogicalIndex(time: number): number {
+        if (this.dataStore.length === 0) return 0;
+        const firstTime = this.dataStore.data[0];
+        const lastIdx = this.dataStore.length - 1;
+        const lastTime = this.dataStore.data[lastIdx * 6];
+        const interval = this.parseIntervalMs(this.currentInterval);
+
+        if (time <= firstTime) return (time - firstTime) / interval;
+        if (time >= lastTime) return lastIdx + (time - lastTime) / interval;
+
+        let low = 0, high = lastIdx;
+        while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            const t = this.dataStore.data[mid * 6];
+            if (t === time) return mid;
+            if (t < time) low = mid + 1;
+            else high = mid - 1;
+        }
+        return low;
+    }
+
+    public logicalIndexToTime(idx: number): number {
+        if (this.dataStore.length === 0) return 0;
+        const lastIdx = this.dataStore.length - 1;
+        const interval = this.parseIntervalMs(this.currentInterval);
+        if (idx < 0) return this.dataStore.data[0] + (idx * interval);
+        if (idx > lastIdx) return this.dataStore.data[lastIdx * 6] + ((idx - lastIdx) * interval);
+        return this.dataStore.data[Math.floor(idx) * 6];
+    }
+
+    public xToTime(x: number): number {
+        const actualSpacing = this.candleSpacing * this.zoom;
+        return this.logicalIndexToTime((x + this.cameraX) / actualSpacing);
+    }
+
+    public timeToX(time: number): number {
+        const actualSpacing = this.candleSpacing * this.zoom;
+        return (this.timeToLogicalIndex(time) * actualSpacing) - this.cameraX;
+    }
+
+    public yToPrice(y: number): number {
+        const mainChartHeight = this.app.screen.height - this.timeAxisHeight - this.oscHeight;
+        const norm = (mainChartHeight - (y - this.cameraY)) / mainChartHeight;
+        return this.currentMinPrice + (norm * (this.currentMaxPrice - this.currentMinPrice));
+    }
+
+    public priceToY(price: number): number {
+        const mainChartHeight = this.app.screen.height - this.timeAxisHeight - this.oscHeight;
+        const norm = (price - this.currentMinPrice) / (this.currentMaxPrice - this.currentMinPrice);
+        return mainChartHeight - (norm * mainChartHeight) + this.cameraY;
+    }
+
+    public getMagnetPoint(screenX: number, screenY: number, thresholdPx = 15): { time: number; price: number } {
+        const time = this.xToTime(screenX);
+        const rawPrice = this.yToPrice(screenY);
+        const actualSpacing = this.candleSpacing * this.zoom;
+        const logicalIdx = Math.round((screenX + this.cameraX) / actualSpacing);
+        
+        if (logicalIdx >= 0 && logicalIdx < this.dataStore.length) {
+            const base = logicalIdx * 6;
+            const prices = [this.dataStore.data[base + 1], this.dataStore.data[base + 2], this.dataStore.data[base + 3], this.dataStore.data[base + 4]];
+            let closestPrice = rawPrice, minPixelDist = Infinity;
+
+            for (const p of prices) {
+                const dist = Math.abs(this.priceToY(p) - screenY);
+                if (dist < minPixelDist) { minPixelDist = dist; closestPrice = p; }
+            }
+            if (minPixelDist <= thresholdPx) return { time: this.dataStore.data[base], price: closestPrice };
+        }
+        return { time, price: rawPrice };
     }
 
     public destroy() {
