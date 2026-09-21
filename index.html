@@ -701,6 +701,15 @@
             <option value="top">Docked Top Center</option>
           </select>
         </div>
+        <div
+          style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; margin-top: 14px;">
+          <span>Top Bar Telemetry:</span>
+          <select id="select-topbar-display"
+            style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none;">
+            <option value="change" selected>Show 24h Change %</option>
+            <option value="none">Symbol Only</option>
+          </select>
+        </div>
       </div>
 
       <!-- TAB 4: LINE STYLES -->
@@ -870,6 +879,21 @@
         style="margin-top: 4px; background: var(--chart-accent, #2962FF); color: white; border: none; padding: 8px 12px; border-radius: 4px; font-weight: 600; font-size: 13px; cursor: pointer;">
         Apply Timeframe
       </button>
+    </div>
+  </dialog>
+
+  <!-- Layer 6: Custom Confirm Dialog -->
+  <dialog id="custom-confirm"
+    style="background: var(--chart-panel-bg, #131722); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 8px; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif; width: 320px; max-width: 90vw; box-shadow: 0 16px 40px rgba(0,0,0,0.6); outline: none;">
+    <div style="padding: 16px; border-bottom: 1px solid var(--chart-grid, #2A2E39);">
+      <h3 id="confirm-title" style="margin: 0; font-size: 15px; font-weight: 600; color: #fff;">Confirm Action</h3>
+    </div>
+    <div style="padding: 16px; font-size: 13px; color: #D1D4DC; line-height: 1.5;">
+      <span id="confirm-msg">Are you sure?</span>
+    </div>
+    <div style="padding: 12px 16px; background: rgba(0,0,0,0.1); display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--chart-grid, #2A2E39);">
+      <button id="btn-confirm-cancel" style="background: transparent; color: #D1D4DC; border: 1px solid #434651; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">Cancel</button>
+      <button id="btn-confirm-ok" style="background: #EF5350; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: opacity 0.15s;">Delete</button>
     </div>
   </dialog>
 

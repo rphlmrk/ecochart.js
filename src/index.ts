@@ -80,6 +80,7 @@ export class EcoChart {
     // Active Symbol & Timeframe State
     public currentSymbol = 'BTCUSDT';
     public currentInterval = '1m';
+    public currentChangePct = 0;
 
     constructor(target: string | HTMLElement) {
         const el = typeof target === 'string' ? document.getElementById(target) : target;
@@ -233,7 +234,7 @@ export class EcoChart {
         
         this.paneDrawingToolbar.querySelectorAll('.dt-btn').forEach((b) => {
             const btn = b as HTMLElement;
-            btn.addEventListener('click', (e) => {
+            btn.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 WorkspaceManager.setActiveChart(this);
                 const action = btn.dataset.action;
@@ -250,7 +251,7 @@ export class EcoChart {
                     this.isDirty = true;
                     btn.classList.toggle('active', !this.drawingManager.isVisible);
                 } else if (action === 'trash') {
-                    if (confirm('Clear drawings on this pane?')) {
+                    if (await WorkspaceManager.confirmAction('Clear Drawings', 'Are you sure you want to remove all drawings from this chart?')) {
                         this.drawingManager.drawings = [];
                         this.drawingManager.currentDrawing = null;
                         this.isDirty = true;
@@ -482,6 +483,12 @@ export class EcoChart {
                     initialStyle: hitDrawing.style,
                     showOpacity: true,
                     showStrokeOptions: true,
+                    onDelete: () => {
+                        this.drawingManager.drawings = this.drawingManager.drawings.filter(d => d !== hitDrawing);
+                        this.drawingManager.selectedDrawing = null;
+                        this.isDirty = true;
+                        WorkspaceManager.triggerAutoSave();
+                    },
                     onChange: (res) => {
                         hitDrawing.color = parseInt(res.color.replace('#', ''), 16);
                         hitDrawing.alpha = res.opacity;
@@ -654,6 +661,20 @@ export class EcoChart {
             this.isDirty = true;
         }, { passive: false });
 
+        // Keyboard Delete for Drawings
+        document.addEventListener('keydown', (e) => {
+            if (WorkspaceManager.getActiveChart() !== this) return; // Only process on active pane
+            if (e.key === 'Delete' || e.key === 'Backspace') {
+                if (this.drawingManager.selectedDrawing) {
+                    this.drawingManager.drawings = this.drawingManager.drawings.filter(d => d !== this.drawingManager.selectedDrawing);
+                    this.drawingManager.selectedDrawing = null;
+                    colorPicker.close();
+                    this.isDirty = true;
+                    WorkspaceManager.triggerAutoSave();
+                }
+            }
+        });
+
         // ==========================================================
         // 📱 MOBILE MULTI-TOUCH ENGINE (Pinch-to-Zoom & Long-Press Crosshair)
         // ==========================================================
@@ -736,6 +757,12 @@ export class EcoChart {
                         initialStyle: hitDrawing.style,
                         showOpacity: true,
                         showStrokeOptions: true,
+                        onDelete: () => {
+                            this.drawingManager.drawings = this.drawingManager.drawings.filter(d => d !== hitDrawing);
+                            this.drawingManager.selectedDrawing = null;
+                            this.isDirty = true;
+                            WorkspaceManager.triggerAutoSave();
+                        },
                         onChange: (res) => {
                             hitDrawing.color = parseInt(res.color.replace('#', ''), 16);
                             hitDrawing.alpha = res.opacity;
@@ -1047,6 +1074,12 @@ export class EcoChart {
                 const maxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
                 this.renderer.cameraX = maxScroll + 150;
             }
+            }, (pct: number) => {
+            // ---> NEW ON TICKER CALLBACK <---
+            this.currentChangePct = pct;
+            if (WorkspaceManager.getActiveChart() === this) {
+                WorkspaceManager.syncTopBar();
+            }
         });
         this.jumpToLive();
         WorkspaceManager.triggerAutoSave();
@@ -1066,7 +1099,13 @@ export class EcoChart {
                 const maxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
                 this.renderer.cameraX = maxScroll + 150;
             }
-       });
+            }, (pct: number) => {
+            // ---> NEW ON TICKER CALLBACK <---
+            this.currentChangePct = pct;
+            if (WorkspaceManager.getActiveChart() === this) {
+                WorkspaceManager.syncTopBar();
+            }
+        });
         this.jumpToLive();
         WorkspaceManager.triggerAutoSave();
     }
@@ -1083,6 +1122,12 @@ export class EcoChart {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
                 const maxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
                 this.renderer.cameraX = maxScroll + 150;
+            }
+            }, (pct: number) => {
+            // ---> NEW ON TICKER CALLBACK <---
+            this.currentChangePct = pct;
+            if (WorkspaceManager.getActiveChart() === this) {
+                WorkspaceManager.syncTopBar();
             }
         });
 
@@ -1152,6 +1197,36 @@ export class WorkspaceManager {
     public static currentLayout = '1';
     private static saveTimeout: any = null;
     public static toolbarDockMode: 'free' | 'top' = 'free';
+    public static topBarDisplayMode: 'change' | 'none' = 'change';
+
+    // CUSTOM DIALOG PROMISE
+    public static async confirmAction(title: string, message: string): Promise<boolean> {
+        return new Promise((resolve) => {
+            const modal = document.getElementById('custom-confirm') as HTMLDialogElement;
+            if (!modal) return resolve(window.confirm(message));
+
+            document.getElementById('confirm-title')!.textContent = title;
+            document.getElementById('confirm-msg')!.textContent = message;
+            
+            const btnCancel = document.getElementById('btn-confirm-cancel');
+            const btnOk = document.getElementById('btn-confirm-ok');
+
+            const cleanup = () => {
+                btnCancel?.removeEventListener('click', onCancel);
+                btnOk?.removeEventListener('click', onOk);
+                modal.close();
+            };
+
+            const onCancel = () => { cleanup(); resolve(false); };
+            const onOk = () => { cleanup(); resolve(true); };
+
+            btnCancel?.addEventListener('click', onCancel);
+            btnOk?.addEventListener('click', onOk);
+            
+            modal.showModal();
+        });
+    }
+
 
     public static updateToolbarDock() {
         const globalDt = document.getElementById('drawing-toolbar');
@@ -1248,11 +1323,19 @@ export class WorkspaceManager {
 
         const accent = themeManager.getResolvedAccentColor();
 
-        // 1. Symbol Button Label & Browser Title
+        // 1. Symbol Button Label & Browser Title (Telemetry)
         const symLabel = document.getElementById('btn-symbol')?.querySelector('span');
-        if (symLabel) symLabel.textContent = chart.currentSymbol;
-        
-        document.title = `EcoChart - ${chart.currentSymbol}`;
+        if (symLabel) {
+            if (this.topBarDisplayMode === 'change') {
+                const sign = chart.currentChangePct >= 0 ? '+' : '';
+                const color = chart.currentChangePct >= 0 ? 'var(--chart-bull, #26A69A)' : 'var(--chart-bear, #EF5350)';
+                symLabel.innerHTML = `${chart.currentSymbol} <span style="color: ${color}; margin-left: 6px; font-size: 11px;">${sign}${chart.currentChangePct.toFixed(2)}%</span>`;
+                document.title = `${chart.currentSymbol} ${sign}${chart.currentChangePct.toFixed(2)}% | EcoChart`;
+            } else {
+                symLabel.textContent = chart.currentSymbol;
+                document.title = `EcoChart - ${chart.currentSymbol}`;
+            }
+        }
 
         // 2. Timeframe Active Button (Syncs both Desktop Pills and Mobile Dropdown Items)
         document.querySelectorAll('.tf-btn').forEach((b) => {
@@ -1537,18 +1620,18 @@ export class WorkspaceManager {
             });
 
             document.querySelectorAll('.trash-opt-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
+                btn.addEventListener('click', async () => { // <-- MAKE ASYNC
                     const action = (btn as HTMLElement).dataset.action;
                     if (this.activeChart) {
                         const cm = this.activeChart;
                         if (action === 'drawings' || action === 'all') {
-                            if (confirm("Remove drawings?")) {
+                            if (await WorkspaceManager.confirmAction('Remove Drawings', 'Delete all drawings from the active chart?')) {
                                 cm.drawingManager.drawings = [];
                                 cm.drawingManager.currentDrawing = null;
                             }
                         }
                         if (action === 'indicators' || action === 'all') {
-                            if (confirm("Remove indicators?")) {
+                            if (await WorkspaceManager.confirmAction('Remove Indicators', 'Delete all indicators from the active chart?')) {
                                 cm.indicatorManager.activeIndicators = [];
                                 cm.updateLegend();
                                 cm.updateControlsLayout();
@@ -1712,6 +1795,11 @@ export class WorkspaceManager {
         const syncModalInputs = () => {
             const selDock = document.getElementById('select-toolbar-dock') as HTMLSelectElement;
             if (selDock) selDock.value = WorkspaceManager.toolbarDockMode;
+
+            // Sync the TopBar Settings value
+            const selTopBar = document.getElementById('select-topbar-display') as HTMLSelectElement;
+            if (selTopBar) selTopBar.value = WorkspaceManager.topBarDisplayMode;
+
             const current = themeManager.getTheme();
             const setSwatch = (id: string, color: string) => {
                 const el = document.getElementById(id);
@@ -1863,10 +1951,17 @@ export class WorkspaceManager {
             WorkspaceManager.triggerAutoSave();
         });
 
+        const selectTopBar = document.getElementById('select-topbar-display') as HTMLSelectElement;
+        selectTopBar?.addEventListener('change', (e) => {
+            WorkspaceManager.topBarDisplayMode = (e.target as HTMLSelectElement).value as 'change' | 'none';
+            WorkspaceManager.syncTopBar();
+            WorkspaceManager.triggerAutoSave();
+        });
+
         // Workspace Reset
         const btnResetWorkspace = document.getElementById('btn-reset-workspace');
-        btnResetWorkspace?.addEventListener('click', () => {
-            if (confirm("Are you sure you want to reset your workspace? All custom layouts and indicators will be lost.")) {
+        btnResetWorkspace?.addEventListener('click', async () => {
+            if (await WorkspaceManager.confirmAction('Reset Workspace', 'Are you sure you want to reset your workspace? All custom layouts and indicators will be lost forever.')) {
                 localStorage.removeItem('ecochart_workspace_v1');
                 window.location.reload();
             }
@@ -2232,8 +2327,11 @@ export class WorkspaceManager {
                     e.stopPropagation();
                     if (isActive) {
                         this.activeChart!.indicatorManager.removeIndicator(activeInstance.id);
+                        this.activeChart!.renderer.indicatorMainGraphics.clear(); // Force buffer clear
+                        this.activeChart!.renderer.indicatorOscGraphics.clear();
                     } else {
                         const newInd = cat.factory();
+                        newInd.updateParams({}); // Force lastCalculatedIdx invalidation
                         this.activeChart!.indicatorManager.addIndicator(newInd);
                     }
                     this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);

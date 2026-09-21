@@ -9,6 +9,7 @@ export interface ColorPickerOptions {
     initialStyle?: LineStyle;
     showOpacity?: boolean;
     showStrokeOptions?: boolean;
+    onDelete?: () => void;        // <-- NEW: Adds trash icon if provided
     onChange: (result: {
         color: string;
         opacity: number;
@@ -26,7 +27,6 @@ export class ColorPicker {
     private currentOpacity = 1;
     private currentThickness = 1;
     private currentStyle: LineStyle = 'solid';
-    private recentColors: string[] = ['#2962FF', '#26A69A', '#EF5350', '#FF9800', '#E040FB', '#FFFFFF'];
 
     // 10 Columns x 8 Rows Swatch Matrix (Achromatic row + 7 spectrum tiers)
     private readonly PALETTE_MATRIX: string[][] = [
@@ -40,9 +40,7 @@ export class ColorPicker {
         ['#B71C1C', '#E65100', '#F57F17', '#1B5E20', '#004D40', '#006064', '#0D47A1', '#311B92', '#4A148C', '#880E4F'],
     ];
 
-    private constructor() {
-        this.loadRecents();
-    }
+    private constructor() {}
 
     public static getInstance(): ColorPicker {
         if (!ColorPicker.instance) {
@@ -58,7 +56,6 @@ export class ColorPicker {
         let initColor = options.initialColor.toUpperCase();
         let initOpacity = options.initialOpacity ?? 1;
 
-        // If an 8-character hex is passed (#RRGGBBAA), split it into color and opacity
         if (initColor.startsWith('#') && initColor.length === 9) {
             initOpacity = parseInt(initColor.slice(7, 9), 16) / 255;
             initColor = initColor.slice(0, 7);
@@ -73,7 +70,7 @@ export class ColorPicker {
         this.popover.className = 'tv-picker-popover';
 
         this.renderContent();
-        // Append inside the dialog so it inherits the browser's Top Layer
+        
         const container = options.anchorElement.closest('dialog') || document.body;
         container.appendChild(this.popover);
         this.positionPopover(options.anchorElement);
@@ -109,41 +106,12 @@ export class ColorPicker {
         }
         this.popover.appendChild(grid);
 
-        // 2. Divider
-        const div1 = document.createElement('div');
-        div1.className = 'tv-picker-divider';
-        this.popover.appendChild(div1);
-
-        // 3. Custom / Recent Colors Row
-        const recentRow = document.createElement('div');
-        recentRow.className = 'tv-custom-row';
-        for (const color of this.recentColors) {
-            const swatch = document.createElement('div');
-            swatch.className = `tv-swatch ${this.currentColor === color ? 'active' : ''}`;
-            swatch.style.backgroundColor = color;
-            swatch.onclick = () => this.selectColor(color);
-            recentRow.appendChild(swatch);
-        }
-
-        const addBtn = document.createElement('button');
-        addBtn.className = 'tv-add-color-btn';
-        addBtn.textContent = '+';
-        addBtn.onclick = () => {
-            const pickerInput = document.createElement('input');
-            pickerInput.type = 'color';
-            pickerInput.value = this.currentColor;
-            pickerInput.onchange = (e) => {
-                const newColor = (e.target as HTMLInputElement).value.toUpperCase();
-                this.addRecentColor(newColor);
-                this.selectColor(newColor);
-            };
-            pickerInput.click();
-        };
-        recentRow.appendChild(addBtn);
-        this.popover.appendChild(recentRow);
-
-        // 4. Opacity Slider
+        // 2. Opacity Slider
         if (this.currentOptions?.showOpacity !== false) {
+            const div1 = document.createElement('div');
+            div1.className = 'tv-picker-divider';
+            this.popover.appendChild(div1);
+
             const opacityLabel = document.createElement('div');
             opacityLabel.className = 'tv-picker-label';
             opacityLabel.innerHTML = `<span>Opacity</span><span class="tv-opacity-badge">${Math.round(this.currentOpacity * 100)}%</span>`;
@@ -172,7 +140,7 @@ export class ColorPicker {
             this.popover.appendChild(opacityContainer);
         }
 
-        // 5. Stroke Thickness & Line Style (Optional)
+        // 3. Stroke Thickness & Line Style
         if (this.currentOptions?.showStrokeOptions) {
             const div2 = document.createElement('div');
             div2.className = 'tv-picker-divider';
@@ -231,6 +199,26 @@ export class ColorPicker {
             });
             this.popover.appendChild(styleGroup);
         }
+
+        // 4. Delete Toolbar (Only if onDelete is provided)
+        if (this.currentOptions?.onDelete) {
+            const footer = document.createElement('div');
+            footer.className = 'tv-picker-footer';
+            footer.style.cssText = 'display: flex; justify-content: flex-end; padding-top: 8px; margin-top: 8px; border-top: 1px solid #2A2E39;';
+            
+            const delBtn = document.createElement('button');
+            delBtn.innerHTML = '🗑️';
+            delBtn.title = 'Delete Drawing';
+            delBtn.style.cssText = 'background: transparent; color: #EF5350; border: none; font-size: 16px; cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: background 0.1s;';
+            delBtn.onmouseover = () => delBtn.style.background = 'rgba(239, 83, 80, 0.15)';
+            delBtn.onmouseout = () => delBtn.style.background = 'transparent';
+            delBtn.onclick = () => {
+                if (this.currentOptions?.onDelete) this.currentOptions.onDelete();
+                this.close();
+            };
+            footer.appendChild(delBtn);
+            this.popover.appendChild(footer);
+        }
     }
 
     private selectColor(color: string) {
@@ -267,27 +255,6 @@ export class ColorPicker {
 
         this.popover.style.left = `${Math.max(10, left)}px`;
         this.popover.style.top = `${Math.max(10, top)}px`;
-    }
-
-    private addRecentColor(hex: string) {
-        if (!this.recentColors.includes(hex)) {
-            this.recentColors.unshift(hex);
-            if (this.recentColors.length > 6) this.recentColors.pop();
-            try {
-                localStorage.setItem('ecochart_recent_colors', JSON.stringify(this.recentColors));
-            } catch {
-                // Ignore storage limits
-            }
-        }
-    }
-
-    private loadRecents() {
-        try {
-            const raw = localStorage.getItem('ecochart_recent_colors');
-            if (raw) this.recentColors = JSON.parse(raw);
-        } catch {
-            // Fallback to default presets
-        }
     }
 
     private handleOutsideClick = (e: PointerEvent) => {
