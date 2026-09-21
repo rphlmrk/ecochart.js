@@ -1070,10 +1070,33 @@ export class WorkspaceManager {
     public static isAutoHideNav = true;
     public static isCrosshairSyncEnabled = true;
     public static targetFPS = 60;
-    public static showIndicatorSettingsFn: ((ind: any) => void) | null = null; // <-- Bridge to settings view
+    public static showIndicatorSettingsFn: ((ind: any) => void) | null = null;
+    public static toolbarDockMode: 'free' | 'top' = 'free';
 
     public static currentLayout = '1';
     private static saveTimeout: any = null;
+
+    public static updateToolbarDock() {
+        const dt = document.getElementById('drawing-toolbar');
+        const dtHandle = document.getElementById('dt-drag-handle');
+        if (!dt || !dtHandle) return;
+
+        if (this.toolbarDockMode === 'top') {
+            dt.style.left = '50%';
+            dt.style.top = '44px';
+            dt.style.transform = 'translateX(-50%)';
+            dt.style.flexDirection = 'row'; // Optional: lay it out horizontally
+            dtHandle.style.cursor = 'default';
+            dtHandle.style.opacity = '0.2';
+        } else {
+            dt.style.left = '16px';
+            dt.style.top = '60px';
+            dt.style.transform = 'none';
+            dt.style.flexDirection = 'column';
+            dtHandle.style.cursor = 'grab';
+            dtHandle.style.opacity = '1';
+        }
+    }
 
     public static saveWorkspace() {
         if (this.charts.length === 0) return;
@@ -1262,6 +1285,7 @@ export class WorkspaceManager {
 
             // 1. Draggable Engine
             dtHandle.addEventListener('pointerdown', (e) => {
+                if (WorkspaceManager.toolbarDockMode === 'top') return;
                 isDragging = true;
                 startX = e.clientX;
                 startY = e.clientY;
@@ -1757,6 +1781,14 @@ export class WorkspaceManager {
         selectFPS?.addEventListener('change', (e) => {
             const newFps = parseInt((e.target as HTMLSelectElement).value, 10);
             if (newFps > 0) WorkspaceManager.targetFPS = newFps;
+        });
+
+        // Toolbar Dock Listener 
+        const selectDock = document.getElementById('select-toolbar-dock') as HTMLSelectElement;
+        selectDock?.addEventListener('change', (e) => {
+            WorkspaceManager.toolbarDockMode = (e.target as HTMLSelectElement).value as 'free' | 'top';
+            WorkspaceManager.updateToolbarDock();
+            WorkspaceManager.triggerAutoSave();
         });
 
         // Workspace Reset
