@@ -222,6 +222,7 @@ export class EcoChart {
             <button class="dt-btn" data-action="rect" title="Rectangle">▭</button>
             <button class="dt-btn" data-action="fib" title="Fibonacci">📏</button>
             <button class="dt-btn" data-action="prange" title="Price Range">↕️</button>
+            <button class="dt-btn" data-action="text" title="Text Tool" style="font-weight: bold; font-family: serif;">T</button>
             <div style="width: 1px; background: var(--chart-grid, #2A2E39); margin: 2px 0;"></div>
             <button class="dt-btn active" data-action="magnet" title="Magnet Mode">🧲</button>
             <button class="dt-btn" data-action="hide" title="Toggle Drawings">👁️</button>
@@ -260,9 +261,9 @@ export class EcoChart {
                 }
 
                 // Visually toggle active drawing tool
-                if (['cursor', 'trendline', 'hray', 'vline', 'rect', 'fib', 'prange'].includes(action!)) {
+                if (['cursor', 'trendline', 'hray', 'vline', 'rect', 'fib', 'prange', 'text'].includes(action!)) {
                     this.paneDrawingToolbar!.querySelectorAll('.dt-btn[data-action]').forEach(other => {
-                        if (['cursor', 'trendline', 'hray', 'vline', 'rect', 'fib', 'prange'].includes((other as HTMLElement).dataset.action!)) {
+                        if (['cursor', 'trendline', 'hray', 'vline', 'rect', 'fib', 'prange', 'text'].includes((other as HTMLElement).dataset.action!)) {
                             other.classList.remove('active');
                         }
                     });
@@ -442,31 +443,37 @@ export class EcoChart {
            if (this.drawingManager.activeToolType) {
                 const finished = this.drawingManager.onPointerDown(this.renderer, x, y);
                 if (finished) {
-                    // Automatically revert to cursor tool on global AND per-pane toolbars
+                    const finishedDrawing = this.drawingManager.drawings[this.drawingManager.drawings.length - 1];
+                    // If we just placed a Text tool, open the editor modal immediately!
+                    if (finishedDrawing && finishedDrawing.constructor.name === 'TextDrawing') {
+                        WorkspaceManager.openTextEditor(finishedDrawing as any);
+                    }
+
                     document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
                     document.getElementById('tool-cursor')?.classList.add('active');
                     
                     if (this.paneDrawingToolbar) {
-                        this.paneDrawingToolbar.querySelectorAll('.dt-btn[data-action]').forEach(b => {
-                            if (['cursor', 'trendline', 'hray', 'vline', 'rect', 'fib', 'prange'].includes((b as HTMLElement).dataset.action!)) b.classList.remove('active');
-                        });
+                        this.paneDrawingToolbar.querySelectorAll('.dt-btn[data-action]').forEach(b => b.classList.remove('active'));
                         this.paneDrawingToolbar.querySelector('[data-action="cursor"]')?.classList.add('active');
                     }
-                    
-                    const btnLinesMain = document.getElementById('tool-lines-main');
-                    if (btnLinesMain) btnLinesMain.innerHTML = '📉';
                 }
                 this.isDirty = true;
-                return; // Stop here so we don't trigger panning
+                return;
             }
 
-            // Phase 3: Selection Hit Test (Desktop)
+            // Phase 3 & 4: Selection Hit Test (Desktop)
             const hitDrawing = this.drawingManager.trySelect(this.renderer, x, y);
             if (hitDrawing) {
                 this.drawingManager.drawings.forEach(d => d.state = 'idle');
                 hitDrawing.state = 'selected';
                 this.drawingManager.selectedDrawing = hitDrawing;
                 this.isDirty = true;
+
+                // If clicking a Text tool, open Text Modal instead of ColorPicker!
+                if (hitDrawing.constructor.name === 'TextDrawing') {
+                    WorkspaceManager.openTextEditor(hitDrawing as any);
+                    return;
+                }
                 
                 // Spawn a tiny invisible anchor for the ColorPicker at mouse coordinates
                 const anchor = document.createElement('div');
@@ -716,32 +723,39 @@ export class EcoChart {
 
                 // ---> NEW: Mobile Drawing Support <---
                 if (this.drawingManager.activeToolType) {
-                    const finished = this.drawingManager.onPointerDown(this.renderer, x, y);
-                    if (finished) {
-                        document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
-                        document.getElementById('tool-cursor')?.classList.add('active');
-                        
-                        if (this.paneDrawingToolbar) {
-                            this.paneDrawingToolbar.querySelectorAll('.dt-btn[data-action]').forEach(b => {
-                                if (['cursor', 'trendline', 'hray', 'vline', 'rect', 'fib', 'prange'].includes((b as HTMLElement).dataset.action!)) b.classList.remove('active');
-                            });
-                            this.paneDrawingToolbar.querySelector('[data-action="cursor"]')?.classList.add('active');
-                        }
-                        
-                        const btnLinesMain = document.getElementById('tool-lines-main');
-                        if (btnLinesMain) btnLinesMain.innerHTML = '📉';
+                const finished = this.drawingManager.onPointerDown(this.renderer, x, y);
+                if (finished) {
+                    const finishedDrawing = this.drawingManager.drawings[this.drawingManager.drawings.length - 1];
+                    // If we just placed a Text tool, open the editor modal immediately!
+                    if (finishedDrawing && finishedDrawing.constructor.name === 'TextDrawing') {
+                        WorkspaceManager.openTextEditor(finishedDrawing as any);
                     }
-                    this.isDirty = true;
-                    return; // Stop here, do not trigger panning/crosshair timers
-                }
 
-                // Phase 3: Selection Hit Test (Mobile)
-                const hitDrawing = this.drawingManager.trySelect(this.renderer, x, y);
-                if (hitDrawing) {
-                    this.drawingManager.drawings.forEach(d => d.state = 'idle');
-                    hitDrawing.state = 'selected';
-                    this.drawingManager.selectedDrawing = hitDrawing;
-                    this.isDirty = true;
+                    document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
+                    document.getElementById('tool-cursor')?.classList.add('active');
+                    
+                    if (this.paneDrawingToolbar) {
+                        this.paneDrawingToolbar.querySelectorAll('.dt-btn[data-action]').forEach(b => b.classList.remove('active'));
+                        this.paneDrawingToolbar.querySelector('[data-action="cursor"]')?.classList.add('active');
+                    }
+                }
+                this.isDirty = true;
+                return;
+            }
+
+            // Phase 3 & 4: Selection Hit Test (Desktop)
+            const hitDrawing = this.drawingManager.trySelect(this.renderer, x, y);
+            if (hitDrawing) {
+                this.drawingManager.drawings.forEach(d => d.state = 'idle');
+                hitDrawing.state = 'selected';
+                this.drawingManager.selectedDrawing = hitDrawing;
+                this.isDirty = true;
+
+                // If clicking a Text tool, open Text Modal instead of ColorPicker!
+                if (hitDrawing.constructor.name === 'TextDrawing') {
+                    WorkspaceManager.openTextEditor(hitDrawing as any);
+                    return;
+                }
                     
                     const anchor = document.createElement('div');
                     anchor.style.position = 'absolute';
@@ -1227,6 +1241,43 @@ export class WorkspaceManager {
         });
     }
 
+
+    // Open Text Tool Editor Modal
+    public static currentEditingText: any = null;
+
+    public static openTextEditor(textDrawing: any) {
+        this.currentEditingText = textDrawing;
+        const modal = document.getElementById('text-tool-modal') as HTMLDialogElement;
+        if (!modal) return;
+
+        const input = document.getElementById('text-input') as HTMLTextAreaElement;
+        const checkBg = document.getElementById('check-text-bg') as HTMLInputElement;
+        const btnBgColor = document.getElementById('btn-text-bg-color') as HTMLElement;
+        const checkBorder = document.getElementById('check-text-border') as HTMLInputElement;
+        const btnBorderColor = document.getElementById('btn-text-border-color') as HTMLElement;
+        const checkWrap = document.getElementById('check-text-wrap') as HTMLInputElement;
+        const selectSize = document.getElementById('select-text-size') as HTMLSelectElement;
+        const btnBold = document.getElementById('btn-text-bold');
+        const btnItalic = document.getElementById('btn-text-italic');
+        const btnLock = document.getElementById('btn-text-lock');
+        const btnAnchor = document.getElementById('btn-text-anchor');
+
+        if (input) input.value = textDrawing.textContent;
+        if (checkBg) checkBg.checked = textDrawing.hasBackground;
+        if (btnBgColor) btnBgColor.style.backgroundColor = '#' + textDrawing.bgColor.toString(16).padStart(6, '0');
+        if (checkBorder) checkBorder.checked = textDrawing.hasBorder;
+        if (btnBorderColor) btnBorderColor.style.backgroundColor = '#' + textDrawing.borderColor.toString(16).padStart(6, '0');
+        if (checkWrap) checkWrap.checked = textDrawing.textWrap;
+        if (selectSize) selectSize.value = String(textDrawing.fontSize);
+
+        btnBold?.classList.toggle('active', textDrawing.isBold);
+        btnItalic?.classList.toggle('active', textDrawing.isItalic);
+        btnLock?.classList.toggle('active', textDrawing.isLocked);
+        btnAnchor?.classList.toggle('active', textDrawing.isAnchored);
+
+        modal.showModal();
+        input?.focus();
+    }
 
     public static updateToolbarDock() {
         const globalDt = document.getElementById('drawing-toolbar');
@@ -2395,6 +2446,158 @@ export class WorkspaceManager {
         btnMobileCustomTf?.addEventListener('click', () => {
             if (mobileTfMenu) mobileTfMenu.style.display = 'none';
             modalCustomTf?.showModal();
+        });
+
+        // ---> NEW: Text Tool Modal Actions & Toolbar Binding <---
+        const modalText = document.getElementById('text-tool-modal') as HTMLDialogElement;
+        const btnTextClose = document.getElementById('btn-text-close');
+        const btnTextCancel = document.getElementById('btn-text-cancel');
+        const btnTextOk = document.getElementById('btn-text-ok');
+
+        const closeTextModal = () => {
+            modalText?.close();
+            WorkspaceManager.currentEditingText = null;
+        };
+
+        btnTextClose?.addEventListener('click', closeTextModal);
+        btnTextCancel?.addEventListener('click', closeTextModal);
+
+        btnTextOk?.addEventListener('click', () => {
+            const td = WorkspaceManager.currentEditingText;
+            if (td && WorkspaceManager.getActiveChart()) {
+                const input = document.getElementById('text-input') as HTMLTextAreaElement;
+                const checkBg = document.getElementById('check-text-bg') as HTMLInputElement;
+                const checkBorder = document.getElementById('check-text-border') as HTMLInputElement;
+                const checkWrap = document.getElementById('check-text-wrap') as HTMLInputElement;
+                const selectSize = document.getElementById('select-text-size') as HTMLSelectElement;
+
+                td.textContent = input.value;
+                td.hasBackground = checkBg.checked;
+                td.hasBorder = checkBorder.checked;
+                td.textWrap = checkWrap.checked;
+                td.fontSize = parseInt(selectSize.value, 10) || 16;
+
+                WorkspaceManager.getActiveChart()!.isDirty = true;
+                WorkspaceManager.triggerAutoSave();
+            }
+            closeTextModal();
+        });
+
+        // Bold
+        document.getElementById('btn-text-bold')?.addEventListener('click', (e) => {
+            const td = WorkspaceManager.currentEditingText;
+            if (td) {
+                td.isBold = !td.isBold;
+                (e.currentTarget as HTMLElement).classList.toggle('active', td.isBold);
+                WorkspaceManager.getActiveChart()!.isDirty = true;
+            }
+        });
+
+        // Italic
+        document.getElementById('btn-text-italic')?.addEventListener('click', (e) => {
+            const td = WorkspaceManager.currentEditingText;
+            if (td) {
+                td.isItalic = !td.isItalic;
+                (e.currentTarget as HTMLElement).classList.toggle('active', td.isItalic);
+                WorkspaceManager.getActiveChart()!.isDirty = true;
+            }
+        });
+
+        // Anchor
+        document.getElementById('btn-text-anchor')?.addEventListener('click', (e) => {
+            const td = WorkspaceManager.currentEditingText;
+            const chart = WorkspaceManager.getActiveChart();
+            if (td && chart) {
+                td.isAnchored = !td.isAnchored;
+                if (td.isAnchored) {
+                    td.anchorX = chart.renderer.timeToX(td.points[0].time);
+                    td.anchorY = chart.renderer.priceToY(td.points[0].price);
+                }
+                (e.currentTarget as HTMLElement).classList.toggle('active', td.isAnchored);
+                chart.isDirty = true;
+            }
+        });
+
+        // Lock
+        document.getElementById('btn-text-lock')?.addEventListener('click', (e) => {
+            const td = WorkspaceManager.currentEditingText;
+            if (td) {
+                td.isLocked = !td.isLocked;
+                (e.currentTarget as HTMLElement).classList.toggle('active', td.isLocked);
+            }
+        });
+
+        // Delete
+        document.getElementById('btn-text-delete')?.addEventListener('click', () => {
+            const td = WorkspaceManager.currentEditingText;
+            const chart = WorkspaceManager.getActiveChart();
+            if (td && chart) {
+                chart.drawingManager.drawings = chart.drawingManager.drawings.filter(d => d !== td);
+                chart.drawingManager.selectedDrawing = null;
+                chart.isDirty = true;
+                WorkspaceManager.triggerAutoSave();
+            }
+            closeTextModal();
+        });
+
+        // Text Color picker trigger
+        document.getElementById('btn-text-color')?.addEventListener('click', (e) => {
+            const td = WorkspaceManager.currentEditingText;
+            if (!td) return;
+            colorPicker.open({
+                anchorElement: e.currentTarget as HTMLElement,
+                initialColor: '#' + td.color.toString(16).padStart(6, '0'),
+                showOpacity: false,
+                onChange: (res) => {
+                    td.color = parseInt(res.color.replace('#', ''), 16);
+                    WorkspaceManager.getActiveChart()!.isDirty = true;
+                }
+            });
+        });
+
+        // Background Color picker trigger
+        document.getElementById('btn-text-bg-color')?.addEventListener('click', (e) => {
+            const td = WorkspaceManager.currentEditingText;
+            const btn = e.currentTarget as HTMLElement;
+            if (!td) return;
+            colorPicker.open({
+                anchorElement: btn,
+                initialColor: '#' + td.bgColor.toString(16).padStart(6, '0'),
+                showOpacity: true,
+                onChange: (res) => {
+                    td.bgColor = parseInt(res.color.replace('#', ''), 16);
+                    td.bgAlpha = res.opacity;
+                    btn.style.backgroundColor = res.color;
+                    WorkspaceManager.getActiveChart()!.isDirty = true;
+                }
+            });
+        });
+
+        // Border Color picker trigger
+        document.getElementById('btn-text-border-color')?.addEventListener('click', (e) => {
+            const td = WorkspaceManager.currentEditingText;
+            const btn = e.currentTarget as HTMLElement;
+            if (!td) return;
+            colorPicker.open({
+                anchorElement: btn,
+                initialColor: '#' + td.borderColor.toString(16).padStart(6, '0'),
+                showOpacity: false,
+                onChange: (res) => {
+                    td.borderColor = parseInt(res.color.replace('#', ''), 16);
+                    btn.style.backgroundColor = res.color;
+                    WorkspaceManager.getActiveChart()!.isDirty = true;
+                }
+            });
+        });
+
+        // Global Toolbar 'tool-text' Click Listener
+        document.getElementById('tool-text')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (WorkspaceManager.getActiveChart()) {
+                WorkspaceManager.getActiveChart()!.drawingManager.startTool('text');
+                document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
+                (e.currentTarget as HTMLElement).classList.add('active');
+            }
         });
     }
 }

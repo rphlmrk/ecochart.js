@@ -6,9 +6,10 @@ import { FibRetracement } from './FibRetracement';
 import { PriceRange } from './PriceRange';
 import { VerticalLine } from './VerticalLine';
 import { HorizontalRay } from './HorizontalRay';
+import { TextDrawing } from './TextDrawing';
 import { Graphics } from 'pixi.js';
 
-export type ToolType = 'trendline' | 'rect' | 'fib' | 'prange' | 'vline' | 'hray';
+export type ToolType = 'trendline' | 'rect' | 'fib' | 'prange' | 'vline' | 'hray' | 'text';
 
 export class DrawingManager {
     public drawings: BaseDrawing[] = [];
@@ -41,6 +42,7 @@ export class DrawingManager {
             case 'prange': this.currentDrawing = new PriceRange(); break;
             case 'vline': this.currentDrawing = new VerticalLine(); break;
             case 'hray': this.currentDrawing = new HorizontalRay(); break;
+            case 'text': this.currentDrawing = new TextDrawing(); break;
         }
     }
 
