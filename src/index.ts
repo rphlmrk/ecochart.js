@@ -32,6 +32,11 @@ export interface SavedWorkspaceState {
     version: number;
     layout: string;
     activePaneIndex: number;
+    targetFPS?: number;
+    toolbarDockMode?: 'free' | 'top';
+    topBarDisplayMode?: 'change' | 'none';
+    isAutoHideNav?: boolean;
+    isCrosshairSyncEnabled?: boolean;
     panes: SavedPaneState[];
 }
 
@@ -1300,6 +1305,11 @@ export class WorkspaceManager {
             version: 1,
             layout: this.currentLayout,
             activePaneIndex: this.activeChart ? this.charts.indexOf(this.activeChart) : 0,
+            targetFPS: this.targetFPS,
+            toolbarDockMode: this.toolbarDockMode,
+            topBarDisplayMode: this.topBarDisplayMode,
+            isAutoHideNav: this.isAutoHideNav,
+            isCrosshairSyncEnabled: this.isCrosshairSyncEnabled,
             panes: this.charts.map(c => c.serialize())
         };
         try {
@@ -1341,6 +1351,15 @@ export class WorkspaceManager {
             if (raw) {
                 const state = JSON.parse(raw) as SavedWorkspaceState;
                 if (state.version === 1) {
+                    // Restore global workspace preferences
+                    if (state.targetFPS) this.targetFPS = state.targetFPS;
+                    if (state.toolbarDockMode) this.toolbarDockMode = state.toolbarDockMode;
+                    if (state.topBarDisplayMode) this.topBarDisplayMode = state.topBarDisplayMode;
+                    if (state.isAutoHideNav !== undefined) this.isAutoHideNav = state.isAutoHideNav;
+                    if (state.isCrosshairSyncEnabled !== undefined) this.isCrosshairSyncEnabled = state.isCrosshairSyncEnabled;
+
+                    this.updateToolbarDock();
+
                     this.setLayout(state.layout, state.panes);
                     if (state.activePaneIndex >= 0 && state.activePaneIndex < this.charts.length) {
                         this.setActiveChart(this.charts[state.activePaneIndex]);
@@ -1847,9 +1866,17 @@ export class WorkspaceManager {
             const selDock = document.getElementById('select-toolbar-dock') as HTMLSelectElement;
             if (selDock) selDock.value = WorkspaceManager.toolbarDockMode;
 
-            // Sync the TopBar Settings value
             const selTopBar = document.getElementById('select-topbar-display') as HTMLSelectElement;
             if (selTopBar) selTopBar.value = WorkspaceManager.topBarDisplayMode;
+
+            const selectFPS = document.getElementById('select-fps-limit') as HTMLSelectElement;
+            if (selectFPS) selectFPS.value = WorkspaceManager.targetFPS.toString();
+
+            const checkAutoHide = document.getElementById('check-autohide-nav') as HTMLInputElement;
+            if (checkAutoHide) checkAutoHide.checked = WorkspaceManager.isAutoHideNav;
+
+            const checkSync = document.getElementById('check-sync-crosshair') as HTMLInputElement;
+            if (checkSync) checkSync.checked = WorkspaceManager.isCrosshairSyncEnabled;
 
             const current = themeManager.getTheme();
             const setSwatch = (id: string, color: string) => {
@@ -1991,7 +2018,10 @@ export class WorkspaceManager {
         const selectFPS = document.getElementById('select-fps-limit') as HTMLSelectElement;
         selectFPS?.addEventListener('change', (e) => {
             const newFps = parseInt((e.target as HTMLSelectElement).value, 10);
-            if (newFps > 0) WorkspaceManager.targetFPS = newFps;
+            if (newFps > 0) {
+                WorkspaceManager.targetFPS = newFps;
+                WorkspaceManager.triggerAutoSave(); // <-- Save immediately
+            }
         });
 
         // NEW: Toolbar Dock Selector
@@ -2123,8 +2153,9 @@ export class WorkspaceManager {
                 }
             }
 
-            colorPicker.close();
+           colorPicker.close();
             modalSettings?.close();
+            WorkspaceManager.triggerAutoSave(); // <-- Save all modal changes
         };
         btnCloseSettings?.addEventListener('click', closeSettings);
         btnModalCloseX?.addEventListener('click', closeSettings);
