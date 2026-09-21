@@ -26,6 +26,26 @@ export class FibRetracement extends BaseDrawing {
         }
     }
 
+    public hitTest(r: ChartRenderer, screenX: number, screenY: number): boolean {
+        if (this.points.length < 2) return false;
+        const x1 = r.timeToX(this.points[0].time);
+        const p1 = this.points[0].price;
+        const x2 = r.timeToX(this.points[1].time);
+        const p2 = this.points[1].price;
+
+        const startX = Math.min(x1, x2) - 10;
+        const endX = Math.max(x1, x2) + 100 + 10; // +100 for ray extension
+
+        if (screenX >= startX && screenX <= endX) {
+            const diff = p1 - p2;
+            for (const level of this.levels) {
+                const y = r.priceToY(p1 - (diff * level));
+                if (Math.abs(screenY - y) < 10) return true; // Hit a fib level line
+            }
+        }
+        return false;
+    }
+
     public render(r: ChartRenderer, g: Graphics): void {
         if (this.points.length < 2) return;
 
@@ -35,15 +55,15 @@ export class FibRetracement extends BaseDrawing {
         const p2 = this.points[1].price;
         
         const startX = Math.min(x1, x2);
-        const endX = Math.max(x1, x2) + 100; // Extend rays slightly to the right
+        const endX = Math.max(x1, x2) + 100;
         const diff = p1 - p2;
 
-        StrokeEngine.drawLine(g, x1, r.priceToY(p1), x2, r.priceToY(p2), { color: this.color, width: 1, style: 'dashed', alpha: 0.5 });
+        StrokeEngine.drawLine(g, x1, r.priceToY(p1), x2, r.priceToY(p2), { color: this.color, width: 1, style: 'dashed', alpha: this.alpha * 0.5 });
 
         this.levels.forEach(level => {
             const lvlPrice = p1 - (diff * level);
             const y = r.priceToY(lvlPrice);
-            StrokeEngine.drawLine(g, startX, y, endX, y, { color: this.color, width: this.width, alpha: 0.8 });
+            StrokeEngine.drawLine(g, startX, y, endX, y, { color: this.color, width: this.width, alpha: this.alpha, style: this.style });
         });
 
         if (this.state !== 'idle') {

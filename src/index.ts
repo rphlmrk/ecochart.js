@@ -52,7 +52,8 @@ export class EcoChart {
     public autoBtn: HTMLButtonElement | null = null;
     public resetBtn: HTMLElement | null = null;
     public navBar: HTMLDivElement | null = null;
-    public legendContainer: HTMLDivElement | null = null; // <-- NEW
+    public legendContainer: HTMLDivElement | null = null; 
+    public paneDrawingToolbar: HTMLDivElement | null = null; // <-- PER-PANE TOOLBAR
 
     // Interaction State
     private isDraggingChart = false;
@@ -199,11 +200,81 @@ export class EcoChart {
         this.container.appendChild(this.navBar);
 
         // Hide initially if auto-hide is enabled
-        if (WorkspaceManager.isAutoHideNav) {
-            this.hideNavBar();
-        }
+        // 4. Per-Pane Docked Drawing Toolbar (Top Center)
+        this.paneDrawingToolbar = document.createElement('div');
+        this.paneDrawingToolbar.className = 'pane-drawing-toolbar';
+        this.paneDrawingToolbar.style.cssText = `
+            position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+            display: ${WorkspaceManager.toolbarDockMode === 'top' ? 'flex' : 'none'}; flex-direction: row; gap: 4px; z-index: 5; user-select: none;
+            background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45);
+            border-radius: 6px; padding: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            opacity: 0.15; transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        `;
 
-        // Proximity detection: Show Nav Bar (Bottom Center) & Legend (Top Left)
+        // Simplified robust flat UI for per-pane docks
+        this.paneDrawingToolbar.innerHTML = `
+            <button class="dt-btn active" data-action="cursor" title="Cursor">🖱️</button>
+            <div style="width: 1px; background: var(--chart-grid, #2A2E39); margin: 2px 0;"></div>
+            <button class="dt-btn" data-action="trendline" title="Trendline">📉</button>
+            <button class="dt-btn" data-action="hray" title="Horizontal Ray">➖</button>
+            <button class="dt-btn" data-action="vline" title="Vertical Line">⏸</button>
+            <button class="dt-btn" data-action="rect" title="Rectangle">▭</button>
+            <button class="dt-btn" data-action="fib" title="Fibonacci">📏</button>
+            <button class="dt-btn" data-action="prange" title="Price Range">↕️</button>
+            <div style="width: 1px; background: var(--chart-grid, #2A2E39); margin: 2px 0;"></div>
+            <button class="dt-btn active" data-action="magnet" title="Magnet Mode">🧲</button>
+            <button class="dt-btn" data-action="hide" title="Toggle Drawings">👁️</button>
+            <button class="dt-btn" data-action="trash" title="Clear Drawings">🗑️</button>
+        `;
+
+        // Prevent canvas panning when clicking tools
+        this.paneDrawingToolbar.addEventListener('pointerdown', (e) => e.stopPropagation());
+        this.paneDrawingToolbar.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: false });
+        
+        this.paneDrawingToolbar.querySelectorAll('.dt-btn').forEach((b) => {
+            const btn = b as HTMLElement;
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                WorkspaceManager.setActiveChart(this);
+                const action = btn.dataset.action;
+                
+                if (action === 'cursor') this.drawingManager.activeToolType = null;
+                else if (['trendline', 'hray', 'vline', 'rect', 'fib', 'prange'].includes(action!)) {
+                    this.drawingManager.startTool(action as any);
+                } else if (action === 'magnet') {
+                    this.drawingManager.isMagnetEnabled = !this.drawingManager.isMagnetEnabled;
+                    this.renderer.isMagnetEnabled = this.drawingManager.isMagnetEnabled;
+                    btn.classList.toggle('active', this.drawingManager.isMagnetEnabled);
+                } else if (action === 'hide') {
+                    this.drawingManager.isVisible = !this.drawingManager.isVisible;
+                    this.isDirty = true;
+                    btn.classList.toggle('active', !this.drawingManager.isVisible);
+                } else if (action === 'trash') {
+                    if (confirm('Clear drawings on this pane?')) {
+                        this.drawingManager.drawings = [];
+                        this.drawingManager.currentDrawing = null;
+                        this.isDirty = true;
+                        WorkspaceManager.triggerAutoSave();
+                    }
+                }
+
+                // Visually toggle active drawing tool
+                if (['cursor', 'trendline', 'hray', 'vline', 'rect', 'fib', 'prange'].includes(action!)) {
+                    this.paneDrawingToolbar!.querySelectorAll('.dt-btn[data-action]').forEach(other => {
+                        if (['cursor', 'trendline', 'hray', 'vline', 'rect', 'fib', 'prange'].includes((other as HTMLElement).dataset.action!)) {
+                            other.classList.remove('active');
+                        }
+                    });
+                    btn.classList.add('active');
+                }
+            });
+        });
+
+        this.container.appendChild(this.paneDrawingToolbar);
+
+        if (WorkspaceManager.isAutoHideNav) this.hideNavBar();
+
+        // Proximity detection: Show Nav Bar, Legend, and Per-Pane Dock
         this.container.addEventListener('pointermove', (e) => {
             const rect = this.container.getBoundingClientRect();
             const distFromBottom = rect.bottom - e.clientY;
@@ -211,33 +282,26 @@ export class EcoChart {
             const distFromLeft = e.clientX - rect.left;
             const distFromCenterX = Math.abs(e.clientX - (rect.left + rect.width / 2));
 
-            // 1. Nav Bar Proximity (Bottom Center)
             if (this.navBar && WorkspaceManager.isAutoHideNav) {
-                if (distFromBottom >= 0 && distFromBottom <= 120 && distFromCenterX <= 180) {
-                    this.showNavBar();
-                } else {
-                    this.hideNavBar();
-                }
+                if (distFromBottom >= 0 && distFromBottom <= 120 && distFromCenterX <= 180) this.showNavBar();
+                else this.hideNavBar();
             }
 
-            // 2. Legend Proximity (Top Left)
             if (this.legendContainer) {
-                // If mouse is within 180px from top and 300px from left
-                if (distFromTop >= 0 && distFromTop <= 180 && distFromLeft >= 0 && distFromLeft <= 300) {
-                    this.legendContainer.style.opacity = '1';
-                } else {
-                    this.legendContainer.style.opacity = '0.15';
-                }
+                if (distFromTop >= 0 && distFromTop <= 180 && distFromLeft >= 0 && distFromLeft <= 300) this.legendContainer.style.opacity = '1';
+                else this.legendContainer.style.opacity = '0.15';
+            }
+
+            if (this.paneDrawingToolbar && WorkspaceManager.toolbarDockMode === 'top') {
+                if (distFromTop >= 0 && distFromTop <= 60 && distFromCenterX <= 220) this.paneDrawingToolbar.style.opacity = '1';
+                else this.paneDrawingToolbar.style.opacity = '0.15';
             }
         });
 
         this.container.addEventListener('pointerleave', () => {
-            if (WorkspaceManager.isAutoHideNav) {
-                this.hideNavBar();
-            }
-            if (this.legendContainer) {
-                this.legendContainer.style.opacity = '0.15';
-            }
+            if (WorkspaceManager.isAutoHideNav) this.hideNavBar();
+            if (this.legendContainer) this.legendContainer.style.opacity = '0.15';
+            if (this.paneDrawingToolbar) this.paneDrawingToolbar.style.opacity = '0.15';
         });
     }
 
@@ -377,11 +441,17 @@ export class EcoChart {
            if (this.drawingManager.activeToolType) {
                 const finished = this.drawingManager.onPointerDown(this.renderer, x, y);
                 if (finished) {
-                    // Automatically revert to cursor tool when shape is complete
+                    // Automatically revert to cursor tool on global AND per-pane toolbars
                     document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
                     document.getElementById('tool-cursor')?.classList.add('active');
                     
-                    // Reset Main Line button icon if needed
+                    if (this.paneDrawingToolbar) {
+                        this.paneDrawingToolbar.querySelectorAll('.dt-btn[data-action]').forEach(b => {
+                            if (['cursor', 'trendline', 'hray', 'vline', 'rect', 'fib', 'prange'].includes((b as HTMLElement).dataset.action!)) b.classList.remove('active');
+                        });
+                        this.paneDrawingToolbar.querySelector('[data-action="cursor"]')?.classList.add('active');
+                    }
+                    
                     const btnLinesMain = document.getElementById('tool-lines-main');
                     if (btnLinesMain) btnLinesMain.innerHTML = '📉';
                 }
@@ -629,6 +699,13 @@ export class EcoChart {
                     if (finished) {
                         document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
                         document.getElementById('tool-cursor')?.classList.add('active');
+                        
+                        if (this.paneDrawingToolbar) {
+                            this.paneDrawingToolbar.querySelectorAll('.dt-btn[data-action]').forEach(b => {
+                                if (['cursor', 'trendline', 'hray', 'vline', 'rect', 'fib', 'prange'].includes((b as HTMLElement).dataset.action!)) b.classList.remove('active');
+                            });
+                            this.paneDrawingToolbar.querySelector('[data-action="cursor"]')?.classList.add('active');
+                        }
                         
                         const btnLinesMain = document.getElementById('tool-lines-main');
                         if (btnLinesMain) btnLinesMain.innerHTML = '📉';
@@ -1070,31 +1147,24 @@ export class WorkspaceManager {
     public static isAutoHideNav = true;
     public static isCrosshairSyncEnabled = true;
     public static targetFPS = 60;
-    public static showIndicatorSettingsFn: ((ind: any) => void) | null = null;
-    public static toolbarDockMode: 'free' | 'top' = 'free';
+    public static showIndicatorSettingsFn: ((ind: any) => void) | null = null; // <-- Bridge to settings view
 
     public static currentLayout = '1';
     private static saveTimeout: any = null;
+    public static toolbarDockMode: 'free' | 'top' = 'free';
 
     public static updateToolbarDock() {
-        const dt = document.getElementById('drawing-toolbar');
-        const dtHandle = document.getElementById('dt-drag-handle');
-        if (!dt || !dtHandle) return;
-
+        const globalDt = document.getElementById('drawing-toolbar');
         if (this.toolbarDockMode === 'top') {
-            dt.style.left = '50%';
-            dt.style.top = '44px';
-            dt.style.transform = 'translateX(-50%)';
-            dt.style.flexDirection = 'row'; // Optional: lay it out horizontally
-            dtHandle.style.cursor = 'default';
-            dtHandle.style.opacity = '0.2';
+            if (globalDt) globalDt.style.display = 'none'; // Hide global floating toolbar
+            this.charts.forEach(c => {
+                if (c.paneDrawingToolbar) c.paneDrawingToolbar.style.display = 'flex'; // Show per-pane toolbars
+            });
         } else {
-            dt.style.left = '16px';
-            dt.style.top = '60px';
-            dt.style.transform = 'none';
-            dt.style.flexDirection = 'column';
-            dtHandle.style.cursor = 'grab';
-            dtHandle.style.opacity = '1';
+            if (globalDt) globalDt.style.display = 'flex'; // Show global floating toolbar
+            this.charts.forEach(c => {
+                if (c.paneDrawingToolbar) c.paneDrawingToolbar.style.display = 'none'; // Hide per-pane toolbars
+            });
         }
     }
 
@@ -1640,6 +1710,8 @@ export class WorkspaceManager {
         }
 
         const syncModalInputs = () => {
+            const selDock = document.getElementById('select-toolbar-dock') as HTMLSelectElement;
+            if (selDock) selDock.value = WorkspaceManager.toolbarDockMode;
             const current = themeManager.getTheme();
             const setSwatch = (id: string, color: string) => {
                 const el = document.getElementById(id);
@@ -1783,7 +1855,7 @@ export class WorkspaceManager {
             if (newFps > 0) WorkspaceManager.targetFPS = newFps;
         });
 
-        // Toolbar Dock Listener 
+        // NEW: Toolbar Dock Selector
         const selectDock = document.getElementById('select-toolbar-dock') as HTMLSelectElement;
         selectDock?.addEventListener('change', (e) => {
             WorkspaceManager.toolbarDockMode = (e.target as HTMLSelectElement).value as 'free' | 'top';

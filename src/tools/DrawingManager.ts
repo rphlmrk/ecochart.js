@@ -22,47 +22,12 @@ export class DrawingManager {
     public trySelect(r: ChartRenderer, screenX: number, screenY: number): BaseDrawing | null {
         if (!this.isVisible) return null;
         
+        // Loop backwards so we select the topmost drawing first
         for (let i = this.drawings.length - 1; i >= 0; i--) {
             const d = this.drawings[i];
-            if (d.points.length === 0) continue;
-
-            const x1 = r.timeToX(d.points[0].time);
-            const y1 = r.priceToY(d.points[0].price);
-            let x2 = x1, y2 = y1;
-            
-            if (d.points.length > 1) {
-                x2 = r.timeToX(d.points[1].time);
-                y2 = r.priceToY(d.points[1].price);
+            if (d.hitTest(r, screenX, screenY)) {
+                return d;
             }
-
-            const margin = 12; // Hitbox padding (pixels)
-            let hit = false;
-            
-            // Generic Bounding Box (Handles Rects, Price Ranges, Fibs)
-            const left = Math.min(x1, x2) - margin;
-            const right = Math.max(x1, x2) + margin;
-            const top = Math.min(y1, y2) - margin;
-            const bottom = Math.max(y1, y2) + margin;
-
-            // If it has 2 points and significant height, use Bounding Box
-            if (d.points.length > 1 && Math.abs(y1 - y2) > margin) {
-                hit = screenX >= left && screenX <= right && screenY >= top && screenY <= bottom;
-            } 
-            // Otherwise treat as a line (Trendline, H-Ray, V-Line approximation)
-            else {
-                 const l2 = (x2 - x1) ** 2 + (y2 - y1) ** 2;
-                 if (l2 === 0) {
-                     hit = Math.hypot(screenX - x1, screenY - y1) < margin;
-                 } else {
-                     let t = ((screenX - x1) * (x2 - x1) + (screenY - y1) * (y2 - y1)) / l2;
-                     t = Math.max(0, Math.min(1, t));
-                     const projX = x1 + t * (x2 - x1);
-                     const projY = y1 + t * (y2 - y1);
-                     hit = Math.hypot(screenX - projX, screenY - projY) < margin;
-                 }
-            }
-
-            if (hit) return d;
         }
         return null;
     }
