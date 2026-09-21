@@ -328,6 +328,28 @@
         padding: 2px 5px;
       }
     }
+
+    /* Floating Drawing Toolbar Buttons */
+    .dt-btn {
+      background: transparent;
+      color: var(--chart-text, #D1D4DC);
+      border: 1px solid transparent;
+      width: 28px;
+      height: 28px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      padding: 0;
+      transition: all 0.1s ease;
+    }
+
+    .dt-btn:hover, .dt-btn.active {
+      background: rgba(41, 98, 255, 0.15);
+      color: var(--chart-accent, #2962FF);
+    }
   </style>
 </head>
 
@@ -485,6 +507,57 @@
             style="background: transparent; color: #D1D4DC; border: none; padding: 4px 8px; font-size: 14px; cursor: pointer; border-radius: 4px;">
             ⚙️
           </button>
+        </div>
+      </div> <!-- This is the closing div for #top-bar -->
+
+      <!-- Floating Drawing Toolbar -->
+      <div id="drawing-toolbar"
+        style="position: absolute; left: 16px; top: 60px; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; display: flex; flex-direction: column; gap: 4px; z-index: 20; box-shadow: 0 4px 12px rgba(0,0,0,0.4); opacity: 0.15; transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1); pointer-events: auto;">
+        
+        <!-- Drag Handle -->
+        <div id="dt-drag-handle" style="cursor: grab; text-align: center; color: #787B86; padding: 4px 0; font-size: 12px; display: flex; justify-content: center; user-select: none;">
+          <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor"><circle cx="2" cy="2" r="1.5"/><circle cx="8" cy="2" r="1.5"/><circle cx="2" cy="7" r="1.5"/><circle cx="8" cy="7" r="1.5"/><circle cx="2" cy="12" r="1.5"/><circle cx="8" cy="12" r="1.5"/></svg>
+        </div>
+        <div style="height: 1px; background: var(--chart-grid, #2A2E39); margin: 2px 0;"></div>
+        
+        <!-- Primary Tools -->
+        <button class="dt-btn active" id="tool-cursor" title="Cursor" data-tool="cursor">🖱️</button>
+        
+        <!-- Line Tools Group -->
+        <div style="position: relative;" id="lines-group">
+          <button class="dt-btn" id="tool-lines-main" title="Line Tools">📉</button>
+          <div id="lines-menu" style="display: none; position: absolute; left: 34px; top: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 145px;">
+            <button class="menu-opt-btn sub-tool-btn" data-tool="trendline" data-icon="📉">📉 Trendline</button>
+            <button class="menu-opt-btn sub-tool-btn" data-tool="hray" data-icon="➖">➖ Horizontal Ray</button>
+            <button class="menu-opt-btn sub-tool-btn" data-tool="vline" data-icon="⏸">⏸ Vertical Line</button>
+          </div>
+        </div>
+
+        <button class="dt-btn" id="tool-rect" title="Rectangle" data-tool="rect">▭</button>
+        <button class="dt-btn" id="tool-fib" title="Fibonacci Retracement" data-tool="fib">📏</button>
+        <button class="dt-btn" id="tool-prange" title="Price Range" data-tool="prange">↕️</button>
+        
+        <div style="height: 1px; background: var(--chart-grid, #2A2E39); margin: 2px 0;"></div>
+        
+        <!-- Utilities -->
+        <button class="dt-btn active" id="tool-magnet" title="Magnet Mode (Snap to OHLC)">🧲</button>
+        
+        <div style="position: relative;">
+          <button class="dt-btn" id="tool-hide" title="Hide Objects">👁️</button>
+          <div id="hide-menu" style="display: none; position: absolute; left: 34px; top: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 135px;">
+            <button class="hide-opt-btn menu-opt-btn" data-action="drawings">Hide Drawings</button>
+            <button class="hide-opt-btn menu-opt-btn" data-action="indicators">Hide Indicators</button>
+            <button class="hide-opt-btn menu-opt-btn" data-action="all">Hide All</button>
+          </div>
+        </div>
+
+        <div style="position: relative;">
+          <button class="dt-btn" id="tool-trash" title="Remove Objects">🗑️</button>
+          <div id="trash-menu" style="display: none; position: absolute; left: 34px; top: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 150px;">
+            <button class="trash-opt-btn menu-opt-btn" data-action="drawings">Remove Drawings</button>
+            <button class="trash-opt-btn menu-opt-btn" data-action="indicators">Remove Indicators</button>
+            <button class="trash-opt-btn menu-opt-btn" data-action="all">Remove All</button>
+          </div>
         </div>
       </div>
     </div>

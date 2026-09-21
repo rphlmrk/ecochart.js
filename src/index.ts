@@ -140,6 +140,8 @@ export class EcoChart {
         // 1. Interactive On-Chart Legend (Top-Left of this pane)
         this.legendContainer = document.createElement('div');
         this.legendContainer.className = 'chart-legend';
+        this.legendContainer.style.opacity = '0.15';
+        this.legendContainer.style.transition = 'opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1)';
         this.container.appendChild(this.legendContainer);
 
         // 2. Auto-fit button for this pane (Positioned dynamically at bottom of main price axis)
@@ -201,24 +203,40 @@ export class EcoChart {
             this.hideNavBar();
         }
 
-        // Proximity detection: show when mouse moves near the bottom center of this pane
+        // Proximity detection: Show Nav Bar (Bottom Center) & Legend (Top Left)
         this.container.addEventListener('pointermove', (e) => {
-            if (!this.navBar || !WorkspaceManager.isAutoHideNav) return;
             const rect = this.container.getBoundingClientRect();
             const distFromBottom = rect.bottom - e.clientY;
+            const distFromTop = e.clientY - rect.top;
+            const distFromLeft = e.clientX - rect.left;
             const distFromCenterX = Math.abs(e.clientX - (rect.left + rect.width / 2));
 
-            // Within 120px vertically from bottom, and within 180px horizontally of the nav bar
-            if (distFromBottom >= 0 && distFromBottom <= 120 && distFromCenterX <= 180) {
-                this.showNavBar();
-            } else {
-                this.hideNavBar();
+            // 1. Nav Bar Proximity (Bottom Center)
+            if (this.navBar && WorkspaceManager.isAutoHideNav) {
+                if (distFromBottom >= 0 && distFromBottom <= 120 && distFromCenterX <= 180) {
+                    this.showNavBar();
+                } else {
+                    this.hideNavBar();
+                }
+            }
+
+            // 2. Legend Proximity (Top Left)
+            if (this.legendContainer) {
+                // If mouse is within 180px from top and 300px from left
+                if (distFromTop >= 0 && distFromTop <= 180 && distFromLeft >= 0 && distFromLeft <= 300) {
+                    this.legendContainer.style.opacity = '1';
+                } else {
+                    this.legendContainer.style.opacity = '0.15';
+                }
             }
         });
 
         this.container.addEventListener('pointerleave', () => {
             if (WorkspaceManager.isAutoHideNav) {
                 this.hideNavBar();
+            }
+            if (this.legendContainer) {
+                this.legendContainer.style.opacity = '0.15';
             }
         });
     }
@@ -356,10 +374,62 @@ export class EcoChart {
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
 
-            if (this.drawingManager.activeToolType) {
-                this.drawingManager.onPointerDown(this.renderer, x, y);
+           if (this.drawingManager.activeToolType) {
+                const finished = this.drawingManager.onPointerDown(this.renderer, x, y);
+                if (finished) {
+                    // Automatically revert to cursor tool when shape is complete
+                    document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
+                    document.getElementById('tool-cursor')?.classList.add('active');
+                    
+                    // Reset Main Line button icon if needed
+                    const btnLinesMain = document.getElementById('tool-lines-main');
+                    if (btnLinesMain) btnLinesMain.innerHTML = '📉';
+                }
                 this.isDirty = true;
                 return; // Stop here so we don't trigger panning
+            }
+
+            // Phase 3: Selection Hit Test (Desktop)
+            const hitDrawing = this.drawingManager.trySelect(this.renderer, x, y);
+            if (hitDrawing) {
+                this.drawingManager.drawings.forEach(d => d.state = 'idle');
+                hitDrawing.state = 'selected';
+                this.drawingManager.selectedDrawing = hitDrawing;
+                this.isDirty = true;
+                
+                // Spawn a tiny invisible anchor for the ColorPicker at mouse coordinates
+                const anchor = document.createElement('div');
+                anchor.style.position = 'absolute';
+                anchor.style.left = `${e.clientX}px`;
+                anchor.style.top = `${e.clientY}px`;
+                document.body.appendChild(anchor);
+                
+                colorPicker.open({
+                    anchorElement: anchor,
+                    initialColor: '#' + hitDrawing.color.toString(16).padStart(6, '0'),
+                    initialOpacity: hitDrawing.alpha,
+                    initialThickness: hitDrawing.width,
+                    initialStyle: hitDrawing.style,
+                    showOpacity: true,
+                    showStrokeOptions: true,
+                    onChange: (res) => {
+                        hitDrawing.color = parseInt(res.color.replace('#', ''), 16);
+                        hitDrawing.alpha = res.opacity;
+                        hitDrawing.width = res.thickness || hitDrawing.width;
+                        hitDrawing.style = res.style || hitDrawing.style;
+                        this.isDirty = true;
+                        WorkspaceManager.triggerAutoSave();
+                    }
+                });
+                
+                setTimeout(() => anchor.remove(), 100); // cleanup DOM
+                return; // Stop panning
+            } else {
+                // Missed! Clear selection and close color picker if open
+                this.drawingManager.drawings.forEach(d => d.state = 'idle');
+                this.drawingManager.selectedDrawing = null;
+                colorPicker.close();
+                this.isDirty = true;
             }
 
             const chartWidth = this.renderer.app.screen.width - this.renderer.priceAxisWidth;
@@ -553,6 +623,61 @@ export class EcoChart {
                 this.touchStartY = y;
                 this.touchStartTime = Date.now();
 
+                // ---> NEW: Mobile Drawing Support <---
+                if (this.drawingManager.activeToolType) {
+                    const finished = this.drawingManager.onPointerDown(this.renderer, x, y);
+                    if (finished) {
+                        document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
+                        document.getElementById('tool-cursor')?.classList.add('active');
+                        
+                        const btnLinesMain = document.getElementById('tool-lines-main');
+                        if (btnLinesMain) btnLinesMain.innerHTML = '📉';
+                    }
+                    this.isDirty = true;
+                    return; // Stop here, do not trigger panning/crosshair timers
+                }
+
+                // Phase 3: Selection Hit Test (Mobile)
+                const hitDrawing = this.drawingManager.trySelect(this.renderer, x, y);
+                if (hitDrawing) {
+                    this.drawingManager.drawings.forEach(d => d.state = 'idle');
+                    hitDrawing.state = 'selected';
+                    this.drawingManager.selectedDrawing = hitDrawing;
+                    this.isDirty = true;
+                    
+                    const anchor = document.createElement('div');
+                    anchor.style.position = 'absolute';
+                    anchor.style.left = `${t.clientX}px`;
+                    anchor.style.top = `${t.clientY}px`;
+                    document.body.appendChild(anchor);
+                    
+                    colorPicker.open({
+                        anchorElement: anchor,
+                        initialColor: '#' + hitDrawing.color.toString(16).padStart(6, '0'),
+                        initialOpacity: hitDrawing.alpha,
+                        initialThickness: hitDrawing.width,
+                        initialStyle: hitDrawing.style,
+                        showOpacity: true,
+                        showStrokeOptions: true,
+                        onChange: (res) => {
+                            hitDrawing.color = parseInt(res.color.replace('#', ''), 16);
+                            hitDrawing.alpha = res.opacity;
+                            hitDrawing.width = res.thickness || hitDrawing.width;
+                            hitDrawing.style = res.style || hitDrawing.style;
+                            this.isDirty = true;
+                            WorkspaceManager.triggerAutoSave();
+                        }
+                    });
+                    
+                    setTimeout(() => anchor.remove(), 100);
+                    return; // Stop chart interactions
+                } else {
+                    this.drawingManager.drawings.forEach(d => d.state = 'idle');
+                    this.drawingManager.selectedDrawing = null;
+                    colorPicker.close();
+                    this.isDirty = true;
+                }
+
                 const chartWidth = this.renderer.app.screen.width - this.renderer.priceAxisWidth;
                 const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
 
@@ -631,6 +756,13 @@ export class EcoChart {
                 const t = e.touches[0];
                 const x = t.clientX - rect.left;
                 const y = t.clientY - rect.top;
+
+                // ---> NEW: Mobile Drawing Support <---
+                if (this.drawingManager.activeToolType) {
+                    this.drawingManager.onPointerMove(this.renderer, x, y);
+                    this.isDirty = true;
+                    return; // Stop here, do not pan chart
+                }
 
                 // Cancel long-press if the user slides their finger (they want to pan, not crosshair)
                 if (!this.isMobileCrosshairActive && this.longPressTimeout) {
@@ -1023,9 +1155,11 @@ export class WorkspaceManager {
 
         const accent = themeManager.getResolvedAccentColor();
 
-        // 1. Symbol Button Label
+        // 1. Symbol Button Label & Browser Title
         const symLabel = document.getElementById('btn-symbol')?.querySelector('span');
         if (symLabel) symLabel.textContent = chart.currentSymbol;
+        
+        document.title = `EcoChart - ${chart.currentSymbol}`;
 
         // 2. Timeframe Active Button (Syncs both Desktop Pills and Mobile Dropdown Items)
         document.querySelectorAll('.tf-btn').forEach((b) => {
@@ -1113,6 +1247,227 @@ export class WorkspaceManager {
     }
 
     private static setupGlobalControls() {
+
+        const dt = document.getElementById('drawing-toolbar');
+        const dtHandle = document.getElementById('dt-drag-handle');
+
+        if (dt && dtHandle) {
+            // Prevent canvas from stealing touch events from the toolbar on mobile
+            dt.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: false });
+            dt.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+            let isDragging = false;
+            let startX = 0, startY = 0;
+            let initialLeft = 0, initialTop = 0;
+
+            // 1. Draggable Engine
+            dtHandle.addEventListener('pointerdown', (e) => {
+                isDragging = true;
+                startX = e.clientX;
+                startY = e.clientY;
+                initialLeft = dt.offsetLeft;
+                initialTop = dt.offsetTop;
+                dtHandle.setPointerCapture(e.pointerId);
+                dtHandle.style.cursor = 'grabbing';
+            });
+
+            dtHandle.addEventListener('pointermove', (e) => {
+                if (!isDragging) return;
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                
+                // Keep within screen bounds
+                const newLeft = Math.max(0, Math.min(window.innerWidth - dt.offsetWidth, initialLeft + dx));
+                const newTop = Math.max(38, Math.min(window.innerHeight - dt.offsetHeight, initialTop + dy)); // 38px avoids top bar
+                
+                dt.style.left = `${newLeft}px`;
+                dt.style.top = `${newTop}px`;
+            });
+
+            const stopDrag = (e: PointerEvent) => {
+                isDragging = false;
+                dtHandle.releasePointerCapture(e.pointerId);
+                dtHandle.style.cursor = 'grab';
+                WorkspaceManager.triggerAutoSave(); // Save toolbar position (optional future feature)
+            };
+
+            dtHandle.addEventListener('pointerup', stopDrag);
+            dtHandle.addEventListener('pointercancel', stopDrag);
+
+            // 2. Proximity Fading (Global)
+            document.addEventListener('pointermove', (e) => {
+                const rect = dt.getBoundingClientRect();
+                // Calculate distance from mouse to the bounding box of the toolbar
+                const dist = Math.max(
+                    0,
+                    rect.left - e.clientX,
+                    e.clientX - rect.right,
+                    rect.top - e.clientY,
+                    e.clientY - rect.bottom
+                );
+
+                // If mouse is within 60px of the toolbar, fully visible
+                if (dist < 60) {
+                    dt.style.opacity = '1';
+                } else {
+                    dt.style.opacity = '0.15';
+                }
+            });
+
+            // 3. Tool Click Dispatcher & Menus
+            const btnLinesMain = document.getElementById('tool-lines-main');
+            const linesMenu = document.getElementById('lines-menu');
+            const btnHide = document.getElementById('tool-hide');
+            const hideMenu = document.getElementById('hide-menu');
+            const btnTrash = document.getElementById('tool-trash');
+            const trashMenu = document.getElementById('trash-menu');
+
+            // Helper to close all floating menus on the toolbar
+            const closeAllDTMenus = () => {
+                if (linesMenu) linesMenu.style.display = 'none';
+                if (hideMenu) hideMenu.style.display = 'none';
+                if (trashMenu) trashMenu.style.display = 'none';
+            };
+
+            // Main Lines Button - Opens dropdown
+            btnLinesMain?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const isOp = linesMenu?.style.display === 'flex';
+                closeAllDTMenus();
+                if (linesMenu) linesMenu.style.display = isOp ? 'none' : 'flex';
+            });
+
+            // Handle Sub-Tools (Trendline, V-Line, H-Ray) inside the dropdown
+            document.querySelectorAll('.sub-tool-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const tool = (btn as HTMLElement).dataset.tool;
+                    const icon = (btn as HTMLElement).dataset.icon;
+                    if (this.activeChart && tool) {
+                        this.activeChart.drawingManager.startTool(tool as any);
+                        
+                        // Update Main Icon & Active State
+                        if (btnLinesMain && icon) btnLinesMain.innerHTML = icon;
+                        document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
+                        btnLinesMain?.classList.add('active');
+                    }
+                    closeAllDTMenus();
+                });
+            });
+
+            // Handle Top-Level Tools (Cursor, Rect, Fib, PRange)
+            const topLevelTools = ['tool-cursor', 'tool-rect', 'tool-fib', 'tool-prange'];
+            topLevelTools.forEach(id => {
+                const el = document.getElementById(id);
+                el?.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    closeAllDTMenus();
+                    const tool = el.dataset.tool;
+                    if (this.activeChart) {
+                        if (tool === 'cursor') this.activeChart.drawingManager.activeToolType = null;
+                        else this.activeChart.drawingManager.startTool(tool as any);
+                    }
+                    document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
+                    el.classList.add('active');
+                });
+            });
+
+            // Dynamic Hide Menu
+            btnHide?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const isOp = hideMenu?.style.display === 'flex';
+                closeAllDTMenus();
+                if (hideMenu && !isOp && this.activeChart) {
+                    hideMenu.style.display = 'flex';
+                    
+                    // Update Text Dynamically based on state
+                    const drawBtn = hideMenu.querySelector('[data-action="drawings"]');
+                    const indBtn = hideMenu.querySelector('[data-action="indicators"]');
+                    
+                    const drwVisible = this.activeChart.drawingManager.isVisible;
+                    const anyIndVisible = this.activeChart.indicatorManager.activeIndicators.some(i => i.visible);
+
+                    if (drawBtn) drawBtn.textContent = drwVisible ? "Hide Drawings" : "Show Drawings";
+                    if (indBtn) indBtn.textContent = anyIndVisible ? "Hide Indicators" : "Show Indicators";
+                }
+            });
+
+            // Trash Menu
+            btnTrash?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const isOp = trashMenu?.style.display === 'flex';
+                closeAllDTMenus();
+                if (trashMenu && !isOp) trashMenu.style.display = 'flex';
+            });
+
+            // Close menus when clicking outside
+            document.addEventListener('click', closeAllDTMenus);
+
+            // Magnet Toggle Sync
+            const btnMagnet = document.getElementById('tool-magnet');
+            btnMagnet?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                closeAllDTMenus();
+                if (this.activeChart) {
+                    const manager = this.activeChart.drawingManager;
+                    manager.isMagnetEnabled = !manager.isMagnetEnabled;
+                    
+                    // Sync state across all active panes
+                    this.charts.forEach(chart => {
+                        chart.drawingManager.isMagnetEnabled = manager.isMagnetEnabled;
+                        chart.renderer.isMagnetEnabled = manager.isMagnetEnabled;
+                    });
+                    
+                    btnMagnet.classList.toggle('active', manager.isMagnetEnabled);
+                }
+            });
+
+            document.querySelectorAll('.hide-opt-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const action = (btn as HTMLElement).dataset.action;
+                    if (this.activeChart) {
+                        const cm = this.activeChart;
+                        if (action === 'drawings' || action === 'all') {
+                            cm.drawingManager.isVisible = !cm.drawingManager.isVisible;
+                        }
+                        if (action === 'indicators' || action === 'all') {
+                            const anyVisible = cm.indicatorManager.activeIndicators.some(i => i.visible);
+                            cm.indicatorManager.activeIndicators.forEach(i => i.visible = !anyVisible);
+                            cm.updateLegend();
+                            cm.updateControlsLayout();
+                        }
+                        cm.isDirty = true;
+                        if (hideMenu) hideMenu.style.display = 'none';
+                    }
+                });
+            });
+
+            document.querySelectorAll('.trash-opt-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const action = (btn as HTMLElement).dataset.action;
+                    if (this.activeChart) {
+                        const cm = this.activeChart;
+                        if (action === 'drawings' || action === 'all') {
+                            if (confirm("Remove drawings?")) {
+                                cm.drawingManager.drawings = [];
+                                cm.drawingManager.currentDrawing = null;
+                            }
+                        }
+                        if (action === 'indicators' || action === 'all') {
+                            if (confirm("Remove indicators?")) {
+                                cm.indicatorManager.activeIndicators = [];
+                                cm.updateLegend();
+                                cm.updateControlsLayout();
+                            }
+                        }
+                        cm.isDirty = true;
+                        WorkspaceManager.triggerAutoSave();
+                        if (trashMenu) trashMenu.style.display = 'none';
+                    }
+                });
+            });
+        }
+        
         // Layout Menu Toggle
         const btnLayout = document.getElementById('btn-layout');
         const layoutMenu = document.getElementById('layout-menu');

@@ -63,6 +63,7 @@ export class ChartRenderer {
     public crosshairY = -100;
     public isCrosshairVisible = false;
     public crosshairColor = 0x9598A1;
+    public isMagnetEnabled = true;
 
     public applyTheme(theme: ChartTheme) {
         this.isDarkTheme = theme.isDark; // <-- Store dark/light state
@@ -627,14 +628,29 @@ export class ChartRenderer {
         // 1. Draw Local Crosshair & Badges
         if (this.isCrosshairVisible && this.crosshairX >= 0 && this.crosshairX < chartWidth && this.crosshairY >= 0 && this.crosshairY < timeAxisY) {
             
+            // Magnet Snap Logic
+            let drawX = this.crosshairX;
+            let drawY = this.crosshairY;
+            
+            // Only snap if magnet is on AND we are hovering the main chart (not oscillators)
+            if (this.isMagnetEnabled && this.crosshairY <= mainChartHeight) {
+                const mag = this.getMagnetPoint(this.crosshairX, this.crosshairY, 30);
+                drawX = this.timeToX(mag.time);
+                drawY = this.priceToY(mag.price);
+            }
+
             // Horizontal crosshair across entire width
-            StrokeEngine.drawLine(this.crosshairGraphics, 0, this.crosshairY, chartWidth, this.crosshairY, {
+            StrokeEngine.drawLine(this.crosshairGraphics, 0, drawY, chartWidth, drawY, {
                 color: this.crosshairColor, width: 1, alpha: 0.6, style: this.crosshairStyle, dashLength: 4, gapLength: 3
             });
             // Vertical crosshair down to the time axis
-            StrokeEngine.drawLine(this.crosshairGraphics, this.crosshairX, 0, this.crosshairX, timeAxisY, {
+            StrokeEngine.drawLine(this.crosshairGraphics, drawX, 0, drawX, timeAxisY, {
                 color: this.crosshairColor, width: 1, alpha: 0.6, style: this.crosshairStyle, dashLength: 4, gapLength: 3
             });
+
+            // Update crosshair tracking variables for the badges to use the snapped coords
+            this.crosshairX = drawX;
+            this.crosshairY = drawY;
 
             // Y-Axis Badge (Dynamic switching between Main Price and Oscillator Scale)
             if (this.crosshairY <= mainChartHeight) {

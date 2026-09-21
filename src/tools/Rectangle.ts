@@ -1,19 +1,18 @@
 import { BaseDrawing } from './DrawingTool';
 import type { ChartRenderer } from '../renderer/ChartRenderer';
-import { StrokeEngine } from '../renderer/StrokeEngine';
 import { Graphics } from 'pixi.js';
 
-export class Trendline extends BaseDrawing {
+export class Rectangle extends BaseDrawing {
     public onPointerDown(time: number, price: number): boolean {
         if (this.state === 'drawing_start') {
             this.points[0] = { time, price };
             this.points[1] = { time, price };
             this.state = 'drawing_end';
-            return false; // Still drawing
+            return false;
         } else if (this.state === 'drawing_end') {
             this.points[1] = { time, price };
             this.state = 'selected';
-            return true; // Finished drawing
+            return true;
         }
         return true;
     }
@@ -32,11 +31,14 @@ export class Trendline extends BaseDrawing {
         const x2 = r.timeToX(this.points[1].time);
         const y2 = r.priceToY(this.points[1].price);
 
-        // Frustum Culling
-        const screenW = r.app.screen.width - r.priceAxisWidth;
-        if ((x1 < 0 && x2 < 0) || (x1 > screenW && x2 > screenW)) return;
+        const left = Math.min(x1, x2);
+        const top = Math.min(y1, y2);
+        const width = Math.abs(x2 - x1);
+        const height = Math.abs(y2 - y1);
 
-        StrokeEngine.drawLine(g, x1, y1, x2, y2, { color: this.color, width: this.width, alpha: this.alpha, style: this.style });
+        g.rect(left, top, width, height)
+         .fill({ color: this.color, alpha: 0.15 })
+         .stroke({ color: this.color, width: this.width, alpha: 0.8 });
 
         if (this.state !== 'idle') {
             g.circle(x1, y1, 4).fill(0xffffff).stroke({ color: this.color, width: 2 });
