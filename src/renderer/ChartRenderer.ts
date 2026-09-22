@@ -271,8 +271,14 @@ export class ChartRenderer {
         const mainChartHeight = timeAxisY - oscHeight; // Chart squishes to fit oscillator above time axis
 
         const actualSpacing = this.candleSpacing * this.zoom;
-        const visStart = Math.max(0, Math.floor(this.cameraX / actualSpacing));
-        const visEnd = Math.min(this.dataStore.length, Math.floor((this.cameraX + chartWidth) / actualSpacing) + 1);
+        
+        // Sliding window with a 15-candle buffer on each side for smooth scrolling
+        const buffer = 15;
+        const rawVisStart = Math.floor(this.cameraX / actualSpacing);
+        const rawVisEnd = Math.floor((this.cameraX + chartWidth) / actualSpacing) + 1;
+
+        const visStart = Math.max(0, rawVisStart - buffer);
+        const visEnd = Math.min(this.dataStore.length, rawVisEnd + buffer);
 
         if (this.isAutoScale) {
             let minP = Infinity; let maxP = -Infinity;

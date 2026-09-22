@@ -1,4 +1,5 @@
 import type { ChartRenderer } from '../renderer/ChartRenderer';
+import { db } from '../data/db'; 
 import { BaseDrawing } from './DrawingTool';
 import { Trendline } from './Trendline';
 import { Rectangle } from './Rectangle';
@@ -18,19 +19,50 @@ export class DrawingManager {
     public isMagnetEnabled = true;
     public isVisible = true;
     public selectedDrawing: BaseDrawing | null = null;
+    public draggingHandle: 0 | 1 | null = null; // Tracks which handle is moving
+    public currentSymbol = '';
 
     // Phase 3: Hit Testing logic to see if a user clicked on a drawing
-    public trySelect(r: ChartRenderer, screenX: number, screenY: number): BaseDrawing | null {
+    public trySelect(r: ChartRenderer, screenX: number, screenY: number): { drawing: BaseDrawing, part: string } | null {
         if (!this.isVisible) return null;
-        
-        // Loop backwards so we select the topmost drawing first
         for (let i = this.drawings.length - 1; i >= 0; i--) {
             const d = this.drawings[i];
-            if (d.hitTest(r, screenX, screenY)) {
-                return d;
-            }
+            const hit = d.hitTest(r, screenX, screenY);
+            if (hit !== 'none') return { drawing: d, part: hit };
         }
         return null;
+    }
+
+    // --- DB SYNC METHODS ---
+    public async loadDrawings(symbol: string) {
+        this.currentSymbol = symbol;
+        const records = await db.drawings.where('symbol').equals(symbol).toArray();
+        this.drawings = records.map(record => {
+            let d: BaseDrawing;
+            switch(record.toolType) {
+                case 'trendline': d = new Trendline(); break;
+                case 'rect': d = new Rectangle(); break;
+                case 'fib': d = new FibRetracement(); break;
+                case 'prange': d = new PriceRange(); break;
+                case 'vline': d = new VerticalLine(); break;
+                case 'hray': d = new HorizontalRay(); break;
+                case 'text': d = new TextDrawing(); break;
+                default: d = new Trendline();
+            }
+            d.deserialize(record);
+            return d;
+        });
+    }
+
+    public async saveDrawing(d: BaseDrawing) {
+        if (!this.currentSymbol || (d.state !== 'idle' && d.state !== 'selected')) return;
+        const record = d.serialize();
+        record.symbol = this.currentSymbol;
+        await db.drawings.put(record);
+    }
+
+    public async deleteDrawing(id: string) {
+        await db.drawings.delete(id);
     }
 
     public startTool(type: ToolType) {

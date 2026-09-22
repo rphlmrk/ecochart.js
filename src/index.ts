@@ -37,6 +37,7 @@ export interface SavedWorkspaceState {
     topBarDisplayMode?: 'change' | 'none';
     isAutoHideNav?: boolean;
     isCrosshairSyncEnabled?: boolean;
+    dataLimits?: Record<string, number>; // <-- NEW
     panes: SavedPaneState[];
 }
 
@@ -467,11 +468,16 @@ export class EcoChart {
             }
 
             // Phase 3 & 4: Selection Hit Test (Desktop)
-            const hitDrawing = this.drawingManager.trySelect(this.renderer, x, y);
-            if (hitDrawing) {
+            const hitResult = this.drawingManager.trySelect(this.renderer, x, y);
+            if (hitResult) {
+                const hitDrawing = hitResult.drawing;
                 this.drawingManager.drawings.forEach(d => d.state = 'idle');
                 hitDrawing.state = 'selected';
                 this.drawingManager.selectedDrawing = hitDrawing;
+                
+                // If they grabbed a circle handle, start dragging!
+                if (hitResult.part === 'handle_0') { this.drawingManager.draggingHandle = 0; return; }
+                if (hitResult.part === 'handle_1') { this.drawingManager.draggingHandle = 1; return; }
                 this.isDirty = true;
 
                 // If clicking a Text tool, open Text Modal instead of ColorPicker!
@@ -496,6 +502,7 @@ export class EcoChart {
                     showOpacity: true,
                     showStrokeOptions: true,
                     onDelete: () => {
+                        this.drawingManager.deleteDrawing(hitDrawing.id); // Delete from DB
                         this.drawingManager.drawings = this.drawingManager.drawings.filter(d => d !== hitDrawing);
                         this.drawingManager.selectedDrawing = null;
                         this.isDirty = true;
@@ -553,6 +560,15 @@ export class EcoChart {
               if (this.drawingManager.activeToolType) {
                 this.drawingManager.onPointerMove(this.renderer, this.renderer.crosshairX, this.renderer.crosshairY);
                 this.isDirty = true;
+            } else if (this.drawingManager.selectedDrawing && this.drawingManager.draggingHandle !== null) {
+                // MODIFING EXISTING DRAWING
+                const { time, price } = this.drawingManager.isMagnetEnabled 
+                    ? this.renderer.getMagnetPoint(this.renderer.crosshairX, this.renderer.crosshairY) 
+                    : { time: this.renderer.xToTime(this.renderer.crosshairX), price: this.renderer.yToPrice(this.renderer.crosshairY) };
+                
+                this.drawingManager.selectedDrawing.points[this.drawingManager.draggingHandle] = { time, price };
+                this.isDirty = true;
+                return; // Stop chart from panning
             }
 
             // Broadcast time to other panes
@@ -612,6 +628,13 @@ export class EcoChart {
 
         const stopDragging = (e: PointerEvent) => {
             if (e.pointerType === 'touch') return;
+            
+            // Save modified drawing to DB and reset handle
+            if (this.drawingManager.draggingHandle !== null && this.drawingManager.selectedDrawing) {
+                this.drawingManager.saveDrawing(this.drawingManager.selectedDrawing);
+                this.drawingManager.draggingHandle = null;
+            }
+
             this.isDraggingChart = false;
             this.isDraggingPriceAxis = false;
             this.isDraggingTimeAxis = false;
@@ -748,12 +771,16 @@ export class EcoChart {
                 return;
             }
 
-            // Phase 3 & 4: Selection Hit Test (Desktop)
-            const hitDrawing = this.drawingManager.trySelect(this.renderer, x, y);
-            if (hitDrawing) {
+            // Phase 3 & 4: Selection Hit Test (Mobile)
+            const hitResult = this.drawingManager.trySelect(this.renderer, x, y);
+            if (hitResult) {
+                const hitDrawing = hitResult.drawing;
                 this.drawingManager.drawings.forEach(d => d.state = 'idle');
                 hitDrawing.state = 'selected';
                 this.drawingManager.selectedDrawing = hitDrawing;
+                
+                if (hitResult.part === 'handle_0') { this.drawingManager.draggingHandle = 0; return; }
+                if (hitResult.part === 'handle_1') { this.drawingManager.draggingHandle = 1; return; }
                 this.isDirty = true;
 
                 // If clicking a Text tool, open Text Modal instead of ColorPicker!
@@ -777,6 +804,7 @@ export class EcoChart {
                         showOpacity: true,
                         showStrokeOptions: true,
                         onDelete: () => {
+                            this.drawingManager.deleteDrawing(hitDrawing.id);
                             this.drawingManager.drawings = this.drawingManager.drawings.filter(d => d !== hitDrawing);
                             this.drawingManager.selectedDrawing = null;
                             this.isDirty = true;
@@ -1106,6 +1134,7 @@ export class EcoChart {
 
     public async switchSymbol(newSymbol: string) {
         this.currentSymbol = newSymbol;
+        this.drawingManager.loadDrawings(newSymbol); // Load DB drawings!
         this.network.disconnect();
         this.dataStore.clear();
         this.isDirty = true;
@@ -1218,6 +1247,20 @@ export class WorkspaceManager {
     public static toolbarDockMode: 'free' | 'top' = 'free';
     public static topBarDisplayMode: 'change' | 'none' = 'change';
 
+    // Global Timeframe Download Limits (Stored in days, -1 = Infinity)
+    public static dataLimits: Record<string, number> = {
+        'limit_1m_3m': 21,
+        'limit_4m_8m': 30,
+        'limit_9m_12m': 90,
+        'limit_15m': 180,
+        'limit_30m_45m': 365,
+        'limit_1h_3h': 730,
+        'limit_4h_6h': 1460,
+        'limit_7h_12h': 1825,
+        'limit_13h_1d': 3650,
+        'limit_1w_1M': -1
+    };
+
     // CUSTOM DIALOG PROMISE
     public static async confirmAction(title: string, message: string): Promise<boolean> {
         return new Promise((resolve) => {
@@ -1310,6 +1353,7 @@ export class WorkspaceManager {
             topBarDisplayMode: this.topBarDisplayMode,
             isAutoHideNav: this.isAutoHideNav,
             isCrosshairSyncEnabled: this.isCrosshairSyncEnabled,
+            dataLimits: this.dataLimits,
             panes: this.charts.map(c => c.serialize())
         };
         try {
@@ -1357,6 +1401,7 @@ export class WorkspaceManager {
                     if (state.topBarDisplayMode) this.topBarDisplayMode = state.topBarDisplayMode;
                     if (state.isAutoHideNav !== undefined) this.isAutoHideNav = state.isAutoHideNav;
                     if (state.isCrosshairSyncEnabled !== undefined) this.isCrosshairSyncEnabled = state.isCrosshairSyncEnabled;
+                    if (state.dataLimits) this.dataLimits = { ...this.dataLimits, ...state.dataLimits };
 
                     this.updateToolbarDock();
 
@@ -1862,7 +1907,44 @@ export class WorkspaceManager {
             });
         }
 
+        // Symbol Cache Clear & Status
+        const btnClearSymbolCache = document.getElementById('btn-clear-symbol-cache');
+        const labelSymbolCache = document.getElementById('label-symbol-cache-status');
+
+        const updateSymbolCacheLabel = () => {
+            if (!labelSymbolCache) return;
+            const cached = localStorage.getItem('ecochart_binance_symbols_v1');
+            if (cached) {
+                try {
+                    const parsed = JSON.parse(cached);
+                    const count = Array.isArray(parsed.symbols) ? parsed.symbols.length : 0;
+                    labelSymbolCache.textContent = `${count} pairs cached`;
+                    labelSymbolCache.style.color = 'var(--chart-bull, #26A69A)';
+                } catch {
+                    labelSymbolCache.textContent = 'Invalid cache';
+                }
+            } else {
+                labelSymbolCache.textContent = 'Not cached (Fetches live)';
+                labelSymbolCache.style.color = '#787B86';
+            }
+        };
+
+        btnClearSymbolCache?.addEventListener('click', async () => {
+            if (await WorkspaceManager.confirmAction('Clear Symbol Cache', 'Remove stored USDT trading pairs? They will be freshly downloaded on next search.')) {
+                localStorage.removeItem('ecochart_binance_symbols_v1');
+                updateSymbolCacheLabel();
+            }
+        });
+
         const syncModalInputs = () => {
+            updateSymbolCacheLabel();
+
+            // Sync Data Limit Dropdowns
+            Object.keys(WorkspaceManager.dataLimits).forEach(key => {
+                const el = document.getElementById(key) as HTMLSelectElement;
+                if (el) el.value = String(WorkspaceManager.dataLimits[key]);
+            });
+            
             const selDock = document.getElementById('select-toolbar-dock') as HTMLSelectElement;
             if (selDock) selDock.value = WorkspaceManager.toolbarDockMode;
 
@@ -1942,6 +2024,15 @@ export class WorkspaceManager {
         bindSwatch('input-bull-border', 'bullBorder', true);
         bindSwatch('input-bear-border', 'bearBorder', true);
         bindSwatch('input-custom-accent', 'accentColor', false);
+
+        // Bind Data Limit Dropdowns
+        document.querySelectorAll('.data-limit-select').forEach(select => {
+            select.addEventListener('change', (e) => {
+                const el = e.target as HTMLSelectElement;
+                WorkspaceManager.dataLimits[el.id] = parseInt(el.value, 10);
+                WorkspaceManager.triggerAutoSave();
+            });
+        });
 
         // Advanced Grid Swatch
         const btnGrid = document.getElementById('input-grid-color');

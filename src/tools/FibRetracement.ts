@@ -4,6 +4,7 @@ import { StrokeEngine } from '../renderer/StrokeEngine';
 import { Graphics } from 'pixi.js';
 
 export class FibRetracement extends BaseDrawing {
+    public toolType = 'fib';
     private readonly levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
     
     public onPointerDown(time: number, price: number): boolean {
@@ -26,24 +27,27 @@ export class FibRetracement extends BaseDrawing {
         }
     }
 
-    public hitTest(r: ChartRenderer, screenX: number, screenY: number): boolean {
-        if (this.points.length < 2) return false;
+    public hitTest(r: ChartRenderer, screenX: number, screenY: number): 'none' | 'handle_0' | 'handle_1' | 'body' {
+        const handleHit = this.checkHandleHit(r, screenX, screenY);
+        if (handleHit !== 'none') return handleHit;
+        if (this.points.length < 2) return 'none';
+        
         const x1 = r.timeToX(this.points[0].time);
         const p1 = this.points[0].price;
         const x2 = r.timeToX(this.points[1].time);
         const p2 = this.points[1].price;
 
         const startX = Math.min(x1, x2) - 10;
-        const endX = Math.max(x1, x2) + 100 + 10; // +100 for ray extension
+        const endX = Math.max(x1, x2) + 100 + 10; 
 
         if (screenX >= startX && screenX <= endX) {
             const diff = p1 - p2;
             for (const level of this.levels) {
                 const y = r.priceToY(p1 - (diff * level));
-                if (Math.abs(screenY - y) < 10) return true; // Hit a fib level line
+                if (Math.abs(screenY - y) < 10) return 'body'; 
             }
         }
-        return false;
+        return 'none';
     }
 
     public render(r: ChartRenderer, g: Graphics): void {

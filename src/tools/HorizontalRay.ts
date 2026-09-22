@@ -4,6 +4,7 @@ import { StrokeEngine } from '../renderer/StrokeEngine';
 import { Graphics } from 'pixi.js';
 
 export class HorizontalRay extends BaseDrawing {
+    public toolType = 'hray';
     public onPointerDown(time: number, price: number): boolean {
         this.points[0] = { time, price };
         this.state = 'selected';
@@ -12,13 +13,15 @@ export class HorizontalRay extends BaseDrawing {
 
     public onPointerMove(): void {}
 
-    public hitTest(r: ChartRenderer, screenX: number, screenY: number): boolean {
-        if (this.points.length < 1) return false;
+    public hitTest(r: ChartRenderer, screenX: number, screenY: number): 'none' | 'handle_0' | 'handle_1' | 'body' {
+        const handleHit = this.checkHandleHit(r, screenX, screenY);
+        if (handleHit !== 'none') return handleHit;
+        if (this.points.length < 1) return 'none';
+        
         const x = r.timeToX(this.points[0].time);
         const y = r.priceToY(this.points[0].price);
         
-        // Ray goes from x to infinity right. Hitbox is y ± 10px, starting from x - 10px
-        return screenX >= (x - 10) && Math.abs(screenY - y) < 10;
+        return (screenX >= (x - 10) && Math.abs(screenY - y) < 10) ? 'body' : 'none';
     }
 
     public render(r: ChartRenderer, g: Graphics): void {

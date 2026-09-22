@@ -4,6 +4,7 @@ import { StrokeEngine } from '../renderer/StrokeEngine';
 import { Graphics, Text } from 'pixi.js';
 
 export class PriceRange extends BaseDrawing {
+    public toolType = 'prange';
     private labelText: Text | null = null;
 
     public onPointerDown(time: number, price: number): boolean {
@@ -26,8 +27,11 @@ export class PriceRange extends BaseDrawing {
         }
     }
 
-    public hitTest(r: ChartRenderer, screenX: number, screenY: number): boolean {
-        if (this.points.length < 2) return false;
+    public hitTest(r: ChartRenderer, screenX: number, screenY: number): 'none' | 'handle_0' | 'handle_1' | 'body' {
+        const handleHit = this.checkHandleHit(r, screenX, screenY);
+        if (handleHit !== 'none') return handleHit;
+        if (this.points.length < 2) return 'none';
+        
         const x1 = r.timeToX(this.points[0].time);
         const y1 = r.priceToY(this.points[0].price);
         const x2 = r.timeToX(this.points[1].time);
@@ -38,7 +42,7 @@ export class PriceRange extends BaseDrawing {
         const top = Math.min(y1, y2) - 10;
         const bottom = Math.max(y1, y2) + 10;
 
-        return screenX >= left && screenX <= right && screenY >= top && screenY <= bottom;
+        return (screenX >= left && screenX <= right && screenY >= top && screenY <= bottom) ? 'body' : 'none';
     }
 
     public render(r: ChartRenderer, g: Graphics): void {

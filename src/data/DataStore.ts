@@ -14,6 +14,39 @@ export class DataStore {
         this.length = 0;
     }
 
+    public setAll(candles: Array<[number, number, number, number, number, number]>) {
+        // Protect the actively forming live candle from being overwritten by a background sync
+        let formingCandle: number[] | null = null;
+        if (this.length > 0) {
+            const base = (this.length - 1) * 6;
+            formingCandle = [this.data[base], this.data[base+1], this.data[base+2], this.data[base+3], this.data[base+4], this.data[base+5]];
+        }
+
+        this.clear();
+        while (this.capacity < candles.length + 1) {
+            this.capacity *= 2;
+        }
+        if (this.data.length < this.capacity * 6) {
+            this.data = new Float64Array(this.capacity * 6);
+        }
+
+        for (let i = 0; i < candles.length; i++) {
+            const base = i * 6;
+            const c = candles[i];
+            this.data[base] = c[0]; this.data[base+1] = c[1]; this.data[base+2] = c[2];
+            this.data[base+3] = c[3]; this.data[base+4] = c[4]; this.data[base+5] = c[5];
+        }
+        this.length = candles.length;
+
+        // Restore the live forming candle if it belongs at the end
+        if (formingCandle && this.length > 0) {
+            const lastTime = this.data[(this.length - 1) * 6];
+            if (formingCandle[0] >= lastTime) {
+                this.appendOrUpdate(formingCandle[0], formingCandle[1], formingCandle[2], formingCandle[3], formingCandle[4], formingCandle[5]);
+            }
+        }
+    }
+    
     // Mirrors your Go `mergeCandles` logic
     public appendOrUpdate(time: number, o: number, h: number, l: number, c: number, v: number): boolean {
         let isNewCandle = false;

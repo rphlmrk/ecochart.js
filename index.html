@@ -590,6 +590,8 @@
         Styles</button>
       <button class="modal-tab-btn" data-tab="workspace"
         style="background: transparent; color: #787B86; border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer;">Workspace</button>
+      <button class="modal-tab-btn" data-tab="data"
+        style="background: transparent; color: #787B86; border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer;">Data</button>
     </div>
 
     <div style="padding: 18px; max-height: 380px; overflow-y: auto;">
@@ -770,11 +772,106 @@
             <input type="file" id="input-import-workspace" accept=".json" style="display: none;" />
           </div>
 
+          <!-- Cache & Local Storage Management -->
+          <div style="margin-top: 16px; border-top: 1px solid #2A2E39; padding-top: 16px;">
+            <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Storage & Cache</span>
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+                <span>Symbol Directory:</span>
+                <span id="label-symbol-cache-status" style="color: #787B86; font-size: 11px;">Checking...</span>
+              </div>
+              <button id="btn-clear-symbol-cache" style="width: 100%; background: #2A2E39; color: #D1D4DC; border: 1px solid #434651; padding: 6px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">
+                Clear Symbol Directory Cache
+              </button>
+            </div>
+          </div>
+
           <div style="margin-top: 16px; border-top: 1px solid #2A2E39; padding-top: 16px;">
             <span style="font-size: 11px; font-weight: 700; color: #EF5350; text-transform: uppercase;">Danger Zone</span>
             <div style="margin-top: 10px;">
               <button id="btn-reset-workspace" style="width: 100%; background: rgba(239, 83, 80, 0.15); color: #EF5350; border: 1px solid #EF5350; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">⚠ Reset Workspace to Defaults</button>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 6: DATA & STORAGE LIMITS -->
+      <div id="tab-content-data" class="modal-tab-content" style="display: none;">
+        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Historical Data Limits</span>
+        <div style="font-size: 11px; color: #D1D4DC; margin-top: 6px; margin-bottom: 12px; opacity: 0.85;">
+          Define how much historical data to download and store per timeframe group. Lower values save database space and improve performance.
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: x 10px; row-gap: 8px;">
+          <!-- 1m - 3m -->
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            <span>1m to 3m:</span>
+            <select id="limit_1m_3m" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="7">1 Week</option><option value="21" selected>3 Weeks</option><option value="30">1 Month</option><option value="90">3 Months</option><option value="180">6 Months</option><option value="365">1 Year</option><option value="-1">Max Available</option>
+            </select>
+          </div>
+          <!-- 4m - 8m -->
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            <span>4m to 8m:</span>
+            <select id="limit_4m_8m" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="7">1 Week</option><option value="21">3 Weeks</option><option value="30" selected>1 Month</option><option value="90">3 Months</option><option value="180">6 Months</option><option value="365">1 Year</option><option value="-1">Max Available</option>
+            </select>
+          </div>
+          <!-- 9m - 12m -->
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            <span>9m to 12m:</span>
+            <select id="limit_9m_12m" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="30">1 Month</option><option value="90" selected>3 Months</option><option value="180">6 Months</option><option value="365">1 Year</option><option value="-1">Max Available</option>
+            </select>
+          </div>
+          <!-- 15m -->
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            <span>15m:</span>
+            <select id="limit_15m" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="90">3 Months</option><option value="180" selected>6 Months</option><option value="365">1 Year</option><option value="730">2 Years</option><option value="-1">Max Available</option>
+            </select>
+          </div>
+          <!-- 30m - 45m -->
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            <span>30m to 45m:</span>
+            <select id="limit_30m_45m" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="180">6 Months</option><option value="365" selected>1 Year</option><option value="730">2 Years</option><option value="1460">4 Years</option><option value="-1">Max Available</option>
+            </select>
+          </div>
+          <!-- 1h - 3h -->
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            <span>1h to 3h:</span>
+            <select id="limit_1h_3h" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="365">1 Year</option><option value="730" selected>2 Years</option><option value="1460">4 Years</option><option value="3650">10 Years</option><option value="-1">Max Available</option>
+            </select>
+          </div>
+          <!-- 4h - 6h -->
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            <span>4h to 6h:</span>
+            <select id="limit_4h_6h" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="730">2 Years</option><option value="1460" selected>4 Years</option><option value="1825">5 Years</option><option value="3650">10 Years</option><option value="-1">Max Available</option>
+            </select>
+          </div>
+          <!-- 7h - 12h -->
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            <span>7h to 12h:</span>
+            <select id="limit_7h_12h" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="1460">4 Years</option><option value="1825" selected>5 Years</option><option value="3650">10 Years</option><option value="7300">20 Years</option><option value="-1">Max Available</option>
+            </select>
+          </div>
+          <!-- 13h - 1d -->
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            <span>13h to 1D:</span>
+            <select id="limit_13h_1d" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="1825">5 Years</option><option value="3650" selected>10 Years</option><option value="7300">20 Years</option><option value="-1">Max Available</option>
+            </select>
+          </div>
+          <!-- 1w & 1M -->
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+            <span>1W & 1M:</span>
+            <select id="limit_1w_1M" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="3650">10 Years</option><option value="7300">20 Years</option><option value="-1" selected>Max Available</option>
+            </select>
           </div>
         </div>
       </div>

@@ -4,6 +4,7 @@ import { StrokeEngine } from '../renderer/StrokeEngine';
 import { Graphics } from 'pixi.js';
 
 export class VerticalLine extends BaseDrawing {
+    public toolType = 'vline';
     public onPointerDown(time: number, price: number): boolean {
         this.points[0] = { time, price };
         this.state = 'selected';
@@ -13,11 +14,13 @@ export class VerticalLine extends BaseDrawing {
     public onPointerMove(): void {}
 
     // Fixed: Prefixed screenY with an underscore to satisfy TypeScript
-    public hitTest(r: ChartRenderer, screenX: number, _screenY: number): boolean {
-        if (this.points.length < 1) return false;
+    public hitTest(r: ChartRenderer, screenX: number, _screenY: number): 'none' | 'handle_0' | 'handle_1' | 'body' {
+        const handleHit = this.checkHandleHit(r, screenX, _screenY);
+        if (handleHit !== 'none') return handleHit;
+        if (this.points.length < 1) return 'none';
+        
         const x = r.timeToX(this.points[0].time);
-        // Vertical line covers entire Y axis. Hitbox is x ± 10px
-        return Math.abs(screenX - x) < 10;
+        return Math.abs(screenX - x) < 10 ? 'body' : 'none';
     }
 
     public render(r: ChartRenderer, g: Graphics): void {
