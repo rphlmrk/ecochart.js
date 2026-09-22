@@ -1113,7 +1113,11 @@ export class EcoChart {
         this.dataStore.clear();
         this.isDirty = true;
 
-        await this.network.connect(this.currentSymbol, this.currentInterval, () => {
+        await this.network.connect(this.currentSymbol, this.currentInterval, (prependedCount = 0) => {
+            if (prependedCount > 0 && !this.isLockedToEdge) {
+                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+                this.renderer.cameraX += prependedCount * actualSpacing;
+            }
             this.indicatorManager.update(this.dataStore); // Run Math Engine
             this.isDirty = true;
             if (this.isLockedToEdge) {
@@ -1139,7 +1143,11 @@ export class EcoChart {
         this.dataStore.clear();
         this.isDirty = true;
 
-        await this.network.connect(this.currentSymbol, this.currentInterval, () => {
+        await this.network.connect(this.currentSymbol, this.currentInterval, (prependedCount = 0) => {
+            if (prependedCount > 0 && !this.isLockedToEdge) {
+                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+                this.renderer.cameraX += prependedCount * actualSpacing;
+            }
             this.indicatorManager.update(this.dataStore); // Run Math Engine
             this.isDirty = true;
             if (this.isLockedToEdge) {
@@ -1163,7 +1171,11 @@ export class EcoChart {
         this.currentInterval = interval;
         await this.renderer.init(this.canvas);
 
-        await this.network.connect(symbol, interval, () => {
+        await this.network.connect(symbol, interval, (prependedCount = 0) => {
+            if (prependedCount > 0 && !this.isLockedToEdge) {
+                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+                this.renderer.cameraX += prependedCount * actualSpacing;
+            }
             this.indicatorManager.update(this.dataStore); // Run Math Engine
             this.isDirty = true;
             if (this.isLockedToEdge) {

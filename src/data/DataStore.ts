@@ -14,7 +14,18 @@ export class DataStore {
         this.length = 0;
     }
 
-    public setAll(candles: Array<[number, number, number, number, number, number]>) {
+    public setAll(candles: Array<[number, number, number, number, number, number]>): number {
+        let prependedCount = 0;
+        if (this.length > 0 && candles.length > 0) {
+            const oldOldest = this.data[0];
+            for (let i = 0; i < candles.length; i++) {
+                if (candles[i][0] === oldOldest) {
+                    prependedCount = i;
+                    break;
+                }
+            }
+        }
+
         // Protect the actively forming live candle from being overwritten by a background sync
         let formingCandle: number[] | null = null;
         if (this.length > 0) {
@@ -45,6 +56,7 @@ export class DataStore {
                 this.appendOrUpdate(formingCandle[0], formingCandle[1], formingCandle[2], formingCandle[3], formingCandle[4], formingCandle[5]);
             }
         }
+        return prependedCount;
     }
     
     // Mirrors your Go `mergeCandles` logic

@@ -49,7 +49,7 @@ export class BinanceClient {
         return days === -1 ? Infinity : days * 24 * 60 * 60 * 1000;
     }
 
-    private async reloadFromDB(symbol: string, baseInterval: string, interval: string, cutoffTime: number) {
+    private async reloadFromDB(symbol: string, baseInterval: string, interval: string, cutoffTime: number): Promise<number> {
         const records = await db.candles.where('[symbol+interval]').equals([symbol.toUpperCase(), baseInterval])
             .filter(r => r.time >= cutoffTime).sortBy('time');
 
@@ -63,7 +63,7 @@ export class BinanceClient {
             const resampled = TimeframeResampler.resampleHistory(rawFormat, interval);
             candles.push(...resampled);
         }
-        this.dataStore.setAll(candles);
+        return this.dataStore.setAll(candles);
     }
 
     private async fetchAndSaveChunk(symbol: string, baseInterval: string, startTime: number | undefined, endTime: number) {
@@ -89,15 +89,15 @@ export class BinanceClient {
         } catch(e) { return 0; }
     }
 
-    private async startBackgroundSync(symbol: string, baseInterval: string, oldestLocal: number, cutoffTime: number, interval: string, onUpdate: () => void) {
+    private async startBackgroundSync(symbol: string, baseInterval: string, oldestLocal: number, cutoffTime: number, interval: string, onUpdate: (prependedCount?: number) => void) {
         let currentEnd = oldestLocal - 1;
         while (currentEnd > cutoffTime && this.currentSyncKey === `${symbol}_${interval}`) {
             const oldestFetched = await this.fetchAndSaveChunk(symbol, baseInterval, undefined, currentEnd);
             if (oldestFetched === 0) break; // End of market data reached
             currentEnd = oldestFetched - 1;
             
-            await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
-            onUpdate();
+            const prepended = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
+            onUpdate(prepended);
         }
     }
 
@@ -199,7 +199,7 @@ export class BinanceClient {
     }
 
     // UPDATED: Added onTicker callback and Combined Streams
-    public async connect(symbol: string, interval: string, onUpdate: () => void, onTicker: (changePct: number) => void) {
+    public async connect(symbol: string, interval: string, onUpdate: (prependedCount?: number) => void, onTicker: (changePct: number) => void) {
         this.disconnect();
         this.currentSyncKey = `${symbol}_${interval}`;
 
@@ -212,8 +212,8 @@ export class BinanceClient {
 
         // --- 1. LOCAL FIRST DATA LOAD & SYNC ---
         try {
-            await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
-            if (this.dataStore.length > 0) onUpdate();
+            const prepended = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
+            if (this.dataStore.length > 0) onUpdate(prepended);
 
             let oldestLocal = Date.now();
             let newestLocal = 0;
@@ -235,8 +235,8 @@ export class BinanceClient {
             }
 
             // Reload unified state from DB & start paginating backwards infinitely
-            await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
-            onUpdate();
+            const prepended2 = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
+            onUpdate(prepended2);
             this.startBackgroundSync(symbol, baseInterval, oldestLocal, cutoffTime, interval, onUpdate);
         } catch (err) {
             console.error('[Binance] Sync error', err);

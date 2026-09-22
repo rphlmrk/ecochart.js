@@ -30,8 +30,9 @@ export abstract class BaseDrawing {
     // Shared helper for all tools to check if a resize handle was grabbed
     protected checkHandleHit(r: ChartRenderer, screenX: number, screenY: number): 'none' | 'handle_0' | 'handle_1' {
         if (this.points.length > 0) {
-            const x1 = this['isAnchored'] ? this['anchorX'] : r.timeToX(this.points[0].time);
-            const y1 = this['isAnchored'] ? this['anchorY'] : r.priceToY(this.points[0].price);
+            const self = this as any; // Safely bypass strict type checking for TextDrawing properties
+            const x1 = self.isAnchored ? self.anchorX : r.timeToX(this.points[0].time);
+            const y1 = self.isAnchored ? self.anchorY : r.priceToY(this.points[0].price);
             if (Math.hypot(screenX - x1, screenY - y1) < 15) return 'handle_0';
         }
         if (this.points.length > 1) {
