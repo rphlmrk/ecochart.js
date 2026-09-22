@@ -78,13 +78,38 @@ export class DrawingManager {
         }
     }
 
-    public onPointerDown(r: ChartRenderer, screenX: number, screenY: number): boolean {
+    public onPointerDown(r: ChartRenderer, screenX: number, screenY: number, shiftKey = false): boolean {
         if (!this.currentDrawing) return false;
         
         // Use a slightly larger snap threshold for better drawing UX
-        const { time, price } = this.isMagnetEnabled 
+        let { time, price } = this.isMagnetEnabled 
             ? r.getMagnetPoint(screenX, screenY, 30) 
             : { time: r.xToTime(screenX), price: r.yToPrice(screenY) };
+
+        // Apply Shift Constraint (0, 45, 90 degrees) for final click
+        if (shiftKey && this.currentDrawing.toolType === 'trendline' && this.currentDrawing.points.length > 0) {
+            const startX = r.timeToX(this.currentDrawing.points[0].time);
+            const startY = r.priceToY(this.currentDrawing.points[0].price);
+            let curX = r.timeToX(time);
+            let curY = r.priceToY(price);
+
+            const dx = curX - startX;
+            const dy = curY - startY;
+            const angle = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
+
+            if (angle < 22.5 || angle > 157.5) {
+                curY = startY; // Snap Horizontal
+            } else if (angle > 67.5 && angle < 112.5) {
+                curX = startX; // Snap Vertical
+            } else {
+                const dist = Math.max(Math.abs(dx), Math.abs(dy)); // Snap 45 degrees
+                curX = startX + Math.sign(dx) * dist;
+                curY = startY + Math.sign(dy) * dist;
+            }
+
+            time = r.xToTime(curX);
+            price = r.yToPrice(curY);
+        }
 
         if (this.currentDrawing.onPointerDown(time, price)) {
             this.currentDrawing.state = 'idle'; // Hide handles immediately
@@ -96,11 +121,38 @@ export class DrawingManager {
         return false; // Still drawing
     }
 
-    public onPointerMove(r: ChartRenderer, screenX: number, screenY: number) {
+    public onPointerMove(r: ChartRenderer, screenX: number, screenY: number, shiftKey = false) {
         if (!this.currentDrawing) return;
-        const { time, price } = this.isMagnetEnabled 
+        
+        let { time, price } = this.isMagnetEnabled 
             ? r.getMagnetPoint(screenX, screenY) 
             : { time: r.xToTime(screenX), price: r.yToPrice(screenY) };
+
+        // Apply Shift Constraint (0, 45, 90 degrees) for Trendlines
+        if (shiftKey && this.currentDrawing.toolType === 'trendline' && this.currentDrawing.points.length > 0) {
+            const startX = r.timeToX(this.currentDrawing.points[0].time);
+            const startY = r.priceToY(this.currentDrawing.points[0].price);
+            let curX = r.timeToX(time);
+            let curY = r.priceToY(price);
+
+            const dx = curX - startX;
+            const dy = curY - startY;
+            const angle = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
+
+            if (angle < 22.5 || angle > 157.5) {
+                curY = startY; // Snap Horizontal
+            } else if (angle > 67.5 && angle < 112.5) {
+                curX = startX; // Snap Vertical
+            } else {
+                const dist = Math.max(Math.abs(dx), Math.abs(dy)); // Snap 45 degrees
+                curX = startX + Math.sign(dx) * dist;
+                curY = startY + Math.sign(dy) * dist;
+            }
+
+            time = r.xToTime(curX);
+            price = r.yToPrice(curY);
+        }
+
         this.currentDrawing.onPointerMove(time, price);
     }
 

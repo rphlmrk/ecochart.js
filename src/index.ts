@@ -447,9 +447,13 @@ export class EcoChart {
             const y = e.clientY - rect.top;
 
            if (this.drawingManager.activeToolType) {
-                const finished = this.drawingManager.onPointerDown(this.renderer, x, y);
+                // Pass e.shiftKey so the final click snaps to straight lines
+                const finished = this.drawingManager.onPointerDown(this.renderer, x, y, e.shiftKey);
                 if (finished) {
                     const finishedDrawing = this.drawingManager.drawings[this.drawingManager.drawings.length - 1];
+                    
+                    if (finishedDrawing) this.drawingManager.saveDrawing(finishedDrawing);
+
                     // If we just placed a Text tool, open the editor modal immediately!
                     if (finishedDrawing && finishedDrawing.constructor.name === 'TextDrawing') {
                         WorkspaceManager.openTextEditor(finishedDrawing as any);
@@ -514,6 +518,9 @@ export class EcoChart {
                         hitDrawing.width = res.thickness || hitDrawing.width;
                         hitDrawing.style = res.style || hitDrawing.style;
                         this.isDirty = true;
+                        
+                        this.drawingManager.saveDrawing(hitDrawing);
+                        
                         WorkspaceManager.triggerAutoSave();
                     }
                 });
@@ -558,14 +565,41 @@ export class EcoChart {
             this.updateLegendValues();
 
               if (this.drawingManager.activeToolType) {
-                this.drawingManager.onPointerMove(this.renderer, this.renderer.crosshairX, this.renderer.crosshairY);
+                // 1. Pass e.shiftKey for New Drawings
+                this.drawingManager.onPointerMove(this.renderer, this.renderer.crosshairX, this.renderer.crosshairY, e.shiftKey);
                 this.isDirty = true;
             } else if (this.drawingManager.selectedDrawing && this.drawingManager.draggingHandle !== null) {
                 // MODIFING EXISTING DRAWING
-                const { time, price } = this.drawingManager.isMagnetEnabled 
+                let { time, price } = this.drawingManager.isMagnetEnabled 
                     ? this.renderer.getMagnetPoint(this.renderer.crosshairX, this.renderer.crosshairY) 
                     : { time: this.renderer.xToTime(this.renderer.crosshairX), price: this.renderer.yToPrice(this.renderer.crosshairY) };
                 
+                // 2. Add Shift-Key constraint for MODIFING existing drawings
+                if (e.shiftKey && this.drawingManager.selectedDrawing.toolType === 'trendline') {
+                    const anchorIdx = this.drawingManager.draggingHandle === 0 ? 1 : 0;
+                    const anchorPt = this.drawingManager.selectedDrawing.points[anchorIdx];
+                    
+                    const startX = this.renderer.timeToX(anchorPt.time);
+                    const startY = this.renderer.priceToY(anchorPt.price);
+                    let curX = this.renderer.timeToX(time);
+                    let curY = this.renderer.priceToY(price);
+                    
+                    const dx = curX - startX;
+                    const dy = curY - startY;
+                    const angle = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
+
+                    if (angle < 22.5 || angle > 157.5) curY = startY; 
+                    else if (angle > 67.5 && angle < 112.5) curX = startX;
+                    else { 
+                        const dist = Math.max(Math.abs(dx), Math.abs(dy));
+                        curX = startX + Math.sign(dx) * dist;
+                        curY = startY + Math.sign(dy) * dist;
+                    }
+                    
+                    time = this.renderer.xToTime(curX);
+                    price = this.renderer.yToPrice(curY);
+                }
+
                 this.drawingManager.selectedDrawing.points[this.drawingManager.draggingHandle] = { time, price };
                 this.isDirty = true;
                 return; // Stop chart from panning
@@ -751,9 +785,12 @@ export class EcoChart {
 
                 // ---> NEW: Mobile Drawing Support <---
                 if (this.drawingManager.activeToolType) {
-                const finished = this.drawingManager.onPointerDown(this.renderer, x, y);
+                const finished = this.drawingManager.onPointerDown(this.renderer, x, y, e.shiftKey);
                 if (finished) {
                     const finishedDrawing = this.drawingManager.drawings[this.drawingManager.drawings.length - 1];
+                    
+                    if (finishedDrawing) this.drawingManager.saveDrawing(finishedDrawing);
+
                     // If we just placed a Text tool, open the editor modal immediately!
                     if (finishedDrawing && finishedDrawing.constructor.name === 'TextDrawing') {
                         WorkspaceManager.openTextEditor(finishedDrawing as any);
@@ -816,6 +853,9 @@ export class EcoChart {
                             hitDrawing.width = res.thickness || hitDrawing.width;
                             hitDrawing.style = res.style || hitDrawing.style;
                             this.isDirty = true;
+
+                            this.drawingManager.saveDrawing(hitDrawing);
+
                             WorkspaceManager.triggerAutoSave();
                         }
                     });
@@ -1090,6 +1130,9 @@ export class EcoChart {
     public async deserialize(state: SavedPaneState) {
         this.currentSymbol = state.symbol || 'BTCUSDT';
         this.currentInterval = state.timeframe || '1m';
+        
+        await this.drawingManager.loadDrawings(this.currentSymbol); 
+
         this.renderer.chartMode = (state.chartMode as any) || 'candles';
         this.renderer.isAutoScale = state.isAutoScale ?? true;
         
@@ -1169,6 +1212,9 @@ export class EcoChart {
     public async startLiveBinance(symbol: string, interval: string) {
         this.currentSymbol = symbol;
         this.currentInterval = interval;
+
+        await this.drawingManager.loadDrawings(symbol); 
+
         await this.renderer.init(this.canvas);
 
         await this.network.connect(symbol, interval, (prependedCount = 0) => {
@@ -2610,6 +2656,8 @@ export class WorkspaceManager {
                 td.hasBorder = checkBorder.checked;
                 td.textWrap = checkWrap.checked;
                 td.fontSize = parseInt(selectSize.value, 10) || 16;
+
+                WorkspaceManager.getActiveChart()!.drawingManager.saveDrawing(td);
 
                 WorkspaceManager.getActiveChart()!.isDirty = true;
                 WorkspaceManager.triggerAutoSave();
