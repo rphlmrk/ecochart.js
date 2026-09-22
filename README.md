@@ -68,6 +68,9 @@ Includes 14+ designer presets (Midnight Abyss, Cyberpunk Neon, Solar Spark, Crim
 
 ---
 
+<img width="1920" height="914" alt="ecoochart 2" src="https://github.com/user-attachments/assets/b41b08aa-b481-4a53-9072-c6239adf71ad" />
+<img width="1920" height="917" alt="ecoochart 1" src="https://github.com/user-attachments/assets/392b49f1-fe46-4a98-9ca0-7fa0255c61c5" />
+
 ## 🛠️ Tech Stack
 
 - **Language:** TypeScript  
