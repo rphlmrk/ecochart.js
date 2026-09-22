@@ -1261,7 +1261,11 @@ export class EcoChart {
         this.renderer.cameraX = initialMaxScroll + 150;
 
         setInterval(() => {
-            if (this.isRunning) this.isDirty = true;
+            if (this.isRunning) {
+                // Evaluate dynamic schedule, session, system, or solar-session transitions
+                themeManager.evaluateDynamicTheme();
+                this.isDirty = true;
+            }
         }, 1000);
 
         let lastFrameTime = performance.now();
@@ -2052,6 +2056,8 @@ export class WorkspaceManager {
                     <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.name}</span>
                 `;
                 card.onclick = () => {
+                    // Clicking a preset manually switches mode back to manual
+                    themeManager.setDynamicConfig({ mode: 'manual' });
                     themeManager.setThemeById(p.id);
                     syncModalInputs();
                 };
@@ -2090,6 +2096,38 @@ export class WorkspaceManager {
 
         const syncModalInputs = () => {
             updateSymbolCacheLabel();
+
+            // Sync Dynamic Theme Controls (Options A - D)
+            const dynCfg = themeManager.getDynamicConfig();
+            const selDynMode = document.getElementById('select-dynamic-theme-mode') as HTMLSelectElement;
+            const boxDynOpts = document.getElementById('dynamic-theme-options');
+            const rowDayTheme = document.getElementById('row-day-theme');
+            const rowNightTheme = document.getElementById('row-night-theme');
+            const rowHours = document.getElementById('row-schedule-hours');
+            const selDayTheme = document.getElementById('select-day-theme') as HTMLSelectElement;
+            const selNightTheme = document.getElementById('select-night-theme') as HTMLSelectElement;
+            const inputDayHour = document.getElementById('input-day-start-hour') as HTMLInputElement;
+            const inputNightHour = document.getElementById('input-night-start-hour') as HTMLInputElement;
+
+            if (selDynMode) selDynMode.value = dynCfg.mode;
+            if (selDayTheme) selDayTheme.value = dynCfg.dayThemeId;
+            if (selNightTheme) selNightTheme.value = dynCfg.nightThemeId;
+            if (inputDayHour) inputDayHour.value = String(dynCfg.dayStartHour);
+            if (inputNightHour) inputNightHour.value = String(dynCfg.nightStartHour);
+
+            // Contextual Visibility based on Mode
+            if (boxDynOpts) {
+                if (dynCfg.mode === 'manual' || dynCfg.mode === 'session') {
+                    boxDynOpts.style.display = 'none';
+                } else {
+                    boxDynOpts.style.display = 'flex';
+                    if (rowDayTheme) rowDayTheme.style.display = 'flex';
+                    if (rowNightTheme) rowNightTheme.style.display = 'flex';
+                    if (rowHours) rowHours.style.display = (dynCfg.mode === 'schedule' || dynCfg.mode === 'solar-session') ? 'flex' : 'none';
+                }
+            }
+        
+
 
             // Sync Data Limit Dropdowns
             Object.keys(WorkspaceManager.dataLimits).forEach(key => {
@@ -2167,6 +2205,7 @@ export class WorkspaceManager {
             const selClock2 = document.getElementById('select-clock-secondary') as HTMLSelectElement;
             if (selClock2) selClock2.value = WorkspaceManager.clockConfig.secondaryTz;
         };
+        
 
         const bindSwatch = (btnId: string, themeKey: keyof ChartTheme, showOpacity = true) => {
             const btn = document.getElementById(btnId);
@@ -2317,6 +2356,37 @@ export class WorkspaceManager {
                 c.renderer.mainLineWidth = width;
                 c.isDirty = true;
             });
+        });
+
+        // Dynamic Theme Mode Listeners (Options A - D)
+        document.getElementById('select-dynamic-theme-mode')?.addEventListener('change', (e) => {
+            const mode = (e.target as HTMLSelectElement).value as any;
+            themeManager.setDynamicConfig({ mode });
+            syncModalInputs();
+        });
+
+        document.getElementById('select-day-theme')?.addEventListener('change', (e) => {
+            const dayThemeId = (e.target as HTMLSelectElement).value;
+            themeManager.setDynamicConfig({ dayThemeId });
+        });
+
+        document.getElementById('select-night-theme')?.addEventListener('change', (e) => {
+            const nightThemeId = (e.target as HTMLSelectElement).value;
+            themeManager.setDynamicConfig({ nightThemeId });
+        });
+
+        document.getElementById('input-day-start-hour')?.addEventListener('change', (e) => {
+            const val = parseInt((e.target as HTMLInputElement).value, 10);
+            if (!isNaN(val) && val >= 0 && val <= 23) {
+                themeManager.setDynamicConfig({ dayStartHour: val });
+            }
+        });
+
+        document.getElementById('input-night-start-hour')?.addEventListener('change', (e) => {
+            const val = parseInt((e.target as HTMLInputElement).value, 10);
+            if (!isNaN(val) && val >= 0 && val <= 23) {
+                themeManager.setDynamicConfig({ nightStartHour: val });
+            }
         });
 
         document.querySelectorAll('input[name="accent-source"]').forEach((radio) => {

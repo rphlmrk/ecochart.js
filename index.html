@@ -600,6 +600,64 @@
 
       <!-- TAB 1: THEMES -->
       <div id="tab-content-themes" class="modal-tab-content">
+
+        <!-- DYNAMIC THEME ENGINE (Options A - D) -->
+        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Dynamic Theme Mode</span>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 8px; margin-bottom: 12px;">
+          <span style="font-size: 12px; color: #D1D4DC;">Mode:</span>
+          <select id="select-dynamic-theme-mode" style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none; max-width: 250px;">
+            <option value="manual" selected>Manual (Static Preset)</option>
+            <option value="schedule">Option A: Scheduled Day & Night</option>
+            <option value="session">Option B: Market Session Reactive</option>
+            <option value="system">Option C: Follow System OS</option>
+            <option value="solar-session">Option D: Solar Session Flow</option>
+          </select>
+        </div>
+
+        <!-- Dynamic Contextual Options (A, C, D) -->
+        <div id="dynamic-theme-options" style="display: none; background: rgba(0,0,0,0.25); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 6px; padding: 10px; margin-bottom: 16px; flex-direction: column; gap: 10px;">
+          <!-- Day Theme Picker -->
+          <div id="row-day-theme" style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+            <span>☀️ Day Theme (Light):</span>
+            <select id="select-day-theme" style="background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="solar-spark" selected>Solar Spark</option>
+              <option value="corporate-trust">Corporate Trust</option>
+              <option value="crimson-pulse">Crimson Pulse</option>
+              <option value="sunset-blaze">Sunset Blaze</option>
+              <option value="emerald-oasis">Emerald Oasis</option>
+              <option value="hydro-tech">Hydro Tech</option>
+              <option value="matcha-mint">Matcha & Mint</option>
+              <option value="bubblegum-pop">Bubblegum Pop</option>
+              <option value="sunset-horizon">Sunset Horizon</option>
+            </select>
+          </div>
+
+          <!-- Night Theme Picker -->
+          <div id="row-night-theme" style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+            <span>🌙 Night Theme (Dark):</span>
+            <select id="select-night-theme" style="background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="midnight-abyss" selected>Midnight Abyss</option>
+              <option value="cyberpunk-neon">Cyberpunk Neon</option>
+              <option value="amethyst-mystique">Amethyst Mystique</option>
+              <option value="minimalist-mono">Minimalist Mono</option>
+              <option value="mystic-lavender">Mystic Lavender</option>
+            </select>
+          </div>
+
+          <!-- Schedule Hours (Local) -->
+          <div id="row-schedule-hours" style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+            <span>Day Hours (Local):</span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <input type="number" id="input-day-start-hour" value="7" min="0" max="23" style="width: 44px; background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 2px 4px; font-size: 11px; text-align: center; outline: none;" title="Day Start Hour (00-23)" />
+              <span style="font-size: 11px; opacity: 0.6;">to</span>
+              <input type="number" id="input-night-start-hour" value="19" min="0" max="23" style="width: 44px; background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 2px 4px; font-size: 11px; text-align: center; outline: none;" title="Night Start Hour (00-23)" />
+            </div>
+          </div>
+        </div>
+
+        <div style="height: 1px; background: var(--chart-grid, #2A2E39); margin: 14px 0;"></div>
+
+        <!-- MANUAL COLOR PRESETS -->
         <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Color Presets</span>
         <div id="preset-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0 16px 0;">
         </div>
