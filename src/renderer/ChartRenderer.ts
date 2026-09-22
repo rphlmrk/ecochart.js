@@ -11,6 +11,19 @@ export class ChartRenderer {
     // Theme state
     public isDarkTheme = true;
 
+    // Session Config (Color + Alpha)
+    public sessionConfig = {
+        enabled: true,
+        showOnAxis: true,
+        showOnChart: false,
+        asiaColor: 0xFBC02D,
+        asiaAlpha: 0.5,
+        londonColor: 0x2962FF,
+        londonAlpha: 0.5,
+        nyColor: 0xEF5350,
+        nyAlpha: 0.5
+    };
+
     // Pixi Layers (Z-Index order)
     private gridGraphics!: Graphics;
     private candlesGraphics!: Graphics;
@@ -505,6 +518,54 @@ export class ChartRenderer {
         // Draw Time Axis at bottom
         this.uiGraphics.rect(0, timeAxisY, width, this.timeAxisHeight).fill(this.axisBgColor);
         this.uiGraphics.moveTo(0, timeAxisY).lineTo(width, timeAxisY).stroke({ color: this.gridColor, width: 1 });
+
+        // --- 3.5 DRAW MARKET SESSION HIGHLIGHTS ---
+        if (this.sessionConfig.enabled) {
+            const htf = ['1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'];
+            if (!htf.includes(this.currentInterval)) {
+                for (let i = visStart; i < visEnd; i++) {
+                    if (i < 0) continue;
+                    const ts = this.dataStore.data[i * 6];
+                    if (!ts) continue;
+
+                    const d = new Date(ts);
+                    const floatHour = d.getUTCHours() + (d.getUTCMinutes() / 60);
+
+                    let color = -1;
+                    let userAlpha = 0.5;
+
+                    // Priority overlaps: NY > London > Asia
+                    if (floatHour >= 13.5 && floatHour < 20) {
+                        color = this.sessionConfig.nyColor;
+                        userAlpha = this.sessionConfig.nyAlpha;
+                    } else if (floatHour >= 8 && floatHour < 16.5) {
+                        color = this.sessionConfig.londonColor;
+                        userAlpha = this.sessionConfig.londonAlpha;
+                    } else if (floatHour >= 0 && floatHour < 9) {
+                        color = this.sessionConfig.asiaColor;
+                        userAlpha = this.sessionConfig.asiaAlpha;
+                    }
+
+                    if (color !== -1) {
+                        const x = (i * actualSpacing) - this.cameraX;
+                        if (x > chartWidth || x + actualSpacing < 0) continue;
+
+                        // Shade the main chart background behind candles
+                        if (this.sessionConfig.showOnChart) {
+                            this.gridGraphics.rect(x, 0, actualSpacing, mainChartHeight)
+                                .fill({ color, alpha: userAlpha * (this.isDarkTheme ? 0.35 : 0.45) });
+                        }
+                        // Shade the bottom time axis with user-defined opacity
+                        if (this.sessionConfig.showOnAxis) {
+                            this.uiGraphics.rect(x, timeAxisY, actualSpacing, this.timeAxisHeight)
+                                .fill({ color, alpha: userAlpha });
+                            this.uiGraphics.rect(x, timeAxisY, actualSpacing, 3)
+                                .fill({ color, alpha: Math.min(1, userAlpha * 1.5) }); // Top edge emphasis
+                        }
+                    }
+                }
+            }
+        }
 
         // Draw Divider Line across chart AND right axis column
         if (oscHeight > 0) {

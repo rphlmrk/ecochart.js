@@ -37,7 +37,8 @@ export interface SavedWorkspaceState {
     topBarDisplayMode?: 'change' | 'none';
     isAutoHideNav?: boolean;
     isCrosshairSyncEnabled?: boolean;
-    dataLimits?: Record<string, number>; // <-- NEW
+    dataLimits?: Record<string, number>;
+    sessionConfig?: any;
     panes: SavedPaneState[];
 }
 
@@ -52,7 +53,9 @@ export class EcoChart {
     public canvas: HTMLCanvasElement;
     public container: HTMLElement;
     public isRunning = true;
-    private themeUnsubscribe: (() => void) | null = null; // <--- ADD THIS
+    private themeUnsubscribe: (() => void) | null = null; 
+
+    private lastThemeIsDark: boolean = true;
 
     // Per-Pane Controls & Legend
     public autoBtn: HTMLButtonElement | null = null;
@@ -111,15 +114,29 @@ export class EcoChart {
         // Build per-pane Auto button and Navigation Bar
         this.createPaneControls();
 
+        // Initialize the tracking variable
+        this.lastThemeIsDark = themeManager.getTheme().isDark;
+
         this.themeUnsubscribe = themeManager.subscribe((theme) => { 
             this.renderer.applyTheme(theme);
             const accent = themeManager.getResolvedAccentColor();
+            
             if (this.autoBtn) {
                 this.autoBtn.style.color = this.renderer.isAutoScale ? accent : 'var(--chart-text, #787B86)';
             }
             if (this.resetBtn) {
                 this.resetBtn.style.color = accent;
             }
+
+            // ---> 2. CHECK FOR LIGHT/DARK TRANSITION <---
+            if (theme.isDark !== this.lastThemeIsDark) {
+                this.lastThemeIsDark = theme.isDark;
+                const drawingsChanged = this.drawingManager.adaptDrawingsToTheme(theme.isDark);
+                if (drawingsChanged) {
+                    WorkspaceManager.triggerAutoSave();
+                }
+            }
+
             this.isDirty = true;
         });
 
@@ -1319,6 +1336,43 @@ export class WorkspaceManager {
         'limit_1w_1M': -1
     };
 
+    public static sessionConfig = {
+        enabled: true,
+        showOnAxis: true,
+        showOnChart: false,
+        asiaColor: '#FBC02D80',
+        londonColor: '#2962FF80',
+        nyColor: '#EF535080'
+    };
+
+    public static syncSessions() {
+        const parseSess = (hex: string) => {
+            const clean = hex.replace('#', '');
+            const color = parseInt(clean.slice(0, 6), 16) || 0;
+            const alpha = clean.length >= 8 ? parseInt(clean.slice(6, 8), 16) / 255 : 0.5;
+            return { color, alpha };
+        };
+
+        const asia = parseSess(this.sessionConfig.asiaColor);
+        const london = parseSess(this.sessionConfig.londonColor);
+        const ny = parseSess(this.sessionConfig.nyColor);
+
+        this.charts.forEach(c => {
+            c.renderer.sessionConfig = {
+                enabled: this.sessionConfig.enabled,
+                showOnAxis: this.sessionConfig.showOnAxis,
+                showOnChart: this.sessionConfig.showOnChart,
+                asiaColor: asia.color,
+                asiaAlpha: asia.alpha,
+                londonColor: london.color,
+                londonAlpha: london.alpha,
+                nyColor: ny.color,
+                nyAlpha: ny.alpha
+            };
+            c.isDirty = true;
+        });
+    }
+
     // CUSTOM DIALOG PROMISE
     public static async confirmAction(title: string, message: string): Promise<boolean> {
         return new Promise((resolve) => {
@@ -1412,6 +1466,7 @@ export class WorkspaceManager {
             isAutoHideNav: this.isAutoHideNav,
             isCrosshairSyncEnabled: this.isCrosshairSyncEnabled,
             dataLimits: this.dataLimits,
+            sessionConfig: this.sessionConfig,
             panes: this.charts.map(c => c.serialize())
         };
         try {
@@ -1460,6 +1515,8 @@ export class WorkspaceManager {
                     if (state.isAutoHideNav !== undefined) this.isAutoHideNav = state.isAutoHideNav;
                     if (state.isCrosshairSyncEnabled !== undefined) this.isCrosshairSyncEnabled = state.isCrosshairSyncEnabled;
                     if (state.dataLimits) this.dataLimits = { ...this.dataLimits, ...state.dataLimits };
+
+                     if (state.sessionConfig) this.sessionConfig = { ...this.sessionConfig, ...state.sessionConfig };
 
                     this.updateToolbarDock();
 
@@ -1592,6 +1649,7 @@ export class WorkspaceManager {
             if (i === 0) this.setActiveChart(chart);
         }
         
+        this.syncSessions();
         this.triggerAutoSave();
     }
 
@@ -2026,6 +2084,19 @@ export class WorkspaceManager {
                     el.style.backgroundColor = color;
                 }
             };
+
+            // Sync Session Toggles & Swatches
+            const chkSessEnabled = document.getElementById('check-sessions-enabled') as HTMLInputElement;
+            if (chkSessEnabled) chkSessEnabled.checked = WorkspaceManager.sessionConfig.enabled;
+            const chkSessAxis = document.getElementById('check-sessions-axis') as HTMLInputElement;
+            if (chkSessAxis) chkSessAxis.checked = WorkspaceManager.sessionConfig.showOnAxis;
+            const chkSessChart = document.getElementById('check-sessions-chart') as HTMLInputElement;
+            if (chkSessChart) chkSessChart.checked = WorkspaceManager.sessionConfig.showOnChart;
+
+            setSwatch('input-sess-asia', WorkspaceManager.sessionConfig.asiaColor);
+            setSwatch('input-sess-london', WorkspaceManager.sessionConfig.londonColor);
+            setSwatch('input-sess-ny', WorkspaceManager.sessionConfig.nyColor);
+
             setSwatch('input-bull-body', current.bullBody);
             setSwatch('input-bear-body', current.bearBody);
             setSwatch('input-bull-wick', current.bullWick);
@@ -2082,6 +2153,44 @@ export class WorkspaceManager {
         bindSwatch('input-bull-border', 'bullBorder', true);
         bindSwatch('input-bear-border', 'bearBorder', true);
         bindSwatch('input-custom-accent', 'accentColor', false);
+
+        // Bind Session Checkboxes
+        const bindSessCheck = (id: string, key: keyof typeof WorkspaceManager.sessionConfig) => {
+            document.getElementById(id)?.addEventListener('change', (e) => {
+                (WorkspaceManager.sessionConfig as any)[key] = (e.target as HTMLInputElement).checked;
+                WorkspaceManager.syncSessions();
+                WorkspaceManager.triggerAutoSave();
+            });
+        };
+        bindSessCheck('check-sessions-enabled', 'enabled');
+        bindSessCheck('check-sessions-axis', 'showOnAxis');
+        bindSessCheck('check-sessions-chart', 'showOnChart');
+
+        // Bind Session Swatches (with Opacity Enabled)
+        const bindSessionSwatch = (btnId: string, configKey: keyof typeof WorkspaceManager.sessionConfig) => {
+            const btn = document.getElementById(btnId);
+            if (!btn) return;
+            btn.addEventListener('click', () => {
+                const currentHex = (WorkspaceManager.sessionConfig as any)[configKey] || '#FFFFFF';
+                colorPicker.open({
+                    anchorElement: btn,
+                    initialColor: currentHex,
+                    showOpacity: true, // <--- OPACITY SLIDER ENABLED
+                    onChange: (res) => {
+                        const aHex = Math.round(res.opacity * 255).toString(16).padStart(2, '0');
+                        const fullHex = `${res.color.slice(0, 7)}${aHex}`.toUpperCase();
+                        btn.dataset.color = fullHex;
+                        btn.style.backgroundColor = fullHex;
+                        (WorkspaceManager.sessionConfig as any)[configKey] = fullHex;
+                        WorkspaceManager.syncSessions();
+                        WorkspaceManager.triggerAutoSave();
+                    }
+                });
+            });
+        };
+        bindSessionSwatch('input-sess-asia', 'asiaColor');
+        bindSessionSwatch('input-sess-london', 'londonColor');
+        bindSessionSwatch('input-sess-ny', 'nyColor');
 
         // Bind Data Limit Dropdowns
         document.querySelectorAll('.data-limit-select').forEach(select => {

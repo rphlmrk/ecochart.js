@@ -28,11 +28,11 @@ export class ColorPicker {
     private currentThickness = 1;
     private currentStyle: LineStyle = 'solid';
 
-    // 10 Columns x 8 Rows Swatch Matrix (Achromatic row + 7 spectrum tiers)
+    // 10 Columns x 8 Rows Swatch Matrix (100% unique colors, zero duplicates)
     private readonly PALETTE_MATRIX: string[][] = [
         ['#FFFFFF', '#E1E3EB', '#CFD3DC', '#B2B5BE', '#9598A1', '#787B86', '#5D606B', '#434651', '#2A2E39', '#000000'],
-        ['#EF5350', '#FF9800', '#FBC02D', '#4CAF50', '#009688', '#00BCD4', '#2962FF', '#673AB7', '#9C27B0', '#E91E63'],
-        ['#FCE4EC', '#FFF3E0', '#FFFDE7', '#E8F5E9', '#E0F2F1', '#E0F7FA', '#E8EAF6', '#EDE7F6', '#F3E5F5', '#FCE4EC'],
+        ['#EF5350', '#FF9800', '#FFEB3B', '#4CAF50', '#009688', '#00BCD4', '#2962FF', '#673AB7', '#9C27B0', '#E91E63'],
+        ['#FFEBEE', '#FFF3E0', '#FFFDE7', '#E8F5E9', '#E0F2F1', '#E0F7FA', '#E8EAF6', '#EDE7F6', '#F3E5F5', '#FCE4EC'],
         ['#FFCDD2', '#FFE0B2', '#FFF9C4', '#C8E6C9', '#B2DFDB', '#B2EBF2', '#C5CAE9', '#D1C4E9', '#E1BEE7', '#F8BBD0'],
         ['#EF9A9A', '#FFCC80', '#FFF59D', '#A5D6A7', '#80CBC4', '#80DEEA', '#9FA8DA', '#B39DDB', '#CE93D8', '#F48FB1'],
         ['#E57373', '#FFB74D', '#FFF176', '#81C784', '#4DB6AC', '#4DD0E1', '#7986CB', '#9575CD', '#BA68C8', '#F06292'],

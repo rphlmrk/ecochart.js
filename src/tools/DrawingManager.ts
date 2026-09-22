@@ -163,4 +163,54 @@ export class DrawingManager {
         for (const d of this.drawings) d.render(r, g);
         if (this.currentDrawing) this.currentDrawing.render(r, g);
     }
+    
+    // Calculates perceived brightness and flips clashing black/white/gray colors
+    public static adaptColorToTheme(color: number, isDark: boolean): number {
+        const r = (color >> 16) & 0xff;
+        const g = (color >> 8) & 0xff;
+        const b = color & 0xff;
+        const luminance = (0.299 * r + 0.587 * g + 0.114 * b);
+
+        // If switching to Light Theme, and color is very bright (e.g. white/light gray)
+        if (!isDark && luminance > 180) {
+            return 0x131722; // Flip to dark slate
+        }
+        // If switching to Dark Theme, and color is very dark (e.g. black/dark gray)
+        if (isDark && luminance < 75) {
+            return 0xD1D4DC; // Flip to light gray
+        }
+        return color; // Leave vibrant colors (red, blue, green) alone
+    }
+
+    // Scans all drawings and updates them if they clash with the new theme
+    public adaptDrawingsToTheme(isDark: boolean): boolean {
+        let anyChanged = false;
+        
+        for (const d of this.drawings) {
+            let drawingChanged = false;
+            
+            const newColor = DrawingManager.adaptColorToTheme(d.color, isDark);
+            if (newColor !== d.color) {
+                d.color = newColor;
+                drawingChanged = true;
+            }
+            
+            // Handle TextTool backgrounds and borders
+            if (d.toolType === 'text') {
+                const td = d as any;
+                const newBg = DrawingManager.adaptColorToTheme(td.bgColor, isDark);
+                const newBorder = DrawingManager.adaptColorToTheme(td.borderColor, isDark);
+                
+                if (newBg !== td.bgColor) { td.bgColor = newBg; drawingChanged = true; }
+                if (newBorder !== td.borderColor) { td.borderColor = newBorder; drawingChanged = true; }
+            }
+            
+            if (drawingChanged) {
+                this.saveDrawing(d); // Save the fixed color to the database
+                anyChanged = true;
+            }
+        }
+        return anyChanged;
+    }
+
 }
