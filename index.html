@@ -914,6 +914,46 @@
             <button type="button" class="tv-swatch-trigger" id="input-sess-ny" data-color="#EF5350" style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#EF5350;cursor:pointer;"></button>
           </div>
         </div>
+        <!-- Time Axis World Clock Section -->
+        <div style="margin-top: 20px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 16px;">
+          <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">World Clocks (Time Axis)</span>
+          <div style="font-size: 11px; color: #D1D4DC; margin-top: 4px; margin-bottom: 12px; opacity: 0.85;">
+            Shows live timezone clocks on the bottom axis when space permits. Auto-hides on historical scroll.
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-clock-enabled" checked style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
+              Enable World Clocks on Time Axis
+            </label>
+
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+              <span>Primary Clock:</span>
+              <select id="select-clock-primary" style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none; cursor: pointer;">
+                <option value="America/New_York" selected>New York (NYC)</option>
+                <option value="Europe/London">London (LON)</option>
+                <option value="Asia/Tokyo">Tokyo (TYO)</option>
+                <option value="Asia/Hong_Kong">Hong Kong (HKG)</option>
+                <option value="Europe/Frankfurt">Frankfurt (FRA)</option>
+                <option value="UTC">UTC / GMT</option>
+                <option value="local">Local Time</option>
+              </select>
+            </div>
+
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+              <span>Secondary Clock (Desktop Only):</span>
+              <select id="select-clock-secondary" style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none; cursor: pointer;">
+                <option value="Europe/London" selected>London (LON)</option>
+                <option value="America/New_York">New York (NYC)</option>
+                <option value="Asia/Tokyo">Tokyo (TYO)</option>
+                <option value="Asia/Hong_Kong">Hong Kong (HKG)</option>
+                <option value="Europe/Frankfurt">Frankfurt (FRA)</option>
+                <option value="UTC">UTC / GMT</option>
+                <option value="local">Local Time</option>
+              </select>
+            </div>
+          </div>
+        </div>
       </div>
 
     </div>

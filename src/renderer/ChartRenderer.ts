@@ -24,6 +24,17 @@ export class ChartRenderer {
         nyAlpha: 0.5
     };
 
+    // Timezone Clock Config
+    public clockConfig = {
+        enabled: true,
+        primaryTz: 'America/New_York',
+        primaryLabel: 'NYC',
+        secondaryTz: 'Europe/London',
+        secondaryLabel: 'LON'
+    };
+    private clock1BadgeText!: Text;
+    private clock2BadgeText!: Text;
+
     // Pixi Layers (Z-Index order)
     private gridGraphics!: Graphics;
     private candlesGraphics!: Graphics;
@@ -252,6 +263,20 @@ export class ChartRenderer {
             text: '',
             style: { fontFamily: 'sans-serif', fontSize: 11, fill: 0xffffff }
         });
+
+        this.clock1BadgeText = new Text({
+            text: '',
+            style: { fontFamily: 'sans-serif', fontSize: 10, fontWeight: 'bold', fill: 0xffffff }
+        });
+        this.clock2BadgeText = new Text({
+            text: '',
+            style: { fontFamily: 'sans-serif', fontSize: 10, fontWeight: 'bold', fill: 0xffffff }
+        });
+        this.clock1BadgeText.visible = false;
+        this.clock2BadgeText.visible = false;
+        this.textContainer.addChild(this.clock1BadgeText);
+        this.textContainer.addChild(this.clock2BadgeText);
+
         this.persistentPriceBadgeText.visible = false;
         this.persistentTimeBadgeText.visible = false;
 
@@ -621,6 +646,125 @@ export class ChartRenderer {
         // Hide unused oscillator labels in the pool
         for (let i = this.activeOscLabels; i < this.oscLabelPool.length; i++) {
             this.oscLabelPool[i].visible = false;
+        }
+
+        // --- 3.8 DRAW WORLD TIMEZONE CLOCKS IN EMPTY TIME AXIS SPACE ---
+        if (this.clock1BadgeText) this.clock1BadgeText.visible = false;
+        if (this.clock2BadgeText) this.clock2BadgeText.visible = false;
+
+        if (this.clockConfig.enabled && this.dataStore.length > 0) {
+            const lastCandleIdx = this.dataStore.length - 1;
+            const lastCandleX = (lastCandleIdx * actualSpacing) - this.cameraX + actualSpacing;
+            const availableSpace = chartWidth - lastCandleX;
+
+            // Only show if there is enough empty space beyond the live candle (auto-hides on history scroll)
+            if (availableSpace >= 100) {
+                const now = new Date();
+                const isMobile = width < 768 || availableSpace < 220;
+
+                const formatTime = (tz: string) => {
+                    try {
+                        const opt: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+                        if (tz !== 'local') opt.timeZone = tz;
+                        return new Intl.DateTimeFormat([], opt).format(now);
+                    } catch {
+                        return '--:--:--';
+                    }
+                };
+
+                // Detects Morning Open (🔔), Active Hours (🟢), or Closed (🌙)
+                const getSessionStatus = (tz: string) => {
+                    try {
+                        const parts = new Intl.DateTimeFormat('en-US', {
+                            timeZone: tz === 'local' ? undefined : tz,
+                            hour: 'numeric', minute: 'numeric', hour12: false
+                        }).formatToParts(now);
+
+                        const h = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
+                        const m = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+                        const t = h + (m / 60);
+
+                        let isOpening = false;
+                        let isOpen = false;
+
+                        if (tz === 'America/New_York') {
+                            isOpening = (t >= 9.5 && t < 10.5); // 09:30 - 10:30 Morning Opening Session
+                            isOpen = (t >= 9.5 && t < 16.0);    // 09:30 - 16:00 Regular Open
+                        } else if (tz === 'Europe/London') {
+                            isOpening = (t >= 8.0 && t < 9.0);   // 08:00 - 09:00 Morning Opening Session
+                            isOpen = (t >= 8.0 && t < 16.5);    // 08:00 - 16:30 Regular Open
+                        } else if (tz === 'Asia/Tokyo') {
+                            isOpening = (t >= 9.0 && t < 10.0);  // 09:00 - 10:00 Morning Open
+                            isOpen = (t >= 9.0 && t < 15.0);
+                        } else if (tz === 'Asia/Hong_Kong') {
+                            isOpening = (t >= 9.5 && t < 10.5);
+                            isOpen = (t >= 9.5 && t < 16.0);
+                        } else if (tz === 'Europe/Frankfurt') {
+                            isOpening = (t >= 8.0 && t < 9.0);
+                            isOpen = (t >= 8.0 && t < 16.5);
+                        } else {
+                            isOpening = (t >= 8.0 && t < 9.5);
+                            isOpen = (t >= 8.0 && t < 17.0);
+                        }
+
+                        if (isOpening) {
+                            // Morning Opening Drive: Gold Accent & Bell
+                            return { icon: '🔔', textColor: 0xFFD600, borderColor: 0xFFD600, borderWidth: 1.5 };
+                        } else if (isOpen) {
+                            // Open Regular Session: Green Active Dot & Teal Accent
+                            return { icon: '🟢', textColor: 0x26A69A, borderColor: 0x26A69A, borderWidth: 1.5 };
+                        } else {
+                            // Closed Session: Moon Icon & Standard Border
+                            return { icon: '🌙', textColor: this.axisTextColor, borderColor: this.gridColor, borderWidth: 1 };
+                        }
+                    } catch {
+                        return { icon: '', textColor: this.axisTextColor, borderColor: this.gridColor, borderWidth: 1 };
+                    }
+                };
+
+                const badgeH = 18;
+                const badgeY = timeAxisY + Math.floor((this.timeAxisHeight - badgeH) / 2);
+                let rightAnchor = chartWidth - 8;
+
+                // Clock 1 (Primary)
+                const st1 = getSessionStatus(this.clockConfig.primaryTz);
+                const timeStr1 = `${st1.icon} ${this.clockConfig.primaryLabel} ${formatTime(this.clockConfig.primaryTz)}`;
+                this.clock1BadgeText.text = timeStr1;
+                this.clock1BadgeText.style.fill = st1.textColor;
+                const badgeW1 = Math.ceil(this.clock1BadgeText.width) + 12;
+                const badgeX1 = rightAnchor - badgeW1;
+
+                if (badgeX1 > lastCandleX + 8) {
+                    this.uiGraphics.roundRect(badgeX1, badgeY, badgeW1, badgeH, 3)
+                        .fill({ color: this.axisBgColor, alpha: 0.95 })
+                        .stroke({ color: st1.borderColor, width: st1.borderWidth, alpha: 0.9 });
+
+                    this.clock1BadgeText.x = badgeX1 + 6;
+                    this.clock1BadgeText.y = badgeY + 2;
+                    this.clock1BadgeText.visible = true;
+                    rightAnchor = badgeX1 - 6;
+
+                    // Clock 2 (Secondary) - Desktop only when space allows
+                    if (!isMobile && this.clockConfig.secondaryTz) {
+                        const st2 = getSessionStatus(this.clockConfig.secondaryTz);
+                        const timeStr2 = `${st2.icon} ${this.clockConfig.secondaryLabel} ${formatTime(this.clockConfig.secondaryTz)}`;
+                        this.clock2BadgeText.text = timeStr2;
+                        this.clock2BadgeText.style.fill = st2.textColor;
+                        const badgeW2 = Math.ceil(this.clock2BadgeText.width) + 12;
+                        const badgeX2 = rightAnchor - badgeW2;
+
+                        if (badgeX2 > lastCandleX + 8) {
+                            this.uiGraphics.roundRect(badgeX2, badgeY, badgeW2, badgeH, 3)
+                                .fill({ color: this.axisBgColor, alpha: 0.95 })
+                                .stroke({ color: st2.borderColor, width: st2.borderWidth, alpha: 0.9 });
+
+                            this.clock2BadgeText.x = badgeX2 + 6;
+                            this.clock2BadgeText.y = badgeY + 2;
+                            this.clock2BadgeText.visible = true;
+                        }
+                    }
+                }
+            }
         }
 
         // --- 4. DRAW LIVE PRICE LINE & COUNTDOWN BADGE ---

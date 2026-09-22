@@ -39,6 +39,7 @@ export interface SavedWorkspaceState {
     isCrosshairSyncEnabled?: boolean;
     dataLimits?: Record<string, number>;
     sessionConfig?: any;
+    clockConfig?: any;
     panes: SavedPaneState[];
 }
 
@@ -1345,6 +1346,38 @@ export class WorkspaceManager {
         nyColor: '#EF535080'
     };
 
+    public static clockConfig = {
+        enabled: true,
+        primaryTz: 'America/New_York',
+        secondaryTz: 'Europe/London'
+    };
+
+    public static getTzLabel(tz: string): string {
+        const map: Record<string, string> = {
+            'America/New_York': 'NYC',
+            'Europe/London': 'LON',
+            'Asia/Tokyo': 'TYO',
+            'Asia/Hong_Kong': 'HKG',
+            'Europe/Frankfurt': 'FRA',
+            'UTC': 'UTC',
+            'local': 'LOC'
+        };
+        return map[tz] || 'UTC';
+    }
+
+    public static syncClock() {
+        this.charts.forEach(c => {
+            c.renderer.clockConfig = {
+                enabled: this.clockConfig.enabled,
+                primaryTz: this.clockConfig.primaryTz,
+                primaryLabel: this.getTzLabel(this.clockConfig.primaryTz),
+                secondaryTz: this.clockConfig.secondaryTz,
+                secondaryLabel: this.getTzLabel(this.clockConfig.secondaryTz)
+            };
+            c.isDirty = true;
+        });
+    }
+
     public static syncSessions() {
         const parseSess = (hex: string) => {
             const clean = hex.replace('#', '');
@@ -1467,6 +1500,7 @@ export class WorkspaceManager {
             isCrosshairSyncEnabled: this.isCrosshairSyncEnabled,
             dataLimits: this.dataLimits,
             sessionConfig: this.sessionConfig,
+            clockConfig: this.clockConfig,
             panes: this.charts.map(c => c.serialize())
         };
         try {
@@ -1517,6 +1551,7 @@ export class WorkspaceManager {
                     if (state.dataLimits) this.dataLimits = { ...this.dataLimits, ...state.dataLimits };
 
                      if (state.sessionConfig) this.sessionConfig = { ...this.sessionConfig, ...state.sessionConfig };
+                     if (state.clockConfig) this.clockConfig = { ...this.clockConfig, ...state.clockConfig };
 
                     this.updateToolbarDock();
 
@@ -1650,6 +1685,7 @@ export class WorkspaceManager {
         }
         
         this.syncSessions();
+        this.syncClock();
         this.triggerAutoSave();
     }
 
@@ -2122,6 +2158,14 @@ export class WorkspaceManager {
                 if (selPrice) selPrice.value = this.activeChart.renderer.livePriceStyle;
                 if (selLineWidth) selLineWidth.value = this.activeChart.renderer.mainLineWidth.toString();
             }
+
+            // Sync Clock Controls (now properly inside syncModalInputs)
+            const chkClock = document.getElementById('check-clock-enabled') as HTMLInputElement;
+            if (chkClock) chkClock.checked = WorkspaceManager.clockConfig.enabled;
+            const selClock1 = document.getElementById('select-clock-primary') as HTMLSelectElement;
+            if (selClock1) selClock1.value = WorkspaceManager.clockConfig.primaryTz;
+            const selClock2 = document.getElementById('select-clock-secondary') as HTMLSelectElement;
+            if (selClock2) selClock2.value = WorkspaceManager.clockConfig.secondaryTz;
         };
 
         const bindSwatch = (btnId: string, themeKey: keyof ChartTheme, showOpacity = true) => {
@@ -2191,6 +2235,25 @@ export class WorkspaceManager {
         bindSessionSwatch('input-sess-asia', 'asiaColor');
         bindSessionSwatch('input-sess-london', 'londonColor');
         bindSessionSwatch('input-sess-ny', 'nyColor');
+
+        // Bind Clock Controls
+        document.getElementById('check-clock-enabled')?.addEventListener('change', (e) => {
+            WorkspaceManager.clockConfig.enabled = (e.target as HTMLInputElement).checked;
+            WorkspaceManager.syncClock();
+            WorkspaceManager.triggerAutoSave();
+        });
+
+        document.getElementById('select-clock-primary')?.addEventListener('change', (e) => {
+            WorkspaceManager.clockConfig.primaryTz = (e.target as HTMLSelectElement).value;
+            WorkspaceManager.syncClock();
+            WorkspaceManager.triggerAutoSave();
+        });
+
+        document.getElementById('select-clock-secondary')?.addEventListener('change', (e) => {
+            WorkspaceManager.clockConfig.secondaryTz = (e.target as HTMLSelectElement).value;
+            WorkspaceManager.syncClock();
+            WorkspaceManager.triggerAutoSave();
+        });
 
         // Bind Data Limit Dropdowns
         document.querySelectorAll('.data-limit-select').forEach(select => {
