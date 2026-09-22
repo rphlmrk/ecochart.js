@@ -11,7 +11,20 @@ export class IndicatorManager {
     }
 
     public removeIndicator(id: string) {
+        const ind = this.activeIndicators.find(i => i.id === id);
+        if (ind && typeof (ind as any).destroy === 'function') {
+            (ind as any).destroy();
+        }
         this.activeIndicators = this.activeIndicators.filter(i => i.id !== id);
+    }
+
+    public clearAll() {
+        for (const ind of this.activeIndicators) {
+            if (typeof (ind as any).destroy === 'function') {
+                (ind as any).destroy();
+            }
+        }
+        this.activeIndicators = [];
     }
 
     // Calculates total stacked height for all active, visible oscillators
@@ -45,7 +58,13 @@ export class IndicatorManager {
         let currentOscY = mainChartHeight;
 
         for (const ind of this.activeIndicators) {
-            if (!ind.visible) continue;
+            if (!ind.visible) {
+                // Hide any pooled text containers (fixes stuck ZigZag numbers)
+                if ((ind as any).labelContainer) {
+                    (ind as any).labelContainer.visible = false;
+                }
+                continue;
+            }
 
             if (ind.isOscillator) {
                 const layout = {

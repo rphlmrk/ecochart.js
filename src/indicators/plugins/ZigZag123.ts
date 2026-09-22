@@ -453,4 +453,12 @@ export class ZigZag123Indicator extends BaseIndicator {
             valueColor: parseColor(this.getParam('zzColor', '#FF9800'))
         };
     }
+
+    public destroy(): void {
+        this.labelContainer.visible = false;
+        if (this.labelContainer.parent) {
+            this.labelContainer.parent.removeChild(this.labelContainer);
+        }
+        this.isContainerMounted = false;
+    }
 }

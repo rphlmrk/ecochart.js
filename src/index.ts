@@ -1903,7 +1903,7 @@ export class WorkspaceManager {
                         }
                         if (action === 'indicators' || action === 'all') {
                             if (await WorkspaceManager.confirmAction('Remove Indicators', 'Delete all indicators from the active chart?')) {
-                                cm.indicatorManager.activeIndicators = [];
+                                cm.indicatorManager.clearAll();
                                 cm.updateLegend();
                                 cm.updateControlsLayout();
                             }
