@@ -110,8 +110,9 @@ export class ZigZag123Indicator extends BaseIndicator {
             return [null, null];
         };
 
-        // Sequential bar evaluation
-        for (let i = 0; i < ds.length; i++) {
+        // Sequential bar evaluation (Capped at recent 2,500 bars for mobile performance)
+        const startBarIdx = Math.max(0, ds.length - 2500);
+        for (let i = startBarIdx; i < ds.length; i++) {
             let newSwing = false;
             let updatedSwing = false;
             let newSwingType = 0;
@@ -354,12 +355,20 @@ export class ZigZag123Indicator extends BaseIndicator {
         const sp = r.candleSpacing * r.zoom;
         const screenW = layout.chartWidth;
 
-        // 1. Draw Alternating ZigZag Swings
+        // 1. Draw Alternating ZigZag Swings with Viewport Frustum Culling
         if (showZigZag && this.cachedZzPoints.length > 1) {
             let isDrawing = false;
             for (let i = 0; i < this.cachedZzPoints.length; i++) {
                 const pt = this.cachedZzPoints[i];
                 const x = (pt.barIdx * sp) - r.cameraX;
+
+                // Skip points if both current and next are far off-screen to the left
+                const nextPt = this.cachedZzPoints[i + 1];
+                if (nextPt) {
+                    const nextX = (nextPt.barIdx * sp) - r.cameraX;
+                    if (nextX < -50) continue;
+                }
+
                 const normY = (pt.price - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice);
                 const y = layout.mainChartHeight - (normY * layout.mainChartHeight) + r.cameraY;
 
@@ -369,18 +378,28 @@ export class ZigZag123Indicator extends BaseIndicator {
                 } else {
                     g.lineTo(x, y);
                 }
+
+                // Stop iterating once we draw past the right edge of the screen
+                if (x > screenW + 50) break;
             }
-            g.stroke({ color: zzColor, width: zzWidth });
+            if (isDrawing) {
+                g.stroke({ color: zzColor, width: zzWidth });
+            }
         }
 
-        // 2. Draw Breakout Reference Lines
+        // 2. Draw Breakout Reference Lines (Clipped to Viewport)
         if (showLevels) {
             for (let i = 0; i < this.cachedBreakoutLines.length; i++) {
                 const line = this.cachedBreakoutLines[i];
-                const x1 = (line.startBar * sp) - r.cameraX;
-                const x2 = (line.endBar * sp) - r.cameraX;
+                const rawX1 = (line.startBar * sp) - r.cameraX;
+                const rawX2 = (line.endBar * sp) - r.cameraX;
 
-                if (x2 < 0 || x1 > screenW) continue;
+                if (rawX2 < 0 || rawX1 > screenW) continue;
+
+                // Clamp coordinates to screen edges to prevent drawing thousands of off-screen dashes
+                const x1 = Math.max(-10, rawX1);
+                const x2 = Math.min(screenW + 10, rawX2);
+                if (x1 >= x2) continue;
 
                 const normY = (line.price - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice);
                 const y = layout.mainChartHeight - (normY * layout.mainChartHeight) + r.cameraY;

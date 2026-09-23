@@ -1174,12 +1174,12 @@ export class EcoChart {
         this.dataStore.clear();
         this.isDirty = true;
 
-        await this.network.connect(this.currentSymbol, this.currentInterval, (prependedCount = 0) => {
+        await this.network.connect(this.currentSymbol, this.currentInterval, (prependedCount = 0, isClosed = true) => {
             if (prependedCount > 0 && !this.isLockedToEdge) {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
                 this.renderer.cameraX += prependedCount * actualSpacing;
             }
-            this.indicatorManager.update(this.dataStore); // Run Math Engine
+            this.indicatorManager.update(this.dataStore, isClosed); // Run Math Engine
             this.isDirty = true;
             if (this.isLockedToEdge) {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
@@ -1204,12 +1204,12 @@ export class EcoChart {
         this.dataStore.clear();
         this.isDirty = true;
 
-        await this.network.connect(this.currentSymbol, this.currentInterval, (prependedCount = 0) => {
+        await this.network.connect(this.currentSymbol, this.currentInterval, (prependedCount = 0, isClosed = true) => {
             if (prependedCount > 0 && !this.isLockedToEdge) {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
                 this.renderer.cameraX += prependedCount * actualSpacing;
             }
-            this.indicatorManager.update(this.dataStore); // Run Math Engine
+            this.indicatorManager.update(this.dataStore, isClosed); // Run Math Engine
             this.isDirty = true;
             if (this.isLockedToEdge) {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;

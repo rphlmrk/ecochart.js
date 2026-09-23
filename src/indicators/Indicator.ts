@@ -45,6 +45,10 @@ export abstract class BaseIndicator {
     public values: Float64Array;
     public params: ParamDef[] = [];
     protected lastCalculatedIdx = -1;
+    
+    // Core State Machine variables
+    protected state: any = {};
+    protected confirmedState: any = {};
 
     constructor(id: string, name: string, isOscillator = false) {
         this.id = id;
@@ -97,23 +101,59 @@ export abstract class BaseIndicator {
         };
     }
 
-    public update(dataStore: DataStore) {
-        if (dataStore.length === 0) {
+    public update(ds: DataStore, isClosedTick: boolean) {
+        if (ds.length === 0) {
             this.lastCalculatedIdx = -1;
             return;
         }
 
         // Auto-expand buffer if DataStore exceeds capacity
-        if (dataStore.length > this.values.length) {
+        if (ds.length > this.values.length) {
             const newArr = new Float64Array(this.values.length * 2);
             newArr.set(this.values);
             this.values = newArr;
         }
 
-        this.calculate(dataStore);
+        // --- BACKWARDS COMPATIBILITY ---
+        // If the indicator hasn't been migrated to Phase 3 yet, run the old loop
+        if (this.calculate !== BaseIndicator.prototype.calculate) {
+            this.calculate(ds);
+            return;
+        }
+        // -------------------------------
+
+        // 1. Initial historical load
+        if (this.lastCalculatedIdx === -1) {
+            this.setup();
+            for (let i = 0; i < ds.length; i++) {
+                this.next(i, true, ds);
+            }
+            this.lastCalculatedIdx = ds.length - 1;
+            this.confirmedState = JSON.parse(JSON.stringify(this.state));
+            return;
+        }
+
+        // 2. Live Tick Updates
+        const liveIdx = ds.length - 1;
+        
+        // Restore safe state before processing unclosed tick
+        this.state = JSON.parse(JSON.stringify(this.confirmedState));
+        
+        this.next(liveIdx, isClosedTick, ds);
+
+        // 3. Lock in state if the candle officially closed
+        if (isClosedTick) {
+            this.confirmedState = JSON.parse(JSON.stringify(this.state));
+            this.lastCalculatedIdx = liveIdx;
+        }
     }
 
-    protected abstract calculate(dataStore: DataStore): void;
+    // New Architecture Methods
+    protected setup(): void {}
+    protected next(index: number, isClosed: boolean, ds: DataStore): void {}
+    
+    // Legacy fallback
+    protected calculate(ds: DataStore): void {}
     public abstract render(renderer: ChartRenderer, layout: IndicatorLayout, graphics: Graphics): void;
 }
 

@@ -46,12 +46,32 @@ export class HTFProjectionsIndicator extends BaseIndicator {
             return;
         }
 
+        const count = this.getParam<number>('count', 4);
         const tfMs = this.getEffectiveTfMins() * 60 * 1000;
+        const targetCount = count + 2;
+
+        // Fast reverse scan: only scan history far enough back to draw what we need
+        let blocksFound = 0;
+        let lastBlockTime = -1;
+        let scanStartIdx = 0;
+
+        for (let i = ds.length - 1; i >= 0; i--) {
+            const bTime = Math.floor(ds.data[i * 6] / tfMs) * tfMs;
+            if (bTime !== lastBlockTime) {
+                lastBlockTime = bTime;
+                blocksFound++;
+                if (blocksFound >= targetCount) {
+                    scanStartIdx = i;
+                    break;
+                }
+            }
+        }
+
         this.cachedCandles = [];
         let curBlock: any = null;
         let blockStartMs = 0;
 
-        for (let i = 0; i < ds.length; i++) {
+        for (let i = scanStartIdx; i < ds.length; i++) {
             const base = i * 6;
             const t = ds.data[base];
             const bTime = Math.floor(t / tfMs) * tfMs;
@@ -126,12 +146,17 @@ export class HTFProjectionsIndicator extends BaseIndicator {
                 });
             }
 
-            // Origin Connecting Lines (Theme-Aware)
+            // Origin Connecting Lines (Clipped to visible screen to save GPU cycles)
             if (showHL && (drawCandles.length - 1 - i) < 2) {
-                const xOriginHigh = (d.highIdx * sp) - r.cameraX;
-                const xOriginLow = (d.lowIdx * sp) - r.cameraX;
-                StrokeEngine.drawLine(g, xOriginHigh, yH, xMid, yH, { color: helperLineColor, width: Math.max(1, lineThickness - 0.5), alpha: 0.45, style: 'dotted' });
-                StrokeEngine.drawLine(g, xOriginLow, yL, xMid, yL, { color: helperLineColor, width: Math.max(1, lineThickness - 0.5), alpha: 0.45, style: 'dotted' });
+                const xOriginHigh = Math.max(-10, (d.highIdx * sp) - r.cameraX);
+                const xOriginLow = Math.max(-10, (d.lowIdx * sp) - r.cameraX);
+                
+                if (xOriginHigh < xMid) {
+                    StrokeEngine.drawLine(g, xOriginHigh, yH, xMid, yH, { color: helperLineColor, width: Math.max(1, lineThickness - 0.5), alpha: 0.45, style: 'dotted' });
+                }
+                if (xOriginLow < xMid) {
+                    StrokeEngine.drawLine(g, xOriginLow, yL, xMid, yL, { color: helperLineColor, width: Math.max(1, lineThickness - 0.5), alpha: 0.45, style: 'dotted' });
+                }
             }
         }
     }

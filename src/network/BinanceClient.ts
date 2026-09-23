@@ -199,7 +199,7 @@ export class BinanceClient {
     }
 
     // UPDATED: Added onTicker callback and Combined Streams
-    public async connect(symbol: string, interval: string, onUpdate: (prependedCount?: number) => void, onTicker: (changePct: number) => void) {
+    public async connect(symbol: string, interval: string, onUpdate: (prependedCount?: number, isClosed?: boolean) => void, onTicker: (changePct: number) => void) {
         this.disconnect();
         this.currentSyncKey = `${symbol}_${interval}`;
 
@@ -236,8 +236,8 @@ export class BinanceClient {
 
             // Reload unified state from DB & start paginating backwards infinitely
             const prepended2 = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
-            onUpdate(prepended2);
-            this.startBackgroundSync(symbol, baseInterval, oldestLocal, cutoffTime, interval, onUpdate);
+            onUpdate(prepended2, true);
+            this.startBackgroundSync(symbol, baseInterval, oldestLocal, cutoffTime, interval, (prep) => onUpdate(prep, true));
         } catch (err) {
             console.error('[Binance] Sync error', err);
         }
@@ -279,7 +279,7 @@ export class BinanceClient {
                         time: k.t, o, h, l, c, v
                     }).catch(() => {});
                 }
-                onUpdate(); 
+                onUpdate(0, k.x); 
             } 
             else if (data.e === '24hrTicker') {
                 const changePct = parseFloat(data.P);
