@@ -25,68 +25,51 @@ export class HTFBoxIndicator extends BaseIndicator {
         return parseInt(mode, 10) || 60;
     }
 
-   private cachedBlocks: Array<{
-        startBarIdx: number;
-        barsCount: number;
-        o: number; h: number; l: number; c: number;
-    }> = [];
-
-    protected onParamsUpdated(): void {
+   protected onParamsUpdated(): void {
         const tfMins = this.getEffectiveTfMins();
         this.id = `HTF_BOX_${tfMins}`;
         this.name = `HTF Box (${tfMins}m)`;
-        this.cachedBlocks = [];
     }
 
-    // Pre-aggregates HTF candles ONCE when data updates (Zero CPU cost in render)
-    protected calculate(ds: DataStore) {
-        if (ds.length === 0) {
-            this.cachedBlocks = [];
-            return;
-        }
+    protected setup(): void {
+        this.state = {
+            cachedBlocks: [],
+            blockStartMs: 0,
+            startBarIdx: 0,
+            o: 0, h: -Infinity, l: Infinity, c: 0
+        };
+    }
 
+    protected next(index: number, _isClosed: boolean, ds: DataStore): void {
         const tfMs = this.getEffectiveTfMins() * 60 * 1000;
         const intervalMs = (ds.length >= 2 && ds.data[6] > ds.data[0]) ? (ds.data[6] - ds.data[0]) : 60000;
         const barsPerBlock = Math.max(1, Math.round(tfMs / intervalMs));
 
-        this.cachedBlocks = [];
-        let blockStartMs = 0;
-        let blockO = 0, blockH = -Infinity, blockL = Infinity, blockC = 0;
-        let startBarIdx = 0;
+        const base = index * 6;
+        const t = ds.data[base];
+        const bTime = Math.floor(t / tfMs) * tfMs;
+        const o = ds.data[base + 1], h = ds.data[base + 2], l = ds.data[base + 3], c = ds.data[base + 4];
 
-        for (let i = 0; i < ds.length; i++) {
-            const base = i * 6;
-            const t = ds.data[base];
-            const bTime = Math.floor(t / tfMs) * tfMs;
-
-            if (blockStartMs === 0 || bTime !== blockStartMs) {
-                if (blockStartMs !== 0) {
-                    this.cachedBlocks.push({
-                        startBarIdx,
-                        barsCount: barsPerBlock,
-                        o: blockO, h: blockH, l: blockL, c: blockC
-                    });
-                }
-                blockStartMs = bTime;
-                startBarIdx = i;
-                blockO = ds.data[base + 1];
-                blockH = ds.data[base + 2];
-                blockL = ds.data[base + 3];
-            } else {
-                blockH = Math.max(blockH, ds.data[base + 2]);
-                blockL = Math.min(blockL, ds.data[base + 3]);
+        if (this.state.blockStartMs === 0 || bTime !== this.state.blockStartMs) {
+            if (this.state.blockStartMs !== 0) {
+                this.state.cachedBlocks.push({
+                    startBarIdx: this.state.startBarIdx,
+                    barsCount: barsPerBlock,
+                    o: this.state.o, h: this.state.h, l: this.state.l, c: this.state.c
+                });
+                
+                if (this.state.cachedBlocks.length > 500) this.state.cachedBlocks.shift(); // Prevent memory bloat
             }
-            blockC = ds.data[base + 4];
+            this.state.blockStartMs = bTime;
+            this.state.startBarIdx = index;
+            this.state.o = o;
+            this.state.h = h;
+            this.state.l = l;
+        } else {
+            this.state.h = Math.max(this.state.h, h);
+            this.state.l = Math.min(this.state.l, l);
         }
-
-        if (blockStartMs !== 0) {
-            this.cachedBlocks.push({
-                startBarIdx,
-                barsCount: barsPerBlock,
-                o: blockO, h: blockH, l: blockL, c: blockC
-            });
-        }
-        this.lastCalculatedIdx = ds.length - 1;
+        this.state.c = c;
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
@@ -98,9 +81,21 @@ export class HTFBoxIndicator extends BaseIndicator {
         const opacity = r.isDarkTheme ? customOpacity : Math.min(0.85, customOpacity * 1.6);
         const sp = r.candleSpacing * r.zoom;
 
+        // Combine history with actively forming block
+        const blocks = [...(this.state.cachedBlocks || [])];
+        if (this.state.blockStartMs !== 0) {
+            const intervalMs = (r.dataStore.length >= 2) ? (r.dataStore.data[6] - r.dataStore.data[0]) : 60000;
+            const barsPerBlock = Math.max(1, Math.round((this.getEffectiveTfMins() * 60000) / intervalMs));
+            blocks.push({
+                startBarIdx: this.state.startBarIdx,
+                barsCount: barsPerBlock,
+                o: this.state.o, h: this.state.h, l: this.state.l, c: this.state.c
+            });
+        }
+
         // Zero allocations: loops only over the few pre-calculated blocks visible on screen
-        for (let i = 0; i < this.cachedBlocks.length; i++) {
-            const b = this.cachedBlocks[i];
+        for (let i = 0; i < blocks.length; i++) {
+            const b = blocks[i];
             const x1 = (b.startBarIdx * sp) - r.cameraX;
             const x2 = x1 + (b.barsCount * sp);
 

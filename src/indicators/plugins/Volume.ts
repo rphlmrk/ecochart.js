@@ -14,7 +14,8 @@ export class VolumeIndicator extends BaseIndicator {
         ];
     }
 
-    protected calculate(_ds: DataStore) {}
+    protected setup(): void {}
+    protected next(): void {} // Volume reads directly from DataStore in render(), no math needed
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
         const heightPct = this.getParam<number>('heightPct', 0.15);

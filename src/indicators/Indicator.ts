@@ -150,10 +150,10 @@ export abstract class BaseIndicator {
 
     // New Architecture Methods
     protected setup(): void {}
-    protected next(index: number, isClosed: boolean, ds: DataStore): void {}
+    protected next(_index: number, _isClosed: boolean, _ds: DataStore): void {}
     
     // Legacy fallback
-    protected calculate(ds: DataStore): void {}
+    protected calculate(_ds: DataStore): void {}
     public abstract render(renderer: ChartRenderer, layout: IndicatorLayout, graphics: Graphics): void;
 }
 

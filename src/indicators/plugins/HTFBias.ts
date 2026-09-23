@@ -29,52 +29,50 @@ export class HTFBiasIndicator extends BaseIndicator {
         return parseInt(mode, 10) || 60;
     }
 
-    private cachedCandles: Array<{
-        o: number; h: number; l: number; c: number;
-        highIdx: number; lowIdx: number; startIdx: number; endIdx: number;
-    }> = [];
-
     protected onParamsUpdated(): void {
         const tfMins = this.getEffectiveTfMins();
         this.id = `HTF_BIAS_${tfMins}`;
         this.name = `HTF Bias (${tfMins}m)`;
-        this.cachedCandles = [];
     }
 
-    // Pre-aggregates candles ONCE when data updates
-    protected calculate(ds: DataStore) {
-        if (ds.length === 0) {
-            this.cachedCandles = [];
-            return;
-        }
+    protected setup(): void {
+        this.state = {
+            cachedCandles: [],
+            blockStartMs: 0,
+            startIdx: 0, highIdx: 0, lowIdx: 0,
+            o: 0, h: -Infinity, l: Infinity, c: 0
+        };
+    }
 
+    protected next(index: number, _isClosed: boolean, ds: DataStore): void {
         const tfMs = this.getEffectiveTfMins() * 60 * 1000;
-        this.cachedCandles = [];
-        let curBlock: any = null;
+        const base = index * 6;
+        const t = ds.data[base];
+        const bTime = Math.floor(t / tfMs) * tfMs;
+        const o = ds.data[base + 1], h = ds.data[base + 2], l = ds.data[base + 3], c = ds.data[base + 4];
 
-        for (let i = 0; i < ds.length; i++) {
-            const base = i * 6;
-            const t = ds.data[base];
-            const bTime = Math.floor(t / tfMs) * tfMs;
-            const o = ds.data[base + 1], h = ds.data[base + 2], l = ds.data[base + 3], c = ds.data[base + 4];
-
-            if (!curBlock || bTime !== curBlock.startMs) {
-                if (curBlock) {
-                    curBlock.endIdx = i - 1;
-                    this.cachedCandles.push(curBlock);
-                }
-                curBlock = { startMs: bTime, o, h, l, c, highIdx: i, lowIdx: i, startIdx: i, endIdx: i };
-            } else {
-                if (h > curBlock.h) { curBlock.h = h; curBlock.highIdx = i; }
-                if (l < curBlock.l) { curBlock.l = l; curBlock.lowIdx = i; }
-                curBlock.c = c;
+        if (this.state.blockStartMs === 0 || bTime !== this.state.blockStartMs) {
+            if (this.state.blockStartMs !== 0) {
+                this.state.cachedCandles.push({
+                    o: this.state.o, h: this.state.h, l: this.state.l, c: this.state.c,
+                    highIdx: this.state.highIdx, lowIdx: this.state.lowIdx,
+                    startIdx: this.state.startIdx, endIdx: index - 1
+                });
+                
+                if (this.state.cachedCandles.length > 500) this.state.cachedCandles.shift();
             }
+            this.state.blockStartMs = bTime;
+            this.state.startIdx = index;
+            this.state.highIdx = index;
+            this.state.lowIdx = index;
+            this.state.o = o;
+            this.state.h = h;
+            this.state.l = l;
+        } else {
+            if (h > this.state.h) { this.state.h = h; this.state.highIdx = index; }
+            if (l < this.state.l) { this.state.l = l; this.state.lowIdx = index; }
         }
-        if (curBlock) {
-            curBlock.endIdx = ds.length - 1;
-            this.cachedCandles.push(curBlock);
-        }
-        this.lastCalculatedIdx = ds.length - 1;
+        this.state.c = c;
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
@@ -99,7 +97,14 @@ export class HTFBiasIndicator extends BaseIndicator {
         const visStart = Math.max(0, Math.floor(r.cameraX / sp));
         const visEnd = Math.min(r.dataStore.length, Math.floor((r.cameraX + layout.chartWidth) / sp) + 1);
 
-        const htfCandles = this.cachedCandles;
+        const htfCandles = [...(this.state.cachedCandles || [])];
+        if (this.state.blockStartMs !== 0) {
+            htfCandles.push({
+                startIdx: this.state.startIdx, endIdx: r.dataStore.length - 1,
+                highIdx: this.state.highIdx, lowIdx: this.state.lowIdx,
+                o: this.state.o, h: this.state.h, l: this.state.l, c: this.state.c
+            });
+        }
         if (htfCandles.length < 2) return;
 
         let mother = htfCandles[0];
@@ -198,9 +203,10 @@ export class HTFBiasIndicator extends BaseIndicator {
         const insideClr = parseColor(this.getParam('insideColor', '#FFEB3B'));
 
         // If the latest candle is an Inside Bar, reflect it in the telemetry
-        if (this.cachedCandles.length >= 2 && showInsideBar) {
-            const last = this.cachedCandles[this.cachedCandles.length - 1];
-            const mother = this.cachedCandles[this.cachedCandles.length - 2];
+        const candles = this.state.cachedCandles || [];
+        if (candles.length >= 1 && showInsideBar) {
+            const last = { o: this.state.o, h: this.state.h, l: this.state.l, c: this.state.c }; // Active block
+            const mother = candles[candles.length - 1];
             if (last.h <= mother.h && last.l >= mother.l) {
                 return {
                     label: this.name,

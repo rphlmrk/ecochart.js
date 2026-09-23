@@ -1,4 +1,4 @@
-import { BaseIndicator, SMAEngine, parseColor, type IndicatorLayout } from '../Indicator';
+import { BaseIndicator, parseColor, type IndicatorLayout } from '../Indicator';
 import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { Graphics } from 'pixi.js';
@@ -18,9 +18,17 @@ export class SMAIndicator extends BaseIndicator {
         this.name = `SMA (${len})`;
     }
 
-    protected calculate(ds: DataStore) {
+    protected setup(): void {}
+
+    protected next(index: number, _isClosed: boolean, ds: DataStore): void {
         const length = Math.max(1, this.getParam<number>('length', 20));
-        this.lastCalculatedIdx = SMAEngine.calculate(ds, length, this.values, this.lastCalculatedIdx);
+        if (index < length - 1) return;
+        
+        let sum = 0;
+        for (let j = 0; j < length; j++) {
+            sum += ds.data[(index - j) * 6 + 4]; // Close price
+        }
+        this.values[index] = sum / length;
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {

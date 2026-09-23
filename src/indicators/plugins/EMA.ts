@@ -1,4 +1,4 @@
-import { BaseIndicator, EMAEngine, parseColor, type IndicatorLayout } from '../Indicator';
+import { BaseIndicator, parseColor, type IndicatorLayout } from '../Indicator';
 import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { Graphics } from 'pixi.js';
@@ -18,9 +18,19 @@ export class EMAIndicator extends BaseIndicator {
         this.name = `EMA (${len})`;
     }
 
-    protected calculate(ds: DataStore) {
-        const length = Math.max(1, this.getParam<number>('length', 20));
-        this.lastCalculatedIdx = EMAEngine.calculate(ds, length, this.values, this.lastCalculatedIdx);
+    protected setup(): void {}
+
+    protected next(index: number, _isClosed: boolean, ds: DataStore): void {
+        const period = Math.max(1, this.getParam<number>('length', 20));
+        const k = 2 / (period + 1);
+        
+        if (index === 0) {
+            this.values[0] = ds.data[4]; // Initialize first point with first Close
+            return;
+        }
+        
+        const close = ds.data[index * 6 + 4];
+        this.values[index] = (close - this.values[index - 1]) * k + this.values[index - 1];
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
