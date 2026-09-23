@@ -214,7 +214,8 @@ export class ChartRenderer {
             resizeTo: canvas.parentElement!,
             backgroundColor: this.bgColor,
             antialias: false,
-            resolution: window.devicePixelRatio || 1,
+            // Optimization: Cap resolution at 2. High-DPI Androids (3x+) choke on heavy Canvas fills
+            resolution: Math.min(window.devicePixelRatio || 1, 2),
         });
 
         // Initialize Layers in order (Background -> Foreground)
@@ -332,10 +333,13 @@ export class ChartRenderer {
             this.cameraY = 0;
         }
 
+        // CPU Optimization: Pre-calculate Y-axis ratio to avoid division in hot loops
+        const priceRange = this.currentMaxPrice - this.currentMinPrice || 1;
+        const yRatio = mainChartHeight / priceRange;
+        const yOffset = mainChartHeight + this.cameraY;
+
         const priceToY = (price: number) => {
-            const range = this.currentMaxPrice - this.currentMinPrice;
-            const norm = (price - this.currentMinPrice) / range;
-            return mainChartHeight - (norm * mainChartHeight) + this.cameraY;
+            return yOffset - ((price - this.currentMinPrice) * yRatio);
         };
 
         const yToPrice = (y: number) => {
@@ -428,7 +432,7 @@ export class ChartRenderer {
             this.timeLabelPool[i].visible = false;
         }
 
-        // --- 2. MULTI-MODE CHART DRAWING ---
+        // --- 2. MULTI-MODE CHART DRAWING (OPTIMIZED BATCHING) ---
         const candleWidth = Math.max(1, actualSpacing * 0.8);
 
         if (this.chartMode === 'line') {
@@ -470,21 +474,37 @@ export class ChartRenderer {
             const spineWidth = Math.max(1, Math.min(2, Math.floor(candleWidth * 0.2)));
             const tickWidth = Math.max(2, candleWidth / 2);
 
+            this.candlesGraphics.beginPath();
             for (let i = visStart; i < visEnd; i++) {
                 const base = i * 6;
                 const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
-                const x = (i * actualSpacing) - this.cameraX;
-                const xMid = x + (candleWidth / 2);
-                const yH = priceToY(h), yL = priceToY(l), yO = priceToY(o), yC = priceToY(c);
-                const isBull = c >= o;
-                const clr = isBull ? this.bullColor : this.bearColor;
-                const alpha = isBull ? this.bullAlpha : this.bearAlpha;
-
-                this.candlesGraphics.rect(xMid - (spineWidth / 2), yH, spineWidth, Math.max(1, yL - yH)).fill({ color: clr, alpha });
-                this.candlesGraphics.rect(x, yO - (spineWidth / 2), tickWidth, spineWidth).fill({ color: clr, alpha });
-                this.candlesGraphics.rect(xMid, yC - (spineWidth / 2), tickWidth, spineWidth).fill({ color: clr, alpha });
+                if (c >= o) {
+                    const x = (i * actualSpacing) - this.cameraX, xMid = x + (candleWidth / 2);
+                    const yH = priceToY(h), yL = priceToY(l), yO = priceToY(o), yC = priceToY(c);
+                    this.candlesGraphics.rect(xMid - (spineWidth / 2), yH, spineWidth, Math.max(1, yL - yH));
+                    this.candlesGraphics.rect(x, yO - (spineWidth / 2), tickWidth, spineWidth);
+                    this.candlesGraphics.rect(xMid, yC - (spineWidth / 2), tickWidth, spineWidth);
+                }
             }
+            this.candlesGraphics.fill({ color: this.bullColor, alpha: this.bullAlpha });
+
+            this.candlesGraphics.beginPath();
+            for (let i = visStart; i < visEnd; i++) {
+                const base = i * 6;
+                const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
+                if (c < o) {
+                    const x = (i * actualSpacing) - this.cameraX, xMid = x + (candleWidth / 2);
+                    const yH = priceToY(h), yL = priceToY(l), yO = priceToY(o), yC = priceToY(c);
+                    this.candlesGraphics.rect(xMid - (spineWidth / 2), yH, spineWidth, Math.max(1, yL - yH));
+                    this.candlesGraphics.rect(x, yO - (spineWidth / 2), tickWidth, spineWidth);
+                    this.candlesGraphics.rect(xMid, yC - (spineWidth / 2), tickWidth, spineWidth);
+                }
+            }
+            this.candlesGraphics.fill({ color: this.bearColor, alpha: this.bearAlpha });
+
         } else if (this.chartMode === 'heikinAshi') {
+            // Pre-calculate HA values
+            const haData: { haO: number, haH: number, haL: number, haC: number }[] = new Array(visEnd);
             let prevHaOpen = (this.dataStore.data[1] + this.dataStore.data[4]) / 2;
             let prevHaClose = (this.dataStore.data[1] + this.dataStore.data[2] + this.dataStore.data[3] + this.dataStore.data[4]) / 4;
 
@@ -493,48 +513,100 @@ export class ChartRenderer {
                 const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
                 const haClose = (o + h + l + c) / 4;
                 const haOpen = i === 0 ? prevHaOpen : (prevHaOpen + prevHaClose) / 2;
-                const haHigh = Math.max(h, haOpen, haClose);
-                const haLow = Math.min(l, haOpen, haClose);
+                if (i >= visStart) haData[i] = { haO: haOpen, haH: Math.max(h, haOpen, haClose), haL: Math.min(l, haOpen, haClose), haC: haClose };
+                prevHaOpen = haOpen; prevHaClose = haClose;
+            }
 
-                prevHaOpen = haOpen;
-                prevHaClose = haClose;
-
-                if (i >= visStart) {
-                    const x = (i * actualSpacing) - this.cameraX;
-                    const yH = priceToY(haHigh), yL = priceToY(haLow), yO = priceToY(haOpen), yC = priceToY(haClose);
-                    const isBull = haClose >= haOpen;
-                    const bodyColor = isBull ? this.bullColor : this.bearColor;
-                    const bodyAlpha = isBull ? this.bullAlpha : this.bearAlpha;
-                    const wickColor = isBull ? this.bullWickColor : this.bearWickColor;
-                    const wickAlpha = isBull ? this.bullWickAlpha : this.bearWickAlpha;
-                    const borderColor = isBull ? this.bullBorderColor : this.bearBorderColor;
-                    const borderAlpha = isBull ? this.bullBorderAlpha : this.bearBorderAlpha;
-
-                    this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH)).fill({ color: wickColor, alpha: wickAlpha });
-                    const bodyTop = Math.min(yO, yC);
-                    const bodyHeight = Math.max(1, Math.abs(yO - yC));
-                    this.candlesGraphics.rect(x, bodyTop, candleWidth, bodyHeight).fill({ color: bodyColor, alpha: bodyAlpha }).stroke({ color: borderColor, width: 1, alpha: borderAlpha });
+            // Draw Bull
+            this.candlesGraphics.beginPath();
+            for (let i = visStart; i < visEnd; i++) {
+                const d = haData[i];
+                if (d.haC >= d.haO) {
+                    const x = (i * actualSpacing) - this.cameraX, yH = priceToY(d.haH), yL = priceToY(d.haL);
+                    this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
                 }
             }
-        } else {
-            for (let i = visStart; i < visEnd; i++) {
-                const base = i * 6;
-                const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
-                const x = (i * actualSpacing) - this.cameraX;
-                const yH = priceToY(h), yL = priceToY(l), yO = priceToY(o), yC = priceToY(c);
-                const isBull = c >= o;
-                const bodyColor = isBull ? this.bullColor : this.bearColor;
-                const bodyAlpha = isBull ? this.bullAlpha : this.bearAlpha;
-                const wickColor = isBull ? this.bullWickColor : this.bearWickColor;
-                const wickAlpha = isBull ? this.bullWickAlpha : this.bearWickAlpha;
-                const borderColor = isBull ? this.bullBorderColor : this.bearBorderColor;
-                const borderAlpha = isBull ? this.bullBorderAlpha : this.bearBorderAlpha;
+            this.candlesGraphics.fill({ color: this.bullWickColor, alpha: this.bullWickAlpha });
 
-                this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH)).fill({ color: wickColor, alpha: wickAlpha });
-                const bodyTop = Math.min(yO, yC);
-                const bodyHeight = Math.max(1, Math.abs(yO - yC));
-                this.candlesGraphics.rect(x, bodyTop, candleWidth, bodyHeight).fill({ color: bodyColor, alpha: bodyAlpha }).stroke({ color: borderColor, width: 1, alpha: borderAlpha });
+            this.candlesGraphics.beginPath();
+            for (let i = visStart; i < visEnd; i++) {
+                const d = haData[i];
+                if (d.haC >= d.haO) {
+                    const x = (i * actualSpacing) - this.cameraX, yO = priceToY(d.haO), yC = priceToY(d.haC);
+                    this.candlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
+                }
             }
+            this.candlesGraphics.fill({ color: this.bullColor, alpha: this.bullAlpha }).stroke({ color: this.bullBorderColor, width: 1, alpha: this.bullBorderAlpha });
+
+            // Draw Bear
+            this.candlesGraphics.beginPath();
+            for (let i = visStart; i < visEnd; i++) {
+                const d = haData[i];
+                if (d.haC < d.haO) {
+                    const x = (i * actualSpacing) - this.cameraX, yH = priceToY(d.haH), yL = priceToY(d.haL);
+                    this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
+                }
+            }
+            this.candlesGraphics.fill({ color: this.bearWickColor, alpha: this.bearWickAlpha });
+
+            this.candlesGraphics.beginPath();
+            for (let i = visStart; i < visEnd; i++) {
+                const d = haData[i];
+                if (d.haC < d.haO) {
+                    const x = (i * actualSpacing) - this.cameraX, yO = priceToY(d.haO), yC = priceToY(d.haC);
+                    this.candlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
+                }
+            }
+            this.candlesGraphics.fill({ color: this.bearColor, alpha: this.bearAlpha }).stroke({ color: this.bearBorderColor, width: 1, alpha: this.bearBorderAlpha });
+
+        } else {
+            // STANDARD CANDLES BATCHING
+
+            // 1. Bull Wicks
+            this.candlesGraphics.beginPath();
+            for (let i = visStart; i < visEnd; i++) {
+                const base = i * 6, o = this.dataStore.data[base + 1], c = this.dataStore.data[base + 4];
+                if (c >= o) {
+                    const h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3];
+                    const x = (i * actualSpacing) - this.cameraX, yH = priceToY(h), yL = priceToY(l);
+                    this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
+                }
+            }
+            this.candlesGraphics.fill({ color: this.bullWickColor, alpha: this.bullWickAlpha });
+
+            // 2. Bear Wicks
+            this.candlesGraphics.beginPath();
+            for (let i = visStart; i < visEnd; i++) {
+                const base = i * 6, o = this.dataStore.data[base + 1], c = this.dataStore.data[base + 4];
+                if (c < o) {
+                    const h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3];
+                    const x = (i * actualSpacing) - this.cameraX, yH = priceToY(h), yL = priceToY(l);
+                    this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
+                }
+            }
+            this.candlesGraphics.fill({ color: this.bearWickColor, alpha: this.bearWickAlpha });
+
+            // 3. Bull Bodies
+            this.candlesGraphics.beginPath();
+            for (let i = visStart; i < visEnd; i++) {
+                const base = i * 6, o = this.dataStore.data[base + 1], c = this.dataStore.data[base + 4];
+                if (c >= o) {
+                    const x = (i * actualSpacing) - this.cameraX, yO = priceToY(o), yC = priceToY(c);
+                    this.candlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
+                }
+            }
+            this.candlesGraphics.fill({ color: this.bullColor, alpha: this.bullAlpha }).stroke({ color: this.bullBorderColor, width: 1, alpha: this.bullBorderAlpha });
+
+            // 4. Bear Bodies
+            this.candlesGraphics.beginPath();
+            for (let i = visStart; i < visEnd; i++) {
+                const base = i * 6, o = this.dataStore.data[base + 1], c = this.dataStore.data[base + 4];
+                if (c < o) {
+                    const x = (i * actualSpacing) - this.cameraX, yO = priceToY(o), yC = priceToY(c);
+                    this.candlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
+                }
+            }
+            this.candlesGraphics.fill({ color: this.bearColor, alpha: this.bearAlpha }).stroke({ color: this.bearBorderColor, width: 1, alpha: this.bearBorderAlpha });
         }
 
         // --- 3. DRAW AXIS BACKGROUNDS & DIVIDERS ---
