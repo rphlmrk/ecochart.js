@@ -1709,21 +1709,46 @@ export class WorkspaceManager {
             let isDragging = false;
             let startX = 0, startY = 0;
             let initialLeft = 0, initialTop = 0;
+            let dragTimer: any = null;
 
-            // 1. Draggable Engine
+            // 1. Draggable Engine (Long-Press for Mobile, Instant for Desktop)
             dtHandle.addEventListener('pointerdown', (e) => {
                 if (WorkspaceManager.toolbarDockMode === 'top') return;
-                isDragging = true;
+
                 startX = e.clientX;
                 startY = e.clientY;
                 initialLeft = dt.offsetLeft;
                 initialTop = dt.offsetTop;
-                dtHandle.setPointerCapture(e.pointerId);
-                dtHandle.style.cursor = 'grabbing';
+
+                const startDragging = () => {
+                    isDragging = true;
+                    dtHandle.setPointerCapture(e.pointerId);
+                    dtHandle.style.cursor = 'grabbing';
+                    dt.style.opacity = '0.9'; // Visual feedback
+                    if (navigator.vibrate) navigator.vibrate(40); // Haptic feedback on Android
+                };
+
+                if (e.pointerType === 'touch') {
+                    // Mobile: Require 300ms hold to start dragging
+                    dragTimer = setTimeout(startDragging, 300);
+                } else {
+                    // Desktop: Instant drag
+                    startDragging();
+                }
             });
 
             dtHandle.addEventListener('pointermove', (e) => {
-                if (!isDragging) return;
+                if (!isDragging) {
+                    // If user moves finger before the timer pops, cancel the drag intent
+                    if (dragTimer && Math.hypot(e.clientX - startX, e.clientY - startY) > 10) {
+                        clearTimeout(dragTimer);
+                        dragTimer = null;
+                    }
+                    return;
+                }
+
+                try { e.preventDefault(); } catch { } // Force Android to ignore native gestures
+
                 const dx = e.clientX - startX;
                 const dy = e.clientY - startY;
 
@@ -1736,10 +1761,17 @@ export class WorkspaceManager {
             });
 
             const stopDrag = (e: PointerEvent) => {
-                isDragging = false;
-                dtHandle.releasePointerCapture(e.pointerId);
-                dtHandle.style.cursor = 'grab';
-                WorkspaceManager.triggerAutoSave(); // Save toolbar position (optional future feature)
+                if (dragTimer) {
+                    clearTimeout(dragTimer);
+                    dragTimer = null;
+                }
+                if (isDragging) {
+                    isDragging = false;
+                    dtHandle.releasePointerCapture(e.pointerId);
+                    dtHandle.style.cursor = 'grab';
+                    dt.style.opacity = '1';
+                    WorkspaceManager.triggerAutoSave();
+                }
             };
 
             dtHandle.addEventListener('pointerup', stopDrag);
