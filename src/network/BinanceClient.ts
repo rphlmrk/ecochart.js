@@ -31,7 +31,7 @@ export class BinanceClient {
                 const state = JSON.parse(raw);
                 if (state.dataLimits) limits = { ...limits, ...state.dataLimits };
             }
-        } catch {}
+        } catch { }
 
         const mins = TimeframeResampler.parseMs(interval) / 60000;
         let limitKey = 'limit_1w_1M';
@@ -86,7 +86,7 @@ export class BinanceClient {
 
             await db.candles.bulkPut(records);
             return data[0][0]; // Return oldest fetched time
-        } catch(e) { return 0; }
+        } catch (e) { return 0; }
     }
 
     private async startBackgroundSync(symbol: string, baseInterval: string, oldestLocal: number, cutoffTime: number, interval: string, onUpdate: (prependedCount?: number) => void) {
@@ -95,7 +95,7 @@ export class BinanceClient {
             const oldestFetched = await this.fetchAndSaveChunk(symbol, baseInterval, undefined, currentEnd);
             if (oldestFetched === 0) break; // End of market data reached
             currentEnd = oldestFetched - 1;
-            
+
             const prepended = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
             onUpdate(prepended);
         }
@@ -167,7 +167,7 @@ export class BinanceClient {
                     return parsed.symbols;
                 }
             }
-        } catch {}
+        } catch { }
 
         try {
             const res = await BinanceClient.safeFetch('https://api.binance.com/api/v3/exchangeInfo');
@@ -183,10 +183,10 @@ export class BinanceClient {
                 }));
 
             if (symbols.length > 0) {
-                try { localStorage.setItem(CACHE_KEY, JSON.stringify({ timestamp: Date.now(), symbols })); } catch {}
+                try { localStorage.setItem(CACHE_KEY, JSON.stringify({ timestamp: Date.now(), symbols })); } catch { }
                 return symbols;
             }
-        } catch (err) {}
+        } catch (err) { }
 
         return [
             { symbol: 'BTCUSDT', baseAsset: 'BTC', quoteAsset: 'USDT' },
@@ -206,7 +206,7 @@ export class BinanceClient {
         const isNative = TimeframeResampler.isNative(interval);
         const baseInterval = TimeframeResampler.getBaseNativeInterval(interval);
         const targetIntervalMs = TimeframeResampler.parseMs(interval);
-        
+
         const limitMs = this.getLimitMs(interval);
         const cutoffTime = limitMs === Infinity ? 0 : Date.now() - limitMs;
 
@@ -215,23 +215,14 @@ export class BinanceClient {
             const prepended = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
             if (this.dataStore.length > 0) onUpdate(prepended);
 
+            // 1. Force fetch the latest 1,000 candles to bridge any offline gap seamlessly
+            await this.fetchAndSaveChunk(symbol, baseInterval, undefined, Date.now());
+
+            // 2. Determine the absolute oldest candle we have, so we can paginate backward
             let oldestLocal = Date.now();
-            let newestLocal = 0;
-
-            const localRecords = await db.candles.where('[symbol+interval]').equals([symbol.toUpperCase(), baseInterval]).filter(r => r.time >= cutoffTime).sortBy('time');
-            if (localRecords.length > 0) {
-                oldestLocal = localRecords[0].time;
-                newestLocal = localRecords[localRecords.length - 1].time;
-            }
-
-            if (newestLocal > 0) {
-                // Sync Forward (Missing gap up to live)
-                await this.fetchAndSaveChunk(symbol, baseInterval, newestLocal + 1, Date.now());
-            } else {
-                // Initial Fetch
-                await this.fetchAndSaveChunk(symbol, baseInterval, undefined, Date.now());
-                const freshRecords = await db.candles.where('[symbol+interval]').equals([symbol.toUpperCase(), baseInterval]).filter(r => r.time >= cutoffTime).sortBy('time');
-                if (freshRecords.length > 0) oldestLocal = freshRecords[0].time;
+            const freshRecords = await db.candles.where('[symbol+interval]').equals([symbol.toUpperCase(), baseInterval]).filter(r => r.time >= cutoffTime).sortBy('time');
+            if (freshRecords.length > 0) {
+                oldestLocal = freshRecords[0].time;
             }
 
             // Reload unified state from DB & start paginating backwards infinitely
@@ -253,7 +244,7 @@ export class BinanceClient {
 
         this.ws.onmessage = (event) => {
             if (this.currentSyncKey !== `${symbol}_${interval}`) return; // Abort if switched
-            
+
             const raw = JSON.parse(event.data);
             const data = raw.data;
             if (!data) return;
@@ -277,10 +268,10 @@ export class BinanceClient {
                         symbol: symbol.toUpperCase(),
                         interval: baseInterval,
                         time: k.t, o, h, l, c, v
-                    }).catch(() => {});
+                    }).catch(() => { });
                 }
-                onUpdate(0, k.x); 
-            } 
+                onUpdate(0, k.x);
+            }
             else if (data.e === '24hrTicker') {
                 const changePct = parseFloat(data.P);
                 if (!isNaN(changePct)) onTicker(changePct);
@@ -297,9 +288,9 @@ export class BinanceClient {
 
     public disconnect() {
         this.currentSyncKey = ''; // Stops active background sync loop
-        this.isReconnecting = true; 
+        this.isReconnecting = true;
         if (this.ws) {
-            this.ws.onclose = null; 
+            this.ws.onclose = null;
             this.ws.close();
             this.ws = null;
         }

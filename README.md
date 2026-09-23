@@ -131,3 +131,90 @@ npm run build
   await chart.startLiveBinance('BTCUSDT', '1m');
 </script>
 ```
+
+---
+
+## 🧠 Streaming State Machine: How to Write Custom Indicators
+
+To guarantee stable 60–120 FPS performance on live market feeds—even on low-power mobile devices—EcoChart does **not** recalculate indicators using full-history loops on every live tick.
+
+Instead, `BaseIndicator` operates as an **Event-Driven Streaming State Machine**:
+- **History Load:** Runs sequentially through all historical bars once ($i = 0 \dots N-1$) with `isClosed = true`.
+- **Live Ticks:** Executes in **$O(1)$ time complexity** only on the forming bar (`index = ds.length - 1`), evaluating single-candle changes without touching past candles.
+- **Automated Tick Rollback:** Before processing an unclosed live tick (`isClosed = false`), the engine automatically restores `this.state` from `this.confirmedState`. This prevents temporary wicks and false intraday breakouts from corrupting permanent indicator memory.
+
+---
+
+### The Two Lifecycle Methods
+
+When creating a new indicator, you only implement two methods:
+
+```typescript
+export class MyIndicator extends BaseIndicator {
+    // 1. Called on initial load, symbol change, or parameter update
+    protected setup(): void {
+        this.state = {
+            // Put persistent running values here (e.g., running sum, trend state)
+            trend: 0,
+            lastSwingPrice: 0
+        };
+    }
+
+    // 2. Called per candle (once per bar in history, and once per tick on live edge)
+    protected next(index: number, isClosed: boolean, ds: DataStore): void {
+        // Read candle data
+        const close = ds.data[index * 6 + 4];
+
+        // Perform calculation for THIS index only
+        this.values[index] = close;
+
+        // Mutate state freely — BaseIndicator handles rolling it back on live ticks!
+        if (close > this.state.lastSwingPrice) {
+            this.state.trend = 1;
+            this.state.lastSwingPrice = close;
+        }
+    }
+}
+```
+
+### Rulebook for Custom Indicators
+
+| Rule | Description |
+| :--- | :--- |
+| ❌ **No Full-History Loops** | Never write `for (let i = 0; i < ds.length; i++)` inside `next()`. The engine manages the loop. |
+| 🔄 **State Isolation** | Store running states (such as pivot counts or session boundaries) inside `this.state`. Do not use detached global variables. |
+| ⚡ **Sparse Output Arrays** | If your indicator produces visual boxes or lines (like HTF boxes or ZigZag segments), cap historical cache arrays inside `this.state` to avoid memory bloat (e.g., `if (this.state.blocks.length > 500) this.state.blocks.shift()`). |
+| 🎯 **Direct Data Access** | Candlesticks in `DataStore` use a flat `Float64Array` with 6 fields per bar: `base = index * 6`. Offsets: `+0 Time`, `+1 Open`, `+2 High`, `+3 Low`, `+4 Close`, `+5 Volume`. |
+
+### Example: Writing a Simple Moving Average (SMA)
+
+```typescript
+import { BaseIndicator, parseColor, type IndicatorLayout } from '../Indicator';
+import type { DataStore } from '../../data/DataStore';
+import { Graphics } from 'pixi.js';
+
+export class SimpleSMA extends BaseIndicator {
+    constructor(period = 20) {
+        super(`SMA_${period}`, `SMA (${period})`);
+        this.params = [{ id: 'length', name: 'Length', type: 'number', value: period, min: 1, max: 200 }];
+    }
+
+    protected setup(): void {}
+
+    protected next(index: number, _isClosed: boolean, ds: DataStore): void {
+        const len = Math.max(1, this.getParam<number>('length', 20));
+        if (index < len - 1) return;
+
+        let sum = 0;
+        for (let j = 0; j < len; j++) {
+            sum += ds.data[(index - j) * 6 + 4]; // Close price
+        }
+        this.values[index] = sum / len;
+    }
+
+    public render(r: any, layout: IndicatorLayout, g: Graphics): void {
+        // Standard WebGL stroke rendering...
+    }
+}
+```
+
