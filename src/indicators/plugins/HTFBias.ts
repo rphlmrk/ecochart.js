@@ -58,7 +58,7 @@ export class HTFBiasIndicator extends BaseIndicator {
                     highIdx: this.state.highIdx, lowIdx: this.state.lowIdx,
                     startIdx: this.state.startIdx, endIdx: index - 1
                 });
-                
+
                 if (this.state.cachedCandles.length > 500) this.state.cachedCandles.shift();
             }
             this.state.blockStartMs = bTime;
@@ -97,22 +97,26 @@ export class HTFBiasIndicator extends BaseIndicator {
         const visStart = Math.max(0, Math.floor(r.cameraX / sp));
         const visEnd = Math.min(r.dataStore.length, Math.floor((r.cameraX + layout.chartWidth) / sp) + 1);
 
-        const htfCandles = [...(this.state.cachedCandles || [])];
-        if (this.state.blockStartMs !== 0) {
-            htfCandles.push({
-                startIdx: this.state.startIdx, endIdx: r.dataStore.length - 1,
-                highIdx: this.state.highIdx, lowIdx: this.state.lowIdx,
-                o: this.state.o, h: this.state.h, l: this.state.l, c: this.state.c
-            });
-        }
-        if (htfCandles.length < 2) return;
+        // Map over existing candles without doing an expensive spread [...] 
+        const htfCandles = this.state.cachedCandles || [];
+        const liveBlock = this.state.blockStartMs !== 0 ? {
+            startIdx: this.state.startIdx, endIdx: r.dataStore.length - 1,
+            highIdx: this.state.highIdx, lowIdx: this.state.lowIdx,
+            o: this.state.o, h: this.state.h, l: this.state.l, c: this.state.c
+        } : null;
 
-        let mother = htfCandles[0];
+        const totalBlocks = htfCandles.length + (liveBlock ? 1 : 0);
+        if (totalBlocks < 2) return;
+
+        // Helper to get candle by index without creating new arrays
+        const getBlock = (idx: number) => idx < htfCandles.length ? htfCandles[idx] : liveBlock!;
+
+        let mother = getBlock(0);
         let currentBias = 0;
 
-        for (let i = 1; i < htfCandles.length; i++) {
-            const curr = htfCandles[i];
-            const isLast = i === htfCandles.length - 1;
+        for (let i = 1; i < totalBlocks; i++) {
+            const curr = getBlock(i);
+            const isLast = i === totalBlocks - 1;
             const inView = !(curr.endIdx < visStart || curr.startIdx > visEnd);
             const isInside = curr.h <= mother.h && curr.l >= mother.l;
 
@@ -170,7 +174,7 @@ export class HTFBiasIndicator extends BaseIndicator {
                     StrokeEngine.drawLine(g, x1, yTop, x2, yTop, { color: insideClr, width: 1.5, alpha: 0.8 });
                     StrokeEngine.drawLine(g, x1, yTop + ribbonH, x2, yTop + ribbonH, { color: insideClr, width: 1.5, alpha: 0.8 });
 
-                // 2. Trend Bias (Bull / Bear)
+                    // 2. Trend Bias (Bull / Bear)
                 } else if (currentBias !== 0) {
                     const color = currentBias === 1 ? bullClr : bearClr;
                     g.rect(x1, yTop, Math.max(1, x2 - x1), ribbonH).fill({ color, alpha: 0.2 });

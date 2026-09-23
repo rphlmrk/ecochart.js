@@ -6,13 +6,13 @@ import { THEME_PRESETS } from './theme/presets';
 import { colorPicker } from './ui/ColorPicker';
 import type { ChartTheme, LineStyle, AccentSource } from './theme/types';
 import { IndicatorManager } from './indicators/IndicatorManager';
-import { 
-    SMAIndicator, 
-    EMAIndicator, 
-    VolumeIndicator, 
-    ExhaustionIndicator, 
-    HTFBoxIndicator, 
-    HTFBiasIndicator, 
+import {
+    SMAIndicator,
+    EMAIndicator,
+    VolumeIndicator,
+    ExhaustionIndicator,
+    HTFBoxIndicator,
+    HTFBiasIndicator,
     HTFProjectionsIndicator,
     ZigZag123Indicator
 } from './indicators/plugins';
@@ -48,13 +48,13 @@ export class EcoChart {
     public renderer: ChartRenderer;
     public network: BinanceClient;
     public indicatorManager: IndicatorManager;
-     public drawingManager: DrawingManager;
+    public drawingManager: DrawingManager;
     public isDirty = true;
     public isCrosshairDirty = false;
     public canvas: HTMLCanvasElement;
     public container: HTMLElement;
     public isRunning = true;
-    private themeUnsubscribe: (() => void) | null = null; 
+    private themeUnsubscribe: (() => void) | null = null;
 
     private lastThemeIsDark: boolean = true;
 
@@ -62,8 +62,9 @@ export class EcoChart {
     public autoBtn: HTMLButtonElement | null = null;
     public resetBtn: HTMLElement | null = null;
     public navBar: HTMLDivElement | null = null;
-    public legendContainer: HTMLDivElement | null = null; 
+    public legendContainer: HTMLDivElement | null = null;
     public paneDrawingToolbar: HTMLDivElement | null = null; // <-- PER-PANE TOOLBAR
+    private legendValNodes = new Map<string, HTMLElement>(); // <-- CACHE FOR FAST CROSSHAIR
 
     // Interaction State
     private isDraggingChart = false;
@@ -118,10 +119,10 @@ export class EcoChart {
         // Initialize the tracking variable
         this.lastThemeIsDark = themeManager.getTheme().isDark;
 
-        this.themeUnsubscribe = themeManager.subscribe((theme) => { 
+        this.themeUnsubscribe = themeManager.subscribe((theme) => {
             this.renderer.applyTheme(theme);
             const accent = themeManager.getResolvedAccentColor();
-            
+
             if (this.autoBtn) {
                 this.autoBtn.style.color = this.renderer.isAutoScale ? accent : 'var(--chart-text, #787B86)';
             }
@@ -256,14 +257,14 @@ export class EcoChart {
         // Prevent canvas panning when clicking tools
         this.paneDrawingToolbar.addEventListener('pointerdown', (e) => e.stopPropagation());
         this.paneDrawingToolbar.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: false });
-        
+
         this.paneDrawingToolbar.querySelectorAll('.dt-btn').forEach((b) => {
             const btn = b as HTMLElement;
             btn.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 WorkspaceManager.setActiveChart(this);
                 const action = btn.dataset.action;
-                
+
                 if (action === 'cursor') this.drawingManager.activeToolType = null;
                 else if (['trendline', 'hray', 'vline', 'rect', 'fib', 'prange'].includes(action!)) {
                     this.drawingManager.startTool(action as any);
@@ -334,10 +335,10 @@ export class EcoChart {
     public destroy() {
         this.isRunning = false;
 
-        if (this.themeUnsubscribe) {       
-            this.themeUnsubscribe();       
-            this.themeUnsubscribe = null;  
-        }             
+        if (this.themeUnsubscribe) {
+            this.themeUnsubscribe();
+            this.themeUnsubscribe = null;
+        }
 
         this.network.disconnect();
         this.renderer.destroy();
@@ -388,6 +389,9 @@ export class EcoChart {
             valSpan.textContent = data.valueStr;
             valSpan.style.color = '#' + data.valueColor.toString(16).padStart(6, '0');
             item.appendChild(valSpan);
+
+            // Save to cache for instant access during crosshair movement
+            this.legendValNodes.set(ind.id, valSpan);
 
             // 👁 / ⊘ Visibility Toggle Button
             const eyeBtn = document.createElement('button');
@@ -444,11 +448,10 @@ export class EcoChart {
         const targetIdx = this.renderer.getHoverIndex();
 
         this.indicatorManager.activeIndicators.forEach((ind) => {
-            const item = this.legendContainer!.querySelector(`[data-ind-id="${ind.id}"]`);
-            if (item) {
-                const valSpan = item.querySelector('.legend-val') as HTMLElement;
-                if (valSpan) {
-                    const data = ind.getValueAt(targetIdx, this.dataStore, this.renderer.isDarkTheme, this.renderer.axisTextColor);
+            const valSpan = this.legendValNodes.get(ind.id);
+            if (valSpan) {
+                const data = ind.getValueAt(targetIdx, this.dataStore, this.renderer.isDarkTheme, this.renderer.axisTextColor);
+                if (valSpan.textContent !== data.valueStr) { // Only update DOM if changed
                     valSpan.textContent = data.valueStr;
                     valSpan.style.color = '#' + data.valueColor.toString(16).padStart(6, '0');
                 }
@@ -464,12 +467,12 @@ export class EcoChart {
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
 
-           if (this.drawingManager.activeToolType) {
+            if (this.drawingManager.activeToolType) {
                 // Pass e.shiftKey so the final click snaps to straight lines
                 const finished = this.drawingManager.onPointerDown(this.renderer, x, y, e.shiftKey);
                 if (finished) {
                     const finishedDrawing = this.drawingManager.drawings[this.drawingManager.drawings.length - 1];
-                    
+
                     if (finishedDrawing) this.drawingManager.saveDrawing(finishedDrawing);
 
                     // If we just placed a Text tool, open the editor modal immediately!
@@ -479,7 +482,7 @@ export class EcoChart {
 
                     document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
                     document.getElementById('tool-cursor')?.classList.add('active');
-                    
+
                     if (this.paneDrawingToolbar) {
                         this.paneDrawingToolbar.querySelectorAll('.dt-btn[data-action]').forEach(b => b.classList.remove('active'));
                         this.paneDrawingToolbar.querySelector('[data-action="cursor"]')?.classList.add('active');
@@ -496,7 +499,7 @@ export class EcoChart {
                 this.drawingManager.drawings.forEach(d => d.state = 'idle');
                 hitDrawing.state = 'selected';
                 this.drawingManager.selectedDrawing = hitDrawing;
-                
+
                 // If they grabbed a circle handle, start dragging!
                 if (hitResult.part === 'handle_0') { this.drawingManager.draggingHandle = 0; return; }
                 if (hitResult.part === 'handle_1') { this.drawingManager.draggingHandle = 1; return; }
@@ -507,14 +510,14 @@ export class EcoChart {
                     WorkspaceManager.openTextEditor(hitDrawing as any);
                     return;
                 }
-                
+
                 // Spawn a tiny invisible anchor for the ColorPicker at mouse coordinates
                 const anchor = document.createElement('div');
                 anchor.style.position = 'absolute';
                 anchor.style.left = `${e.clientX}px`;
                 anchor.style.top = `${e.clientY}px`;
                 document.body.appendChild(anchor);
-                
+
                 colorPicker.open({
                     anchorElement: anchor,
                     initialColor: '#' + hitDrawing.color.toString(16).padStart(6, '0'),
@@ -536,13 +539,13 @@ export class EcoChart {
                         hitDrawing.width = res.thickness || hitDrawing.width;
                         hitDrawing.style = res.style || hitDrawing.style;
                         this.isDirty = true;
-                        
+
                         this.drawingManager.saveDrawing(hitDrawing);
-                        
+
                         WorkspaceManager.triggerAutoSave();
                     }
                 });
-                
+
                 setTimeout(() => anchor.remove(), 100); // cleanup DOM
                 return; // Stop panning
             } else {
@@ -582,38 +585,38 @@ export class EcoChart {
             this.isCrosshairDirty = true; // Mark crosshair dirty only (does not redraw candles)
             this.updateLegendValues();
 
-              if (this.drawingManager.activeToolType) {
+            if (this.drawingManager.activeToolType) {
                 // 1. Pass e.shiftKey for New Drawings
                 this.drawingManager.onPointerMove(this.renderer, this.renderer.crosshairX, this.renderer.crosshairY, e.shiftKey);
                 this.isDirty = true;
             } else if (this.drawingManager.selectedDrawing && this.drawingManager.draggingHandle !== null) {
                 // MODIFING EXISTING DRAWING
-                let { time, price } = this.drawingManager.isMagnetEnabled 
-                    ? this.renderer.getMagnetPoint(this.renderer.crosshairX, this.renderer.crosshairY) 
+                let { time, price } = this.drawingManager.isMagnetEnabled
+                    ? this.renderer.getMagnetPoint(this.renderer.crosshairX, this.renderer.crosshairY)
                     : { time: this.renderer.xToTime(this.renderer.crosshairX), price: this.renderer.yToPrice(this.renderer.crosshairY) };
-                
+
                 // 2. Add Shift-Key constraint for MODIFING existing drawings
                 if (e.shiftKey && this.drawingManager.selectedDrawing.toolType === 'trendline') {
                     const anchorIdx = this.drawingManager.draggingHandle === 0 ? 1 : 0;
                     const anchorPt = this.drawingManager.selectedDrawing.points[anchorIdx];
-                    
+
                     const startX = this.renderer.timeToX(anchorPt.time);
                     const startY = this.renderer.priceToY(anchorPt.price);
                     let curX = this.renderer.timeToX(time);
                     let curY = this.renderer.priceToY(price);
-                    
+
                     const dx = curX - startX;
                     const dy = curY - startY;
                     const angle = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
 
-                    if (angle < 22.5 || angle > 157.5) curY = startY; 
+                    if (angle < 22.5 || angle > 157.5) curY = startY;
                     else if (angle > 67.5 && angle < 112.5) curX = startX;
-                    else { 
+                    else {
                         const dist = Math.max(Math.abs(dx), Math.abs(dy));
                         curX = startX + Math.sign(dx) * dist;
                         curY = startY + Math.sign(dy) * dist;
                     }
-                    
+
                     time = this.renderer.xToTime(curX);
                     price = this.renderer.yToPrice(curY);
                 }
@@ -680,7 +683,7 @@ export class EcoChart {
 
         const stopDragging = (e: PointerEvent) => {
             if (e.pointerType === 'touch') return;
-            
+
             // Save modified drawing to DB and reset handle
             if (this.drawingManager.draggingHandle !== null && this.drawingManager.selectedDrawing) {
                 this.drawingManager.saveDrawing(this.drawingManager.selectedDrawing);
@@ -781,7 +784,7 @@ export class EcoChart {
                 this.isMobileCrosshairActive = false;
                 this.renderer.isCrosshairVisible = false;
                 this.isCrosshairDirty = true;
-                
+
                 this.isDraggingChart = false;
                 this.isDraggingPriceAxis = false;
                 this.isDraggingTimeAxis = false;
@@ -803,53 +806,53 @@ export class EcoChart {
 
                 // ---> NEW: Mobile Drawing Support <---
                 if (this.drawingManager.activeToolType) {
-                const finished = this.drawingManager.onPointerDown(this.renderer, x, y, e.shiftKey);
-                if (finished) {
-                    const finishedDrawing = this.drawingManager.drawings[this.drawingManager.drawings.length - 1];
-                    
-                    if (finishedDrawing) this.drawingManager.saveDrawing(finishedDrawing);
+                    const finished = this.drawingManager.onPointerDown(this.renderer, x, y, e.shiftKey);
+                    if (finished) {
+                        const finishedDrawing = this.drawingManager.drawings[this.drawingManager.drawings.length - 1];
 
-                    // If we just placed a Text tool, open the editor modal immediately!
-                    if (finishedDrawing && finishedDrawing.constructor.name === 'TextDrawing') {
-                        WorkspaceManager.openTextEditor(finishedDrawing as any);
+                        if (finishedDrawing) this.drawingManager.saveDrawing(finishedDrawing);
+
+                        // If we just placed a Text tool, open the editor modal immediately!
+                        if (finishedDrawing && finishedDrawing.constructor.name === 'TextDrawing') {
+                            WorkspaceManager.openTextEditor(finishedDrawing as any);
+                        }
+
+                        document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
+                        document.getElementById('tool-cursor')?.classList.add('active');
+
+                        if (this.paneDrawingToolbar) {
+                            this.paneDrawingToolbar.querySelectorAll('.dt-btn[data-action]').forEach(b => b.classList.remove('active'));
+                            this.paneDrawingToolbar.querySelector('[data-action="cursor"]')?.classList.add('active');
+                        }
                     }
-
-                    document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
-                    document.getElementById('tool-cursor')?.classList.add('active');
-                    
-                    if (this.paneDrawingToolbar) {
-                        this.paneDrawingToolbar.querySelectorAll('.dt-btn[data-action]').forEach(b => b.classList.remove('active'));
-                        this.paneDrawingToolbar.querySelector('[data-action="cursor"]')?.classList.add('active');
-                    }
-                }
-                this.isDirty = true;
-                return;
-            }
-
-            // Phase 3 & 4: Selection Hit Test (Mobile)
-            const hitResult = this.drawingManager.trySelect(this.renderer, x, y);
-            if (hitResult) {
-                const hitDrawing = hitResult.drawing;
-                this.drawingManager.drawings.forEach(d => d.state = 'idle');
-                hitDrawing.state = 'selected';
-                this.drawingManager.selectedDrawing = hitDrawing;
-                
-                if (hitResult.part === 'handle_0') { this.drawingManager.draggingHandle = 0; return; }
-                if (hitResult.part === 'handle_1') { this.drawingManager.draggingHandle = 1; return; }
-                this.isDirty = true;
-
-                // If clicking a Text tool, open Text Modal instead of ColorPicker!
-                if (hitDrawing.constructor.name === 'TextDrawing') {
-                    WorkspaceManager.openTextEditor(hitDrawing as any);
+                    this.isDirty = true;
                     return;
                 }
-                    
+
+                // Phase 3 & 4: Selection Hit Test (Mobile)
+                const hitResult = this.drawingManager.trySelect(this.renderer, x, y);
+                if (hitResult) {
+                    const hitDrawing = hitResult.drawing;
+                    this.drawingManager.drawings.forEach(d => d.state = 'idle');
+                    hitDrawing.state = 'selected';
+                    this.drawingManager.selectedDrawing = hitDrawing;
+
+                    if (hitResult.part === 'handle_0') { this.drawingManager.draggingHandle = 0; return; }
+                    if (hitResult.part === 'handle_1') { this.drawingManager.draggingHandle = 1; return; }
+                    this.isDirty = true;
+
+                    // If clicking a Text tool, open Text Modal instead of ColorPicker!
+                    if (hitDrawing.constructor.name === 'TextDrawing') {
+                        WorkspaceManager.openTextEditor(hitDrawing as any);
+                        return;
+                    }
+
                     const anchor = document.createElement('div');
                     anchor.style.position = 'absolute';
                     anchor.style.left = `${t.clientX}px`;
                     anchor.style.top = `${t.clientY}px`;
                     document.body.appendChild(anchor);
-                    
+
                     colorPicker.open({
                         anchorElement: anchor,
                         initialColor: '#' + hitDrawing.color.toString(16).padStart(6, '0'),
@@ -877,7 +880,7 @@ export class EcoChart {
                             WorkspaceManager.triggerAutoSave();
                         }
                     });
-                    
+
                     setTimeout(() => anchor.remove(), 100);
                     return; // Stop chart interactions
                 } else {
@@ -953,14 +956,14 @@ export class EcoChart {
                     const worldBaseX = (pinchCenterX + this.renderer.cameraX) / this.renderer.zoom;
                     const scaleFactor = currentDist / this.initialPinchDist;
                     const newZoom = Math.max(0.1, Math.min(this.initialPinchZoom * scaleFactor, 50));
-                    
+
                     this.renderer.zoom = newZoom;
                     this.renderer.cameraX = (worldBaseX * this.renderer.zoom) - pinchCenterX;
                     this.isLockedToEdge = false;
                     this.isDirty = true;
                 }
 
-            // Case B: 1-Finger Interactions
+                // Case B: 1-Finger Interactions
             } else if (this.activeTouches.size === 1) {
                 const t = e.touches[0];
                 const x = t.clientX - rect.left;
@@ -1025,7 +1028,7 @@ export class EcoChart {
                     }
                     this.isDirty = true;
                 }
-                
+
                 this.lastMouseX = t.clientX;
                 this.lastMouseY = t.clientY;
             }
@@ -1098,7 +1101,7 @@ export class EcoChart {
                 ? themeManager.getResolvedAccentColor()
                 : 'var(--chart-text, #787B86)';
         }
-       WorkspaceManager.syncTopBar();
+        WorkspaceManager.syncTopBar();
         WorkspaceManager.triggerAutoSave();
     }
 
@@ -1148,12 +1151,12 @@ export class EcoChart {
     public async deserialize(state: SavedPaneState) {
         this.currentSymbol = state.symbol || 'BTCUSDT';
         this.currentInterval = state.timeframe || '1m';
-        
-        await this.drawingManager.loadDrawings(this.currentSymbol); 
+
+        await this.drawingManager.loadDrawings(this.currentSymbol);
 
         this.renderer.chartMode = (state.chartMode as any) || 'candles';
         this.renderer.isAutoScale = state.isAutoScale ?? true;
-        
+
         this.indicatorManager.activeIndicators = [];
         if (state.indicators) {
             state.indicators.forEach(indState => {
@@ -1161,7 +1164,7 @@ export class EcoChart {
                 if (ind) this.indicatorManager.addIndicator(ind);
             });
         }
-        
+
         await this.startLiveBinance(this.currentSymbol, this.currentInterval);
         this.updateLegend();
         this.updateControlsLayout();
@@ -1186,7 +1189,7 @@ export class EcoChart {
                 const maxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
                 this.renderer.cameraX = maxScroll + 150;
             }
-            }, (pct: number) => {
+        }, (pct: number) => {
             // ---> NEW ON TICKER CALLBACK <---
             this.currentChangePct = pct;
             if (WorkspaceManager.getActiveChart() === this) {
@@ -1216,7 +1219,7 @@ export class EcoChart {
                 const maxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
                 this.renderer.cameraX = maxScroll + 150;
             }
-            }, (pct: number) => {
+        }, (pct: number) => {
             // ---> NEW ON TICKER CALLBACK <---
             this.currentChangePct = pct;
             if (WorkspaceManager.getActiveChart() === this) {
@@ -1231,7 +1234,7 @@ export class EcoChart {
         this.currentSymbol = symbol;
         this.currentInterval = interval;
 
-        await this.drawingManager.loadDrawings(symbol); 
+        await this.drawingManager.loadDrawings(symbol);
 
         await this.renderer.init(this.canvas);
 
@@ -1247,7 +1250,7 @@ export class EcoChart {
                 const maxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
                 this.renderer.cameraX = maxScroll + 150;
             }
-            }, (pct: number) => {
+        }, (pct: number) => {
             // ---> NEW ON TICKER CALLBACK <---
             this.currentChangePct = pct;
             if (WorkspaceManager.getActiveChart() === this) {
@@ -1418,7 +1421,7 @@ export class WorkspaceManager {
 
             document.getElementById('confirm-title')!.textContent = title;
             document.getElementById('confirm-msg')!.textContent = message;
-            
+
             const btnCancel = document.getElementById('btn-confirm-cancel');
             const btnOk = document.getElementById('btn-confirm-ok');
 
@@ -1433,7 +1436,7 @@ export class WorkspaceManager {
 
             btnCancel?.addEventListener('click', onCancel);
             btnOk?.addEventListener('click', onOk);
-            
+
             modal.showModal();
         });
     }
@@ -1540,7 +1543,7 @@ export class WorkspaceManager {
 
     public static init() {
         this.setupGlobalControls();
-        
+
         try {
             const raw = localStorage.getItem('ecochart_workspace_v1');
             if (raw) {
@@ -1554,8 +1557,8 @@ export class WorkspaceManager {
                     if (state.isCrosshairSyncEnabled !== undefined) this.isCrosshairSyncEnabled = state.isCrosshairSyncEnabled;
                     if (state.dataLimits) this.dataLimits = { ...this.dataLimits, ...state.dataLimits };
 
-                     if (state.sessionConfig) this.sessionConfig = { ...this.sessionConfig, ...state.sessionConfig };
-                     if (state.clockConfig) this.clockConfig = { ...this.clockConfig, ...state.clockConfig };
+                    if (state.sessionConfig) this.sessionConfig = { ...this.sessionConfig, ...state.sessionConfig };
+                    if (state.clockConfig) this.clockConfig = { ...this.clockConfig, ...state.clockConfig };
 
                     this.updateToolbarDock();
 
@@ -1569,7 +1572,7 @@ export class WorkspaceManager {
         } catch (err) {
             console.warn('Failed to load workspace', err);
         }
-        
+
         this.setLayout('1'); // Fallback if no save exists
     }
 
@@ -1676,18 +1679,18 @@ export class WorkspaceManager {
             grid.appendChild(pane);
 
             const chart = new EcoChart(pane);
-            
+
             if (savedPanes && savedPanes[i]) {
                 chart.deserialize(savedPanes[i]);
             } else {
                 const cfg = defaultConfigs[i] || defaultConfigs[0];
                 chart.startLiveBinance(cfg.symbol, cfg.tf);
             }
-            
+
             this.charts.push(chart);
             if (i === 0) this.setActiveChart(chart);
         }
-        
+
         this.syncSessions();
         this.syncClock();
         this.triggerAutoSave();
@@ -1723,11 +1726,11 @@ export class WorkspaceManager {
                 if (!isDragging) return;
                 const dx = e.clientX - startX;
                 const dy = e.clientY - startY;
-                
+
                 // Keep within screen bounds
                 const newLeft = Math.max(0, Math.min(window.innerWidth - dt.offsetWidth, initialLeft + dx));
                 const newTop = Math.max(38, Math.min(window.innerHeight - dt.offsetHeight, initialTop + dy)); // 38px avoids top bar
-                
+
                 dt.style.left = `${newLeft}px`;
                 dt.style.top = `${newTop}px`;
             });
@@ -1793,7 +1796,7 @@ export class WorkspaceManager {
                     const icon = (btn as HTMLElement).dataset.icon;
                     if (this.activeChart && tool) {
                         this.activeChart.drawingManager.startTool(tool as any);
-                        
+
                         // Update Main Icon & Active State
                         if (btnLinesMain && icon) btnLinesMain.innerHTML = icon;
                         document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
@@ -1827,11 +1830,11 @@ export class WorkspaceManager {
                 closeAllDTMenus();
                 if (hideMenu && !isOp && this.activeChart) {
                     hideMenu.style.display = 'flex';
-                    
+
                     // Update Text Dynamically based on state
                     const drawBtn = hideMenu.querySelector('[data-action="drawings"]');
                     const indBtn = hideMenu.querySelector('[data-action="indicators"]');
-                    
+
                     const drwVisible = this.activeChart.drawingManager.isVisible;
                     const anyIndVisible = this.activeChart.indicatorManager.activeIndicators.some(i => i.visible);
 
@@ -1859,13 +1862,13 @@ export class WorkspaceManager {
                 if (this.activeChart) {
                     const manager = this.activeChart.drawingManager;
                     manager.isMagnetEnabled = !manager.isMagnetEnabled;
-                    
+
                     // Sync state across all active panes
                     this.charts.forEach(chart => {
                         chart.drawingManager.isMagnetEnabled = manager.isMagnetEnabled;
                         chart.renderer.isMagnetEnabled = manager.isMagnetEnabled;
                     });
-                    
+
                     btnMagnet.classList.toggle('active', manager.isMagnetEnabled);
                 }
             });
@@ -1915,7 +1918,7 @@ export class WorkspaceManager {
                 });
             });
         }
-        
+
         // Layout Menu Toggle
         const btnLayout = document.getElementById('btn-layout');
         const layoutMenu = document.getElementById('layout-menu');
@@ -2126,7 +2129,7 @@ export class WorkspaceManager {
                     if (rowHours) rowHours.style.display = (dynCfg.mode === 'schedule' || dynCfg.mode === 'solar-session') ? 'flex' : 'none';
                 }
             }
-        
+
 
 
             // Sync Data Limit Dropdowns
@@ -2134,7 +2137,7 @@ export class WorkspaceManager {
                 const el = document.getElementById(key) as HTMLSelectElement;
                 if (el) el.value = String(WorkspaceManager.dataLimits[key]);
             });
-            
+
             const selDock = document.getElementById('select-toolbar-dock') as HTMLSelectElement;
             if (selDock) selDock.value = WorkspaceManager.toolbarDockMode;
 
@@ -2205,7 +2208,7 @@ export class WorkspaceManager {
             const selClock2 = document.getElementById('select-clock-secondary') as HTMLSelectElement;
             if (selClock2) selClock2.value = WorkspaceManager.clockConfig.secondaryTz;
         };
-        
+
 
         const bindSwatch = (btnId: string, themeKey: keyof ChartTheme, showOpacity = true) => {
             const btn = document.getElementById(btnId);
@@ -2449,7 +2452,7 @@ export class WorkspaceManager {
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `ecochart_workspace_${new Date().toISOString().slice(0,10)}.json`;
+                a.download = `ecochart_workspace_${new Date().toISOString().slice(0, 10)}.json`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -2462,7 +2465,7 @@ export class WorkspaceManager {
         // Workspace Import
         const btnImportWorkspace = document.getElementById('btn-import-workspace');
         const inputImportWorkspace = document.getElementById('input-import-workspace') as HTMLInputElement;
-        
+
         btnImportWorkspace?.addEventListener('click', () => {
             inputImportWorkspace?.click();
         });
@@ -2494,7 +2497,7 @@ export class WorkspaceManager {
         const btnWorkspaceModal = document.getElementById('btn-workspace-modal');
         btnWorkspaceModal?.addEventListener('click', () => {
             syncModalInputs();
-            
+
             // Programmatically switch to the Workspace tab
             document.querySelectorAll('.modal-tab-btn').forEach(t => {
                 (t as HTMLElement).style.background = 'transparent';
@@ -2505,7 +2508,7 @@ export class WorkspaceManager {
                 wsTab.style.background = '#2A2E39';
                 wsTab.style.color = '#2962FF';
             }
-            
+
             document.querySelectorAll('.modal-tab-content').forEach(c => {
                 (c as HTMLElement).style.display = 'none';
             });
@@ -2544,7 +2547,7 @@ export class WorkspaceManager {
                 }
             }
 
-           colorPicker.close();
+            colorPicker.close();
             modalSettings?.close();
             WorkspaceManager.triggerAutoSave(); // <-- Save all modal changes
         };
@@ -2673,7 +2676,7 @@ export class WorkspaceManager {
                     if (param.max !== undefined) input.max = String(param.max);
                     if (param.step !== undefined) input.step = String(param.step);
                     input.style.cssText = 'background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; width: 75px; font-size: 12px; outline: none; text-align: right;';
-                    
+
                     input.oninput = () => {
                         const num = parseFloat(input.value);
                         if (!isNaN(num)) {
@@ -2687,12 +2690,12 @@ export class WorkspaceManager {
                     };
                     row.appendChild(input);
 
-                // Field Type 2: Color (Integrated with ColorPicker)
+                    // Field Type 2: Color (Integrated with ColorPicker)
                 } else if (param.type === 'color') {
                     const swatch = document.createElement('button');
                     swatch.type = 'button';
                     swatch.style.cssText = `width: 26px; height: 26px; border-radius: 4px; border: 1px solid var(--chart-grid, #434651); background: ${param.value}; cursor: pointer; padding: 0;`;
-                    
+
                     swatch.onclick = (e) => {
                         e.stopPropagation();
                         colorPicker.open({
@@ -2710,13 +2713,13 @@ export class WorkspaceManager {
                     };
                     row.appendChild(swatch);
 
-                // Field Type 3: Boolean Checkbox
+                    // Field Type 3: Boolean Checkbox
                 } else if (param.type === 'boolean') {
                     const check = document.createElement('input');
                     check.type = 'checkbox';
                     check.checked = Boolean(param.value);
                     check.style.cssText = 'cursor: pointer; width: 16px; height: 16px; accent-color: var(--chart-accent, #2962FF);';
-                    
+
                     check.onchange = () => {
                         indicator.updateParams({ [param.id]: check.checked });
                         this.activeChart!.updateLegend();
@@ -2725,11 +2728,11 @@ export class WorkspaceManager {
                     };
                     row.appendChild(check);
 
-                // Field Type 4: Select Dropdown
+                    // Field Type 4: Select Dropdown
                 } else if (param.type === 'select') {
                     const select = document.createElement('select');
                     select.style.cssText = 'background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; outline: none; cursor: pointer;';
-                    
+
                     (param.options || []).forEach((opt: string) => {
                         const optEl = document.createElement('option');
                         optEl.value = opt;

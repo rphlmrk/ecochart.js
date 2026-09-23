@@ -25,7 +25,7 @@ export class HTFBoxIndicator extends BaseIndicator {
         return parseInt(mode, 10) || 60;
     }
 
-   protected onParamsUpdated(): void {
+    protected onParamsUpdated(): void {
         const tfMins = this.getEffectiveTfMins();
         this.id = `HTF_BOX_${tfMins}`;
         this.name = `HTF Box (${tfMins}m)`;
@@ -57,7 +57,7 @@ export class HTFBoxIndicator extends BaseIndicator {
                     barsCount: barsPerBlock,
                     o: this.state.o, h: this.state.h, l: this.state.l, c: this.state.c
                 });
-                
+
                 if (this.state.cachedBlocks.length > 500) this.state.cachedBlocks.shift(); // Prevent memory bloat
             }
             this.state.blockStartMs = bTime;
@@ -81,21 +81,22 @@ export class HTFBoxIndicator extends BaseIndicator {
         const opacity = r.isDarkTheme ? customOpacity : Math.min(0.85, customOpacity * 1.6);
         const sp = r.candleSpacing * r.zoom;
 
-        // Combine history with actively forming block
-        const blocks = [...(this.state.cachedBlocks || [])];
+        const history = this.state.cachedBlocks || [];
+        const totalBlocks = history.length + (this.state.blockStartMs !== 0 ? 1 : 0);
+
+        let liveBarsPerBlock = 1;
         if (this.state.blockStartMs !== 0) {
             const intervalMs = (r.dataStore.length >= 2) ? (r.dataStore.data[6] - r.dataStore.data[0]) : 60000;
-            const barsPerBlock = Math.max(1, Math.round((this.getEffectiveTfMins() * 60000) / intervalMs));
-            blocks.push({
-                startBarIdx: this.state.startBarIdx,
-                barsCount: barsPerBlock,
-                o: this.state.o, h: this.state.h, l: this.state.l, c: this.state.c
-            });
+            liveBarsPerBlock = Math.max(1, Math.round((this.getEffectiveTfMins() * 60000) / intervalMs));
         }
 
-        // Zero allocations: loops only over the few pre-calculated blocks visible on screen
-        for (let i = 0; i < blocks.length; i++) {
-            const b = blocks[i];
+        // Zero allocations: loops over existing arrays without spreading
+        for (let i = 0; i < totalBlocks; i++) {
+            const b = i < history.length ? history[i] : {
+                startBarIdx: this.state.startBarIdx,
+                barsCount: liveBarsPerBlock,
+                o: this.state.o, h: this.state.h, l: this.state.l, c: this.state.c
+            };
             const x1 = (b.startBarIdx * sp) - r.cameraX;
             const x2 = x1 + (b.barsCount * sp);
 

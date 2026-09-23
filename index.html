@@ -10,8 +10,10 @@
     html {
       margin: 0;
       padding: 0;
-      height: 100vh; /* Fallback */
-      height: 100dvh; /* Modern dynamic viewport */
+      height: 100vh;
+      /* Fallback */
+      height: 100dvh;
+      /* Modern dynamic viewport */
       overflow: hidden;
       background: #000;
       /* Prevent mobile pull-to-refresh & rubber-banding */
@@ -29,6 +31,7 @@
       flex-shrink: 1;
       min-width: 0;
     }
+
     #tf-group::-webkit-scrollbar {
       display: none;
     }
@@ -37,6 +40,7 @@
     .desktop-only {
       display: flex !important;
     }
+
     .mobile-only {
       display: none !important;
     }
@@ -45,6 +49,7 @@
       .desktop-only {
         display: none !important;
       }
+
       .mobile-only {
         display: flex !important;
       }
@@ -67,30 +72,34 @@
       box-sizing: border-box;
       transition: background 0.1s ease;
     }
+
     .menu-opt-btn:hover {
       background: rgba(255, 255, 255, 0.08);
     }
 
     /* Responsive modal sizing for phones & tablets */
     @media (max-width: 768px) {
+
       /* Prevent iOS Safari auto-zoom by forcing 16px on inputs */
       input[type="text"],
       input[type="number"],
       select {
         font-size: 16px !important;
       }
-      
+
       dialog {
         max-width: 94vw !important;
         width: 94vw !important;
         margin: auto !important;
         box-sizing: border-box !important;
       }
+
       .nav-btn {
         width: 32px !important;
         height: 32px !important;
         font-size: 16px !important;
       }
+
       #settings-tabs {
         overflow-x: auto;
         white-space: nowrap;
@@ -323,6 +332,7 @@
         left: 6px;
         gap: 3px;
       }
+
       .legend-item {
         font-size: 10px;
         padding: 2px 5px;
@@ -346,7 +356,8 @@
       transition: all 0.1s ease;
     }
 
-    .dt-btn:hover, .dt-btn.active {
+    .dt-btn:hover,
+    .dt-btn.active {
       background: rgba(41, 98, 255, 0.15);
       color: var(--chart-accent, #2962FF);
     }
@@ -377,16 +388,27 @@
 
         <!-- 1. DESKTOP/TABLET TIMEFRAME PILLS (Shown on >= 768px) -->
         <div id="tf-group" class="desktop-only" style="display: flex; gap: 2px;">
-          <button class="tf-btn" data-tf="1s" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1s</button>
-          <button class="tf-btn" data-tf="1m" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1m</button>
-          <button class="tf-btn" data-tf="3m" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">3m</button>
-          <button class="tf-btn" data-tf="5m" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">5m</button>
-          <button class="tf-btn" data-tf="15m" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">15m</button>
-          <button class="tf-btn" data-tf="30m" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">30m</button>
-          <button class="tf-btn" data-tf="1h" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1h</button>
-          <button class="tf-btn" data-tf="4h" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">4h</button>
-          <button class="tf-btn" data-tf="1d" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">D</button>
-          <button id="btn-custom-tf" style="background: transparent; color: #787B86; border: 1px dashed var(--chart-grid, #363A45); padding: 2px 6px; font-size: 11px; cursor: pointer; border-radius: 4px;" title="Custom Timeframe">+ Custom</button>
+          <button class="tf-btn" data-tf="1s"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1s</button>
+          <button class="tf-btn" data-tf="1m"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1m</button>
+          <button class="tf-btn" data-tf="3m"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">3m</button>
+          <button class="tf-btn" data-tf="5m"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">5m</button>
+          <button class="tf-btn" data-tf="15m"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">15m</button>
+          <button class="tf-btn" data-tf="30m"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">30m</button>
+          <button class="tf-btn" data-tf="1h"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">1h</button>
+          <button class="tf-btn" data-tf="4h"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">4h</button>
+          <button class="tf-btn" data-tf="1d"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">D</button>
+          <button id="btn-custom-tf"
+            style="background: transparent; color: #787B86; border: 1px dashed var(--chart-grid, #363A45); padding: 2px 6px; font-size: 11px; cursor: pointer; border-radius: 4px;"
+            title="Custom Timeframe">+ Custom</button>
         </div>
 
         <!-- 2. MOBILE TIMEFRAME DROPDOWN (Shown on < 768px) -->
@@ -408,7 +430,8 @@
             <button class="tf-btn menu-opt-btn" data-tf="4h">4h</button>
             <button class="tf-btn menu-opt-btn" data-tf="1d">1d</button>
             <div style="height: 1px; background: var(--chart-grid, #2A2E39); margin: 3px 0;"></div>
-            <button id="btn-mobile-custom-tf" class="menu-opt-btn" style="color: var(--chart-accent, #2962FF);">+ Custom</button>
+            <button id="btn-mobile-custom-tf" class="menu-opt-btn" style="color: var(--chart-accent, #2962FF);">+
+              Custom</button>
           </div>
         </div>
 
@@ -416,11 +439,16 @@
 
         <!-- 3. DESKTOP/TABLET CHART MODES (Shown on >= 768px) -->
         <div id="mode-group" class="desktop-only" style="display: flex; gap: 2px;">
-          <button class="mode-btn" data-mode="candles" title="Candlesticks" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">🕯️</button>
-          <button class="mode-btn" data-mode="bars" title="OHLC Bars" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">📊</button>
-          <button class="mode-btn" data-mode="line" title="Line" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">📈</button>
-          <button class="mode-btn" data-mode="area" title="Area" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">🏔️</button>
-          <button class="mode-btn" data-mode="heikinAshi" title="Heikin-Ashi" style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; font-weight: 700;">HA</button>
+          <button class="mode-btn" data-mode="candles" title="Candlesticks"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">🕯️</button>
+          <button class="mode-btn" data-mode="bars" title="OHLC Bars"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">📊</button>
+          <button class="mode-btn" data-mode="line" title="Line"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">📈</button>
+          <button class="mode-btn" data-mode="area" title="Area"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px;">🏔️</button>
+          <button class="mode-btn" data-mode="heikinAshi" title="Heikin-Ashi"
+            style="background: transparent; color: #787B86; border: none; padding: 4px 6px; font-size: 11px; cursor: pointer; border-radius: 4px; font-weight: 700;">HA</button>
         </div>
 
         <!-- 4. MOBILE CHART MODE DROPDOWN (Shown on < 768px) -->
@@ -450,7 +478,7 @@
 
         <!-- Right-Aligned Controls Group -->
         <div style="margin-left: auto; display: flex; align-items: center; gap: 4px;">
-          
+
           <!-- Workspace Quick Access Button -->
           <button id="btn-workspace-modal" title="Manage Workspace"
             style="background: transparent; color: #D1D4DC; border: none; padding: 4px 6px; font-size: 14px; cursor: pointer; border-radius: 4px;">
@@ -500,7 +528,7 @@
             </div>
           </div>
 
-          
+
 
           <!-- Settings Button -->
           <button id="btn-settings"
@@ -513,20 +541,29 @@
       <!-- Floating Drawing Toolbar -->
       <div id="drawing-toolbar"
         style="position: absolute; left: 16px; top: 60px; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; display: flex; flex-direction: column; gap: 4px; z-index: 20; box-shadow: 0 4px 12px rgba(0,0,0,0.4); opacity: 0.15; transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1); pointer-events: auto;">
-        
+
         <!-- Drag Handle -->
-        <div id="dt-drag-handle" style="cursor: grab; text-align: center; color: #787B86; padding: 4px 0; font-size: 12px; display: flex; justify-content: center; user-select: none;">
-          <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor"><circle cx="2" cy="2" r="1.5"/><circle cx="8" cy="2" r="1.5"/><circle cx="2" cy="7" r="1.5"/><circle cx="8" cy="7" r="1.5"/><circle cx="2" cy="12" r="1.5"/><circle cx="8" cy="12" r="1.5"/></svg>
+        <div id="dt-drag-handle"
+          style="cursor: grab; text-align: center; color: #787B86; padding: 4px 0; font-size: 12px; display: flex; justify-content: center; user-select: none; touch-action: none;">
+          <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor">
+            <circle cx="2" cy="2" r="1.5" />
+            <circle cx="8" cy="2" r="1.5" />
+            <circle cx="2" cy="7" r="1.5" />
+            <circle cx="8" cy="7" r="1.5" />
+            <circle cx="2" cy="12" r="1.5" />
+            <circle cx="8" cy="12" r="1.5" />
+          </svg>
         </div>
         <div style="height: 1px; background: var(--chart-grid, #2A2E39); margin: 2px 0;"></div>
-        
+
         <!-- Primary Tools -->
         <button class="dt-btn active" id="tool-cursor" title="Cursor" data-tool="cursor">🖱️</button>
-        
+
         <!-- Line Tools Group -->
         <div style="position: relative;" id="lines-group">
           <button class="dt-btn" id="tool-lines-main" title="Line Tools">📉</button>
-          <div id="lines-menu" style="display: none; position: absolute; left: 34px; top: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 145px;">
+          <div id="lines-menu"
+            style="display: none; position: absolute; left: 34px; top: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 145px;">
             <button class="menu-opt-btn sub-tool-btn" data-tool="trendline" data-icon="📉">📉 Trendline</button>
             <button class="menu-opt-btn sub-tool-btn" data-tool="hray" data-icon="➖">➖ Horizontal Ray</button>
             <button class="menu-opt-btn sub-tool-btn" data-tool="vline" data-icon="⏸">⏸ Vertical Line</button>
@@ -536,16 +573,18 @@
         <button class="dt-btn" id="tool-rect" title="Rectangle" data-tool="rect">▭</button>
         <button class="dt-btn" id="tool-fib" title="Fibonacci Retracement" data-tool="fib">📏</button>
         <button class="dt-btn" id="tool-prange" title="Price Range" data-tool="prange">↕️</button>
-        <button class="dt-btn" id="tool-text" title="Text Tool" data-tool="text" style="font-weight: bold; font-family: serif;">T</button>
-        
+        <button class="dt-btn" id="tool-text" title="Text Tool" data-tool="text"
+          style="font-weight: bold; font-family: serif;">T</button>
+
         <div style="height: 1px; background: var(--chart-grid, #2A2E39); margin: 2px 0;"></div>
-        
+
         <!-- Utilities -->
         <button class="dt-btn active" id="tool-magnet" title="Magnet Mode (Snap to OHLC)">🧲</button>
-        
+
         <div style="position: relative;">
           <button class="dt-btn" id="tool-hide" title="Hide Objects">👁️</button>
-          <div id="hide-menu" style="display: none; position: absolute; left: 34px; top: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 135px;">
+          <div id="hide-menu"
+            style="display: none; position: absolute; left: 34px; top: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 135px;">
             <button class="hide-opt-btn menu-opt-btn" data-action="drawings">Hide Drawings</button>
             <button class="hide-opt-btn menu-opt-btn" data-action="indicators">Hide Indicators</button>
             <button class="hide-opt-btn menu-opt-btn" data-action="all">Hide All</button>
@@ -554,7 +593,8 @@
 
         <div style="position: relative;">
           <button class="dt-btn" id="tool-trash" title="Remove Objects">🗑️</button>
-          <div id="trash-menu" style="display: none; position: absolute; left: 34px; top: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 150px;">
+          <div id="trash-menu"
+            style="display: none; position: absolute; left: 34px; top: 0; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 100; flex-direction: column; width: 150px;">
             <button class="trash-opt-btn menu-opt-btn" data-action="drawings">Remove Drawings</button>
             <button class="trash-opt-btn menu-opt-btn" data-action="indicators">Remove Indicators</button>
             <button class="trash-opt-btn menu-opt-btn" data-action="all">Remove All</button>
@@ -592,7 +632,7 @@
         style="background: transparent; color: #787B86; border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer;">Workspace</button>
       <button class="modal-tab-btn" data-tab="data"
         style="background: transparent; color: #787B86; border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer;">Data</button>
-    <button class="modal-tab-btn" data-tab="sessions"
+      <button class="modal-tab-btn" data-tab="sessions"
         style="background: transparent; color: #787B86; border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer;">Sessions</button>
     </div>
 
@@ -602,10 +642,13 @@
       <div id="tab-content-themes" class="modal-tab-content">
 
         <!-- DYNAMIC THEME ENGINE (Options A - D) -->
-        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Dynamic Theme Mode</span>
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 8px; margin-bottom: 12px;">
+        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Dynamic Theme
+          Mode</span>
+        <div
+          style="display: flex; align-items: center; justify-content: space-between; margin-top: 8px; margin-bottom: 12px;">
           <span style="font-size: 12px; color: #D1D4DC;">Mode:</span>
-          <select id="select-dynamic-theme-mode" style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none; max-width: 250px;">
+          <select id="select-dynamic-theme-mode"
+            style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none; max-width: 250px;">
             <option value="manual" selected>Manual (Static Preset)</option>
             <option value="schedule">Option A: Scheduled Day & Night</option>
             <option value="session">Option B: Market Session Reactive</option>
@@ -615,11 +658,14 @@
         </div>
 
         <!-- Dynamic Contextual Options (A, C, D) -->
-        <div id="dynamic-theme-options" style="display: none; background: rgba(0,0,0,0.25); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 6px; padding: 10px; margin-bottom: 16px; flex-direction: column; gap: 10px;">
+        <div id="dynamic-theme-options"
+          style="display: none; background: rgba(0,0,0,0.25); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 6px; padding: 10px; margin-bottom: 16px; flex-direction: column; gap: 10px;">
           <!-- Day Theme Picker -->
-          <div id="row-day-theme" style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+          <div id="row-day-theme"
+            style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
             <span>☀️ Day Theme (Light):</span>
-            <select id="select-day-theme" style="background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+            <select id="select-day-theme"
+              style="background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
               <option value="solar-spark" selected>Solar Spark</option>
               <option value="corporate-trust">Corporate Trust</option>
               <option value="crimson-pulse">Crimson Pulse</option>
@@ -633,9 +679,11 @@
           </div>
 
           <!-- Night Theme Picker -->
-          <div id="row-night-theme" style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+          <div id="row-night-theme"
+            style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
             <span>🌙 Night Theme (Dark):</span>
-            <select id="select-night-theme" style="background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+            <select id="select-night-theme"
+              style="background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
               <option value="midnight-abyss" selected>Midnight Abyss</option>
               <option value="cyberpunk-neon">Cyberpunk Neon</option>
               <option value="amethyst-mystique">Amethyst Mystique</option>
@@ -645,12 +693,17 @@
           </div>
 
           <!-- Schedule Hours (Local) -->
-          <div id="row-schedule-hours" style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+          <div id="row-schedule-hours"
+            style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
             <span>Day Hours (Local):</span>
             <div style="display: flex; align-items: center; gap: 6px;">
-              <input type="number" id="input-day-start-hour" value="7" min="0" max="23" style="width: 44px; background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 2px 4px; font-size: 11px; text-align: center; outline: none;" title="Day Start Hour (00-23)" />
+              <input type="number" id="input-day-start-hour" value="7" min="0" max="23"
+                style="width: 44px; background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 2px 4px; font-size: 11px; text-align: center; outline: none;"
+                title="Day Start Hour (00-23)" />
               <span style="font-size: 11px; opacity: 0.6;">to</span>
-              <input type="number" id="input-night-start-hour" value="19" min="0" max="23" style="width: 44px; background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 2px 4px; font-size: 11px; text-align: center; outline: none;" title="Night Start Hour (00-23)" />
+              <input type="number" id="input-night-start-hour" value="19" min="0" max="23"
+                style="width: 44px; background: #1e222d; color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 2px 4px; font-size: 11px; text-align: center; outline: none;"
+                title="Night Start Hour (00-23)" />
             </div>
           </div>
         </div>
@@ -818,38 +871,48 @@
 
       <!-- TAB 5: WORKSPACE -->
       <div id="tab-content-workspace" class="modal-tab-content" style="display: none;">
-        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Workspace Data</span>
-        
+        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Workspace
+          Data</span>
+
         <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 10px;">
           <div style="font-size: 12px; color: #D1D4DC;">
             Export your current layout, symbols, timeframes, and indicators to a file, or import an existing setup.
           </div>
-          
+
           <div style="display: flex; gap: 8px;">
-            <button id="btn-export-workspace" style="flex: 1; background: #2A2E39; color: #D1D4DC; border: 1px solid #434651; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">⬇ Export JSON</button>
-            
-            <button id="btn-import-workspace" style="flex: 1; background: #2A2E39; color: #D1D4DC; border: 1px solid #434651; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">⬆ Import JSON</button>
+            <button id="btn-export-workspace"
+              style="flex: 1; background: #2A2E39; color: #D1D4DC; border: 1px solid #434651; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">⬇
+              Export JSON</button>
+
+            <button id="btn-import-workspace"
+              style="flex: 1; background: #2A2E39; color: #D1D4DC; border: 1px solid #434651; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">⬆
+              Import JSON</button>
             <input type="file" id="input-import-workspace" accept=".json" style="display: none;" />
           </div>
 
           <!-- Cache & Local Storage Management -->
           <div style="margin-top: 16px; border-top: 1px solid #2A2E39; padding-top: 16px;">
-            <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Storage & Cache</span>
+            <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Storage &
+              Cache</span>
             <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
               <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
                 <span>Symbol Directory:</span>
                 <span id="label-symbol-cache-status" style="color: #787B86; font-size: 11px;">Checking...</span>
               </div>
-              <button id="btn-clear-symbol-cache" style="width: 100%; background: #2A2E39; color: #D1D4DC; border: 1px solid #434651; padding: 6px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">
+              <button id="btn-clear-symbol-cache"
+                style="width: 100%; background: #2A2E39; color: #D1D4DC; border: 1px solid #434651; padding: 6px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">
                 Clear Symbol Directory Cache
               </button>
             </div>
           </div>
 
           <div style="margin-top: 16px; border-top: 1px solid #2A2E39; padding-top: 16px;">
-            <span style="font-size: 11px; font-weight: 700; color: #EF5350; text-transform: uppercase;">Danger Zone</span>
+            <span style="font-size: 11px; font-weight: 700; color: #EF5350; text-transform: uppercase;">Danger
+              Zone</span>
             <div style="margin-top: 10px;">
-              <button id="btn-reset-workspace" style="width: 100%; background: rgba(239, 83, 80, 0.15); color: #EF5350; border: 1px solid #EF5350; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">⚠ Reset Workspace to Defaults</button>
+              <button id="btn-reset-workspace"
+                style="width: 100%; background: rgba(239, 83, 80, 0.15); color: #EF5350; border: 1px solid #EF5350; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">⚠
+                Reset Workspace to Defaults</button>
             </div>
           </div>
         </div>
@@ -857,80 +920,133 @@
 
       <!-- TAB 6: DATA & STORAGE LIMITS -->
       <div id="tab-content-data" class="modal-tab-content" style="display: none;">
-        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Historical Data Limits</span>
+        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Historical Data
+          Limits</span>
         <div style="font-size: 11px; color: #D1D4DC; margin-top: 6px; margin-bottom: 12px; opacity: 0.85;">
-          Define how much historical data to download and store per timeframe group. Lower values save database space and improve performance.
+          Define how much historical data to download and store per timeframe group. Lower values save database space
+          and improve performance.
         </div>
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: x 10px; row-gap: 8px;">
           <!-- 1m - 3m -->
           <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
             <span>1m to 3m:</span>
-            <select id="limit_1m_3m" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
-              <option value="7">1 Week</option><option value="21" selected>3 Weeks</option><option value="30">1 Month</option><option value="90">3 Months</option><option value="180">6 Months</option><option value="365">1 Year</option><option value="-1">Max Available</option>
+            <select id="limit_1m_3m" class="data-limit-select"
+              style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="7">1 Week</option>
+              <option value="21" selected>3 Weeks</option>
+              <option value="30">1 Month</option>
+              <option value="90">3 Months</option>
+              <option value="180">6 Months</option>
+              <option value="365">1 Year</option>
+              <option value="-1">Max Available</option>
             </select>
           </div>
           <!-- 4m - 8m -->
           <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
             <span>4m to 8m:</span>
-            <select id="limit_4m_8m" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
-              <option value="7">1 Week</option><option value="21">3 Weeks</option><option value="30" selected>1 Month</option><option value="90">3 Months</option><option value="180">6 Months</option><option value="365">1 Year</option><option value="-1">Max Available</option>
+            <select id="limit_4m_8m" class="data-limit-select"
+              style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="7">1 Week</option>
+              <option value="21">3 Weeks</option>
+              <option value="30" selected>1 Month</option>
+              <option value="90">3 Months</option>
+              <option value="180">6 Months</option>
+              <option value="365">1 Year</option>
+              <option value="-1">Max Available</option>
             </select>
           </div>
           <!-- 9m - 12m -->
           <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
             <span>9m to 12m:</span>
-            <select id="limit_9m_12m" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
-              <option value="30">1 Month</option><option value="90" selected>3 Months</option><option value="180">6 Months</option><option value="365">1 Year</option><option value="-1">Max Available</option>
+            <select id="limit_9m_12m" class="data-limit-select"
+              style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="30">1 Month</option>
+              <option value="90" selected>3 Months</option>
+              <option value="180">6 Months</option>
+              <option value="365">1 Year</option>
+              <option value="-1">Max Available</option>
             </select>
           </div>
           <!-- 15m -->
           <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
             <span>15m:</span>
-            <select id="limit_15m" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
-              <option value="90">3 Months</option><option value="180" selected>6 Months</option><option value="365">1 Year</option><option value="730">2 Years</option><option value="-1">Max Available</option>
+            <select id="limit_15m" class="data-limit-select"
+              style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="90">3 Months</option>
+              <option value="180" selected>6 Months</option>
+              <option value="365">1 Year</option>
+              <option value="730">2 Years</option>
+              <option value="-1">Max Available</option>
             </select>
           </div>
           <!-- 30m - 45m -->
           <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
             <span>30m to 45m:</span>
-            <select id="limit_30m_45m" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
-              <option value="180">6 Months</option><option value="365" selected>1 Year</option><option value="730">2 Years</option><option value="1460">4 Years</option><option value="-1">Max Available</option>
+            <select id="limit_30m_45m" class="data-limit-select"
+              style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="180">6 Months</option>
+              <option value="365" selected>1 Year</option>
+              <option value="730">2 Years</option>
+              <option value="1460">4 Years</option>
+              <option value="-1">Max Available</option>
             </select>
           </div>
           <!-- 1h - 3h -->
           <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
             <span>1h to 3h:</span>
-            <select id="limit_1h_3h" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
-              <option value="365">1 Year</option><option value="730" selected>2 Years</option><option value="1460">4 Years</option><option value="3650">10 Years</option><option value="-1">Max Available</option>
+            <select id="limit_1h_3h" class="data-limit-select"
+              style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="365">1 Year</option>
+              <option value="730" selected>2 Years</option>
+              <option value="1460">4 Years</option>
+              <option value="3650">10 Years</option>
+              <option value="-1">Max Available</option>
             </select>
           </div>
           <!-- 4h - 6h -->
           <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
             <span>4h to 6h:</span>
-            <select id="limit_4h_6h" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
-              <option value="730">2 Years</option><option value="1460" selected>4 Years</option><option value="1825">5 Years</option><option value="3650">10 Years</option><option value="-1">Max Available</option>
+            <select id="limit_4h_6h" class="data-limit-select"
+              style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="730">2 Years</option>
+              <option value="1460" selected>4 Years</option>
+              <option value="1825">5 Years</option>
+              <option value="3650">10 Years</option>
+              <option value="-1">Max Available</option>
             </select>
           </div>
           <!-- 7h - 12h -->
           <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
             <span>7h to 12h:</span>
-            <select id="limit_7h_12h" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
-              <option value="1460">4 Years</option><option value="1825" selected>5 Years</option><option value="3650">10 Years</option><option value="7300">20 Years</option><option value="-1">Max Available</option>
+            <select id="limit_7h_12h" class="data-limit-select"
+              style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="1460">4 Years</option>
+              <option value="1825" selected>5 Years</option>
+              <option value="3650">10 Years</option>
+              <option value="7300">20 Years</option>
+              <option value="-1">Max Available</option>
             </select>
           </div>
           <!-- 13h - 1d -->
           <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
             <span>13h to 1D:</span>
-            <select id="limit_13h_1d" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
-              <option value="1825">5 Years</option><option value="3650" selected>10 Years</option><option value="7300">20 Years</option><option value="-1">Max Available</option>
+            <select id="limit_13h_1d" class="data-limit-select"
+              style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="1825">5 Years</option>
+              <option value="3650" selected>10 Years</option>
+              <option value="7300">20 Years</option>
+              <option value="-1">Max Available</option>
             </select>
           </div>
           <!-- 1w & 1M -->
           <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
             <span>1W & 1M:</span>
-            <select id="limit_1w_1M" class="data-limit-select" style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
-              <option value="3650">10 Years</option><option value="7300">20 Years</option><option value="-1" selected>Max Available</option>
+            <select id="limit_1w_1M" class="data-limit-select"
+              style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <option value="3650">10 Years</option>
+              <option value="7300">20 Years</option>
+              <option value="-1" selected>Max Available</option>
             </select>
           </div>
         </div>
@@ -938,56 +1054,76 @@
 
       <!-- TAB 7: SESSIONS -->
       <div id="tab-content-sessions" class="modal-tab-content" style="display: none;">
-        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Market Sessions (UTC)</span>
+        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Market Sessions
+          (UTC)</span>
         <div style="font-size: 11px; color: #D1D4DC; margin-top: 6px; margin-bottom: 12px; opacity: 0.85;">
-          Automatically highlight major market hours. Overlapping sessions prioritize NY > London > Asia. Note: Auto-hides on 1h+ charts.
+          Automatically highlight major market hours. Overlapping sessions prioritize NY > London > Asia. Note:
+          Auto-hides on 1h+ charts.
         </div>
-        
+
         <div style="margin-top: 16px; display: flex; flex-direction: column; gap: 10px;">
-          <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
-            <input type="checkbox" id="check-sessions-enabled" checked style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
+          <label
+            style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+            <input type="checkbox" id="check-sessions-enabled" checked
+              style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
             Enable Session Highlights
           </label>
-          <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
-            <input type="checkbox" id="check-sessions-axis" checked style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
+          <label
+            style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+            <input type="checkbox" id="check-sessions-axis" checked
+              style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
             Highlight Bottom Time Axis (Default)
           </label>
-          <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
-            <input type="checkbox" id="check-sessions-chart" style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
+          <label
+            style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+            <input type="checkbox" id="check-sessions-chart"
+              style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
             Shade Chart Background
           </label>
         </div>
 
-        <div style="display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 20px; border-top: 1px solid #2A2E39; padding-top: 16px;">
-          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+        <div
+          style="display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 20px; border-top: 1px solid #2A2E39; padding-top: 16px;">
+          <div
+            style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
             <span>Asia <span style="opacity: 0.6; margin-left: 4px;">00:00 - 09:00</span></span>
-            <button type="button" class="tv-swatch-trigger" id="input-sess-asia" data-color="#FBC02D" style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#FBC02D;cursor:pointer;"></button>
+            <button type="button" class="tv-swatch-trigger" id="input-sess-asia" data-color="#FBC02D"
+              style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#FBC02D;cursor:pointer;"></button>
           </div>
-          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+          <div
+            style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
             <span>London <span style="opacity: 0.6; margin-left: 4px;">08:00 - 16:30</span></span>
-            <button type="button" class="tv-swatch-trigger" id="input-sess-london" data-color="#2962FF" style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#2962FF;cursor:pointer;"></button>
+            <button type="button" class="tv-swatch-trigger" id="input-sess-london" data-color="#2962FF"
+              style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#2962FF;cursor:pointer;"></button>
           </div>
-          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+          <div
+            style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
             <span>New York <span style="opacity: 0.6; margin-left: 4px;">13:30 - 20:00</span></span>
-            <button type="button" class="tv-swatch-trigger" id="input-sess-ny" data-color="#EF5350" style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#EF5350;cursor:pointer;"></button>
+            <button type="button" class="tv-swatch-trigger" id="input-sess-ny" data-color="#EF5350"
+              style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#EF5350;cursor:pointer;"></button>
           </div>
         </div>
         <!-- Time Axis World Clock Section -->
         <div style="margin-top: 20px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 16px;">
-          <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">World Clocks (Time Axis)</span>
+          <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">World Clocks (Time
+            Axis)</span>
           <div style="font-size: 11px; color: #D1D4DC; margin-top: 4px; margin-bottom: 12px; opacity: 0.85;">
             Shows live timezone clocks on the bottom axis when space permits. Auto-hides on historical scroll.
           </div>
 
           <div style="display: flex; flex-direction: column; gap: 10px;">
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
-              <input type="checkbox" id="check-clock-enabled" checked style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
+            <label
+              style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-clock-enabled" checked
+                style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
               Enable World Clocks on Time Axis
             </label>
 
-            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+            <div
+              style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
               <span>Primary Clock:</span>
-              <select id="select-clock-primary" style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <select id="select-clock-primary"
+                style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none; cursor: pointer;">
                 <option value="America/New_York" selected>New York (NYC)</option>
                 <option value="Europe/London">London (LON)</option>
                 <option value="Asia/Tokyo">Tokyo (TYO)</option>
@@ -998,9 +1134,11 @@
               </select>
             </div>
 
-            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+            <div
+              style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
               <span>Secondary Clock (Desktop Only):</span>
-              <select id="select-clock-secondary" style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none; cursor: pointer;">
+              <select id="select-clock-secondary"
+                style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none; cursor: pointer;">
                 <option value="Europe/London" selected>London (LON)</option>
                 <option value="America/New_York">New York (NYC)</option>
                 <option value="Asia/Tokyo">Tokyo (TYO)</option>
@@ -1026,24 +1164,31 @@
 
   <dialog id="indicators-modal"
     style="background: var(--chart-panel-bg, #131722); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 8px; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif; width: 340px; max-width: 94vw; box-shadow: 0 16px 40px rgba(0,0,0,0.6); outline: none; overflow: visible;">
-    
+
     <!-- Modal Header -->
-    <div style="padding: 12px 16px; border-bottom: 1px solid var(--chart-grid, #2A2E39); display: flex; align-items: center; justify-content: space-between;">
+    <div
+      style="padding: 12px 16px; border-bottom: 1px solid var(--chart-grid, #2A2E39); display: flex; align-items: center; justify-content: space-between;">
       <div style="display: flex; align-items: center; gap: 8px;">
-        <button id="btn-ind-back" style="display: none; background: transparent; border: none; color: var(--chart-text, #D1D4DC); font-size: 14px; cursor: pointer; padding: 0 4px; font-weight: bold;" title="Back to indicators">←</button>
+        <button id="btn-ind-back"
+          style="display: none; background: transparent; border: none; color: var(--chart-text, #D1D4DC); font-size: 14px; cursor: pointer; padding: 0 4px; font-weight: bold;"
+          title="Back to indicators">←</button>
         <h3 id="ind-modal-title" style="margin: 0; font-size: 14px; font-weight: 600;">Indicators</h3>
       </div>
-      <button id="btn-close-indicators" style="background: none; border: none; color: #787B86; font-size: 16px; cursor: pointer;">✕</button>
+      <button id="btn-close-indicators"
+        style="background: none; border: none; color: #787B86; font-size: 16px; cursor: pointer;">✕</button>
     </div>
 
     <!-- View 1: Catalog List -->
     <div id="indicators-list" style="padding: 6px 0; max-height: 340px; overflow-y: auto;"></div>
 
     <!-- View 2: Dynamic Settings Form -->
-    <div id="indicators-settings-view" style="display: none; padding: 16px; max-height: 340px; overflow-y: auto; flex-direction: column; gap: 14px;">
+    <div id="indicators-settings-view"
+      style="display: none; padding: 16px; max-height: 340px; overflow-y: auto; flex-direction: column; gap: 14px;">
       <div id="indicators-settings-fields" style="display: flex; flex-direction: column; gap: 12px;"></div>
-      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 12px;">
-        <button id="btn-ind-settings-apply" style="background: var(--chart-accent, #2962FF); color: white; border: none; border-radius: 4px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;">Done</button>
+      <div
+        style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 12px;">
+        <button id="btn-ind-settings-apply"
+          style="background: var(--chart-accent, #2962FF); color: white; border: none; border-radius: 4px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;">Done</button>
       </div>
     </div>
   </dialog>
@@ -1122,28 +1267,35 @@
   <dialog id="custom-confirm"
     style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 8px; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif; width: 320px; max-width: 90vw; box-shadow: 0 16px 40px rgba(0,0,0,0.4); outline: none;">
     <div style="padding: 16px; border-bottom: 1px solid var(--chart-grid, #2A2E39);">
-      <h3 id="confirm-title" style="margin: 0; font-size: 15px; font-weight: 700; color: var(--chart-text, #D1D4DC);">Confirm Action</h3>
+      <h3 id="confirm-title" style="margin: 0; font-size: 15px; font-weight: 700; color: var(--chart-text, #D1D4DC);">
+        Confirm Action</h3>
     </div>
     <div style="padding: 16px; font-size: 13px; color: var(--chart-text, #D1D4DC); opacity: 0.85; line-height: 1.5;">
       <span id="confirm-msg">Are you sure?</span>
     </div>
-    <div style="padding: 12px 16px; background: rgba(0,0,0,0.05); display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--chart-grid, #2A2E39);">
-      <button id="btn-confirm-cancel" style="background: transparent; color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">Cancel</button>
-      <button id="btn-confirm-ok" style="background: #EF5350; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: opacity 0.15s;">Delete</button>
+    <div
+      style="padding: 12px 16px; background: rgba(0,0,0,0.05); display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--chart-grid, #2A2E39);">
+      <button id="btn-confirm-cancel"
+        style="background: transparent; color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.15s;">Cancel</button>
+      <button id="btn-confirm-ok"
+        style="background: #EF5350; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; transition: opacity 0.15s;">Delete</button>
     </div>
   </dialog>
 
   <!-- Layer 7: Text Tool Modal (Based on reference UI) -->
   <dialog id="text-tool-modal"
     style="background: var(--chart-panel-bg, #161a25); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 12px; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif; width: 340px; max-width: 92vw; box-shadow: 0 20px 48px rgba(0,0,0,0.6); outline: none; overflow: visible;">
-    
+
     <!-- Modal Header -->
-    <div style="padding: 12px 16px; border-bottom: 1px solid var(--chart-grid, #2A2E39); display: flex; align-items: center; justify-content: space-between;">
+    <div
+      style="padding: 12px 16px; border-bottom: 1px solid var(--chart-grid, #2A2E39); display: flex; align-items: center; justify-content: space-between;">
       <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 5px; background: rgba(41, 98, 255, 0.2); border: 1px solid var(--chart-accent, #2962FF); color: var(--chart-accent, #2962FF); font-weight: bold; font-size: 13px;">T</span>
+        <span
+          style="display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 5px; background: rgba(41, 98, 255, 0.2); border: 1px solid var(--chart-accent, #2962FF); color: var(--chart-accent, #2962FF); font-weight: bold; font-size: 13px;">T</span>
         <h3 style="margin: 0; font-size: 14px; font-weight: 600; color: var(--chart-text, #fff);">Text Tool</h3>
       </div>
-      <button id="btn-text-close" style="background: none; border: none; color: #787B86; font-size: 16px; cursor: pointer;">✕</button>
+      <button id="btn-text-close"
+        style="background: none; border: none; color: #787B86; font-size: 16px; cursor: pointer;">✕</button>
     </div>
 
     <div style="padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;">
@@ -1158,7 +1310,8 @@
           <span>Background</span>
         </div>
         <div style="display: flex; align-items: center; gap: 6px;">
-          <input type="checkbox" id="check-text-bg" style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);" />
+          <input type="checkbox" id="check-text-bg"
+            style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);" />
           <button type="button" class="tv-swatch-trigger" id="btn-text-bg-color" data-color="#1E222D"
             style="width: 22px; height: 22px; border-radius: 4px; border: 1px solid #434651; background: #1e222d; cursor: pointer; padding: 0;"></button>
         </div>
@@ -1171,7 +1324,8 @@
           <span>Border</span>
         </div>
         <div style="display: flex; align-items: center; gap: 6px;">
-          <input type="checkbox" id="check-text-border" style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);" />
+          <input type="checkbox" id="check-text-border"
+            style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);" />
           <button type="button" class="tv-swatch-trigger" id="btn-text-border-color" data-color="#2962FF"
             style="width: 22px; height: 22px; border-radius: 4px; border: 1px solid #434651; background: #2962FF; cursor: pointer; padding: 0;"></button>
         </div>
@@ -1183,25 +1337,32 @@
           <span style="font-size: 15px; opacity: 0.8;">☰</span>
           <span>Text wrap</span>
         </div>
-        <input type="checkbox" id="check-text-wrap" style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);" />
+        <input type="checkbox" id="check-text-wrap"
+          style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);" />
       </div>
 
       <!-- Action Buttons -->
       <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px;">
-        <button id="btn-text-cancel" style="background: transparent; color: var(--chart-text, #D1D4DC); border: 1px solid #434651; border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;">Cancel</button>
-        <button id="btn-text-ok" style="background: var(--chart-accent, #2962FF); color: white; border: none; border-radius: 6px; padding: 6px 18px; font-size: 12px; font-weight: 600; cursor: pointer;">Ok</button>
+        <button id="btn-text-cancel"
+          style="background: transparent; color: var(--chart-text, #D1D4DC); border: 1px solid #434651; border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;">Cancel</button>
+        <button id="btn-text-ok"
+          style="background: var(--chart-accent, #2962FF); color: white; border: none; border-radius: 6px; padding: 6px 18px; font-size: 12px; font-weight: 600; cursor: pointer;">Ok</button>
       </div>
 
       <!-- Formatting Bar (Attached Directly Underneath) -->
       <div id="text-formatting-bar"
         style="display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.3); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 6px; padding: 4px 6px; margin-top: 4px;">
-        <button id="btn-text-tool-indicator" class="dt-btn active" style="width: 24px; height: 24px; font-weight: bold; border-bottom: 2px solid var(--chart-accent, #2962FF); border-radius: 0;">T</button>
-        <button id="btn-text-bold" class="dt-btn" style="width: 24px; height: 24px; font-weight: bold;" title="Bold">B</button>
-        <button id="btn-text-italic" class="dt-btn" style="width: 24px; height: 24px; font-style: italic;" title="Italic">I</button>
+        <button id="btn-text-tool-indicator" class="dt-btn active"
+          style="width: 24px; height: 24px; font-weight: bold; border-bottom: 2px solid var(--chart-accent, #2962FF); border-radius: 0;">T</button>
+        <button id="btn-text-bold" class="dt-btn" style="width: 24px; height: 24px; font-weight: bold;"
+          title="Bold">B</button>
+        <button id="btn-text-italic" class="dt-btn" style="width: 24px; height: 24px; font-style: italic;"
+          title="Italic">I</button>
         <button id="btn-text-color" class="dt-btn" style="width: 24px; height: 24px;" title="Text Color">🎨</button>
-        
+
         <!-- Font Size Select -->
-        <select id="select-text-size" style="background: transparent; color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 2px 4px; font-size: 11px; cursor: pointer; outline: none;">
+        <select id="select-text-size"
+          style="background: transparent; color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 2px 4px; font-size: 11px; cursor: pointer; outline: none;">
           <option value="12">12</option>
           <option value="14">14</option>
           <option value="16" selected>16</option>
@@ -1210,9 +1371,11 @@
           <option value="32">32</option>
         </select>
 
-        <button id="btn-text-anchor" class="dt-btn" style="width: 24px; height: 24px;" title="Anchor to Screen">⚓</button>
+        <button id="btn-text-anchor" class="dt-btn" style="width: 24px; height: 24px;"
+          title="Anchor to Screen">⚓</button>
         <button id="btn-text-lock" class="dt-btn" style="width: 24px; height: 24px;" title="Lock Drawing">🔒</button>
-        <button id="btn-text-delete" class="dt-btn" style="width: 24px; height: 24px; color: #EF5350;" title="Delete">🗑️</button>
+        <button id="btn-text-delete" class="dt-btn" style="width: 24px; height: 24px; color: #EF5350;"
+          title="Delete">🗑️</button>
       </div>
     </div>
   </dialog>

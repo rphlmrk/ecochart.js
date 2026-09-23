@@ -45,7 +45,7 @@ export abstract class BaseIndicator {
     public values: Float64Array;
     public params: ParamDef[] = [];
     protected lastCalculatedIdx = -1;
-    
+
     // Core State Machine variables
     protected state: any = {};
     protected confirmedState: any = {};
@@ -87,7 +87,7 @@ export abstract class BaseIndicator {
     /**
      * Optional hook for subclasses to update titles or IDs when params change
      */
-    protected onParamsUpdated(): void {}
+    protected onParamsUpdated(): void { }
 
     /**
      * Retrieves the formatted title and numerical value at a specific candle index.
@@ -135,25 +135,25 @@ export abstract class BaseIndicator {
 
         // 2. Live Tick Updates
         const liveIdx = ds.length - 1;
-        
-        // Restore safe state before processing unclosed tick
-        this.state = JSON.parse(JSON.stringify(this.confirmedState));
-        
+
+        // Restore safe state before processing unclosed tick (Fast Clone)
+        this.state = { ...this.confirmedState };
+
         this.next(liveIdx, isClosedTick, ds);
 
-        // 3. Lock in state if the candle officially closed
+        // 3. Lock in state if the candle officially closed (Fast Clone)
         if (isClosedTick) {
-            this.confirmedState = JSON.parse(JSON.stringify(this.state));
+            this.confirmedState = { ...this.state };
             this.lastCalculatedIdx = liveIdx;
         }
     }
 
     // New Architecture Methods
-    protected setup(): void {}
-    protected next(_index: number, _isClosed: boolean, _ds: DataStore): void {}
-    
+    protected setup(): void { }
+    protected next(_index: number, _isClosed: boolean, _ds: DataStore): void { }
+
     // Legacy fallback
-    protected calculate(_ds: DataStore): void {}
+    protected calculate(_ds: DataStore): void { }
     public abstract render(renderer: ChartRenderer, layout: IndicatorLayout, graphics: Graphics): void;
 }
 
@@ -177,11 +177,11 @@ export class EMAEngine {
     public static calculate(dataStore: DataStore, period: number, output: Float64Array, lastIdx: number): number {
         const k = 2 / (period + 1);
         const start = Math.max(1, lastIdx === -1 ? 1 : lastIdx);
-        
+
         if (lastIdx <= 0 && dataStore.length > 0) {
             output[0] = dataStore.data[4]; // Initialize first point with first Close
         }
-        
+
         for (let i = start; i < dataStore.length; i++) {
             const close = dataStore.data[i * 6 + 4];
             output[i] = (close - output[i - 1]) * k + output[i - 1];

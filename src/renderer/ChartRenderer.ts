@@ -48,7 +48,7 @@ export class ChartRenderer {
     //indicator
     public indicatorMainGraphics!: Graphics;
     public indicatorOscGraphics!: Graphics;
-    public drawingGraphics!: Graphics; 
+    public drawingGraphics!: Graphics;
 
     // Dedicated Crosshair Graphics & Sync State
     private crosshairGraphics!: Graphics;
@@ -92,7 +92,7 @@ export class ChartRenderer {
     public applyTheme(theme: ChartTheme) {
         this.isDarkTheme = theme.isDark; // <-- Store dark/light state
         this.bgColor = ThemeManager.hexToInt(theme.background);
-        
+
 
         if (this.app && this.app.renderer) {
             this.app.renderer.background.color = this.bgColor;
@@ -304,12 +304,12 @@ export class ChartRenderer {
         const height = this.app.screen.height;
         const chartWidth = width - this.priceAxisWidth;
         const timeAxisY = height - this.timeAxisHeight; // The strict Y-coordinate where the time axis starts
-        
+
         const oscHeight = this.oscHeight;
         const mainChartHeight = timeAxisY - oscHeight; // Chart squishes to fit oscillator above time axis
 
         const actualSpacing = this.candleSpacing * this.zoom;
-        
+
         // Sliding window with a 15-candle buffer on each side for smooth scrolling
         const buffer = 15;
         const rawVisStart = Math.floor(this.cameraX / actualSpacing);
@@ -367,13 +367,14 @@ export class ChartRenderer {
             let textLabel: Text;
             if (this.activePriceLabels < this.priceLabelPool.length) {
                 textLabel = this.priceLabelPool[this.activePriceLabels];
-                textLabel.text = p.toFixed(2);
+                const newText = p.toFixed(2);
+                if (textLabel.text !== newText) textLabel.text = newText;
             } else {
                 textLabel = new Text({ text: p.toFixed(2), style: { fontFamily: 'sans-serif', fontSize: 11, fill: this.axisTextColor } });
                 this.priceLabelPool.push(textLabel);
                 this.textContainer.addChild(textLabel);
             }
-            
+
             textLabel.x = chartWidth + 5;
             textLabel.y = y - 6;
             textLabel.visible = true;
@@ -405,15 +406,15 @@ export class ChartRenderer {
                 let textLabel: Text;
                 if (this.activeTimeLabels < this.timeLabelPool.length) {
                     textLabel = this.timeLabelPool[this.activeTimeLabels];
-                    textLabel.text = timeStr;
+                    if (textLabel.text !== timeStr) textLabel.text = timeStr;
                 } else {
                     textLabel = new Text({ text: timeStr, style: { fontFamily: 'sans-serif', fontSize: 11, fill: this.axisTextColor } });
                     textLabel.anchor.x = 0.5;
                     this.timeLabelPool.push(textLabel);
                     this.textContainer.addChild(textLabel);
                 }
-                
-                textLabel.x = x;          
+
+                textLabel.x = x;
                 textLabel.y = timeAxisY + 5;
                 textLabel.visible = true;
                 this.activeTimeLabels++;
@@ -617,15 +618,15 @@ export class ChartRenderer {
                     });
 
                     // Format string
-                    const labelText = this.activeOscillatorScale.format 
-                        ? this.activeOscillatorScale.format(step) 
+                    const labelText = this.activeOscillatorScale.format
+                        ? this.activeOscillatorScale.format(step)
                         : (step > 0 ? `+${step}` : `${step}`);
 
                     // Fetch from Object Pool (Zero VRAM allocations)
                     let textLabel: Text;
                     if (this.activeOscLabels < this.oscLabelPool.length) {
                         textLabel = this.oscLabelPool[this.activeOscLabels];
-                        textLabel.text = labelText;
+                        if (textLabel.text !== labelText) textLabel.text = labelText;
                     } else {
                         textLabel = new Text({
                             text: labelText,
@@ -799,12 +800,12 @@ export class ChartRenderer {
 
             const badgeTextColor = this.getContrastTextColor(liveColor);
 
-            const livePriceText = new Text({ text: lastClose.toFixed(2), style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold', fill: badgeTextColor }});
+            const livePriceText = new Text({ text: lastClose.toFixed(2), style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold', fill: badgeTextColor } });
             livePriceText.x = chartWidth + 5;
             livePriceText.y = badgeY + 3;
             this.liveBadgeText.addChild(livePriceText);
 
-            const countdownText = new Text({ text: countdownStr, style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: '500', fill: badgeTextColor }});
+            const countdownText = new Text({ text: countdownStr, style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: '500', fill: badgeTextColor } });
             countdownText.alpha = 0.9;
             countdownText.x = chartWidth + 5;
             countdownText.y = badgeY + 18;
@@ -829,7 +830,7 @@ export class ChartRenderer {
         const height = this.app.screen.height;
         const chartWidth = width - this.priceAxisWidth;
         const timeAxisY = height - this.timeAxisHeight;
-        
+
         const oscHeight = this.oscHeight;
         const mainChartHeight = timeAxisY - oscHeight;
 
@@ -838,11 +839,11 @@ export class ChartRenderer {
 
         // 1. Draw Local Crosshair & Badges
         if (this.isCrosshairVisible && this.crosshairX >= 0 && this.crosshairX < chartWidth && this.crosshairY >= 0 && this.crosshairY < timeAxisY) {
-            
+
             // Magnet Snap Logic
             let drawX = this.crosshairX;
             let drawY = this.crosshairY;
-            
+
             // Only snap if magnet is on AND we are hovering the main chart (not oscillators)
             if (this.isMagnetEnabled && this.crosshairY <= mainChartHeight) {
                 const mag = this.getMagnetPoint(this.crosshairX, this.crosshairY, 30);
@@ -1078,7 +1079,7 @@ export class ChartRenderer {
         const rawPrice = this.yToPrice(screenY);
         const actualSpacing = this.candleSpacing * this.zoom;
         const logicalIdx = Math.round((screenX + this.cameraX) / actualSpacing);
-        
+
         if (logicalIdx >= 0 && logicalIdx < this.dataStore.length) {
             const base = logicalIdx * 6;
             const prices = [this.dataStore.data[base + 1], this.dataStore.data[base + 2], this.dataStore.data[base + 3], this.dataStore.data[base + 4]];

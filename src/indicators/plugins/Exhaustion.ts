@@ -34,9 +34,9 @@ export class ExhaustionIndicator extends BaseIndicator {
         const period = Math.max(2, this.getParam<number>('length', 20));
         const start = Math.max(period - 1, this.lastCalculatedIdx === -1 ? 0 : this.lastCalculatedIdx);
 
+        const tps = new Float64Array(period); // Instantiate OUTSIDE the loop once
         for (let i = start; i < ds.length; i++) {
             let sum = 0;
-            const tps = new Float64Array(period);
             for (let j = 0; j < period; j++) {
                 const base = (i - j) * 6;
                 const tp = (ds.data[base + 2] + ds.data[base + 3] + ds.data[base + 4]) / 3;
@@ -97,7 +97,7 @@ export class ExhaustionIndicator extends BaseIndicator {
             let val = this.values[i];
             if (val > 300) val = 300;
             if (val < -300) val = -300;
-            
+
             const y = layout.oscY + layout.oscHeight / 2 - (val * (layout.oscHeight / 600));
 
             if (!isDrawing) {
