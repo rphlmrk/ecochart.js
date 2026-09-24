@@ -1296,6 +1296,7 @@ export class EcoChart {
                     // Render Indicators
                     this.renderer.indicatorMainGraphics.clear();
                     this.renderer.indicatorOscGraphics.clear();
+                    this.renderer.hideAllIndicatorMeshes(); // <-- ADDED: Reset GPU meshes
                     this.indicatorManager.render(this.renderer, this.renderer.indicatorMainGraphics, this.renderer.indicatorOscGraphics);
 
                     this.drawingManager.render(this.renderer, this.renderer.drawingGraphics);

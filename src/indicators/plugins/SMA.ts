@@ -18,12 +18,12 @@ export class SMAIndicator extends BaseIndicator {
         this.name = `SMA (${len})`;
     }
 
-    protected setup(): void {}
+    protected setup(): void { }
 
     protected next(index: number, _isClosed: boolean, ds: DataStore): void {
         const length = Math.max(1, this.getParam<number>('length', 20));
         if (index < length - 1) return;
-        
+
         let sum = 0;
         for (let j = 0; j < length; j++) {
             sum += ds.data[(index - j) * 6 + 4]; // Close price
@@ -31,32 +31,16 @@ export class SMAIndicator extends BaseIndicator {
         this.values[index] = sum / length;
     }
 
-    public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
-        const length = Math.max(1, this.getParam<number>('length', 20));
+    public render(r: ChartRenderer, layout: IndicatorLayout, _g: Graphics) {
         const rawColor = this.getParam('color', '#FFC107');
-        
+
         let color = parseColor(rawColor);
         if (!r.isDarkTheme && String(rawColor).toUpperCase() === '#FFC107') {
             color = 0xD97706;
         }
 
-        const sp = r.candleSpacing * r.zoom;
-        const visStart = Math.max(length, Math.floor(r.cameraX / sp));
-        const visEnd = Math.min(r.dataStore.length, Math.floor((r.cameraX + layout.chartWidth) / sp) + 1);
-
-        let isDrawing = false;
-        for (let i = visStart; i < visEnd; i++) {
-            const x = (i * sp) - r.cameraX + (sp * 0.4);
-            const y = layout.mainChartHeight - (((this.values[i] - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice)) * layout.mainChartHeight) + r.cameraY;
-
-            if (!isDrawing) {
-                g.moveTo(x, y);
-                isDrawing = true;
-            } else {
-                g.lineTo(x, y);
-            }
-        }
-        g.stroke({ color, width: 2 });
+        // Fire directly to the GPU!
+        r.drawGPUIndicatorLine(this.id, this.values, color, 2, false, layout);
     }
 
     public getValueAt(idx: number, ds: DataStore, _isDark: boolean, _defaultTextClr: number) {

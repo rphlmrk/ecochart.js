@@ -34,7 +34,7 @@ export class ExhaustionIndicator extends BaseIndicator {
         const period = Math.max(2, this.getParam<number>('length', 20));
         const start = Math.max(period - 1, this.lastCalculatedIdx === -1 ? 0 : this.lastCalculatedIdx);
 
-        const tps = new Float64Array(period); // Instantiate OUTSIDE the loop once
+        const tps = new Float64Array(period);
         for (let i = start; i < ds.length; i++) {
             let sum = 0;
             for (let j = 0; j < period; j++) {
@@ -49,13 +49,15 @@ export class ExhaustionIndicator extends BaseIndicator {
                 madSum += Math.abs(tps[j] - sma);
             }
             const mad = madSum / period;
-            this.values[i] = mad === 0 ? 0 : (tps[0] - sma) / (0.015 * mad);
+
+            // Clamp math immediately
+            const rawVal = mad === 0 ? 0 : (tps[0] - sma) / (0.015 * mad);
+            this.values[i] = Math.max(-300, Math.min(300, rawVal));
         }
         this.lastCalculatedIdx = ds.length - 1;
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
-        const period = Math.max(2, this.getParam<number>('length', 20));
         const bullColor = parseColor(this.getParam('bullColor', '#00FFEA'));
         const bearColor = parseColor(this.getParam('bearColor', '#FF9800'));
         const rawLineColor = String(this.getParam('lineColor', '#FFFFFF')).toUpperCase();
@@ -63,10 +65,6 @@ export class ExhaustionIndicator extends BaseIndicator {
         const lineColor = (rawLineColor === '#FFFFFF' && !r.isDarkTheme)
             ? r.axisTextColor
             : parseColor(rawLineColor);
-
-        const sp = r.candleSpacing * r.zoom;
-        const visStart = Math.max(period, Math.floor(r.cameraX / sp));
-        const visEnd = Math.min(r.dataStore.length, Math.floor((r.cameraX + layout.chartWidth) / sp) + 1);
 
         g.rect(0, layout.oscY, layout.chartWidth, layout.oscHeight).fill({ color: r.axisBgColor, alpha: 0.35 });
 
@@ -91,23 +89,8 @@ export class ExhaustionIndicator extends BaseIndicator {
             color: bearColor, width: 1, alpha: 0.35, style: 'dashed', dashLength: 4, gapLength: 3
         });
 
-        let isDrawing = false;
-        for (let i = visStart; i < visEnd; i++) {
-            const x = (i * sp) - r.cameraX + (sp * 0.4);
-            let val = this.values[i];
-            if (val > 300) val = 300;
-            if (val < -300) val = -300;
-
-            const y = layout.oscY + layout.oscHeight / 2 - (val * (layout.oscHeight / 600));
-
-            if (!isDrawing) {
-                g.moveTo(x, y);
-                isDrawing = true;
-            } else {
-                g.lineTo(x, y);
-            }
-        }
-        g.stroke({ color: lineColor, width: 1.5 });
+        // Fire line rendering directly to the GPU!
+        r.drawGPUIndicatorLine(this.id, this.values, lineColor, 1.5, true, layout, this.oscillatorScale);
     }
 
     public getValueAt(idx: number, ds: DataStore, _isDark: boolean, defaultTextClr: number) {

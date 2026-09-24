@@ -37,6 +37,9 @@ export class ChartRenderer {
 
     // Pixi Layers (Z-Index order)
     private gridGraphics!: Graphics;
+    private gridMesh!: Mesh<Geometry, Shader>;
+    private gridGeometry!: Geometry;
+    private gridUniforms!: UniformGroup;
     private candlesGraphics!: Graphics;
 
     // GPU Instancing Engine (Single Vector Stamping)
@@ -89,6 +92,9 @@ export class ChartRenderer {
     public indicatorManager?: any;
     private oscHeaderContainer!: Container;
     private oscHeaderPairPool: { title: Text; val: Text }[] = [];
+
+    // GPU Indicator Line Engine
+    private indicatorMeshes = new Map<string, any>();
 
     // Viewport Math
     public cameraX = 0;
@@ -252,8 +258,10 @@ export class ChartRenderer {
 
         this.oscHeaderContainer = new Container();
 
+        this.initGridMesh();            // <-- Create GPU Grid
         this.initInstancedCandleMesh(); // <-- Create GPU Mesh & Shaders
 
+        this.app.stage.addChild(this.gridMesh);     // <-- Add GPU Grid Background
         this.app.stage.addChild(this.gridGraphics);
         this.app.stage.addChild(this.candlesGraphics);
         this.app.stage.addChild(this.candleMesh); // <-- Instanced candles sit here
@@ -385,7 +393,6 @@ export class ChartRenderer {
 
         for (let p = firstPrice; p <= visibleMax; p += step) {
             const y = priceToY(p);
-            StrokeEngine.drawLine(this.gridGraphics, 0, y, chartWidth, y, { color: this.gridColor, width: this.gridThickness, alpha: this.gridAlpha, style: this.gridStyle });
 
             let textLabel: Text;
             if (this.activePriceLabels < this.priceLabelPool.length) {
@@ -418,9 +425,6 @@ export class ChartRenderer {
             if (i < 0) continue;
             const x = (i * actualSpacing) - this.cameraX;
 
-            // Vertical grid lines go all the way down to the Time Axis (covers oscillators)
-            StrokeEngine.drawLine(this.gridGraphics, x, 0, x, timeAxisY, { color: this.gridColor, width: this.gridThickness, alpha: this.gridAlpha, style: this.gridStyle });
-
             const ts = this.dataStore.data[i * 6];
             if (ts) {
                 const date = new Date(ts);
@@ -450,6 +454,21 @@ export class ChartRenderer {
         for (let i = this.activeTimeLabels; i < this.timeLabelPool.length; i++) {
             this.timeLabelPool[i].visible = false;
         }
+
+        // --- 1.8 UPDATE GPU GRID ---
+        const gu = this.gridUniforms.uniforms;
+        gu.uChartSize = [chartWidth, timeAxisY];
+        gu.uMainChartHeight = mainChartHeight;
+        gu.uCameraX = this.cameraX;
+        gu.uCameraY = this.cameraY;
+        gu.uZoom = this.zoom;
+        gu.uCandleSpacing = this.candleSpacing;
+        gu.uMinPrice = this.currentMinPrice;
+        gu.uMaxPrice = this.currentMaxPrice;
+        gu.uPriceStep = step;
+        gu.uCandleStep = candleStep;
+        gu.uGridThickness = this.gridThickness;
+        gu.uGridStyle = this.gridStyle === 'solid' ? 0.0 : 1.0;
 
         // --- 2. MULTI-MODE CHART DRAWING (OPTIMIZED BATCHING) ---
         const candleWidth = Math.max(1, actualSpacing * 0.8);
@@ -1148,6 +1167,116 @@ export class ChartRenderer {
         }
     }
 
+    private initGridMesh() {
+        const gridVertices = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
+        const gridIndices = new Uint32Array([0, 1, 2, 0, 2, 3]);
+
+        this.gridGeometry = new Geometry({
+            attributes: {
+                aVertexPosition: {
+                    buffer: new Buffer({ data: gridVertices, usage: BufferUsage.VERTEX }),
+                    format: 'float32x2'
+                }
+            },
+            indexBuffer: gridIndices
+        });
+
+        this.gridUniforms = new UniformGroup({
+            uChartSize: { value: [0, 0], type: 'vec2<f32>' },
+            uMainChartHeight: { value: 0, type: 'f32' },
+            uCameraX: { value: 0, type: 'f32' },
+            uCameraY: { value: 0, type: 'f32' },
+            uZoom: { value: 1, type: 'f32' },
+            uCandleSpacing: { value: 8, type: 'f32' },
+            uMinPrice: { value: 0, type: 'f32' },
+            uMaxPrice: { value: 1, type: 'f32' },
+            uPriceStep: { value: 1, type: 'f32' },
+            uCandleStep: { value: 1, type: 'f32' },
+            uGridColor: { value: [0.16, 0.18, 0.22, 1.0], type: 'vec4<f32>' },
+            uGridThickness: { value: 1.0, type: 'f32' },
+            uGridStyle: { value: 0.0, type: 'f32' } // 0.0 = solid, 1.0 = dashed
+        });
+
+        const vertexSrc = `
+            precision highp float;
+            attribute vec2 aVertexPosition;
+            uniform vec2 uChartSize;
+            uniform mat3 uProjectionMatrix;
+            uniform mat3 uWorldTransformMatrix;
+            varying vec2 vUv;
+            void main() {
+                vUv = aVertexPosition;
+                vec2 pos = aVertexPosition * uChartSize;
+                mat3 mvp = uProjectionMatrix * uWorldTransformMatrix;
+                gl_Position = vec4((mvp * vec3(pos, 1.0)).xy, 0.0, 1.0);
+            }
+        `;
+
+        const fragmentSrc = `
+            precision highp float;
+            varying vec2 vUv;
+            
+            uniform vec2 uChartSize;
+            uniform float uMainChartHeight;
+            uniform float uCameraX;
+            uniform float uCameraY;
+            uniform float uZoom;
+            uniform float uCandleSpacing;
+            uniform float uMinPrice;
+            uniform float uMaxPrice;
+            uniform float uPriceStep;
+            uniform float uCandleStep;
+            uniform vec4 uGridColor;
+            uniform float uGridThickness;
+            uniform float uGridStyle;
+
+            void main() {
+                vec2 pixel = vUv * uChartSize;
+                float px = pixel.x;
+                float py = pixel.y;
+
+                float alpha = 0.0;
+                float halfThick = max(0.5, uGridThickness * 0.5);
+
+                // --- 1. Vertical Lines (Time Axis) ---
+                float actualSpacing = uCandleSpacing * uZoom;
+                float xWorld = px + uCameraX;
+                float closestI = floor(xWorld / actualSpacing + 0.5);
+                if (mod(closestI, uCandleStep) == 0.0) {
+                    float lineX = (closestI * actualSpacing) - uCameraX;
+                    if (abs(px - lineX) <= halfThick) {
+                        if (uGridStyle < 0.5 || mod(py, 8.0) < 4.0) alpha = 1.0;
+                    }
+                }
+
+                // --- 2. Horizontal Lines (Price Axis) ---
+                if (py <= uMainChartHeight) {
+                    float priceRange = max(0.000001, uMaxPrice - uMinPrice);
+                    float yRatio = uMainChartHeight / priceRange;
+                    float yWorld = uMainChartHeight + uCameraY - py;
+                    float price = uMinPrice + (yWorld / yRatio);
+                    
+                    float closestP = floor(price / uPriceStep + 0.5) * uPriceStep;
+                    float lineY = uMainChartHeight + uCameraY - ((closestP - uMinPrice) * yRatio);
+                    
+                    if (abs(py - lineY) <= halfThick) {
+                        if (uGridStyle < 0.5 || mod(px, 8.0) < 4.0) alpha = 1.0;
+                    }
+                }
+
+                if (alpha == 0.0) discard; // Zero-cost empty pixels
+                gl_FragColor = uGridColor * alpha;
+            }
+        `;
+
+        const shader = Shader.from({
+            gl: { vertex: vertexSrc, fragment: fragmentSrc },
+            resources: { gridUniforms: this.gridUniforms }
+        });
+
+        this.gridMesh = new Mesh({ geometry: this.gridGeometry, shader });
+    }
+
     private initInstancedCandleMesh() {
         // 1. Base Geometry: 8 vertices forming 2 quads (Wick + Body)
         const baseVertices = new Float32Array([
@@ -1317,6 +1446,10 @@ export class ChartRenderer {
         u.uBearBodyColor = toVec4(this.bearColor, this.bearAlpha);
         u.uBullWickColor = toVec4(this.bullWickColor, this.bullWickAlpha);
         u.uBearWickColor = toVec4(this.bearWickColor, this.bearWickAlpha);
+
+        if (this.gridUniforms) {
+            this.gridUniforms.uniforms.uGridColor = toVec4(this.gridColor, this.gridAlpha);
+        }
     }
 
     private syncInstancedData() {
@@ -1409,5 +1542,227 @@ export class ChartRenderer {
         u.uVisEnd = visEnd;
 
         this.candleGeometry.instanceCount = this.dataStore.length;
+    }
+
+    public hideAllIndicatorMeshes() {
+        for (const entry of this.indicatorMeshes.values()) {
+            entry.mesh.visible = false;
+        }
+    }
+
+    public drawGPUIndicatorLine(
+        id: string,
+        values: Float64Array,
+        color: number,
+        width: number,
+        isOscillator: boolean,
+        layout: any,
+        oscScale?: OscillatorScale
+    ) {
+        let entry = this.indicatorMeshes.get(id);
+
+        // 1. Initialize GPU Mesh exactly once per indicator
+        if (!entry) {
+            // A simple 1x1 Vector Quad
+            const baseVertices = new Float32Array([0, -0.5, 1, -0.5, 1, 0.5, 0, 0.5]);
+            const baseIndices = new Uint32Array([0, 1, 2, 0, 2, 3]);
+            const instBuffer = new Buffer({ data: new Float32Array(0), usage: BufferUsage.VERTEX | BufferUsage.COPY_DST });
+
+            const geom = new Geometry({
+                attributes: {
+                    aVertexPosition: { buffer: new Buffer({ data: baseVertices, usage: BufferUsage.VERTEX }), format: 'float32x2' },
+                    aLineData: { buffer: instBuffer, format: 'float32x3', instance: true } // [index, valThis, valNext]
+                },
+                indexBuffer: baseIndices
+            });
+
+            const uniforms = new UniformGroup({
+                uCameraX: { value: 0, type: 'f32' },
+                uCameraY: { value: 0, type: 'f32' },
+                uZoom: { value: 1, type: 'f32' },
+                uCandleSpacing: { value: 8, type: 'f32' },
+                uMinPrice: { value: 0, type: 'f32' },
+                uMaxPrice: { value: 1, type: 'f32' },
+                uChartHeight: { value: 500, type: 'f32' },
+                uColor: { value: [1, 1, 1, 1], type: 'vec4<f32>' },
+                uWidth: { value: 2, type: 'f32' },
+                uVisStart: { value: 0, type: 'f32' },
+                uVisEnd: { value: 10000, type: 'f32' },
+                uIsOscillator: { value: 0, type: 'f32' },
+                uOscY: { value: 0, type: 'f32' },
+                uOscHeight: { value: 100, type: 'f32' },
+                uOscMin: { value: 0, type: 'f32' },
+                uOscMax: { value: 100, type: 'f32' }
+            });
+
+            const vertexSrc = `
+                precision highp float;
+                attribute vec2 aVertexPosition;
+                attribute vec3 aLineData;
+
+                uniform mat3 uProjectionMatrix;
+                uniform mat3 uWorldTransformMatrix;
+
+                uniform float uCameraX;
+                uniform float uCameraY;
+                uniform float uZoom;
+                uniform float uCandleSpacing;
+                uniform float uMinPrice;
+                uniform float uMaxPrice;
+                uniform float uChartHeight;
+                uniform float uWidth;
+                uniform float uVisStart;
+                uniform float uVisEnd;
+
+                uniform float uIsOscillator;
+                uniform float uOscY;
+                uniform float uOscHeight;
+                uniform float uOscMin;
+                uniform float uOscMax;
+
+                varying float vY; // <-- ADDED: Pass Y position to fragment shader
+
+                float getScreenY(float val) {
+                    if (uIsOscillator > 0.5) {
+                        float norm = (val - uOscMin) / max(0.0001, uOscMax - uOscMin);
+                        return uOscY + uOscHeight - (norm * uOscHeight);
+                    } else {
+                        float priceRange = max(0.000001, uMaxPrice - uMinPrice);
+                        float yRatio = uChartHeight / priceRange;
+                        float yOffset = uChartHeight + uCameraY;
+                        return yOffset - ((val - uMinPrice) * yRatio);
+                    }
+                }
+
+                void main() {
+                    float index = aLineData.x;
+                    if (index < uVisStart || index > uVisEnd) {
+                        gl_Position = vec4(0.0);
+                        return;
+                    }
+
+                    float valThis = aLineData.y;
+                    float valNext = aLineData.z;
+                    
+                    // Discard starting zeroes
+                    if (valThis == 0.0 && valNext == 0.0) {
+                        gl_Position = vec4(0.0);
+                        return;
+                    }
+
+                    float actualSpacing = uCandleSpacing * uZoom;
+                    
+                    vec2 A = vec2((index * actualSpacing) - uCameraX + (actualSpacing * 0.4), getScreenY(valThis));
+                    vec2 B = vec2(((index + 1.0) * actualSpacing) - uCameraX + (actualSpacing * 0.4), getScreenY(valNext));
+
+                    vec2 dir = B - A;
+                    if (length(dir) < 0.0001) {
+                        gl_Position = vec4(0.0);
+                        return;
+                    }
+
+                    // Dynamically calculate thickness normal
+                    vec2 normal = normalize(vec2(-dir.y, dir.x));
+                    vec2 pos = A + (dir * aVertexPosition.x) + (normal * aVertexPosition.y * uWidth);
+
+                    vY = pos.y; // <-- ADDED: Assign exact screen Y
+
+                    mat3 mvp = uProjectionMatrix * uWorldTransformMatrix;
+                    gl_Position = vec4((mvp * vec3(pos, 1.0)).xy, 0.0, 1.0);
+                }
+            `;
+
+            const fragmentSrc = `
+                precision mediump float;
+                uniform vec4 uColor;
+                uniform float uIsOscillator;
+                uniform float uOscY;
+                uniform float uOscHeight;
+                uniform float uChartHeight;
+                varying float vY;
+
+                void main() {
+                    if (uIsOscillator > 0.5) {
+                        // Pixel-perfect clipping for oscillator panels
+                        if (vY < uOscY || vY > uOscY + uOscHeight) {
+                            discard;
+                        }
+                    } else {
+                        // Pixel-perfect clipping for the main chart (SMA/EMA)
+                        // Prevents lines from bleeding down into the sub-panels or time axis
+                        if (vY > uChartHeight) {
+                            discard;
+                        }
+                    }
+                    gl_FragColor = uColor;
+                }
+            `;
+
+            const shader = Shader.from({
+                gl: { vertex: vertexSrc, fragment: fragmentSrc },
+                resources: { lineUniforms: uniforms }
+            });
+
+            const mesh = new Mesh({ geometry: geom, shader });
+            entry = { mesh, uniforms, buffer: instBuffer, array: new Float32Array(0), lastSyncedLength: 0, lastSyncedLiveValue: 0 };
+            this.indicatorMeshes.set(id, entry);
+        }
+
+        // Add to the correct parent layer so they sit perfectly behind the crosshair
+        const parent = isOscillator ? this.indicatorOscGraphics : this.indicatorMainGraphics;
+        if (entry.mesh.parent !== parent) {
+            parent.addChild(entry.mesh);
+        }
+        entry.mesh.visible = true;
+
+        // 2. Synchronize Data (Only when new candles form!)
+        const len = this.dataStore.length - 1;
+        if (len <= 0) {
+            entry.mesh.geometry.instanceCount = 0;
+            return;
+        }
+
+        const liveVal = values[len];
+        if (entry.array.length < len * 3 || entry.lastSyncedLength !== len || entry.lastSyncedLiveValue !== liveVal) {
+            if (entry.array.length < len * 3) {
+                entry.array = new Float32Array(Math.max(10000, len * 2) * 3);
+            }
+            // Fast loop to pack lines segments
+            for (let i = 0; i < len; i++) {
+                entry.array[i * 3] = i;
+                entry.array[i * 3 + 1] = values[i];
+                entry.array[i * 3 + 2] = values[i + 1];
+            }
+            entry.buffer.data = entry.array;
+            entry.buffer.update();
+            entry.lastSyncedLength = len;
+            entry.lastSyncedLiveValue = liveVal;
+        }
+
+        // 3. Update GPU Uniforms
+        const u = entry.uniforms.uniforms;
+        u.uCameraX = this.cameraX;
+        u.uCameraY = this.cameraY;
+        u.uZoom = this.zoom;
+        u.uCandleSpacing = this.candleSpacing;
+        u.uMinPrice = this.currentMinPrice;
+        u.uMaxPrice = this.currentMaxPrice;
+        u.uChartHeight = layout.mainChartHeight;
+        u.uColor = [((color >> 16) & 0xff) / 255, ((color >> 8) & 0xff) / 255, (color & 0xff) / 255, 1.0];
+        u.uWidth = width;
+
+        // Frustum Culling bounds
+        u.uVisStart = Math.floor(this.cameraX / (this.candleSpacing * this.zoom)) - 2;
+        u.uVisEnd = Math.floor((this.cameraX + layout.chartWidth) / (this.candleSpacing * this.zoom)) + 2;
+
+        u.uIsOscillator = isOscillator ? 1.0 : 0.0;
+        if (isOscillator && oscScale) {
+            u.uOscY = layout.oscY;
+            u.uOscHeight = layout.oscHeight;
+            u.uOscMin = oscScale.min;
+            u.uOscMax = oscScale.max;
+        }
+
+        entry.mesh.geometry.instanceCount = len;
     }
 }
