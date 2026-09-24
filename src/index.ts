@@ -1416,12 +1416,13 @@ export class EcoChart {
         this.priceAxisRenderer.render();
         this.timeAxisRenderer.render();
 
-        await this.network.connect(symbol, interval, (prependedCount = 0) => {
+        await this.network.connect(symbol, interval, (prependedCount = 0, isClosed = true) => {
             if (prependedCount > 0 && !this.isLockedToEdge) {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
                 this.renderer.cameraX += prependedCount * actualSpacing;
             }
-            this.indicatorManager.update(this.dataStore); // Run Math Engine
+            // Propagate live unclosed tick state to indicator pipeline
+            this.indicatorManager.update(this.dataStore, isClosed);
             this.isDirty = true;
             if (this.isLockedToEdge) {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
@@ -1474,24 +1475,36 @@ export class EcoChart {
                     const activeOsc = this.indicatorManager.getActiveOscillator();
                     this.renderer.activeOscillatorScale = activeOsc?.oscillatorScale;
 
+                    // 1. Evaluate dirty state and calculate positions
                     this.renderer.renderFrame();
 
-                    // Render Indicators
-                    this.renderer.indicatorMainGraphics.clear();
-                    this.renderer.indicatorOscGraphics.clear();
-                    this.renderer.hideAllIndicatorMeshes();
-                    this.indicatorManager.render(this.renderer, this.renderer.indicatorMainGraphics, this.renderer.indicatorOscGraphics);
+                    // 2. Only submit GPU draw call if something visible actually changed
+                    if (this.renderer.isRenderDirty) {
+                        // Only rebuild indicators, drawings & time axis if camera moved or candle closed
+                        if (this.renderer.isHistoricalDirty) {
+                            this.renderer.indicatorMainGraphics.clear();
+                            this.renderer.indicatorOscGraphics.clear();
+                            this.renderer.hideAllIndicatorMeshes();
+                            this.indicatorManager.render(this.renderer, this.renderer.indicatorMainGraphics, this.renderer.indicatorOscGraphics);
 
-                    this.drawingManager.render(this.renderer, this.renderer.drawingGraphics);
+                            this.drawingManager.render(this.renderer, this.renderer.drawingGraphics);
+                            this.timeAxisRenderer.render();
+                        }
 
-                    this.renderer.renderCrosshair();
-                    this.priceAxisRenderer.render();
-                    this.timeAxisRenderer.render();
+                        this.renderer.renderCrosshair();
+                        this.priceAxisRenderer.render();
+
+                        this.renderer.render(); // 🎯 Only refreshes main canvas when dragging or on-screen bar changes
+                    } else {
+                        // Main canvas is idle in history: update only the price axis badge without touching main canvas
+                        this.priceAxisRenderer.updateCountdownOnly();
+                    }
 
                     this.isDirty = false;
                     this.isCrosshairDirty = false;
-                    this.renderer.render(); // 🎯 Submit frame only when dirty
-                } else if (this.isCrosshairDirty) {
+                }
+
+                else if (this.isCrosshairDirty) {
                     this.renderer.renderCrosshair();
                     this.priceAxisRenderer.render();
                     this.timeAxisRenderer.render();

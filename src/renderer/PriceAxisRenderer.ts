@@ -193,8 +193,8 @@ export class PriceAxisRenderer {
      * Skips full canvas clearing, background fills, and scale calculations.
      */
     public updateCountdownOnly() {
+        // If the live price badge is off-screen or no data, do nothing!
         if (this.lastBadgeY < 0 || this.renderer.dataStore.length === 0) {
-            this.render();
             return;
         }
 

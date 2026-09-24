@@ -123,7 +123,7 @@ export class TimeAxisRenderer {
                         return { icon: isFlashTick ? '🔔' : '⚡', textColor: isFlashTick ? '#FFD600' : '#FFF9C4', borderColor: isFlashTick ? '#FFD600' : '#787B86', borderWidth: isFlashTick ? 2 : 1, bgColor: isFlashTick ? 'rgba(255, 214, 0, 0.15)' : this.hexToCSS(this.renderer.axisBgColor) };
                     }
                     if (isClosing) {
-                        return { icon: isFlashTick ? '🔔' : '⚠️', textColor: isFlashTick ? '#FF5722' : '#FFAB91', borderColor: isFlashTick ? '#FF5722' : '#787B86', borderWidth: isFlashTick ? 2 : 1, bgColor: isFlashTick ? 'rgba(255, 87, 34, 0.15)' : this.hexToCSS(this.renderer.axisBgColor) };
+                        return { icon: '⚠️', textColor: '#FFAB91', borderColor: '#FF5722', borderWidth: 1, bgColor: this.hexToCSS(this.renderer.axisBgColor) };
                     }
                     if (isOpen) {
                         return { icon: '🟢', textColor: '#26A69A', borderColor: '#26A69A', borderWidth: 1.5, bgColor: this.hexToCSS(this.renderer.axisBgColor) };
@@ -326,7 +326,7 @@ export class TimeAxisRenderer {
                     return { icon: isFlashTick ? '🔔' : '⚡', textColor: isFlashTick ? '#FFD600' : '#FFF9C4', borderColor: isFlashTick ? '#FFD600' : '#787B86', borderWidth: isFlashTick ? 2 : 1, bgColor: isFlashTick ? 'rgba(255, 214, 0, 0.15)' : this.hexToCSS(this.renderer.axisBgColor) };
                 }
                 if (isClosing) {
-                    return { icon: isFlashTick ? '🔔' : '⚠️', textColor: isFlashTick ? '#FF5722' : '#FFAB91', borderColor: isFlashTick ? '#FF5722' : '#787B86', borderWidth: isFlashTick ? 2 : 1, bgColor: isFlashTick ? 'rgba(255, 87, 34, 0.15)' : this.hexToCSS(this.renderer.axisBgColor) };
+                    return { icon: '⚠️', textColor: '#FFAB91', borderColor: '#FF5722', borderWidth: 1, bgColor: this.hexToCSS(this.renderer.axisBgColor) };
                 }
                 if (isOpen) {
                     return { icon: '🟢', textColor: '#26A69A', borderColor: '#26A69A', borderWidth: 1.5, bgColor: this.hexToCSS(this.renderer.axisBgColor) };

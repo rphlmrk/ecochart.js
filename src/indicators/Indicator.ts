@@ -109,25 +109,30 @@ export abstract class BaseIndicator {
         this.setup();
     }
 
+    protected cloneState(state: any): any {
+        if (!state) return {};
+        if (typeof structuredClone === 'function') {
+            return structuredClone(state);
+        }
+        return JSON.parse(JSON.stringify(state));
+    }
+
     public update(ds: DataStore, isClosedTick: boolean) {
         if (ds.length === 0) {
             this.lastCalculatedIdx = -1;
             return;
         }
 
-        // Auto-expand buffer if DataStore exceeds capacity
         if (ds.length > this.values.length) {
             const newArr = new Float64Array(this.values.length * 2);
             newArr.set(this.values);
             this.values = newArr;
         }
 
-        // --- BACKWARDS COMPATIBILITY ---
         if (this.calculate !== BaseIndicator.prototype.calculate) {
             this.calculate(ds);
             return;
         }
-        // -------------------------------
 
         // 1. Initial historical load
         if (this.lastCalculatedIdx === -1) {
@@ -136,21 +141,19 @@ export abstract class BaseIndicator {
                 this.next(i, true, ds);
             }
             this.lastCalculatedIdx = ds.length - 1;
-            this.confirmedState = JSON.parse(JSON.stringify(this.state));
+            this.confirmedState = this.cloneState(this.state);
             return;
         }
 
-        // 2. Live Tick Updates
+        // 2. Live Tick Updates: restore isolated confirmed state
         const liveIdx = ds.length - 1;
-
-        // Restore safe state before processing unclosed tick
-        this.state = { ...this.confirmedState };
+        this.state = this.cloneState(this.confirmedState);
 
         this.next(liveIdx, isClosedTick, ds);
 
-        // 3. Lock in state if the candle officially closed
+        // 3. Lock in state only if candle officially closed
         if (isClosedTick) {
-            this.confirmedState = { ...this.state };
+            this.confirmedState = this.cloneState(this.state);
             this.lastCalculatedIdx = liveIdx;
         }
     }

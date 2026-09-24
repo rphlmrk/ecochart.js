@@ -44,6 +44,13 @@ export class HTFBiasIndicator extends BaseIndicator {
         };
     }
 
+    protected override cloneState(state: any): any {
+        return {
+            ...state,
+            cachedCandles: state.cachedCandles ? [...state.cachedCandles] : []
+        };
+    }
+
     protected next(index: number, _isClosed: boolean, ds: DataStore): void {
         const tfMs = this.getEffectiveTfMins() * 60 * 1000;
         const base = index * 6;

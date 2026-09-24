@@ -30,11 +30,16 @@ export class ExhaustionIndicator extends BaseIndicator {
         }
     }
 
+    private reusableTps = new Float64Array(200); // Pre-allocated to prevent GC allocation on ticks
+
     protected calculate(ds: DataStore) {
         const period = Math.max(2, this.getParam<number>('length', 20));
         const start = Math.max(period - 1, this.lastCalculatedIdx === -1 ? 0 : this.lastCalculatedIdx);
 
-        const tps = new Float64Array(period);
+        if (this.reusableTps.length < period) {
+            this.reusableTps = new Float64Array(period * 2);
+        }
+        const tps = this.reusableTps;
         for (let i = start; i < ds.length; i++) {
             let sum = 0;
             for (let j = 0; j < period; j++) {

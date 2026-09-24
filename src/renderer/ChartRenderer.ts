@@ -33,12 +33,15 @@ export class ChartRenderer {
         secondaryLabel: 'LON'
     };
 
-    // Pixi Layers (Z-Index order)
+    // Pixi Layers (Z-Index order - Milestone 2 Layer Separation)
     private gridGraphics!: Graphics;
     private gridMesh!: Mesh<Geometry, Shader>;
     private gridGeometry!: Geometry;
     private gridUniforms!: UniformGroup;
-    private candlesGraphics!: Graphics;
+    private historicalCandlesGraphics!: Graphics; // Cached bars 0 to N-2
+    private liveCandlesGraphics!: Graphics;       // Forming bar N-1 only
+    private candlesGraphics!: Graphics;           // Backward-compatible alias
+    private liveHaOpen = 0;                       // Cached Heikin-Ashi open for forming bar
 
     // GPU Session Instancing Engine
     private sessionMesh!: Mesh<Geometry, Shader>;
@@ -99,6 +102,7 @@ export class ChartRenderer {
 
     // --- ECO-MODE STATE ---
     public isRenderDirty = true;
+    public isHistoricalDirty = true;
     public forceNextRender = true;
     private lastRenderState = { camX: 0, camY: 0, zoom: 0, minP: 0, maxP: 0, len: 0, close: 0, high: 0, low: 0, mode: '', w: 0, h: 0, oscH: 0, interval: '' };
     private lastCrosshairState = { x: -100, y: -100, visible: false, w: 0, h: 0, syncTime: null as number | null };
@@ -245,7 +249,9 @@ export class ChartRenderer {
 
         // Initialize Layers in order (Background -> Foreground)
         this.gridGraphics = new Graphics();
-        this.candlesGraphics = new Graphics();
+        this.historicalCandlesGraphics = new Graphics();
+        this.liveCandlesGraphics = new Graphics();
+        this.candlesGraphics = this.historicalCandlesGraphics; // Alias
         this.indicatorMainGraphics = new Graphics();
         this.indicatorOscGraphics = new Graphics();
         this.drawingGraphics = new Graphics();
@@ -261,7 +267,8 @@ export class ChartRenderer {
         this.app.stage.addChild(this.gridMesh);
         this.app.stage.addChild(this.sessionMesh);
         this.app.stage.addChild(this.gridGraphics);
-        this.app.stage.addChild(this.candlesGraphics);
+        this.app.stage.addChild(this.historicalCandlesGraphics); // Static layer
+        this.app.stage.addChild(this.liveCandlesGraphics);       // Dynamic live layer
         this.app.stage.addChild(this.candleMesh);
         this.app.stage.addChild(this.indicatorMainGraphics);
         this.app.stage.addChild(this.indicatorOscGraphics);
@@ -286,59 +293,36 @@ export class ChartRenderer {
         const width = this.app.screen.width;
         const height = this.app.screen.height;
 
-        if (
-            !this.forceNextRender &&
-            this.lastRenderState.camX === this.cameraX &&
-            this.lastRenderState.camY === this.cameraY &&
-            this.lastRenderState.zoom === this.zoom &&
-            this.lastRenderState.minP === this.currentMinPrice &&
-            this.lastRenderState.maxP === this.currentMaxPrice &&
-            this.lastRenderState.len === len &&
-            this.lastRenderState.close === liveC &&
-            this.lastRenderState.high === liveH &&
-            this.lastRenderState.low === liveL &&
-            this.lastRenderState.mode === this.chartMode &&
-            this.lastRenderState.w === width &&
-            this.lastRenderState.h === height &&
-            this.lastRenderState.oscH === this.oscHeight &&
-            this.lastRenderState.interval === this.currentInterval
-        ) {
-            this.isRenderDirty = false;
-            return; // 🛑 ABORT: Nothing changed on screen. Skip heavy CPU math!
-        }
-
-        this.isRenderDirty = true;
+        // Snapshot previous frame state BEFORE auto-scale or updates
+        const prevCamX = this.lastRenderState.camX;
+        const prevCamY = this.lastRenderState.camY;
+        const prevZoom = this.lastRenderState.zoom;
+        const prevMinP = this.lastRenderState.minP;
+        const prevMaxP = this.lastRenderState.maxP;
+        const prevLen = this.lastRenderState.len;
+        const prevMode = this.lastRenderState.mode;
+        const prevW = this.lastRenderState.w;
+        const prevH = this.lastRenderState.h;
+        const prevOscH = this.lastRenderState.oscH;
+        const prevInterval = this.lastRenderState.interval;
+        const forced = this.forceNextRender;
         this.forceNextRender = false;
-        this.lastRenderState = {
-            camX: this.cameraX, camY: this.cameraY, zoom: this.zoom,
-            minP: this.currentMinPrice, maxP: this.currentMaxPrice,
-            len: len, close: liveC, high: liveH, low: liveL,
-            mode: this.chartMode, w: width, h: height,
-            oscH: this.oscHeight, interval: this.currentInterval
-        };
-        // --- END ECO-MODE ---
 
-        this.candlesGraphics.clear();
-        this.gridGraphics.clear();
-        this.uiGraphics.clear();
-        this.indicatorMainGraphics.clear();
-        this.indicatorOscGraphics.clear();
-
-        // Layout Constants (Main chart fills 100% of chartCanvas)
+        // Layout Constants
         const chartWidth = width;
         const timeAxisY = height;
         const oscHeight = this.oscHeight;
         const mainChartHeight = timeAxisY - oscHeight;
         const actualSpacing = this.candleSpacing * this.zoom;
 
-        // Sliding window with a 15-candle buffer on each side for smooth scrolling
+        // Visible index range calculation
         const buffer = 15;
         const rawVisStart = Math.floor(this.cameraX / actualSpacing);
         const rawVisEnd = Math.floor((this.cameraX + chartWidth) / actualSpacing) + 1;
-
         const visStart = Math.max(0, rawVisStart - buffer);
         const visEnd = Math.min(this.dataStore.length, rawVisEnd + buffer);
 
+        // Auto-scale calculation runs first to determine if currentMinPrice/currentMaxPrice changed
         if (this.isAutoScale) {
             let minP = Infinity; let maxP = -Infinity;
             for (let i = visStart; i < visEnd; i++) {
@@ -352,6 +336,73 @@ export class ChartRenderer {
             this.currentMinPrice = minP - (range * 0.1);
             this.cameraY = 0;
         }
+
+        // Check if the live forming candle is visible on screen
+        const liveBarInView = (visEnd >= len && len > 0);
+
+        // Live price ticks ONLY refresh the main canvas when the live printing candle is on screen
+        const livePriceChanged = liveBarInView && (
+            this.lastRenderState.close !== liveC ||
+            this.lastRenderState.high !== liveH ||
+            this.lastRenderState.low !== liveL
+        );
+
+        // Eco-Mode: If scrolled in history and nothing visible changed, stop immediately!
+        if (
+            !forced &&
+            prevCamX === this.cameraX &&
+            prevCamY === this.cameraY &&
+            prevZoom === this.zoom &&
+            prevMinP === this.currentMinPrice &&
+            prevMaxP === this.currentMaxPrice &&
+            prevLen === len &&
+            !livePriceChanged &&
+            prevMode === this.chartMode &&
+            prevW === width &&
+            prevH === height &&
+            prevOscH === oscHeight &&
+            prevInterval === this.currentInterval
+        ) {
+            this.isRenderDirty = false;
+            return;
+        }
+
+        this.isRenderDirty = true;
+
+        // Determine if historical layer must re-render (camera, scale, or candle count changed)
+        this.isHistoricalDirty = (
+            forced ||
+            prevCamX !== this.cameraX ||
+            prevCamY !== this.cameraY ||
+            prevZoom !== this.zoom ||
+            prevMinP !== this.currentMinPrice ||
+            prevMaxP !== this.currentMaxPrice ||
+            prevLen !== len ||
+            prevMode !== this.chartMode ||
+            prevW !== width ||
+            prevH !== height ||
+            prevOscH !== oscHeight ||
+            prevInterval !== this.currentInterval
+        );
+        const isHistoricalDirty = this.isHistoricalDirty;
+
+        if (isHistoricalDirty) {
+            this.historicalCandlesGraphics.clear();
+            this.gridGraphics.clear();
+        }
+        this.liveCandlesGraphics.clear();
+        this.uiGraphics.clear();
+        this.indicatorMainGraphics.clear();
+        this.indicatorOscGraphics.clear();
+
+        // Update render state cache for next cycle
+        this.lastRenderState = {
+            camX: this.cameraX, camY: this.cameraY, zoom: this.zoom,
+            minP: this.currentMinPrice, maxP: this.currentMaxPrice,
+            len: len, close: liveC, high: liveH, low: liveL,
+            mode: this.chartMode, w: width, h: height,
+            oscH: oscHeight, interval: this.currentInterval
+        };
 
         // CPU Optimization: Pre-calculate Y-axis ratio to avoid division in hot loops
         const priceRange = this.currentMaxPrice - this.currentMinPrice || 1;
@@ -409,129 +460,215 @@ export class ChartRenderer {
 
         this.candleMesh.visible = (this.chartMode === 'candles');
 
+        // Precise boundary slicing: live bar rendered dynamically only when in visible window
+        const isLiveVisible = (visEnd >= len && len > 0);
+        const histEnd = isLiveVisible ? (len - 1) : visEnd;
+
         if (this.chartMode === 'line') {
-            for (let i = visStart; i < visEnd; i++) {
-                const c = this.dataStore.data[i * 6 + 4];
-                const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
-                const y = priceToY(c);
-                if (i === visStart) this.candlesGraphics.moveTo(x, y);
-                else this.candlesGraphics.lineTo(x, y);
+            // Historical Line (Redrawn only when camera or historical scale is dirty)
+            if (isHistoricalDirty && histEnd > visStart) {
+                for (let i = visStart; i < histEnd; i++) {
+                    const c = this.dataStore.data[i * 6 + 4];
+                    const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
+                    const y = priceToY(c);
+                    if (i === visStart) this.historicalCandlesGraphics.moveTo(x, y);
+                    else this.historicalCandlesGraphics.lineTo(x, y);
+                }
+                this.historicalCandlesGraphics.stroke({ color: this.accentColor, width: this.mainLineWidth });
             }
-            this.candlesGraphics.stroke({ color: this.accentColor, width: this.mainLineWidth });
+            // Live Line Segment (0.001ms dynamic tick connecting bar N-2 to bar N-1)
+            if (isLiveVisible && len >= 2) {
+                const prevC = this.dataStore.data[(len - 2) * 6 + 4];
+                const prevX = ((len - 2) * actualSpacing) - this.cameraX + (candleWidth / 2);
+                const prevY = priceToY(prevC);
+                const liveX = ((len - 1) * actualSpacing) - this.cameraX + (candleWidth / 2);
+                const liveY = priceToY(liveC);
+                this.liveCandlesGraphics.moveTo(prevX, prevY).lineTo(liveX, liveY).stroke({ color: this.accentColor, width: this.mainLineWidth });
+            }
 
         } else if (this.chartMode === 'area') {
-            if (visEnd > visStart) {
+            // Historical Area
+            if (isHistoricalDirty && histEnd > visStart) {
                 const firstX = (visStart * actualSpacing) - this.cameraX + (candleWidth / 2);
-                const lastX = ((visEnd - 1) * actualSpacing) - this.cameraX + (candleWidth / 2);
+                const lastX = ((histEnd - 1) * actualSpacing) - this.cameraX + (candleWidth / 2);
 
-                this.candlesGraphics.moveTo(firstX, mainChartHeight);
-                for (let i = visStart; i < visEnd; i++) {
+                this.historicalCandlesGraphics.moveTo(firstX, mainChartHeight);
+                for (let i = visStart; i < histEnd; i++) {
+                    const c = this.dataStore.data[i * 6 + 4];
+                    const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
+                    this.historicalCandlesGraphics.lineTo(x, priceToY(c));
+                }
+                this.historicalCandlesGraphics.lineTo(lastX, mainChartHeight).closePath().fill({ color: this.accentColor, alpha: 0.2 });
+
+                for (let i = visStart; i < histEnd; i++) {
                     const c = this.dataStore.data[i * 6 + 4];
                     const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
                     const y = priceToY(c);
-                    this.candlesGraphics.lineTo(x, y);
+                    if (i === visStart) this.historicalCandlesGraphics.moveTo(x, y);
+                    else this.historicalCandlesGraphics.lineTo(x, y);
                 }
-                this.candlesGraphics.lineTo(lastX, mainChartHeight);
-                this.candlesGraphics.closePath();
-                this.candlesGraphics.fill({ color: this.accentColor, alpha: 0.2 });
-
-                for (let i = visStart; i < visEnd; i++) {
-                    const c = this.dataStore.data[i * 6 + 4];
-                    const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
-                    const y = priceToY(c);
-                    if (i === visStart) this.candlesGraphics.moveTo(x, y);
-                    else this.candlesGraphics.lineTo(x, y);
-                }
-                this.candlesGraphics.stroke({ color: this.accentColor, width: this.mainLineWidth });
+                this.historicalCandlesGraphics.stroke({ color: this.accentColor, width: this.mainLineWidth });
             }
+            // Live Area Segment
+            if (isLiveVisible && len >= 2) {
+                const prevC = this.dataStore.data[(len - 2) * 6 + 4];
+                const prevX = ((len - 2) * actualSpacing) - this.cameraX + (candleWidth / 2);
+                const prevY = priceToY(prevC);
+                const liveX = ((len - 1) * actualSpacing) - this.cameraX + (candleWidth / 2);
+                const liveY = priceToY(liveC);
+                this.liveCandlesGraphics.moveTo(prevX, mainChartHeight).lineTo(prevX, prevY).lineTo(liveX, liveY).lineTo(liveX, mainChartHeight).closePath().fill({ color: this.accentColor, alpha: 0.2 });
+                this.liveCandlesGraphics.moveTo(prevX, prevY).lineTo(liveX, liveY).stroke({ color: this.accentColor, width: this.mainLineWidth });
+            }
+
         } else if (this.chartMode === 'bars') {
             const spineWidth = Math.max(1, Math.min(2, Math.floor(candleWidth * 0.2)));
             const tickWidth = Math.max(2, candleWidth / 2);
 
-            this.candlesGraphics.beginPath();
-            for (let i = visStart; i < visEnd; i++) {
-                const base = i * 6;
-                const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
-                if (c >= o) {
-                    const x = (i * actualSpacing) - this.cameraX, xMid = x + (candleWidth / 2);
-                    const yH = priceToY(h), yL = priceToY(l), yO = priceToY(o), yC = priceToY(c);
-                    this.candlesGraphics.rect(xMid - (spineWidth / 2), yH, spineWidth, Math.max(1, yL - yH));
-                    this.candlesGraphics.rect(x, yO - (spineWidth / 2), tickWidth, spineWidth);
-                    this.candlesGraphics.rect(xMid, yC - (spineWidth / 2), tickWidth, spineWidth);
+            // Historical Bars (0 to histEnd - 1)
+            if (isHistoricalDirty && histEnd > visStart) {
+                this.historicalCandlesGraphics.beginPath();
+                for (let i = visStart; i < histEnd; i++) {
+                    const base = i * 6;
+                    const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
+                    if (c >= o) {
+                        const x = (i * actualSpacing) - this.cameraX, xMid = x + (candleWidth / 2);
+                        this.historicalCandlesGraphics.rect(xMid - (spineWidth / 2), priceToY(h), spineWidth, Math.max(1, priceToY(l) - priceToY(h)));
+                        this.historicalCandlesGraphics.rect(x, priceToY(o) - (spineWidth / 2), tickWidth, spineWidth);
+                        this.historicalCandlesGraphics.rect(xMid, priceToY(c) - (spineWidth / 2), tickWidth, spineWidth);
+                    }
                 }
-            }
-            this.candlesGraphics.fill({ color: this.bullColor, alpha: this.bullAlpha });
+                this.historicalCandlesGraphics.fill({ color: this.bullColor, alpha: this.bullAlpha });
 
-            this.candlesGraphics.beginPath();
-            for (let i = visStart; i < visEnd; i++) {
-                const base = i * 6;
-                const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
-                if (c < o) {
-                    const x = (i * actualSpacing) - this.cameraX, xMid = x + (candleWidth / 2);
-                    const yH = priceToY(h), yL = priceToY(l), yO = priceToY(o), yC = priceToY(c);
-                    this.candlesGraphics.rect(xMid - (spineWidth / 2), yH, spineWidth, Math.max(1, yL - yH));
-                    this.candlesGraphics.rect(x, yO - (spineWidth / 2), tickWidth, spineWidth);
-                    this.candlesGraphics.rect(xMid, yC - (spineWidth / 2), tickWidth, spineWidth);
+                this.historicalCandlesGraphics.beginPath();
+                for (let i = visStart; i < histEnd; i++) {
+                    const base = i * 6;
+                    const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
+                    if (c < o) {
+                        const x = (i * actualSpacing) - this.cameraX, xMid = x + (candleWidth / 2);
+                        this.historicalCandlesGraphics.rect(xMid - (spineWidth / 2), priceToY(h), spineWidth, Math.max(1, priceToY(l) - priceToY(h)));
+                        this.historicalCandlesGraphics.rect(x, priceToY(o) - (spineWidth / 2), tickWidth, spineWidth);
+                        this.historicalCandlesGraphics.rect(xMid, priceToY(c) - (spineWidth / 2), tickWidth, spineWidth);
+                    }
                 }
+                this.historicalCandlesGraphics.fill({ color: this.bearColor, alpha: this.bearAlpha });
             }
-            this.candlesGraphics.fill({ color: this.bearColor, alpha: this.bearAlpha });
+
+            // Live Forming Bar (Updated on tick in < 0.005ms)
+            if (isLiveVisible) {
+                const liveIdx = len - 1;
+                const base = liveIdx * 6;
+                const o = this.dataStore.data[base + 1];
+                const x = (liveIdx * actualSpacing) - this.cameraX, xMid = x + (candleWidth / 2);
+                const isBull = liveC >= o;
+                const clr = isBull ? this.bullColor : this.bearColor;
+                const alpha = isBull ? this.bullAlpha : this.bearAlpha;
+
+                this.liveCandlesGraphics.beginPath();
+                this.liveCandlesGraphics.rect(xMid - (spineWidth / 2), priceToY(liveH), spineWidth, Math.max(1, priceToY(liveL) - priceToY(liveH)));
+                this.liveCandlesGraphics.rect(x, priceToY(o) - (spineWidth / 2), tickWidth, spineWidth);
+                this.liveCandlesGraphics.rect(xMid, priceToY(liveC) - (spineWidth / 2), tickWidth, spineWidth);
+                this.liveCandlesGraphics.fill({ color: clr, alpha });
+            }
 
         } else if (this.chartMode === 'heikinAshi') {
-            // Pre-calculate HA values
-            const haData: { haO: number, haH: number, haL: number, haC: number }[] = new Array(visEnd);
-            let prevHaOpen = (this.dataStore.data[1] + this.dataStore.data[4]) / 2;
-            let prevHaClose = (this.dataStore.data[1] + this.dataStore.data[2] + this.dataStore.data[3] + this.dataStore.data[4]) / 4;
+            // Historical Heikin-Ashi (Calculated & drawn only when camera or history is dirty)
+            if (isHistoricalDirty && histEnd > 0) {
+                const haData: { haO: number, haH: number, haL: number, haC: number }[] = new Array(histEnd);
+                let prevHaOpen = (this.dataStore.data[1] + this.dataStore.data[4]) / 2;
+                let prevHaClose = (this.dataStore.data[1] + this.dataStore.data[2] + this.dataStore.data[3] + this.dataStore.data[4]) / 4;
 
-            for (let i = 0; i < visEnd; i++) {
-                const base = i * 6;
-                const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
-                const haClose = (o + h + l + c) / 4;
-                const haOpen = i === 0 ? prevHaOpen : (prevHaOpen + prevHaClose) / 2;
-                if (i >= visStart) haData[i] = { haO: haOpen, haH: Math.max(h, haOpen, haClose), haL: Math.min(l, haOpen, haClose), haC: haClose };
-                prevHaOpen = haOpen; prevHaClose = haClose;
-            }
-
-            // Draw Bull
-            this.candlesGraphics.beginPath();
-            for (let i = visStart; i < visEnd; i++) {
-                const d = haData[i];
-                if (d.haC >= d.haO) {
-                    const x = (i * actualSpacing) - this.cameraX, yH = priceToY(d.haH), yL = priceToY(d.haL);
-                    this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
+                for (let i = 0; i < histEnd; i++) {
+                    const base = i * 6;
+                    const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
+                    const haClose = (o + h + l + c) / 4;
+                    const haOpen = i === 0 ? prevHaOpen : (prevHaOpen + prevHaClose) / 2;
+                    if (i >= visStart) {
+                        haData[i] = { haO: haOpen, haH: Math.max(h, haOpen, haClose), haL: Math.min(l, haOpen, haClose), haC: haClose };
+                    }
+                    prevHaOpen = haOpen;
+                    prevHaClose = haClose;
                 }
-            }
-            this.candlesGraphics.fill({ color: this.bullWickColor, alpha: this.bullWickAlpha });
 
-            this.candlesGraphics.beginPath();
-            for (let i = visStart; i < visEnd; i++) {
-                const d = haData[i];
-                if (d.haC >= d.haO) {
-                    const x = (i * actualSpacing) - this.cameraX, yO = priceToY(d.haO), yC = priceToY(d.haC);
-                    this.candlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
-                }
-            }
-            this.candlesGraphics.fill({ color: this.bullColor, alpha: this.bullAlpha }).stroke({ color: this.bullBorderColor, width: 1, alpha: this.bullBorderAlpha });
+                // Cache next open value for the live forming bar
+                this.liveHaOpen = (prevHaOpen + prevHaClose) / 2;
 
-            // Draw Bear
-            this.candlesGraphics.beginPath();
-            for (let i = visStart; i < visEnd; i++) {
-                const d = haData[i];
-                if (d.haC < d.haO) {
-                    const x = (i * actualSpacing) - this.cameraX, yH = priceToY(d.haH), yL = priceToY(d.haL);
-                    this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
+                // Draw Historical Bull
+                this.historicalCandlesGraphics.beginPath();
+                for (let i = visStart; i < histEnd; i++) {
+                    const d = haData[i];
+                    if (d.haC >= d.haO) {
+                        const x = (i * actualSpacing) - this.cameraX, yH = priceToY(d.haH), yL = priceToY(d.haL);
+                        this.historicalCandlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
+                    }
                 }
-            }
-            this.candlesGraphics.fill({ color: this.bearWickColor, alpha: this.bearWickAlpha });
+                this.historicalCandlesGraphics.fill({ color: this.bullWickColor, alpha: this.bullWickAlpha });
 
-            this.candlesGraphics.beginPath();
-            for (let i = visStart; i < visEnd; i++) {
-                const d = haData[i];
-                if (d.haC < d.haO) {
-                    const x = (i * actualSpacing) - this.cameraX, yO = priceToY(d.haO), yC = priceToY(d.haC);
-                    this.candlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
+                this.historicalCandlesGraphics.beginPath();
+                for (let i = visStart; i < histEnd; i++) {
+                    const d = haData[i];
+                    if (d.haC >= d.haO) {
+                        const x = (i * actualSpacing) - this.cameraX, yO = priceToY(d.haO), yC = priceToY(d.haC);
+                        this.historicalCandlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
+                    }
                 }
+                this.historicalCandlesGraphics.fill({ color: this.bullColor, alpha: this.bullAlpha }).stroke({ color: this.bullBorderColor, width: 1, alpha: this.bullBorderAlpha });
+
+                // Draw Historical Bear
+                this.historicalCandlesGraphics.beginPath();
+                for (let i = visStart; i < histEnd; i++) {
+                    const d = haData[i];
+                    if (d.haC < d.haO) {
+                        const x = (i * actualSpacing) - this.cameraX, yH = priceToY(d.haH), yL = priceToY(d.haL);
+                        this.historicalCandlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
+                    }
+                }
+                this.historicalCandlesGraphics.fill({ color: this.bearWickColor, alpha: this.bearWickAlpha });
+
+                this.historicalCandlesGraphics.beginPath();
+                for (let i = visStart; i < histEnd; i++) {
+                    const d = haData[i];
+                    if (d.haC < d.haO) {
+                        const x = (i * actualSpacing) - this.cameraX, yO = priceToY(d.haO), yC = priceToY(d.haC);
+                        this.historicalCandlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
+                    }
+                }
+                this.historicalCandlesGraphics.fill({ color: this.bearColor, alpha: this.bearAlpha }).stroke({ color: this.bearBorderColor, width: 1, alpha: this.bearBorderAlpha });
             }
-            this.candlesGraphics.fill({ color: this.bearColor, alpha: this.bearAlpha }).stroke({ color: this.bearBorderColor, width: 1, alpha: this.bearBorderAlpha });
+
+            // Live Forming Heikin-Ashi Candle (O(1) execution on tick)
+            if (isLiveVisible) {
+                const liveIdx = len - 1;
+                const base = liveIdx * 6;
+                const o = this.dataStore.data[base + 1];
+                const haOpen = liveIdx === 0 ? ((o + liveC) / 2) : this.liveHaOpen;
+                const haClose = (o + liveH + liveL + liveC) / 4;
+                const haHigh = Math.max(liveH, haOpen, haClose);
+                const haLow = Math.min(liveL, haOpen, haClose);
+                const isBull = haClose >= haOpen;
+
+                const x = (liveIdx * actualSpacing) - this.cameraX;
+                const yH = priceToY(haHigh);
+                const yL = priceToY(haLow);
+                const yO = priceToY(haOpen);
+                const yC = priceToY(haClose);
+
+                const wickColor = isBull ? this.bullWickColor : this.bearWickColor;
+                const wickAlpha = isBull ? this.bullWickAlpha : this.bearWickAlpha;
+                const bodyColor = isBull ? this.bullColor : this.bearColor;
+                const bodyAlpha = isBull ? this.bullAlpha : this.bearAlpha;
+                const borderColor = isBull ? this.bullBorderColor : this.bearBorderColor;
+                const borderAlpha = isBull ? this.bullBorderAlpha : this.bearBorderAlpha;
+
+                // Live Wick
+                this.liveCandlesGraphics.beginPath();
+                this.liveCandlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
+                this.liveCandlesGraphics.fill({ color: wickColor, alpha: wickAlpha });
+
+                // Live Body
+                this.liveCandlesGraphics.beginPath();
+                this.liveCandlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
+                this.liveCandlesGraphics.fill({ color: bodyColor, alpha: bodyAlpha }).stroke({ color: borderColor, width: 1, alpha: borderAlpha });
+            }
 
         } else {
             // GPU INSTANCED CANDLES (Approach 2)
@@ -1182,7 +1319,25 @@ export class ChartRenderer {
             return;
         }
 
-        // 2. Full History Loaded or Prepended
+        // 2. Single New Candle Appended at the end (Uploads ONLY the 1 new candle)
+        if (len === this.lastSyncedLength + 1) {
+            const d = lastIdx * 4;
+            this.candleOHLCArray[d] = this.dataStore.data[lastBase + 1];
+            this.candleOHLCArray[d + 1] = liveH;
+            this.candleOHLCArray[d + 2] = liveL;
+            this.candleOHLCArray[d + 3] = liveC;
+            this.candleIndexArray[lastIdx] = lastIdx;
+
+            this.candleOHLCBuffer.update(16, d * 4);
+            this.candleIndexBuffer.update(4, lastIdx * 4);
+            this.lastSyncedLength = len;
+            this.lastSyncedLiveClose = liveC;
+            this.lastSyncedLiveHigh = liveH;
+            this.lastSyncedLiveLow = liveL;
+            return;
+        }
+
+        // 3. Full History Loaded or Historical Data Prepended
         if (this.lastSyncedLength !== len) {
             for (let i = 0; i < len; i++) {
                 const b = i * 6;
@@ -1202,14 +1357,15 @@ export class ChartRenderer {
             return;
         }
 
-        // 3. Fast Tick (Only live forming candle changed)
+        // 3. Fast Tick: Sub-buffer upload (Only 16 bytes uploaded to GPU instead of full buffer)
         if (this.lastSyncedLiveClose !== liveC || this.lastSyncedLiveHigh !== liveH || this.lastSyncedLiveLow !== liveL) {
             const d = lastIdx * 4;
             this.candleOHLCArray[d] = this.dataStore.data[lastBase + 1];
             this.candleOHLCArray[d + 1] = liveH;
             this.candleOHLCArray[d + 2] = liveL;
             this.candleOHLCArray[d + 3] = liveC;
-            this.candleOHLCBuffer.update();
+            // Task 2.1: Upload only the 16 bytes (4 floats) of the active forming candle
+            this.candleOHLCBuffer.update(16, d * 4);
             this.lastSyncedLiveClose = liveC;
             this.lastSyncedLiveHigh = liveH;
             this.lastSyncedLiveLow = liveL;
@@ -1418,11 +1574,11 @@ export class ChartRenderer {
         }
 
         const liveVal = values[len];
-        if (entry.array.length < len * 3 || entry.lastSyncedLength !== len || entry.lastSyncedLiveValue !== liveVal) {
+        if (entry.array.length < len * 3 || entry.lastSyncedLength !== len) {
             if (entry.array.length < len * 3) {
                 entry.array = new Float32Array(Math.max(10000, len * 2) * 3);
             }
-            // Fast loop to pack lines segments
+            // Full pack on length or capacity change
             for (let i = 0; i < len; i++) {
                 entry.array[i * 3] = i;
                 entry.array[i * 3 + 1] = values[i];
@@ -1431,6 +1587,12 @@ export class ChartRenderer {
             entry.buffer.data = entry.array;
             entry.buffer.update();
             entry.lastSyncedLength = len;
+            entry.lastSyncedLiveValue = liveVal;
+        } else if (entry.lastSyncedLiveValue !== liveVal) {
+            // Upload only the 12 bytes (3 floats) of the forming line segment to GPU
+            const d = (len - 1) * 3;
+            entry.array[d + 2] = liveVal;
+            entry.buffer.update(12, d * 4);
             entry.lastSyncedLiveValue = liveVal;
         }
 

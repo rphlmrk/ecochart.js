@@ -40,6 +40,13 @@ export class HTFBoxIndicator extends BaseIndicator {
         };
     }
 
+    protected override cloneState(state: any): any {
+        return {
+            ...state,
+            cachedBlocks: state.cachedBlocks ? [...state.cachedBlocks] : []
+        };
+    }
+
     protected next(index: number, _isClosed: boolean, ds: DataStore): void {
         const tfMs = this.getEffectiveTfMins() * 60 * 1000;
         const intervalMs = (ds.length >= 2 && ds.data[6] > ds.data[0]) ? (ds.data[6] - ds.data[0]) : 60000;
