@@ -1410,6 +1410,7 @@ export class WorkspaceManager {
                 nyColor: ny.color,
                 nyAlpha: ny.alpha
             };
+            c.renderer.isSessionDirty = true; // <-- Flag GPU Mesh to rebuild
             c.isDirty = true;
         });
     }

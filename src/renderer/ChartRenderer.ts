@@ -1,4 +1,4 @@
-import { Application, Graphics, Text, Container, Buffer, BufferUsage, Geometry, Mesh, Shader, UniformGroup } from 'pixi.js';
+import { Application, Graphics, BitmapText, BitmapFont, Container, Buffer, BufferUsage, Geometry, Mesh, Shader, UniformGroup } from 'pixi.js';
 import { DataStore } from '../data/DataStore';
 import type { ChartTheme, LineStyle } from '../theme/types';
 import { ThemeManager } from '../theme/ThemeManager';
@@ -32,8 +32,8 @@ export class ChartRenderer {
         secondaryTz: 'Europe/London',
         secondaryLabel: 'LON'
     };
-    private clock1BadgeText!: Text;
-    private clock2BadgeText!: Text;
+    private clock1BadgeText!: BitmapText;
+    private clock2BadgeText!: BitmapText;
 
     // Pixi Layers (Z-Index order)
     private gridGraphics!: Graphics;
@@ -41,6 +41,15 @@ export class ChartRenderer {
     private gridGeometry!: Geometry;
     private gridUniforms!: UniformGroup;
     private candlesGraphics!: Graphics;
+
+    // GPU Session Instancing Engine
+    private sessionMesh!: Mesh<Geometry, Shader>;
+    private sessionGeometry!: Geometry;
+    private sessionUniforms!: UniformGroup;
+    private sessionBuffer!: Buffer;
+    private sessionArray = new Float32Array(0);
+    private lastSessionSyncedLength = 0;
+    public isSessionDirty = true;
 
     // GPU Instancing Engine (Single Vector Stamping)
     private candleMesh!: Mesh<Geometry, Shader>;
@@ -73,25 +82,27 @@ export class ChartRenderer {
     public syncHoverTimeMs: number | null = null;
 
     // Persistent Crosshair Text (Zero GC allocations on mouse move)
-    private persistentPriceBadgeText!: Text;
-    private persistentTimeBadgeText!: Text;
+    private persistentPriceBadgeText!: BitmapText;
+    private persistentTimeBadgeText!: BitmapText;
+    private livePriceBadgeText!: BitmapText;     // <-- ADDED to fix GC leak
+    private liveCountdownBadgeText!: BitmapText; // <-- ADDED to fix GC leak
 
     // Axis Label Object Pools (Prevents VRAM Memory Leaks during panning)
-    private priceLabelPool: Text[] = [];
+    private priceLabelPool: BitmapText[] = [];
     private activePriceLabels = 0;
-    private timeLabelPool: Text[] = [];
+    private timeLabelPool: BitmapText[] = [];
     private activeTimeLabels = 0;
 
     // Dedicated Sub-Panel Scale
     public oscHeight = 0; // <-- Dynamic stacked oscillator height
     public activeOscillatorScale?: OscillatorScale;
-    private oscLabelPool: Text[] = [];
+    private oscLabelPool: BitmapText[] = [];
     private activeOscLabels = 0;
 
     // Oscillator Panel Header Telemetry (Zero GC Pool)
     public indicatorManager?: any;
     private oscHeaderContainer!: Container;
-    private oscHeaderPairPool: { title: Text; val: Text }[] = [];
+    private oscHeaderPairPool: { title: BitmapText; val: BitmapText }[] = [];
 
     // GPU Indicator Line Engine
     private indicatorMeshes = new Map<string, any>();
@@ -157,10 +168,10 @@ export class ChartRenderer {
         this.gridStyle = theme.gridStyle || 'solid';
 
         // Update existing pooled labels when theme changes
-        this.priceLabelPool.forEach(l => l.style.fill = this.axisTextColor);
-        this.timeLabelPool.forEach(l => l.style.fill = this.axisTextColor);
-        this.oscLabelPool.forEach(l => l.style.fill = this.axisTextColor);
-        this.oscHeaderPairPool.forEach(p => p.title.style.fill = this.axisTextColor);
+        this.priceLabelPool.forEach(l => l.tint = this.axisTextColor);
+        this.timeLabelPool.forEach(l => l.tint = this.axisTextColor);
+        this.oscLabelPool.forEach(l => l.tint = this.axisTextColor);
+        this.oscHeaderPairPool.forEach(p => p.title.tint = this.axisTextColor);
 
         this.updateInstancedThemeUniforms(); // <-- Synchronize GPU Colors
     }
@@ -240,6 +251,13 @@ export class ChartRenderer {
             resolution: Math.min(window.devicePixelRatio || 1, 2),
         });
 
+        // GPU BITMAP FONT
+        BitmapFont.install({
+            name: 'ChartFont',
+            style: { fontFamily: 'sans-serif', fontSize: 32, fill: 0xffffff, fontWeight: 'bold' },
+            chars: [['a', 'z'], ['A', 'Z'], ['0', '9'], ' .:,;-_=+()!@#$%^&*~`|/\\']
+        });
+
         // Initialize Layers in order (Background -> Foreground)
         this.gridGraphics = new Graphics();
         this.candlesGraphics = new Graphics();
@@ -258,10 +276,12 @@ export class ChartRenderer {
 
         this.oscHeaderContainer = new Container();
 
+        this.initSessionMesh();         // <-- Create GPU Sessions
         this.initGridMesh();            // <-- Create GPU Grid
         this.initInstancedCandleMesh(); // <-- Create GPU Mesh & Shaders
 
         this.app.stage.addChild(this.gridMesh);     // <-- Add GPU Grid Background
+        this.app.stage.addChild(this.sessionMesh);  // <-- Add GPU Sessions
         this.app.stage.addChild(this.gridGraphics);
         this.app.stage.addChild(this.candlesGraphics);
         this.app.stage.addChild(this.candleMesh); // <-- Instanced candles sit here
@@ -282,24 +302,18 @@ export class ChartRenderer {
         this.app.stage.addChild(this.crosshairBadgeGraphics);
         this.app.stage.addChild(this.crosshairBadgeText);
 
-        // Pre-allocate persistent crosshair labels once
-        this.persistentPriceBadgeText = new Text({
-            text: '',
-            style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold', fill: 0xffffff }
-        });
-        this.persistentTimeBadgeText = new Text({
-            text: '',
-            style: { fontFamily: 'sans-serif', fontSize: 11, fill: 0xffffff }
-        });
+        // Pre-allocate persistent crosshair labels once using GPU Font
+        this.persistentPriceBadgeText = new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 11 } });
+        this.persistentTimeBadgeText = new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 11 } });
 
-        this.clock1BadgeText = new Text({
-            text: '',
-            style: { fontFamily: 'sans-serif', fontSize: 10, fontWeight: 'bold', fill: 0xffffff }
-        });
-        this.clock2BadgeText = new Text({
-            text: '',
-            style: { fontFamily: 'sans-serif', fontSize: 10, fontWeight: 'bold', fill: 0xffffff }
-        });
+        this.clock1BadgeText = new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 10 } });
+        this.clock2BadgeText = new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 10 } });
+
+        this.livePriceBadgeText = new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 11 } });
+        this.liveCountdownBadgeText = new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 11 } });
+
+        this.liveBadgeText.addChild(this.livePriceBadgeText);
+        this.liveBadgeText.addChild(this.liveCountdownBadgeText);
         this.clock1BadgeText.visible = false;
         this.clock2BadgeText.visible = false;
         this.textContainer.addChild(this.clock1BadgeText);
@@ -317,10 +331,8 @@ export class ChartRenderer {
 
         this.candlesGraphics.clear();
         this.gridGraphics.clear();
-        this.gridGraphics.clear();
         this.uiGraphics.clear();
         this.liveBadgeGraphics.clear();
-        this.liveBadgeText.removeChildren();
 
         // Reset pooled axis label counters without tearing down the reused WebGL textures
         this.activePriceLabels = 0;
@@ -394,16 +406,17 @@ export class ChartRenderer {
         for (let p = firstPrice; p <= visibleMax; p += step) {
             const y = priceToY(p);
 
-            let textLabel: Text;
+            let textLabel: BitmapText;
             if (this.activePriceLabels < this.priceLabelPool.length) {
                 textLabel = this.priceLabelPool[this.activePriceLabels];
                 const newText = p.toFixed(2);
                 if (textLabel.text !== newText) textLabel.text = newText;
             } else {
-                textLabel = new Text({ text: p.toFixed(2), style: { fontFamily: 'sans-serif', fontSize: 11, fill: this.axisTextColor } });
+                textLabel = new BitmapText({ text: p.toFixed(2), style: { fontFamily: 'ChartFont', fontSize: 11 } });
                 this.priceLabelPool.push(textLabel);
                 this.textContainer.addChild(textLabel);
             }
+            textLabel.tint = this.axisTextColor;
 
             textLabel.x = chartWidth + 5;
             textLabel.y = y - 6;
@@ -430,16 +443,17 @@ export class ChartRenderer {
                 const date = new Date(ts);
                 const timeStr = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
 
-                let textLabel: Text;
+                let textLabel: BitmapText;
                 if (this.activeTimeLabels < this.timeLabelPool.length) {
                     textLabel = this.timeLabelPool[this.activeTimeLabels];
                     if (textLabel.text !== timeStr) textLabel.text = timeStr;
                 } else {
-                    textLabel = new Text({ text: timeStr, style: { fontFamily: 'sans-serif', fontSize: 11, fill: this.axisTextColor } });
+                    textLabel = new BitmapText({ text: timeStr, style: { fontFamily: 'ChartFont', fontSize: 11 } });
                     textLabel.anchor.x = 0.5;
                     this.timeLabelPool.push(textLabel);
                     this.textContainer.addChild(textLabel);
                 }
+                textLabel.tint = this.axisTextColor;
 
                 textLabel.x = x;
                 textLabel.y = timeAxisY + 5;
@@ -612,53 +626,8 @@ export class ChartRenderer {
         this.uiGraphics.rect(0, timeAxisY, width, this.timeAxisHeight).fill(this.axisBgColor);
         this.uiGraphics.moveTo(0, timeAxisY).lineTo(width, timeAxisY).stroke({ color: this.gridColor, width: 1 });
 
-        // --- 3.5 DRAW MARKET SESSION HIGHLIGHTS ---
-        if (this.sessionConfig.enabled) {
-            const htf = ['1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'];
-            if (!htf.includes(this.currentInterval)) {
-                for (let i = visStart; i < visEnd; i++) {
-                    if (i < 0) continue;
-                    const ts = this.dataStore.data[i * 6];
-                    if (!ts) continue;
-
-                    const d = new Date(ts);
-                    const floatHour = d.getUTCHours() + (d.getUTCMinutes() / 60);
-
-                    let color = -1;
-                    let userAlpha = 0.5;
-
-                    // Priority overlaps: NY > London > Asia
-                    if (floatHour >= 13.5 && floatHour < 20) {
-                        color = this.sessionConfig.nyColor;
-                        userAlpha = this.sessionConfig.nyAlpha;
-                    } else if (floatHour >= 8 && floatHour < 16.5) {
-                        color = this.sessionConfig.londonColor;
-                        userAlpha = this.sessionConfig.londonAlpha;
-                    } else if (floatHour >= 0 && floatHour < 9) {
-                        color = this.sessionConfig.asiaColor;
-                        userAlpha = this.sessionConfig.asiaAlpha;
-                    }
-
-                    if (color !== -1) {
-                        const x = (i * actualSpacing) - this.cameraX;
-                        if (x > chartWidth || x + actualSpacing < 0) continue;
-
-                        // Shade the main chart background behind candles
-                        if (this.sessionConfig.showOnChart) {
-                            this.gridGraphics.rect(x, 0, actualSpacing, mainChartHeight)
-                                .fill({ color, alpha: userAlpha * (this.isDarkTheme ? 0.35 : 0.45) });
-                        }
-                        // Shade the bottom time axis with user-defined opacity
-                        if (this.sessionConfig.showOnAxis) {
-                            this.uiGraphics.rect(x, timeAxisY, actualSpacing, this.timeAxisHeight)
-                                .fill({ color, alpha: userAlpha });
-                            this.uiGraphics.rect(x, timeAxisY, actualSpacing, 3)
-                                .fill({ color, alpha: Math.min(1, userAlpha * 1.5) }); // Top edge emphasis
-                        }
-                    }
-                }
-            }
-        }
+        // --- 3.5 DRAW MARKET SESSION HIGHLIGHTS (GPU) ---
+        this.renderInstancedSessions(mainChartHeight, timeAxisY, width, height, visStart, visEnd);
 
         // Draw Divider Line across chart AND right axis column
         if (oscHeight > 0) {
@@ -690,18 +659,19 @@ export class ChartRenderer {
                         : (step > 0 ? `+${step}` : `${step}`);
 
                     // Fetch from Object Pool (Zero VRAM allocations)
-                    let textLabel: Text;
+                    let textLabel: BitmapText;
                     if (this.activeOscLabels < this.oscLabelPool.length) {
                         textLabel = this.oscLabelPool[this.activeOscLabels];
                         if (textLabel.text !== labelText) textLabel.text = labelText;
                     } else {
-                        textLabel = new Text({
+                        textLabel = new BitmapText({
                             text: labelText,
-                            style: { fontFamily: 'sans-serif', fontSize: 10, fill: this.axisTextColor }
+                            style: { fontFamily: 'ChartFont', fontSize: 10 }
                         });
                         this.oscLabelPool.push(textLabel);
                         this.textContainer.addChild(textLabel);
                     }
+                    textLabel.tint = this.axisTextColor;
 
                     textLabel.x = chartWidth + 6;
                     textLabel.y = y - 5;
@@ -798,7 +768,7 @@ export class ChartRenderer {
                 const st1 = getSessionStatus(this.clockConfig.primaryTz);
                 const timeStr1 = `${st1.icon} ${this.clockConfig.primaryLabel} ${formatTime(this.clockConfig.primaryTz)}`;
                 this.clock1BadgeText.text = timeStr1;
-                this.clock1BadgeText.style.fill = st1.textColor;
+                this.clock1BadgeText.tint = st1.textColor;
                 const badgeW1 = Math.ceil(this.clock1BadgeText.width) + 12;
                 const badgeX1 = rightAnchor - badgeW1;
 
@@ -817,7 +787,7 @@ export class ChartRenderer {
                         const st2 = getSessionStatus(this.clockConfig.secondaryTz);
                         const timeStr2 = `${st2.icon} ${this.clockConfig.secondaryLabel} ${formatTime(this.clockConfig.secondaryTz)}`;
                         this.clock2BadgeText.text = timeStr2;
-                        this.clock2BadgeText.style.fill = st2.textColor;
+                        this.clock2BadgeText.tint = st2.textColor;
                         const badgeW2 = Math.ceil(this.clock2BadgeText.width) + 12;
                         const badgeX2 = rightAnchor - badgeW2;
 
@@ -867,16 +837,16 @@ export class ChartRenderer {
 
             const badgeTextColor = this.getContrastTextColor(liveColor);
 
-            const livePriceText = new Text({ text: lastClose.toFixed(2), style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold', fill: badgeTextColor } });
-            livePriceText.x = chartWidth + 5;
-            livePriceText.y = badgeY + 3;
-            this.liveBadgeText.addChild(livePriceText);
+            this.livePriceBadgeText.text = lastClose.toFixed(2);
+            this.livePriceBadgeText.tint = badgeTextColor;
+            this.livePriceBadgeText.x = chartWidth + 5;
+            this.livePriceBadgeText.y = badgeY + 3;
 
-            const countdownText = new Text({ text: countdownStr, style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: '500', fill: badgeTextColor } });
-            countdownText.alpha = 0.9;
-            countdownText.x = chartWidth + 5;
-            countdownText.y = badgeY + 18;
-            this.liveBadgeText.addChild(countdownText);
+            this.liveCountdownBadgeText.text = countdownStr;
+            this.liveCountdownBadgeText.tint = badgeTextColor;
+            this.liveCountdownBadgeText.alpha = 0.9;
+            this.liveCountdownBadgeText.x = chartWidth + 5;
+            this.liveCountdownBadgeText.y = badgeY + 18;
         }
 
         // Render Title & Live/Historical Telemetry for Bottom Panels
@@ -1053,13 +1023,13 @@ export class ChartRenderer {
         for (const osc of activeOscs) {
             const data = osc.getValueAt(targetIdx, this.dataStore, this.isDarkTheme, this.axisTextColor);
 
-            let pair: { title: Text; val: Text };
+            let pair: { title: BitmapText; val: BitmapText };
             if (pairIdx < this.oscHeaderPairPool.length) {
                 pair = this.oscHeaderPairPool[pairIdx];
             } else {
                 pair = {
-                    title: new Text({ text: '', style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold' } }),
-                    val: new Text({ text: '', style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: '600' } })
+                    title: new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 11 } }),
+                    val: new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 11 } })
                 };
                 this.oscHeaderPairPool.push(pair);
                 this.oscHeaderContainer.addChild(pair.title);
@@ -1067,14 +1037,14 @@ export class ChartRenderer {
             }
 
             pair.title.text = data.label + '  ';
-            pair.title.style.fill = this.axisTextColor;
+            pair.title.tint = this.axisTextColor;
             pair.title.alpha = 0.8;
             pair.title.x = 10;
             pair.title.y = currentOscY + 6;
             pair.title.visible = true;
 
             pair.val.text = data.valueStr;
-            pair.val.style.fill = data.valueColor;
+            pair.val.tint = data.valueColor;
             pair.val.x = 10 + pair.title.width;
             pair.val.y = currentOscY + 6;
             pair.val.visible = true;
@@ -1764,5 +1734,222 @@ export class ChartRenderer {
         }
 
         entry.mesh.geometry.instanceCount = len;
+    }
+
+    private initSessionMesh() {
+        const baseVertices = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
+        const baseIndices = new Uint32Array([0, 1, 2, 0, 2, 3]);
+
+        this.sessionBuffer = new Buffer({ data: new Float32Array(0), usage: BufferUsage.VERTEX | BufferUsage.COPY_DST });
+
+        this.sessionGeometry = new Geometry({
+            attributes: {
+                aVertexPosition: {
+                    buffer: new Buffer({ data: baseVertices, usage: BufferUsage.VERTEX }),
+                    format: 'float32x2'
+                },
+                aSessionBlock: {
+                    buffer: this.sessionBuffer,
+                    format: 'float32x2',
+                    stride: 24, // 6 floats * 4 bytes
+                    offset: 0,
+                    instance: true
+                },
+                aSessionColor: {
+                    buffer: this.sessionBuffer,
+                    format: 'float32x4',
+                    stride: 24,
+                    offset: 8, // Skip 2 floats
+                    instance: true
+                }
+            },
+            indexBuffer: baseIndices,
+            instanceCount: 0
+        });
+
+        this.sessionUniforms = new UniformGroup({
+            uCameraX: { value: 0, type: 'f32' },
+            uZoom: { value: 1, type: 'f32' },
+            uCandleSpacing: { value: 8, type: 'f32' },
+            uMainChartHeight: { value: 0, type: 'f32' },
+            uTimeAxisY: { value: 0, type: 'f32' },
+            uTimeAxisHeight: { value: 0, type: 'f32' },
+            uTotalHeight: { value: 0, type: 'f32' },
+            uShowOnChart: { value: 0, type: 'f32' },
+            uShowOnAxis: { value: 0, type: 'f32' },
+            uChartAlphaMult: { value: 1, type: 'f32' },
+            uVisStart: { value: 0, type: 'f32' },
+            uVisEnd: { value: 10000, type: 'f32' }
+        });
+
+        const vertexSrc = `
+            precision highp float;
+            attribute vec2 aVertexPosition;
+            attribute vec2 aSessionBlock;
+            attribute vec4 aSessionColor;
+
+            uniform mat3 uProjectionMatrix;
+            uniform mat3 uWorldTransformMatrix;
+
+            uniform float uCameraX;
+            uniform float uZoom;
+            uniform float uCandleSpacing;
+            uniform float uTotalHeight;
+            uniform float uVisStart;
+            uniform float uVisEnd;
+
+            varying vec4 vColor;
+            varying float vY;
+
+            void main() {
+                float startIdx = aSessionBlock.x;
+                float endIdx = aSessionBlock.y;
+
+                if (endIdx < uVisStart || startIdx > uVisEnd) {
+                    gl_Position = vec4(0.0);
+                    return;
+                }
+
+                float actualSpacing = uCandleSpacing * uZoom;
+                float xLeft = (startIdx * actualSpacing) - uCameraX;
+                float xRight = (endIdx * actualSpacing) - uCameraX + actualSpacing;
+                
+                float w = xRight - xLeft;
+                float posX = xLeft + (aVertexPosition.x * w);
+                float posY = aVertexPosition.y * uTotalHeight;
+
+                vColor = aSessionColor;
+                vY = posY;
+
+                mat3 mvp = uProjectionMatrix * uWorldTransformMatrix;
+                gl_Position = vec4((mvp * vec3(posX, posY, 1.0)).xy, 0.0, 1.0);
+            }
+        `;
+
+        const fragmentSrc = `
+            precision mediump float;
+            varying vec4 vColor;
+            varying float vY;
+
+            uniform float uMainChartHeight;
+            uniform float uTimeAxisY;
+            uniform float uTimeAxisHeight;
+            uniform float uShowOnChart;
+            uniform float uShowOnAxis;
+            uniform float uChartAlphaMult;
+
+            void main() {
+                bool inChart = vY <= uMainChartHeight;
+                bool inAxis = vY >= uTimeAxisY && vY <= uTimeAxisY + uTimeAxisHeight;
+
+                if (inChart && uShowOnChart < 0.5) discard;
+                if (inAxis && uShowOnAxis < 0.5) discard;
+                if (!inChart && !inAxis) discard;
+
+                float finalAlpha = vColor.a;
+
+                if (inChart) {
+                    finalAlpha *= uChartAlphaMult;
+                } else if (inAxis) {
+                    if (vY <= uTimeAxisY + 3.0) {
+                        finalAlpha = min(1.0, finalAlpha * 1.5);
+                    }
+                }
+
+                gl_FragColor = vec4(vColor.rgb * finalAlpha, finalAlpha);
+            }
+        `;
+
+        const shader = Shader.from({ gl: { vertex: vertexSrc, fragment: fragmentSrc }, resources: { sessionUniforms: this.sessionUniforms } });
+        this.sessionMesh = new Mesh({ geometry: this.sessionGeometry, shader });
+    }
+
+    private syncSessionData() {
+        const len = this.dataStore.length;
+        if (len === 0 || !this.sessionConfig.enabled) {
+            this.sessionGeometry.instanceCount = 0;
+            return;
+        }
+
+        const htf = ['1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'];
+        if (htf.includes(this.currentInterval)) {
+            this.sessionGeometry.instanceCount = 0;
+            return;
+        }
+
+        if (this.lastSessionSyncedLength === len && !this.isSessionDirty) return;
+
+        const toRGBA = (hex: number, alpha: number) => [
+            ((hex >> 16) & 0xff) / 255, ((hex >> 8) & 0xff) / 255, (hex & 0xff) / 255, alpha
+        ];
+
+        const asiaColor = toRGBA(this.sessionConfig.asiaColor, this.sessionConfig.asiaAlpha);
+        const lonColor = toRGBA(this.sessionConfig.londonColor, this.sessionConfig.londonAlpha);
+        const nyColor = toRGBA(this.sessionConfig.nyColor, this.sessionConfig.nyAlpha);
+
+        const blocks: number[] = [];
+        let currentAsiaStart = -1, currentLonStart = -1, currentNyStart = -1;
+
+        for (let i = 0; i < len; i++) {
+            const ts = this.dataStore.data[i * 6];
+            // Ultra-fast zero-GC math to get UTC hour (bypasses 'new Date()')
+            const floatHour = (ts % 86400000) / 3600000;
+
+            const inNy = floatHour >= 13.5 && floatHour < 20.0;
+            const inLon = floatHour >= 8.0 && floatHour < 16.5;
+            const inAsia = floatHour >= 0.0 && floatHour < 9.0;
+
+            if (inNy && currentNyStart === -1) currentNyStart = i;
+            else if (!inNy && currentNyStart !== -1) { blocks.push(currentNyStart, i - 1, ...nyColor); currentNyStart = -1; }
+
+            if (inLon && currentLonStart === -1) currentLonStart = i;
+            else if (!inLon && currentLonStart !== -1) { blocks.push(currentLonStart, i - 1, ...lonColor); currentLonStart = -1; }
+
+            if (inAsia && currentAsiaStart === -1) currentAsiaStart = i;
+            else if (!inAsia && currentAsiaStart !== -1) { blocks.push(currentAsiaStart, i - 1, ...asiaColor); currentAsiaStart = -1; }
+        }
+
+        if (currentNyStart !== -1) blocks.push(currentNyStart, len - 1, ...nyColor);
+        if (currentLonStart !== -1) blocks.push(currentLonStart, len - 1, ...lonColor);
+        if (currentAsiaStart !== -1) blocks.push(currentAsiaStart, len - 1, ...asiaColor);
+
+        const instanceCount = blocks.length / 6;
+        if (this.sessionArray.length < blocks.length) {
+            this.sessionArray = new Float32Array(Math.max(blocks.length * 2, 1000));
+        }
+
+        for (let i = 0; i < blocks.length; i++) this.sessionArray[i] = blocks[i];
+
+        this.sessionBuffer.data = this.sessionArray;
+        this.sessionBuffer.update();
+
+        this.sessionGeometry.instanceCount = instanceCount;
+        this.lastSessionSyncedLength = len;
+        this.isSessionDirty = false;
+    }
+
+    private renderInstancedSessions(mainChartHeight: number, timeAxisY: number, _width: number, height: number, visStart: number, visEnd: number) {
+        this.syncSessionData();
+
+        if (this.sessionGeometry.instanceCount === 0) {
+            this.sessionMesh.visible = false;
+            return;
+        }
+
+        this.sessionMesh.visible = true;
+
+        const u = this.sessionUniforms.uniforms;
+        u.uCameraX = this.cameraX;
+        u.uZoom = this.zoom;
+        u.uCandleSpacing = this.candleSpacing;
+        u.uMainChartHeight = mainChartHeight;
+        u.uTimeAxisY = timeAxisY;
+        u.uTimeAxisHeight = this.timeAxisHeight;
+        u.uTotalHeight = height;
+        u.uShowOnChart = this.sessionConfig.showOnChart ? 1.0 : 0.0;
+        u.uShowOnAxis = this.sessionConfig.showOnAxis ? 1.0 : 0.0;
+        u.uChartAlphaMult = this.isDarkTheme ? 0.35 : 0.45;
+        u.uVisStart = visStart;
+        u.uVisEnd = visEnd;
     }
 }
