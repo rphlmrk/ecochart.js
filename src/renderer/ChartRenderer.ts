@@ -32,8 +32,6 @@ export class ChartRenderer {
         secondaryTz: 'Europe/London',
         secondaryLabel: 'LON'
     };
-    private clock1BadgeText!: BitmapText;
-    private clock2BadgeText!: BitmapText;
 
     // Pixi Layers (Z-Index order)
     private gridGraphics!: Graphics;
@@ -41,7 +39,6 @@ export class ChartRenderer {
     private gridGeometry!: Geometry;
     private gridUniforms!: UniformGroup;
     private candlesGraphics!: Graphics;
-    private clockGraphics!: Graphics; // Dedicated layer for world clock badges
 
     // GPU Session Instancing Engine
     private sessionMesh!: Mesh<Geometry, Shader>;
@@ -65,14 +62,7 @@ export class ChartRenderer {
     private lastSyncedLiveHigh = 0;
     private lastSyncedLiveLow = 0;
 
-    private uiGraphics!: Graphics; // Axes & Crosshair lines
-    private textContainer!: Container; // Axis labels
-    private liveBadgeGraphics!: Graphics;
-    private liveBadgeText!: Container;
-    private crosshairBadgeGraphics!: Graphics; // Sits on top of live badge
-    private crosshairBadgeText!: Container;     // Topmost layer
-
-    //indicator
+    private uiGraphics!: Graphics; // Dividers & live price line
     public indicatorMainGraphics!: Graphics;
     public indicatorOscGraphics!: Graphics;
     public drawingGraphics!: Graphics;
@@ -82,23 +72,9 @@ export class ChartRenderer {
     private syncCrosshairGraphics!: Graphics;
     public syncHoverTimeMs: number | null = null;
 
-    // Persistent Crosshair Text (Zero GC allocations on mouse move)
-    private persistentPriceBadgeText!: BitmapText;
-    private persistentTimeBadgeText!: BitmapText;
-    private livePriceBadgeText!: BitmapText;     // <-- ADDED to fix GC leak
-    private liveCountdownBadgeText!: BitmapText; // <-- ADDED to fix GC leak
-
-    // Axis Label Object Pools (Prevents VRAM Memory Leaks during panning)
-    private priceLabelPool: BitmapText[] = [];
-    private activePriceLabels = 0;
-    private timeLabelPool: BitmapText[] = [];
-    private activeTimeLabels = 0;
-
     // Dedicated Sub-Panel Scale
     public oscHeight = 0; // <-- Dynamic stacked oscillator height
     public activeOscillatorScale?: OscillatorScale;
-    private oscLabelPool: BitmapText[] = [];
-    private activeOscLabels = 0;
 
     // Oscillator Panel Header Telemetry (Zero GC Pool)
     public indicatorManager?: any;
@@ -124,7 +100,7 @@ export class ChartRenderer {
     // --- ECO-MODE STATE ---
     public isRenderDirty = true;
     public forceNextRender = true;
-    private lastRenderState = { camX: 0, camY: 0, zoom: 0, len: 0, close: 0, high: 0, low: 0, mode: '', w: 0, h: 0, oscH: 0, interval: '' };
+    private lastRenderState = { camX: 0, camY: 0, zoom: 0, minP: 0, maxP: 0, len: 0, close: 0, high: 0, low: 0, mode: '', w: 0, h: 0, oscH: 0, interval: '' };
     private lastCrosshairState = { x: -100, y: -100, visible: false, w: 0, h: 0, syncTime: null as number | null };
 
     public applyTheme(theme: ChartTheme) {
@@ -176,9 +152,6 @@ export class ChartRenderer {
         this.gridStyle = theme.gridStyle || 'solid';
 
         // Update existing pooled labels when theme changes
-        this.priceLabelPool.forEach(l => l.tint = this.axisTextColor);
-        this.timeLabelPool.forEach(l => l.tint = this.axisTextColor);
-        this.oscLabelPool.forEach(l => l.tint = this.axisTextColor);
         this.oscHeaderPairPool.forEach(p => p.title.tint = this.axisTextColor);
 
         this.updateInstancedThemeUniforms(); // <-- Synchronize GPU Colors
@@ -191,7 +164,7 @@ export class ChartRenderer {
     public axisTextColor = 0xD1D4DC;
 
     // Luminance check: Inverts text to dark if badge background is bright
-    private getContrastTextColor(hexColor: number): number {
+    public getContrastTextColor(hexColor: number): number {
         const r = (hexColor >> 16) & 0xff;
         const g = (hexColor >> 8) & 0xff;
         const b = hexColor & 0xff;
@@ -241,25 +214,27 @@ export class ChartRenderer {
     public currentMinPrice = 0;
     public currentMaxPrice = 1;
 
-    // Axis Dimensions (Exposed for index.ts hit detection)
-    public priceAxisWidth = 60;
-    public timeAxisHeight = 24;
+    // Dedicated canvases now handle axes outside the main viewport
+    public priceAxisWidth = 0;
+    public timeAxisHeight = 0;
     constructor(dataStore: DataStore) {
         this.dataStore = dataStore;
         this.app = new Application();
     }
 
     public async init(canvas: HTMLCanvasElement) {
+        const rect = canvas.getBoundingClientRect();
         await this.app.init({
             canvas: canvas,
-            resizeTo: canvas.parentElement!,
+            width: rect.width || canvas.clientWidth || 800,
+            height: rect.height || canvas.clientHeight || 600,
             backgroundColor: this.bgColor,
             antialias: false,
             autoStart: false, // 🛑 Kill Pixi's continuous 60 FPS auto-loop
-            // Optimization: Cap resolution at 2. High-DPI Androids (3x+) choke on heavy Canvas fills
             resolution: Math.min(window.devicePixelRatio || 1, 2),
+            autoDensity: false // Prevent Pixi from writing fixed px styles
         });
-        this.app.ticker.stop(); // 🛑 Ensure the internal ticker is completely halted
+        this.app.ticker.stop();
 
         // GPU BITMAP FONT
         BitmapFont.install({
@@ -273,69 +248,30 @@ export class ChartRenderer {
         this.candlesGraphics = new Graphics();
         this.indicatorMainGraphics = new Graphics();
         this.indicatorOscGraphics = new Graphics();
+        this.drawingGraphics = new Graphics();
         this.uiGraphics = new Graphics();
-        this.textContainer = new Container();
-
-        this.liveBadgeGraphics = new Graphics();
-        this.liveBadgeText = new Container();
-        this.crosshairBadgeGraphics = new Graphics();
-        this.crosshairBadgeText = new Container();
-
         this.crosshairGraphics = new Graphics();
         this.syncCrosshairGraphics = new Graphics();
-
         this.oscHeaderContainer = new Container();
 
-        this.initSessionMesh();         // <-- Create GPU Sessions
-        this.initGridMesh();            // <-- Create GPU Grid
-        this.initInstancedCandleMesh(); // <-- Create GPU Mesh & Shaders
+        this.initSessionMesh();
+        this.initGridMesh();
+        this.initInstancedCandleMesh();
 
-        this.app.stage.addChild(this.gridMesh);     // <-- Add GPU Grid Background
-        this.app.stage.addChild(this.sessionMesh);  // <-- Add GPU Sessions
+        this.app.stage.addChild(this.gridMesh);
+        this.app.stage.addChild(this.sessionMesh);
         this.app.stage.addChild(this.gridGraphics);
         this.app.stage.addChild(this.candlesGraphics);
-        this.app.stage.addChild(this.candleMesh); // <-- Instanced candles sit here
-        this.app.stage.addChild(this.indicatorMainGraphics); // Indicators behind crosshair
+        this.app.stage.addChild(this.candleMesh);
+        this.app.stage.addChild(this.indicatorMainGraphics);
         this.app.stage.addChild(this.indicatorOscGraphics);
-        this.drawingGraphics = new Graphics();
-        this.clockGraphics = new Graphics();
         this.app.stage.addChild(this.drawingGraphics);
-        this.app.stage.addChild(this.oscHeaderContainer); // Bottom panel header text
+        this.app.stage.addChild(this.oscHeaderContainer);
         this.app.stage.addChild(this.uiGraphics);
-        this.app.stage.addChild(this.clockGraphics); // Sits on top of time axis without redrawing it
-        this.app.stage.addChild(this.textContainer);
 
-        // Crosshairs sit above grid/candles and beneath badges
+        // Crosshairs sit above chart elements
         this.app.stage.addChild(this.syncCrosshairGraphics);
         this.app.stage.addChild(this.crosshairGraphics);
-
-        this.app.stage.addChild(this.liveBadgeGraphics);
-        this.app.stage.addChild(this.liveBadgeText);
-        this.app.stage.addChild(this.crosshairBadgeGraphics);
-        this.app.stage.addChild(this.crosshairBadgeText);
-
-        // Pre-allocate persistent crosshair labels once using GPU Font
-        this.persistentPriceBadgeText = new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 11 } });
-        this.persistentTimeBadgeText = new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 11 } });
-
-        this.clock1BadgeText = new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 10 } });
-        this.clock2BadgeText = new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 10 } });
-
-        this.livePriceBadgeText = new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 11 } });
-        this.liveCountdownBadgeText = new BitmapText({ text: '', style: { fontFamily: 'ChartFont', fontSize: 11 } });
-
-        this.liveBadgeText.addChild(this.livePriceBadgeText);
-        this.liveBadgeText.addChild(this.liveCountdownBadgeText);
-        this.clock1BadgeText.visible = false;
-        this.clock2BadgeText.visible = false;
-        this.textContainer.addChild(this.clock1BadgeText);
-        this.textContainer.addChild(this.clock2BadgeText);
-
-        this.persistentPriceBadgeText.visible = false;
-        this.persistentTimeBadgeText.visible = false;
-
-        this.crosshairBadgeText.addChild(this.persistentPriceBadgeText);
-        this.crosshairBadgeText.addChild(this.persistentTimeBadgeText);
     }
 
     public renderFrame() {
@@ -355,6 +291,8 @@ export class ChartRenderer {
             this.lastRenderState.camX === this.cameraX &&
             this.lastRenderState.camY === this.cameraY &&
             this.lastRenderState.zoom === this.zoom &&
+            this.lastRenderState.minP === this.currentMinPrice &&
+            this.lastRenderState.maxP === this.currentMaxPrice &&
             this.lastRenderState.len === len &&
             this.lastRenderState.close === liveC &&
             this.lastRenderState.high === liveH &&
@@ -373,6 +311,7 @@ export class ChartRenderer {
         this.forceNextRender = false;
         this.lastRenderState = {
             camX: this.cameraX, camY: this.cameraY, zoom: this.zoom,
+            minP: this.currentMinPrice, maxP: this.currentMaxPrice,
             len: len, close: liveC, high: liveH, low: liveL,
             mode: this.chartMode, w: width, h: height,
             oscH: this.oscHeight, interval: this.currentInterval
@@ -382,22 +321,14 @@ export class ChartRenderer {
         this.candlesGraphics.clear();
         this.gridGraphics.clear();
         this.uiGraphics.clear();
-        this.liveBadgeGraphics.clear();
         this.indicatorMainGraphics.clear();
         this.indicatorOscGraphics.clear();
 
-        // Reset pooled axis label counters without tearing down the reused WebGL textures
-        this.activePriceLabels = 0;
-        this.activeTimeLabels = 0;
-        this.activeOscLabels = 0;
-
-        // Layout Constants
-        const chartWidth = width - this.priceAxisWidth;
-        const timeAxisY = height - this.timeAxisHeight; // The strict Y-coordinate where the time axis starts
-
+        // Layout Constants (Main chart fills 100% of chartCanvas)
+        const chartWidth = width;
+        const timeAxisY = height;
         const oscHeight = this.oscHeight;
-        const mainChartHeight = timeAxisY - oscHeight; // Chart squishes to fit oscillator above time axis
-
+        const mainChartHeight = timeAxisY - oscHeight;
         const actualSpacing = this.candleSpacing * this.zoom;
 
         // Sliding window with a 15-candle buffer on each side for smooth scrolling
@@ -438,7 +369,7 @@ export class ChartRenderer {
             return this.currentMinPrice + (norm * range);
         };
 
-        // --- 1. DRAW BACKGROUND GRID & Y-AXIS ---
+        // Grid calculation for GPU quad
         const visibleMax = yToPrice(0);
         const visibleMin = yToPrice(mainChartHeight);
         const range = visibleMax - visibleMin;
@@ -451,73 +382,11 @@ export class ChartRenderer {
         else if (norm < 7.5) step = 5 * mag;
         else step = 10 * mag;
 
-        const firstPrice = Math.ceil(visibleMin / step) * step;
-
-        for (let p = firstPrice; p <= visibleMax; p += step) {
-            const y = priceToY(p);
-
-            let textLabel: BitmapText;
-            if (this.activePriceLabels < this.priceLabelPool.length) {
-                textLabel = this.priceLabelPool[this.activePriceLabels];
-                const newText = p.toFixed(2);
-                if (textLabel.text !== newText) textLabel.text = newText;
-            } else {
-                textLabel = new BitmapText({ text: p.toFixed(2), style: { fontFamily: 'ChartFont', fontSize: 11 } });
-                this.priceLabelPool.push(textLabel);
-                this.textContainer.addChild(textLabel);
-            }
-            textLabel.tint = this.axisTextColor;
-
-            textLabel.x = chartWidth + 5;
-            textLabel.y = y - 6;
-            textLabel.visible = true;
-            this.activePriceLabels++;
-        }
-
-        // --- 1.5 DRAW VERTICAL GRID & X-AXIS ---
         const minPixelsBetweenLabels = 100;
         let candleStep = Math.max(1, Math.ceil(minPixelsBetweenLabels / actualSpacing));
-
         if (candleStep > 1 && candleStep < 5) candleStep = 5;
         else if (candleStep > 5 && candleStep < 10) candleStep = 10;
         else if (candleStep > 10 && candleStep < 30) candleStep = 30;
-
-        const startIdx = visStart - (visStart % candleStep);
-
-        for (let i = startIdx; i < visEnd; i += candleStep) {
-            if (i < 0) continue;
-            const x = (i * actualSpacing) - this.cameraX;
-
-            const ts = this.dataStore.data[i * 6];
-            if (ts) {
-                const date = new Date(ts);
-                const timeStr = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
-
-                let textLabel: BitmapText;
-                if (this.activeTimeLabels < this.timeLabelPool.length) {
-                    textLabel = this.timeLabelPool[this.activeTimeLabels];
-                    if (textLabel.text !== timeStr) textLabel.text = timeStr;
-                } else {
-                    textLabel = new BitmapText({ text: timeStr, style: { fontFamily: 'ChartFont', fontSize: 11 } });
-                    textLabel.anchor.x = 0.5;
-                    this.timeLabelPool.push(textLabel);
-                    this.textContainer.addChild(textLabel);
-                }
-                textLabel.tint = this.axisTextColor;
-
-                textLabel.x = x;
-                textLabel.y = timeAxisY + 5;
-                textLabel.visible = true;
-                this.activeTimeLabels++;
-            }
-        }
-
-        for (let i = this.activePriceLabels; i < this.priceLabelPool.length; i++) {
-            this.priceLabelPool[i].visible = false;
-        }
-        for (let i = this.activeTimeLabels; i < this.timeLabelPool.length; i++) {
-            this.timeLabelPool[i].visible = false;
-        }
 
         // --- 1.8 UPDATE GPU GRID ---
         const gu = this.gridUniforms.uniforms;
@@ -670,77 +539,21 @@ export class ChartRenderer {
         }
 
         // --- 3. DRAW AXIS BACKGROUNDS & DIVIDERS ---
-        this.uiGraphics.rect(chartWidth, 0, this.priceAxisWidth, height).fill(this.axisBgColor);
-        this.uiGraphics.moveTo(chartWidth, 0).lineTo(chartWidth, height).stroke({ color: this.gridColor, width: 1 });
-
-        // Draw Time Axis at bottom
-        this.uiGraphics.rect(0, timeAxisY, width, this.timeAxisHeight).fill(this.axisBgColor);
-        this.uiGraphics.moveTo(0, timeAxisY).lineTo(width, timeAxisY).stroke({ color: this.gridColor, width: 1 });
+        // (Cleaned: Handled completely by dedicated Price and Time Axis Canvases)
 
         // --- 3.5 DRAW MARKET SESSION HIGHLIGHTS (GPU) ---
         this.renderInstancedSessions(mainChartHeight, timeAxisY, width, height, visStart, visEnd);
 
-        // Draw Divider Line across chart AND right axis column
+        // Draw Divider Line across chart
         if (oscHeight > 0) {
             StrokeEngine.drawLine(this.uiGraphics, 0, mainChartHeight, width, mainChartHeight, {
                 color: this.gridColor,
                 width: 1,
                 alpha: 1.0
             });
-
-            // Draw Independent Oscillator Scale on the right axis
-            if (this.activeOscillatorScale && this.activeOscillatorScale.steps) {
-                const { min, max, steps } = this.activeOscillatorScale;
-                const range = max - min || 1;
-
-                for (const step of steps) {
-                    const norm = (step - min) / range;
-                    const y = timeAxisY - (norm * oscHeight);
-
-                    // Draw tick mark on the axis
-                    StrokeEngine.drawLine(this.gridGraphics, chartWidth, y, chartWidth + 4, y, {
-                        color: this.gridColor,
-                        width: 1,
-                        alpha: 0.8
-                    });
-
-                    // Format string
-                    const labelText = this.activeOscillatorScale.format
-                        ? this.activeOscillatorScale.format(step)
-                        : (step > 0 ? `+${step}` : `${step}`);
-
-                    // Fetch from Object Pool (Zero VRAM allocations)
-                    let textLabel: BitmapText;
-                    if (this.activeOscLabels < this.oscLabelPool.length) {
-                        textLabel = this.oscLabelPool[this.activeOscLabels];
-                        if (textLabel.text !== labelText) textLabel.text = labelText;
-                    } else {
-                        textLabel = new BitmapText({
-                            text: labelText,
-                            style: { fontFamily: 'ChartFont', fontSize: 10 }
-                        });
-                        this.oscLabelPool.push(textLabel);
-                        this.textContainer.addChild(textLabel);
-                    }
-                    textLabel.tint = this.axisTextColor;
-
-                    textLabel.x = chartWidth + 6;
-                    textLabel.y = y - 5;
-                    textLabel.visible = true;
-                    this.activeOscLabels++;
-                }
-            }
         }
 
-        // Hide unused oscillator labels in the pool
-        for (let i = this.activeOscLabels; i < this.oscLabelPool.length; i++) {
-            this.oscLabelPool[i].visible = false;
-        }
-
-        // --- 3.8 UPDATE WORLD TIMEZONE CLOCKS & COUNTDOWN ---
-        this.updateTimeAndCountdown();
-
-        // --- 4. DRAW LIVE PRICE LINE & COUNTDOWN BADGE ---
+        // --- 4. DRAW LIVE PRICE LINE ---
         const lastOpen = this.dataStore.data[lastBase + 1];
         const lastClose = this.dataStore.data[lastBase + 4];
         const lastTime = this.dataStore.data[lastBase];
@@ -764,176 +577,14 @@ export class ChartRenderer {
             let countdownStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
             if (hours > 0) countdownStr = `${hours}:${countdownStr}`;
 
-            const badgeH = 36;
-            const badgeY = Math.max(0, Math.min(mainChartHeight - badgeH, liveY - 18));
-            this.liveBadgeGraphics.rect(chartWidth, badgeY, this.priceAxisWidth, badgeH).fill(liveColor);
-
-            const badgeTextColor = this.getContrastTextColor(liveColor);
-
-            this.livePriceBadgeText.text = lastClose.toFixed(2);
-            this.livePriceBadgeText.tint = badgeTextColor;
-            this.livePriceBadgeText.x = chartWidth + 5;
-            this.livePriceBadgeText.y = badgeY + 3;
-
-            this.liveCountdownBadgeText.text = countdownStr;
-            this.liveCountdownBadgeText.tint = badgeTextColor;
-            this.liveCountdownBadgeText.alpha = 0.9;
-            this.liveCountdownBadgeText.x = chartWidth + 5;
-            this.liveCountdownBadgeText.y = badgeY + 18;
+            // (Live Price & Countdown Pill is now drawn on the dedicated PriceAxisCanvas)
         }
 
         // Render Title & Live/Historical Telemetry for Bottom Panels
         this.updateOscillatorHeaders();
     }
 
-    /**
-     * Isolated sub-renderer: updates only the world clocks and countdown timer
-     * without redrawing the chart, grid, sessions, or indicator math.
-     */
-    public updateTimeAndCountdown() {
-        if (!this.clockGraphics || this.dataStore.length === 0) return;
 
-        const width = this.app.screen.width;
-        const height = this.app.screen.height;
-        const chartWidth = width - this.priceAxisWidth;
-        const timeAxisY = height - this.timeAxisHeight;
-        const actualSpacing = this.candleSpacing * this.zoom;
-
-        const lastIdx = this.dataStore.length - 1;
-        const lastBase = lastIdx * 6;
-        const lastTime = this.dataStore.data[lastBase];
-
-        // 1. Update Candle Countdown Text
-        if (this.liveCountdownBadgeText && this.liveCountdownBadgeText.visible) {
-            const intervalMs = this.parseIntervalMs(this.currentInterval);
-            const remainingMs = Math.max(0, (lastTime + intervalMs) - Date.now());
-            const totalSeconds = Math.floor(remainingMs / 1000);
-            const hours = Math.floor(totalSeconds / 3600);
-            const mins = Math.floor((totalSeconds % 3600) / 60);
-            const secs = totalSeconds % 60;
-
-            let countdownStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-            if (hours > 0) countdownStr = `${hours}:${countdownStr}`;
-            if (this.liveCountdownBadgeText.text !== countdownStr) {
-                this.liveCountdownBadgeText.text = countdownStr;
-            }
-        }
-
-        // 2. Update World Clocks on Time Axis
-        this.clockGraphics.clear();
-        if (this.clock1BadgeText) this.clock1BadgeText.visible = false;
-        if (this.clock2BadgeText) this.clock2BadgeText.visible = false;
-
-        if (this.clockConfig.enabled && this.dataStore.length > 0) {
-            const lastCandleX = (lastIdx * actualSpacing) - this.cameraX + actualSpacing;
-            const availableSpace = chartWidth - lastCandleX;
-
-            if (availableSpace >= 100) {
-                const now = new Date();
-                const isMobile = width < 768 || availableSpace < 220;
-
-                const formatTime = (tz: string) => {
-                    try {
-                        const opt: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
-                        if (tz !== 'local') opt.timeZone = tz;
-                        return new Intl.DateTimeFormat([], opt).format(now);
-                    } catch {
-                        return '--:--:--';
-                    }
-                };
-
-                const getSessionStatus = (tz: string) => {
-                    try {
-                        const parts = new Intl.DateTimeFormat('en-US', {
-                            timeZone: tz === 'local' ? undefined : tz,
-                            hour: 'numeric', minute: 'numeric', hour12: false
-                        }).formatToParts(now);
-
-                        const h = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
-                        const m = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
-                        const t = h + (m / 60);
-
-                        let isOpening = false;
-                        let isOpen = false;
-
-                        if (tz === 'America/New_York') {
-                            isOpening = (t >= 9.5 && t < 10.5);
-                            isOpen = (t >= 9.5 && t < 16.0);
-                        } else if (tz === 'Europe/London') {
-                            isOpening = (t >= 8.0 && t < 9.0);
-                            isOpen = (t >= 8.0 && t < 16.5);
-                        } else if (tz === 'Asia/Tokyo') {
-                            isOpening = (t >= 9.0 && t < 10.0);
-                            isOpen = (t >= 9.0 && t < 15.0);
-                        } else if (tz === 'Asia/Hong_Kong') {
-                            isOpening = (t >= 9.5 && t < 10.5);
-                            isOpen = (t >= 9.5 && t < 16.0);
-                        } else if (tz === 'Europe/Frankfurt') {
-                            isOpening = (t >= 8.0 && t < 9.0);
-                            isOpen = (t >= 8.0 && t < 16.5);
-                        } else {
-                            isOpening = (t >= 8.0 && t < 9.5);
-                            isOpen = (t >= 8.0 && t < 17.0);
-                        }
-
-                        if (isOpening) {
-                            return { icon: '🔔', textColor: 0xFFD600, borderColor: 0xFFD600, borderWidth: 1.5 };
-                        } else if (isOpen) {
-                            return { icon: '🟢', textColor: 0x26A69A, borderColor: 0x26A69A, borderWidth: 1.5 };
-                        } else {
-                            return { icon: '🌙', textColor: this.axisTextColor, borderColor: this.gridColor, borderWidth: 1 };
-                        }
-                    } catch {
-                        return { icon: '', textColor: this.axisTextColor, borderColor: this.gridColor, borderWidth: 1 };
-                    }
-                };
-
-                const badgeH = 18;
-                const badgeY = timeAxisY + Math.floor((this.timeAxisHeight - badgeH) / 2);
-                let rightAnchor = chartWidth - 8;
-
-                // Clock 1 (Primary)
-                const st1 = getSessionStatus(this.clockConfig.primaryTz);
-                const timeStr1 = `${st1.icon} ${this.clockConfig.primaryLabel} ${formatTime(this.clockConfig.primaryTz)}`;
-                this.clock1BadgeText.text = timeStr1;
-                this.clock1BadgeText.tint = st1.textColor;
-                const badgeW1 = Math.ceil(this.clock1BadgeText.width) + 12;
-                const badgeX1 = rightAnchor - badgeW1;
-
-                if (badgeX1 > lastCandleX + 8) {
-                    this.clockGraphics.roundRect(badgeX1, badgeY, badgeW1, badgeH, 3)
-                        .fill({ color: this.axisBgColor, alpha: 0.95 })
-                        .stroke({ color: st1.borderColor, width: st1.borderWidth, alpha: 0.9 });
-
-                    this.clock1BadgeText.x = badgeX1 + 6;
-                    this.clock1BadgeText.y = badgeY + 2;
-                    this.clock1BadgeText.visible = true;
-                    rightAnchor = badgeX1 - 6;
-
-                    // Clock 2 (Secondary)
-                    if (!isMobile && this.clockConfig.secondaryTz) {
-                        const st2 = getSessionStatus(this.clockConfig.secondaryTz);
-                        const timeStr2 = `${st2.icon} ${this.clockConfig.secondaryLabel} ${formatTime(this.clockConfig.secondaryTz)}`;
-                        this.clock2BadgeText.text = timeStr2;
-                        this.clock2BadgeText.tint = st2.textColor;
-                        const badgeW2 = Math.ceil(this.clock2BadgeText.width) + 12;
-                        const badgeX2 = rightAnchor - badgeW2;
-
-                        if (badgeX2 > lastCandleX + 8) {
-                            this.clockGraphics.roundRect(badgeX2, badgeY, badgeW2, badgeH, 3)
-                                .fill({ color: this.axisBgColor, alpha: 0.95 })
-                                .stroke({ color: st2.borderColor, width: st2.borderWidth, alpha: 0.9 });
-
-                            this.clock2BadgeText.x = badgeX2 + 6;
-                            this.clock2BadgeText.y = badgeY + 2;
-                            this.clock2BadgeText.visible = true;
-                        }
-                    }
-                }
-            }
-        }
-        this.render(); // Submit 1 isolated frame to display the new second
-    }
 
     public renderCrosshair() {
         if (!this.crosshairGraphics || !this.syncCrosshairGraphics) return;
@@ -963,112 +614,41 @@ export class ChartRenderer {
 
         this.crosshairGraphics.clear();
         this.syncCrosshairGraphics.clear();
-        this.crosshairBadgeGraphics.clear();
 
-        this.persistentPriceBadgeText.visible = false;
-        this.persistentTimeBadgeText.visible = false;
-        const chartWidth = width - this.priceAxisWidth;
-        const timeAxisY = height - this.timeAxisHeight;
-
+        const chartWidth = width;
+        const timeAxisY = height;
         const oscHeight = this.oscHeight;
         const mainChartHeight = timeAxisY - oscHeight;
-
         const actualSpacing = this.candleSpacing * this.zoom;
-        const intervalMs = this.parseIntervalMs(this.currentInterval);
 
-        // 1. Draw Local Crosshair & Badges
-        if (this.isCrosshairVisible && this.crosshairX >= 0 && this.crosshairX < chartWidth && this.crosshairY >= 0 && this.crosshairY < timeAxisY) {
+        // 1. Draw Local Crosshair Lines
+        if (this.isCrosshairVisible && this.crosshairX >= 0 && this.crosshairX <= chartWidth && this.crosshairY >= 0 && this.crosshairY <= timeAxisY) {
 
-            // Magnet Snap Logic
             let drawX = this.crosshairX;
             let drawY = this.crosshairY;
 
-            // Only snap if magnet is on AND we are hovering the main chart (not oscillators)
             if (this.isMagnetEnabled && this.crosshairY <= mainChartHeight) {
                 const mag = this.getMagnetPoint(this.crosshairX, this.crosshairY, 30);
                 drawX = this.timeToX(mag.time);
                 drawY = this.priceToY(mag.price);
             }
 
-            // Horizontal crosshair across entire width
+            // Horizontal crosshair line to edge of chart
             StrokeEngine.drawLine(this.crosshairGraphics, 0, drawY, chartWidth, drawY, {
                 color: this.crosshairColor, width: 1, alpha: 0.6, style: this.crosshairStyle, dashLength: 4, gapLength: 3
             });
-            // Vertical crosshair down to the time axis
+            // Vertical crosshair line down to time axis
             StrokeEngine.drawLine(this.crosshairGraphics, drawX, 0, drawX, timeAxisY, {
                 color: this.crosshairColor, width: 1, alpha: 0.6, style: this.crosshairStyle, dashLength: 4, gapLength: 3
             });
 
-            // Update crosshair tracking variables for the badges to use the snapped coords
             this.crosshairX = drawX;
             this.crosshairY = drawY;
-
-            // Y-Axis Badge (Dynamic switching between Main Price and Oscillator Scale)
-            if (this.crosshairY <= mainChartHeight) {
-                // CASE A: Hovering Main Chart -> Asset Price
-                const range = this.currentMaxPrice - this.currentMinPrice;
-                const localY = this.crosshairY - this.cameraY;
-                const norm = (mainChartHeight - localY) / mainChartHeight;
-                const hoverPrice = this.currentMinPrice + (norm * range);
-
-                const hoverPriceY = Math.max(0, Math.min(mainChartHeight - 20, this.crosshairY - 10));
-                this.crosshairBadgeGraphics.rect(chartWidth, hoverPriceY, this.priceAxisWidth, 20).fill(0x363A45);
-
-                this.persistentPriceBadgeText.text = hoverPrice.toFixed(2);
-                this.persistentPriceBadgeText.x = chartWidth + 5;
-                this.persistentPriceBadgeText.y = hoverPriceY + 3;
-                this.persistentPriceBadgeText.visible = true;
-
-            } else if (this.crosshairY > mainChartHeight && this.crosshairY < timeAxisY && this.activeOscillatorScale) {
-                // CASE B: Hovering Sub-Panel -> Oscillator Reading
-                const localY = this.crosshairY - mainChartHeight;
-                const norm = (oscHeight - localY) / oscHeight;
-                const { min, max } = this.activeOscillatorScale;
-                const oscVal = min + (norm * (max - min));
-
-                const hoverPriceY = Math.max(mainChartHeight, Math.min(timeAxisY - 20, this.crosshairY - 10));
-                this.crosshairBadgeGraphics.rect(chartWidth, hoverPriceY, this.priceAxisWidth, 20).fill(0x363A45);
-
-                this.persistentPriceBadgeText.text = (oscVal > 0 ? `+` : ``) + oscVal.toFixed(1);
-                this.persistentPriceBadgeText.x = chartWidth + 5;
-                this.persistentPriceBadgeText.y = hoverPriceY + 3;
-                this.persistentPriceBadgeText.visible = true;
-            }
-
-            // X-Axis Time Badge
-            const logicalIndex = Math.round((this.crosshairX + this.cameraX) / actualSpacing);
-            const lastIdx = this.dataStore.length - 1;
-            const lastTime = lastIdx >= 0 ? this.dataStore.data[lastIdx * 6] : 0;
-
-            let hoverTimeMs = 0;
-            if (logicalIndex >= 0 && logicalIndex < this.dataStore.length) {
-                hoverTimeMs = this.dataStore.data[logicalIndex * 6];
-            } else if (logicalIndex >= this.dataStore.length && lastIdx >= 0) {
-                hoverTimeMs = lastTime + (logicalIndex - lastIdx) * intervalMs;
-            } else if (this.dataStore.length > 0) {
-                const firstTime = this.dataStore.data[0];
-                hoverTimeMs = firstTime + logicalIndex * intervalMs;
-            }
-
-            if (hoverTimeMs > 0) {
-                const d = new Date(hoverTimeMs);
-                const dateBadgeStr = `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-
-                this.persistentTimeBadgeText.text = dateBadgeStr;
-                const badgeW = this.persistentTimeBadgeText.width + 16;
-                const badgeX = Math.max(0, Math.min(chartWidth - badgeW, this.crosshairX - (badgeW / 2)));
-
-                this.crosshairBadgeGraphics.rect(badgeX, timeAxisY, badgeW, this.timeAxisHeight).fill(0x363A45);
-
-                this.persistentTimeBadgeText.anchor.set(0.5);
-                this.persistentTimeBadgeText.x = badgeX + (badgeW / 2);
-                this.persistentTimeBadgeText.y = timeAxisY + (this.timeAxisHeight / 2);
-                this.persistentTimeBadgeText.visible = true;
-            }
         }
 
         // 2. Draw Synchronized Crosshair from other panes
         if (this.syncHoverTimeMs !== null && this.dataStore.length > 0) {
+            const intervalMs = this.parseIntervalMs(this.currentInterval);
             const firstTime = this.dataStore.data[0];
             const logicalIndex = Math.round((this.syncHoverTimeMs - firstTime) / intervalMs);
             const syncX = (logicalIndex * actualSpacing) - this.cameraX;
@@ -1202,14 +782,17 @@ export class ChartRenderer {
     }
 
     public yToPrice(y: number): number {
-        const mainChartHeight = this.app.screen.height - this.timeAxisHeight - this.oscHeight;
+        const screenHeight = (this.app && this.app.renderer) ? this.app.screen.height : 600;
+        const mainChartHeight = Math.max(1, screenHeight - this.timeAxisHeight - this.oscHeight);
         const norm = (mainChartHeight - (y - this.cameraY)) / mainChartHeight;
         return this.currentMinPrice + (norm * (this.currentMaxPrice - this.currentMinPrice));
     }
 
     public priceToY(price: number): number {
-        const mainChartHeight = this.app.screen.height - this.timeAxisHeight - this.oscHeight;
-        const norm = (price - this.currentMinPrice) / (this.currentMaxPrice - this.currentMinPrice);
+        const screenHeight = (this.app && this.app.renderer) ? this.app.screen.height : 600;
+        const mainChartHeight = Math.max(1, screenHeight - this.timeAxisHeight - this.oscHeight);
+        const priceRange = this.currentMaxPrice - this.currentMinPrice || 1;
+        const norm = (price - this.currentMinPrice) / priceRange;
         return mainChartHeight - (norm * mainChartHeight) + this.cameraY;
     }
 
@@ -1231,6 +814,20 @@ export class ChartRenderer {
             if (minPixelDist <= thresholdPx) return { time: this.dataStore.data[base], price: closestPrice };
         }
         return { time, price: rawPrice };
+    }
+
+    /**
+     * Resizes Pixi's internal viewport to match chartCanvas exactly.
+     */
+    public resize(width: number, height: number) {
+        if (this.app && this.app.renderer && width > 0 && height > 0) {
+            this.app.renderer.resize(width, height);
+            if (this.app.canvas) {
+                this.app.canvas.style.width = '100%';
+                this.app.canvas.style.height = '100%';
+            }
+            this.forceNextRender = true;
+        }
     }
 
     /**

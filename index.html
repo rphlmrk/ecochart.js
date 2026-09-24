@@ -177,6 +177,9 @@
       overflow: hidden;
       border: 1px solid var(--chart-grid, #2A2E39);
       box-sizing: border-box;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 60px;
+      grid-template-rows: minmax(0, 1fr) 24px;
     }
 
     .chart-pane.active-pane {
@@ -184,25 +187,93 @@
       z-index: 2;
     }
 
+    /* 2x2 Dedicated Canvas Elements with strict boundary locks */
+    .chart-canvas {
+      grid-column: 1;
+      grid-row: 1;
+      width: 100% !important;
+      height: 100% !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      display: block;
+      touch-action: none;
+    }
+
+    .price-axis-canvas {
+      grid-column: 2;
+      grid-row: 1;
+      width: 100% !important;
+      height: 100% !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      display: block;
+      touch-action: none;
+      border-left: 1px solid var(--chart-grid, #2A2E39);
+      background: var(--chart-panel-bg, #161a25);
+      box-sizing: border-box;
+    }
+
+    .time-axis-canvas {
+      grid-column: 1;
+      grid-row: 2;
+      width: 100% !important;
+      height: 100% !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      display: block;
+      touch-action: none;
+      border-top: 1px solid var(--chart-grid, #2A2E39);
+      background: var(--chart-panel-bg, #161a25);
+      box-sizing: border-box;
+    }
+
+    .pane-corner-box {
+      grid-column: 2;
+      grid-row: 2;
+      width: 100% !important;
+      height: 100% !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-top: 1px solid var(--chart-grid, #2A2E39);
+      border-left: 1px solid var(--chart-grid, #2A2E39);
+      background: var(--chart-panel-bg, #161a25);
+      box-sizing: border-box;
+      z-index: 3;
+    }
+
+    /* Overlays locked to main chart cell */
+    .pane-overlay-layer {
+      grid-column: 1;
+      grid-row: 1;
+      position: relative;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 5;
+    }
+
     .layout-1 {
-      grid-template-columns: 1fr;
-      grid-template-rows: 1fr;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
     }
 
     .layout-2v {
-      grid-template-columns: 1fr 1fr;
-      grid-template-rows: 1fr;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
     }
 
     .layout-2h {
-      grid-template-columns: 1fr;
-      grid-template-rows: 1fr 1fr;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
     }
 
     /* 2 Left, 1 Right */
     .layout-3l {
-      grid-template-columns: 1fr 1fr;
-      grid-template-rows: 1fr 1fr;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
     }
 
     .layout-3l #chart-pane-0 {
@@ -222,8 +293,8 @@
 
     /* 1 Left, 2 Right */
     .layout-3r {
-      grid-template-columns: 1fr 1fr;
-      grid-template-rows: 1fr 1fr;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
     }
 
     .layout-3r #chart-pane-0 {
@@ -243,18 +314,18 @@
 
     /* 4 Panes */
     .layout-4 {
-      grid-template-columns: 1fr 1fr;
-      grid-template-rows: 1fr 1fr;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
     }
 
     .layout-4v {
-      grid-template-columns: repeat(4, 1fr);
-      grid-template-rows: 1fr;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-rows: minmax(0, 1fr);
     }
 
     .layout-4h {
-      grid-template-columns: 1fr;
-      grid-template-rows: repeat(4, 1fr);
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: repeat(4, minmax(0, 1fr));
     }
 
     /* On-Chart Per-Pane Interactive Legend (Fully Theme-Reactive) */

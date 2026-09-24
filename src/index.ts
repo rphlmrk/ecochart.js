@@ -19,6 +19,8 @@ import {
 
 import { DrawingManager } from './tools/DrawingManager';
 import { IndicatorRegistry, type SavedIndicatorState } from './indicators/IndicatorRegistry';
+import { PriceAxisRenderer } from './renderer/PriceAxisRenderer';
+import { TimeAxisRenderer } from './renderer/TimeAxisRenderer';
 
 export interface SavedPaneState {
     symbol: string;
@@ -51,7 +53,14 @@ export class EcoChart {
     public drawingManager: DrawingManager;
     public isDirty = true;
     public isCrosshairDirty = false;
-    public canvas: HTMLCanvasElement;
+    public canvas: HTMLCanvasElement; // Backward-compatible alias to chartCanvas
+    public chartCanvas!: HTMLCanvasElement;
+    public priceCanvas!: HTMLCanvasElement;
+    public timeCanvas!: HTMLCanvasElement;
+    public cornerBox!: HTMLDivElement;
+    public overlayLayer!: HTMLDivElement;
+    public priceAxisRenderer!: PriceAxisRenderer;
+    public timeAxisRenderer!: TimeAxisRenderer;
     public container: HTMLElement;
     public isRunning = true;
     private themeUnsubscribe: (() => void) | null = null;
@@ -99,12 +108,31 @@ export class EcoChart {
         this.container = el;
         this.container.innerHTML = "";
 
-        this.canvas = document.createElement('canvas');
-        this.canvas.style.width = '100%';
-        this.canvas.style.height = '100%';
-        this.canvas.style.display = 'block';
-        this.canvas.style.touchAction = 'none';
-        this.container.appendChild(this.canvas);
+        // 1. Cell (1, 1): Main Viewport Chart Canvas
+        this.chartCanvas = document.createElement('canvas');
+        this.chartCanvas.className = 'chart-canvas';
+        this.canvas = this.chartCanvas; // Maintain backward compatibility for renderer
+        this.container.appendChild(this.chartCanvas);
+
+        // 2. Cell (1, 2): Right Price Axis Canvas (60px)
+        this.priceCanvas = document.createElement('canvas');
+        this.priceCanvas.className = 'price-axis-canvas';
+        this.container.appendChild(this.priceCanvas);
+
+        // 3. Cell (2, 1): Bottom Time Axis Canvas (24px)
+        this.timeCanvas = document.createElement('canvas');
+        this.timeCanvas.className = 'time-axis-canvas';
+        this.container.appendChild(this.timeCanvas);
+
+        // 4. Cell (2, 2): Bottom-Right Corner Box (Houses AUTO button)
+        this.cornerBox = document.createElement('div');
+        this.cornerBox.className = 'pane-corner-box';
+        this.container.appendChild(this.cornerBox);
+
+        // 5. Cell (1, 1): Overlay Container for Legend, Nav Bar, and Toolbar
+        this.overlayLayer = document.createElement('div');
+        this.overlayLayer.className = 'pane-overlay-layer';
+        this.container.appendChild(this.overlayLayer);
 
         this.dataStore = new DataStore();
         this.renderer = new ChartRenderer(this.dataStore);
@@ -113,14 +141,26 @@ export class EcoChart {
         this.drawingManager = new DrawingManager();
         this.renderer.indicatorManager = this.indicatorManager; // Link reference
 
+        // Initialize dedicated axis renderers
+        this.priceAxisRenderer = new PriceAxisRenderer(this.priceCanvas, this.renderer);
+        this.timeAxisRenderer = new TimeAxisRenderer(this.timeCanvas, this.renderer);
+
         // Build per-pane Auto button and Navigation Bar
         this.createPaneControls();
 
-        // Ensure browser window resize triggers on-demand render
-        window.addEventListener('resize', () => {
-            this.isDirty = true;
-            this.renderer.forceNextRender = true;
+        // Zero-delay ResizeObserver: syncs Pixi & axis canvases safely once renderer is ready
+        const ro = new ResizeObserver(() => {
+            const chartRect = this.chartCanvas.getBoundingClientRect();
+            if (chartRect.width > 0 && chartRect.height > 0) {
+                if (this.renderer.app && this.renderer.app.renderer) {
+                    this.renderer.resize(chartRect.width, chartRect.height);
+                    this.isDirty = true;
+                    this.priceAxisRenderer.render();
+                    this.timeAxisRenderer.render();
+                }
+            }
         });
+        ro.observe(this.container);
 
         // Initialize the tracking variable
         this.lastThemeIsDark = themeManager.getTheme().isDark;
@@ -175,32 +215,32 @@ export class EcoChart {
         this.legendContainer.className = 'chart-legend';
         this.legendContainer.style.opacity = '0.15';
         this.legendContainer.style.transition = 'opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1)';
-        this.container.appendChild(this.legendContainer);
+        this.overlayLayer.appendChild(this.legendContainer);
 
-        // 2. Auto-fit button for this pane (Positioned dynamically at bottom of main price axis)
+        // 2. Auto-fit button permanently docked in the 60x24 corner box
         this.autoBtn = document.createElement('button');
         this.autoBtn.textContent = 'AUTO';
         this.autoBtn.title = 'Auto-fit scale';
         this.autoBtn.style.cssText = `
-            position: absolute; right: 6px; bottom: 28px; z-index: 5;
-            background: var(--chart-panel-bg, #1E222D);
+            background: transparent;
             color: ${this.renderer.isAutoScale ? accent : 'var(--chart-text, #787B86)'};
-            border: 1px solid var(--chart-grid, #2A2E39); border-radius: 3px;
+            border: none; border-radius: 3px;
             font-size: 11px; font-weight: 700; padding: 2px 6px; cursor: pointer;
-            user-select: none; text-transform: uppercase;
+            user-select: none; text-transform: uppercase; width: 100%; height: 100%;
+            display: flex; align-items: center; justify-content: center;
         `;
         this.autoBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             WorkspaceManager.setActiveChart(this);
             this.toggleAutoScale();
         });
-        this.container.appendChild(this.autoBtn);
+        this.cornerBox.appendChild(this.autoBtn);
 
         // 3. Floating navigation bar for this pane
         this.navBar = document.createElement('div');
         this.navBar.className = 'pane-nav-bar';
         this.navBar.style.cssText = `
-            position: absolute; bottom: 32px; left: 50%; transform: translateX(-50%);
+            position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
             display: flex; gap: 4px; z-index: 5; user-select: none;
             background: var(--chart-panel-bg, #1e222d);
             border: 1px solid var(--chart-grid, #2A2E39);
@@ -229,7 +269,7 @@ export class EcoChart {
         this.navBar.querySelector('.nav-btn-reset')?.addEventListener('click', () => this.jumpToLive());
 
         this.resetBtn = this.navBar.querySelector('.nav-btn-reset');
-        this.container.appendChild(this.navBar);
+        this.overlayLayer.appendChild(this.navBar);
 
         // Hide initially if auto-hide is enabled
         // 4. Per-Pane Docked Drawing Toolbar (Top Center)
@@ -303,7 +343,7 @@ export class EcoChart {
             });
         });
 
-        this.container.appendChild(this.paneDrawingToolbar);
+        this.overlayLayer.appendChild(this.paneDrawingToolbar);
 
         if (WorkspaceManager.isAutoHideNav) this.hideNavBar();
 
@@ -350,8 +390,13 @@ export class EcoChart {
         this.renderer.destroy();
         this.autoBtn?.remove();
         this.navBar?.remove();
-        this.legendContainer?.remove(); // <-- Clean up legend
-        this.canvas.remove();
+        this.legendContainer?.remove();
+        this.paneDrawingToolbar?.remove();
+        this.cornerBox?.remove();
+        this.overlayLayer?.remove();
+        this.chartCanvas?.remove();
+        this.priceCanvas?.remove();
+        this.timeCanvas?.remove();
     }
 
     public themeManager = themeManager;
@@ -563,27 +608,35 @@ export class EcoChart {
                 this.isDirty = true;
             }
 
-            const chartWidth = this.renderer.app.screen.width - this.renderer.priceAxisWidth;
-            const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
-
-            // Detect which zone was clicked
-            if (x > chartWidth) {
-                this.isDraggingPriceAxis = true;
-            } else if (y > chartHeight) {
-                this.isDraggingTimeAxis = true;
-                // Lock the point on the timeline directly beneath your cursor
-                this.timeAxisAnchorX = x;
-                this.timeAxisWorldX = (x + this.renderer.cameraX) / this.renderer.zoom;
-            } else {
-                this.isDraggingChart = true;
-            }
-
+            this.isDraggingChart = true;
             this.lastMouseX = e.clientX;
             this.lastMouseY = e.clientY;
             this.canvas.setPointerCapture(e.pointerId);
         });
 
-        this.canvas.addEventListener('pointermove', (e) => {
+        // Dedicated Price Axis Drag Listener
+        this.priceCanvas.addEventListener('pointerdown', (e) => {
+            this.isDraggingPriceAxis = true;
+            this.lastMouseX = e.clientX;
+            this.lastMouseY = e.clientY;
+            WorkspaceManager.setActiveChart(this);
+            this.priceCanvas.setPointerCapture(e.pointerId);
+        });
+
+        // Dedicated Time Axis Drag Listener
+        this.timeCanvas.addEventListener('pointerdown', (e) => {
+            this.isDraggingTimeAxis = true;
+            const chartRect = this.chartCanvas.getBoundingClientRect();
+            const localX = e.clientX - chartRect.left;
+            this.timeAxisAnchorX = localX;
+            this.timeAxisWorldX = (localX + this.renderer.cameraX) / this.renderer.zoom;
+            this.lastMouseX = e.clientX;
+            this.lastMouseY = e.clientY;
+            WorkspaceManager.setActiveChart(this);
+            this.timeCanvas.setPointerCapture(e.pointerId);
+        });
+
+        const handlePointerMove = (e: PointerEvent) => {
             if (e.pointerType === 'touch') return; // Prevent double-speed drag & thumb crosshair
             const rect = this.canvas.getBoundingClientRect();
             this.renderer.crosshairX = e.clientX - rect.left;
@@ -645,12 +698,7 @@ export class EcoChart {
             const deltaX = e.clientX - this.lastMouseX;
             const deltaY = e.clientY - this.lastMouseY;
 
-            // Change cursor based on hover zone
-            const chartWidth = this.renderer.app.screen.width - this.renderer.priceAxisWidth;
-            const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
-            if (this.renderer.crosshairX > chartWidth) this.canvas.style.cursor = 'ns-resize';
-            else if (this.renderer.crosshairY > chartHeight) this.canvas.style.cursor = 'ew-resize';
-            else this.canvas.style.cursor = 'crosshair';
+            this.canvas.style.cursor = 'crosshair';
 
             if (this.isDraggingChart) {
                 if (deltaX !== 0) {
@@ -662,14 +710,23 @@ export class EcoChart {
                 }
             } else if (this.isDraggingPriceAxis) {
                 this.renderer.isAutoScale = false;
+                if (this.autoBtn) this.autoBtn.style.color = 'var(--chart-text, #787B86)';
+                const canvasHeight = this.chartCanvas.clientHeight || 600;
                 const priceRange = this.renderer.currentMaxPrice - this.renderer.currentMinPrice;
-                const stretchFactor = deltaY * (priceRange / chartHeight) * 2;
-                this.renderer.currentMaxPrice += stretchFactor;
-                this.renderer.currentMinPrice -= stretchFactor;
+                const stretchFactor = deltaY * (priceRange / canvasHeight) * 2;
+                const nextMin = this.renderer.currentMinPrice - stretchFactor;
+                const nextMax = this.renderer.currentMaxPrice + stretchFactor;
+                if (nextMax - nextMin > 0.000001) {
+                    this.renderer.currentMinPrice = nextMin;
+                    this.renderer.currentMaxPrice = nextMax;
+                }
+                this.renderer.forceNextRender = true;
             } else if (this.isDraggingTimeAxis) {
+                this.isLockedToEdge = false; // Prevent WebSocket ticks from snapping back
                 const zoomMultiplier = 1 + (deltaX * 0.005);
                 this.renderer.zoom = Math.max(0.1, Math.min(this.renderer.zoom * zoomMultiplier, 50));
                 this.renderer.cameraX = (this.timeAxisWorldX * this.renderer.zoom) - this.timeAxisAnchorX;
+                this.renderer.forceNextRender = true;
             }
 
             if (this.isDraggingChart || this.isDraggingPriceAxis || this.isDraggingTimeAxis) {
@@ -677,7 +734,11 @@ export class EcoChart {
                 this.lastMouseY = e.clientY;
                 this.isDirty = true; // Only redraw full chart when actively panning/zooming
             }
-        });
+        };
+
+        this.canvas.addEventListener('pointermove', handlePointerMove);
+        this.priceCanvas.addEventListener('pointermove', handlePointerMove);
+        this.timeCanvas.addEventListener('pointermove', handlePointerMove);
 
         this.canvas.addEventListener('pointerleave', () => {
             this.renderer.isCrosshairVisible = false;
@@ -700,10 +761,16 @@ export class EcoChart {
             this.isDraggingChart = false;
             this.isDraggingPriceAxis = false;
             this.isDraggingTimeAxis = false;
-            this.canvas.releasePointerCapture(e.pointerId);
+            try { this.canvas.releasePointerCapture(e.pointerId); } catch { }
+            try { this.priceCanvas.releasePointerCapture(e.pointerId); } catch { }
+            try { this.timeCanvas.releasePointerCapture(e.pointerId); } catch { }
         };
         this.canvas.addEventListener('pointerup', stopDragging);
         this.canvas.addEventListener('pointercancel', stopDragging);
+        this.priceCanvas.addEventListener('pointerup', stopDragging);
+        this.priceCanvas.addEventListener('pointercancel', stopDragging);
+        this.timeCanvas.addEventListener('pointerup', stopDragging);
+        this.timeCanvas.addEventListener('pointercancel', stopDragging);
 
         this.canvas.addEventListener('dblclick', () => {
             // Re-enables auto-scaling without moving the timeline
@@ -1247,6 +1314,14 @@ export class EcoChart {
 
         await this.renderer.init(this.canvas);
 
+        // Immediate layout sync so axes render immediately on startup
+        const initRect = this.chartCanvas.getBoundingClientRect();
+        if (initRect.width > 0 && initRect.height > 0) {
+            this.renderer.resize(initRect.width, initRect.height);
+        }
+        this.priceAxisRenderer.render();
+        this.timeAxisRenderer.render();
+
         await this.network.connect(symbol, interval, (prependedCount = 0) => {
             if (prependedCount > 0 && !this.isLockedToEdge) {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
@@ -1274,13 +1349,14 @@ export class EcoChart {
 
         setInterval(() => {
             if (this.isRunning) {
-                // Only mark chart dirty if theme actually changed
+                // Only mark WebGL chart dirty if theme actually changed
                 const themeChanged = themeManager.evaluateDynamicTheme();
                 if (themeChanged) {
                     this.isDirty = true;
                 }
-                // Update isolated timer text & clock badges without redrawing candles or grid
-                this.renderer.updateTimeAndCountdown();
+                // Only update the 2D axis canvas strips. Main WebGL canvas stays at 0 FPS.
+                this.priceAxisRenderer.render();
+                this.timeAxisRenderer.render();
             }
         }, 1000);
 
@@ -1309,17 +1385,23 @@ export class EcoChart {
                     // Render Indicators
                     this.renderer.indicatorMainGraphics.clear();
                     this.renderer.indicatorOscGraphics.clear();
-                    this.renderer.hideAllIndicatorMeshes(); // <-- ADDED: Reset GPU meshes
+                    this.renderer.hideAllIndicatorMeshes();
                     this.indicatorManager.render(this.renderer, this.renderer.indicatorMainGraphics, this.renderer.indicatorOscGraphics);
 
                     this.drawingManager.render(this.renderer, this.renderer.drawingGraphics);
 
                     this.renderer.renderCrosshair();
+                    this.priceAxisRenderer.render();
+                    this.timeAxisRenderer.render();
+
                     this.isDirty = false;
                     this.isCrosshairDirty = false;
                     this.renderer.render(); // 🎯 Submit frame only when dirty
                 } else if (this.isCrosshairDirty) {
                     this.renderer.renderCrosshair();
+                    this.priceAxisRenderer.render();
+                    this.timeAxisRenderer.render();
+
                     this.isCrosshairDirty = false;
                     this.renderer.render(); // 🎯 Submit frame for crosshair move only
                 }
