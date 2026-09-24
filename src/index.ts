@@ -1448,9 +1448,9 @@ export class EcoChart {
                 if (themeChanged) {
                     this.isDirty = true;
                 }
-                // Only update the 2D axis canvas strips. Main WebGL canvas stays at 0 FPS.
-                this.priceAxisRenderer.render();
-                this.timeAxisRenderer.render();
+                // Isolated partial update: Only repaints the countdown pill and clock badges
+                this.priceAxisRenderer.updateCountdownOnly();
+                this.timeAxisRenderer.updateClocksOnly();
             }
         }, 1000);
 

@@ -5,6 +5,14 @@ export class PriceAxisRenderer {
     private ctx: CanvasRenderingContext2D;
     private renderer: ChartRenderer;
 
+    // Cache state for partial badge updates (0% CPU idle)
+    private lastBadgeY = -1;
+    private lastBadgeH = 34;
+    private lastLiveColor = 0;
+    private lastClosePriceStr = '';
+    private lastCountdownStr = '';
+    private lastWidth = 60;
+
     constructor(canvas: HTMLCanvasElement, renderer: ChartRenderer) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d')!;
@@ -140,6 +148,16 @@ export class PriceAxisRenderer {
 
                 this.ctx.font = '10px sans-serif';
                 this.ctx.fillText(countdownStr, w / 2, badgeY + 24);
+
+                // Cache coordinates for partial 1-second updates
+                this.lastBadgeY = badgeY;
+                this.lastBadgeH = badgeH;
+                this.lastLiveColor = liveColor;
+                this.lastClosePriceStr = lastClose.toFixed(2);
+                this.lastCountdownStr = countdownStr;
+                this.lastWidth = w;
+            } else {
+                this.lastBadgeY = -1;
             }
         }
 
@@ -168,5 +186,47 @@ export class PriceAxisRenderer {
                 this.ctx.fillText(text, w / 2, pillY + 10);
             }
         }
+    }
+
+    /**
+     * Partial Update: Only redraws the live price pill (60x34px)
+     * Skips full canvas clearing, background fills, and scale calculations.
+     */
+    public updateCountdownOnly() {
+        if (this.lastBadgeY < 0 || this.renderer.dataStore.length === 0) {
+            this.render();
+            return;
+        }
+
+        const len = this.renderer.dataStore.length;
+        const lastBase = (len - 1) * 6;
+        const lastTime = this.renderer.dataStore.data[lastBase];
+        const intervalMs = this.renderer.parseIntervalMs(this.renderer.currentInterval);
+        const remainingMs = Math.max(0, (lastTime + intervalMs) - Date.now());
+        const totalSecs = Math.floor(remainingMs / 1000);
+        const hours = Math.floor(totalSecs / 3600);
+        const mins = Math.floor((totalSecs % 3600) / 60);
+        const secs = totalSecs % 60;
+        let countdownStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        if (hours > 0) countdownStr = `${hours}:${countdownStr}`;
+
+        if (countdownStr === this.lastCountdownStr) return; // Zero work if second didn't change
+
+        const w = this.lastWidth;
+
+        // Repaint only the live badge rectangle
+        this.ctx.fillStyle = this.hexToCSS(this.lastLiveColor);
+        this.ctx.fillRect(0, this.lastBadgeY, w, this.lastBadgeH);
+
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.font = 'bold 11px sans-serif';
+        this.ctx.fillText(this.lastClosePriceStr, w / 2, this.lastBadgeY + 11);
+
+        this.ctx.font = '10px sans-serif';
+        this.ctx.fillText(countdownStr, w / 2, this.lastBadgeY + 24);
+
+        this.lastCountdownStr = countdownStr;
     }
 }
