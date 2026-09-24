@@ -2210,8 +2210,6 @@ export class WorkspaceManager {
             setSwatch('input-bear-body', current.bearBody);
             setSwatch('input-bull-wick', current.bullWick);
             setSwatch('input-bear-wick', current.bearWick);
-            setSwatch('input-bull-border', current.bullBorder);
-            setSwatch('input-bear-border', current.bearBorder);
             setSwatch('input-bg-color', current.background);
             setSwatch('input-grid-color', current.gridLines);
             setSwatch('input-custom-accent', current.accentColor);
@@ -2268,8 +2266,6 @@ export class WorkspaceManager {
         bindSwatch('input-bear-body', 'bearBody', true);
         bindSwatch('input-bull-wick', 'bullWick', true);
         bindSwatch('input-bear-wick', 'bearWick', true);
-        bindSwatch('input-bull-border', 'bullBorder', true);
-        bindSwatch('input-bear-border', 'bearBorder', true);
         bindSwatch('input-custom-accent', 'accentColor', false);
 
         // Bind Session Checkboxes

@@ -1,4 +1,4 @@
-import { Application, Graphics, Text, Container } from 'pixi.js';
+import { Application, Graphics, Text, Container, Buffer, BufferUsage, Geometry, Mesh, Shader, UniformGroup } from 'pixi.js';
 import { DataStore } from '../data/DataStore';
 import type { ChartTheme, LineStyle } from '../theme/types';
 import { ThemeManager } from '../theme/ThemeManager';
@@ -38,6 +38,20 @@ export class ChartRenderer {
     // Pixi Layers (Z-Index order)
     private gridGraphics!: Graphics;
     private candlesGraphics!: Graphics;
+
+    // GPU Instancing Engine (Single Vector Stamping)
+    private candleMesh!: Mesh<Geometry, Shader>;
+    private candleGeometry!: Geometry;
+    private candleUniforms!: UniformGroup;
+    private candleIndexBuffer!: Buffer;
+    private candleOHLCBuffer!: Buffer;
+    private candleIndexArray = new Float32Array(0);
+    private candleOHLCArray = new Float32Array(0);
+    private lastSyncedLength = 0;
+    private lastSyncedLiveClose = 0;
+    private lastSyncedLiveHigh = 0;
+    private lastSyncedLiveLow = 0;
+
     private uiGraphics!: Graphics; // Axes & Crosshair lines
     private textContainer!: Container; // Axis labels
     private liveBadgeGraphics!: Graphics;
@@ -141,6 +155,8 @@ export class ChartRenderer {
         this.timeLabelPool.forEach(l => l.style.fill = this.axisTextColor);
         this.oscLabelPool.forEach(l => l.style.fill = this.axisTextColor);
         this.oscHeaderPairPool.forEach(p => p.title.style.fill = this.axisTextColor);
+
+        this.updateInstancedThemeUniforms(); // <-- Synchronize GPU Colors
     }
 
     // Theming & Line Styles
@@ -236,8 +252,11 @@ export class ChartRenderer {
 
         this.oscHeaderContainer = new Container();
 
+        this.initInstancedCandleMesh(); // <-- Create GPU Mesh & Shaders
+
         this.app.stage.addChild(this.gridGraphics);
         this.app.stage.addChild(this.candlesGraphics);
+        this.app.stage.addChild(this.candleMesh); // <-- Instanced candles sit here
         this.app.stage.addChild(this.indicatorMainGraphics); // Indicators behind crosshair
         this.app.stage.addChild(this.indicatorOscGraphics);
         this.drawingGraphics = new Graphics();
@@ -435,6 +454,8 @@ export class ChartRenderer {
         // --- 2. MULTI-MODE CHART DRAWING (OPTIMIZED BATCHING) ---
         const candleWidth = Math.max(1, actualSpacing * 0.8);
 
+        this.candleMesh.visible = (this.chartMode === 'candles');
+
         if (this.chartMode === 'line') {
             for (let i = visStart; i < visEnd; i++) {
                 const c = this.dataStore.data[i * 6 + 4];
@@ -560,53 +581,8 @@ export class ChartRenderer {
             this.candlesGraphics.fill({ color: this.bearColor, alpha: this.bearAlpha }).stroke({ color: this.bearBorderColor, width: 1, alpha: this.bearBorderAlpha });
 
         } else {
-            // STANDARD CANDLES BATCHING
-
-            // 1. Bull Wicks
-            this.candlesGraphics.beginPath();
-            for (let i = visStart; i < visEnd; i++) {
-                const base = i * 6, o = this.dataStore.data[base + 1], c = this.dataStore.data[base + 4];
-                if (c >= o) {
-                    const h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3];
-                    const x = (i * actualSpacing) - this.cameraX, yH = priceToY(h), yL = priceToY(l);
-                    this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
-                }
-            }
-            this.candlesGraphics.fill({ color: this.bullWickColor, alpha: this.bullWickAlpha });
-
-            // 2. Bear Wicks
-            this.candlesGraphics.beginPath();
-            for (let i = visStart; i < visEnd; i++) {
-                const base = i * 6, o = this.dataStore.data[base + 1], c = this.dataStore.data[base + 4];
-                if (c < o) {
-                    const h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3];
-                    const x = (i * actualSpacing) - this.cameraX, yH = priceToY(h), yL = priceToY(l);
-                    this.candlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
-                }
-            }
-            this.candlesGraphics.fill({ color: this.bearWickColor, alpha: this.bearWickAlpha });
-
-            // 3. Bull Bodies
-            this.candlesGraphics.beginPath();
-            for (let i = visStart; i < visEnd; i++) {
-                const base = i * 6, o = this.dataStore.data[base + 1], c = this.dataStore.data[base + 4];
-                if (c >= o) {
-                    const x = (i * actualSpacing) - this.cameraX, yO = priceToY(o), yC = priceToY(c);
-                    this.candlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
-                }
-            }
-            this.candlesGraphics.fill({ color: this.bullColor, alpha: this.bullAlpha }).stroke({ color: this.bullBorderColor, width: 1, alpha: this.bullBorderAlpha });
-
-            // 4. Bear Bodies
-            this.candlesGraphics.beginPath();
-            for (let i = visStart; i < visEnd; i++) {
-                const base = i * 6, o = this.dataStore.data[base + 1], c = this.dataStore.data[base + 4];
-                if (c < o) {
-                    const x = (i * actualSpacing) - this.cameraX, yO = priceToY(o), yC = priceToY(c);
-                    this.candlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
-                }
-            }
-            this.candlesGraphics.fill({ color: this.bearColor, alpha: this.bearAlpha }).stroke({ color: this.bearBorderColor, width: 1, alpha: this.bearBorderAlpha });
+            // GPU INSTANCED CANDLES (Approach 2)
+            this.renderInstancedCandles(mainChartHeight, visStart, visEnd);
         }
 
         // --- 3. DRAW AXIS BACKGROUNDS & DIVIDERS ---
@@ -1170,5 +1146,268 @@ export class ChartRenderer {
         if (this.app) {
             this.app.destroy(true, { children: true, texture: true });
         }
+    }
+
+    private initInstancedCandleMesh() {
+        // 1. Base Geometry: 8 vertices forming 2 quads (Wick + Body)
+        const baseVertices = new Float32Array([
+            -0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 0.5, 1.0, 0.0, -0.5, 1.0, 0.0, // Wick Quad
+            -0.5, 0.0, 1.0, 0.5, 0.0, 1.0, 0.5, 1.0, 1.0, -0.5, 1.0, 1.0  // Body Quad
+        ]);
+        const baseIndices = new Uint32Array([
+            0, 1, 2, 0, 2, 3, // Wick Triangles
+            4, 5, 6, 4, 6, 7  // Body Triangles
+        ]);
+
+        this.candleIndexBuffer = new Buffer({
+            data: new Float32Array(0),
+            usage: BufferUsage.VERTEX | BufferUsage.COPY_DST
+        });
+        this.candleOHLCBuffer = new Buffer({
+            data: new Float32Array(0),
+            usage: BufferUsage.VERTEX | BufferUsage.COPY_DST
+        });
+
+        this.candleGeometry = new Geometry({
+            attributes: {
+                aVertexPosition: {
+                    buffer: new Buffer({
+                        data: baseVertices,
+                        usage: BufferUsage.VERTEX
+                    }),
+                    format: 'float32x3'
+                },
+                aCandleIndex: {
+                    buffer: this.candleIndexBuffer,
+                    format: 'float32',
+                    instance: true
+                },
+                aCandleOHLC: {
+                    buffer: this.candleOHLCBuffer,
+                    format: 'float32x4', // Open, High, Low, Close
+                    instance: true
+                }
+            },
+            indexBuffer: baseIndices,
+            instanceCount: 0
+        });
+
+        // 2. Uniforms Group
+        this.candleUniforms = new UniformGroup({
+            uCameraX: { value: 0, type: 'f32' },
+            uCameraY: { value: 0, type: 'f32' },
+            uZoom: { value: 1, type: 'f32' },
+            uCandleSpacing: { value: 8, type: 'f32' },
+            uMinPrice: { value: 0, type: 'f32' },
+            uMaxPrice: { value: 1, type: 'f32' },
+            uChartHeight: { value: 500, type: 'f32' },
+            uVisStart: { value: 0, type: 'f32' },
+            uVisEnd: { value: 10000, type: 'f32' },
+            uBullBodyColor: { value: [0.15, 0.65, 0.60, 1.0], type: 'vec4<f32>' },
+            uBearBodyColor: { value: [0.94, 0.33, 0.31, 1.0], type: 'vec4<f32>' },
+            uBullWickColor: { value: [0.15, 0.65, 0.60, 1.0], type: 'vec4<f32>' },
+            uBearWickColor: { value: [0.94, 0.33, 0.31, 1.0], type: 'vec4<f32>' }
+        });
+
+        // 3. GLSL Vertex & Fragment Shaders
+        const vertexSrc = `
+            precision highp float;
+            attribute vec3 aVertexPosition;
+            attribute float aCandleIndex;
+            attribute vec4 aCandleOHLC; // Open, High, Low, Close
+
+            uniform mat3 uProjectionMatrix;
+            uniform mat3 uWorldTransformMatrix;
+
+            uniform float uCameraX;
+            uniform float uCameraY;
+            uniform float uZoom;
+            uniform float uCandleSpacing;
+            uniform float uMinPrice;
+            uniform float uMaxPrice;
+            uniform float uChartHeight;
+            uniform float uVisStart;
+            uniform float uVisEnd;
+
+            uniform vec4 uBullBodyColor;
+            uniform vec4 uBearBodyColor;
+            uniform vec4 uBullWickColor;
+            uniform vec4 uBearWickColor;
+
+            varying vec4 vColor;
+
+            void main() {
+                // Instantly discard geometry outside the visible camera view
+                if (aCandleIndex < uVisStart || aCandleIndex > uVisEnd) {
+                    gl_Position = vec4(0.0);
+                    return;
+                }
+
+                float openP  = aCandleOHLC.x;
+                float highP  = aCandleOHLC.y;
+                float lowP   = aCandleOHLC.z;
+                float closeP = aCandleOHLC.w;
+                
+                bool isBull = closeP >= openP;
+                
+                float actualSpacing = uCandleSpacing * uZoom;
+                float candleWidth = max(1.0, actualSpacing * 0.8);
+                float centerX = (aCandleIndex * actualSpacing) - uCameraX + (candleWidth * 0.5);
+                
+                float priceRange = max(0.000001, uMaxPrice - uMinPrice);
+                float yRatio = uChartHeight / priceRange;
+                float yOffset = uChartHeight + uCameraY;
+                
+                float topY = 0.0;
+                float bottomY = 0.0;
+                float w = 1.0;
+                
+                if (aVertexPosition.z < 0.5) {
+                    // Wick Quad
+                    topY = yOffset - ((highP - uMinPrice) * yRatio);
+                    bottomY = yOffset - ((lowP - uMinPrice) * yRatio);
+                    w = 1.0;
+                    vColor = isBull ? uBullWickColor : uBearWickColor;
+                } else {
+                    // Body Quad
+                    float maxOC = max(openP, closeP);
+                    float minOC = min(openP, closeP);
+                    topY = yOffset - ((maxOC - uMinPrice) * yRatio);
+                    bottomY = yOffset - ((minOC - uMinPrice) * yRatio);
+                    if (bottomY - topY < 1.0) bottomY = topY + 1.0;
+                    w = candleWidth;
+                    vColor = isBull ? uBullBodyColor : uBearBodyColor;
+                }
+                
+                float posX = centerX + (aVertexPosition.x * w);
+                float posY = mix(bottomY, topY, aVertexPosition.y);
+                
+                mat3 mvp = uProjectionMatrix * uWorldTransformMatrix;
+                gl_Position = vec4((mvp * vec3(posX, posY, 1.0)).xy, 0.0, 1.0);
+            }
+        `;
+
+        const fragmentSrc = `
+            precision mediump float;
+            varying vec4 vColor;
+            void main() {
+                gl_FragColor = vColor;
+            }
+        `;
+
+        const shader = Shader.from({
+            gl: { vertex: vertexSrc, fragment: fragmentSrc },
+            resources: { candleUniforms: this.candleUniforms }
+        });
+
+        this.candleMesh = new Mesh({ geometry: this.candleGeometry, shader });
+        this.updateInstancedThemeUniforms();
+    }
+
+    private updateInstancedThemeUniforms() {
+        if (!this.candleUniforms) return;
+        const toVec4 = (hex: number, alpha: number) => [
+            ((hex >> 16) & 0xff) / 255,
+            ((hex >> 8) & 0xff) / 255,
+            (hex & 0xff) / 255,
+            alpha
+        ];
+        const u = this.candleUniforms.uniforms;
+        u.uBullBodyColor = toVec4(this.bullColor, this.bullAlpha);
+        u.uBearBodyColor = toVec4(this.bearColor, this.bearAlpha);
+        u.uBullWickColor = toVec4(this.bullWickColor, this.bullWickAlpha);
+        u.uBearWickColor = toVec4(this.bearWickColor, this.bearWickAlpha);
+    }
+
+    private syncInstancedData() {
+        const len = this.dataStore.length;
+        if (len === 0) return;
+
+        const lastIdx = len - 1;
+        const lastBase = lastIdx * 6;
+        const liveC = this.dataStore.data[lastBase + 4];
+        const liveH = this.dataStore.data[lastBase + 2];
+        const liveL = this.dataStore.data[lastBase + 3];
+
+        // 1. Capacity Resize
+        if (this.candleOHLCArray.length < len * 4) {
+            const newCap = Math.max(10000, len * 2);
+            this.candleOHLCArray = new Float32Array(newCap * 4);
+            this.candleIndexArray = new Float32Array(newCap);
+
+            for (let i = 0; i < len; i++) {
+                const b = i * 6;
+                const d = i * 4;
+                this.candleOHLCArray[d] = this.dataStore.data[b + 1];
+                this.candleOHLCArray[d + 1] = this.dataStore.data[b + 2];
+                this.candleOHLCArray[d + 2] = this.dataStore.data[b + 3];
+                this.candleOHLCArray[d + 3] = this.dataStore.data[b + 4];
+                this.candleIndexArray[i] = i;
+            }
+            this.candleOHLCBuffer.data = this.candleOHLCArray;
+            this.candleIndexBuffer.data = this.candleIndexArray;
+            this.candleOHLCBuffer.update();
+            this.candleIndexBuffer.update();
+            this.lastSyncedLength = len;
+            this.lastSyncedLiveClose = liveC;
+            this.lastSyncedLiveHigh = liveH;
+            this.lastSyncedLiveLow = liveL;
+            return;
+        }
+
+        // 2. Full History Loaded or Prepended
+        if (this.lastSyncedLength !== len) {
+            for (let i = 0; i < len; i++) {
+                const b = i * 6;
+                const d = i * 4;
+                this.candleOHLCArray[d] = this.dataStore.data[b + 1];
+                this.candleOHLCArray[d + 1] = this.dataStore.data[b + 2];
+                this.candleOHLCArray[d + 2] = this.dataStore.data[b + 3];
+                this.candleOHLCArray[d + 3] = this.dataStore.data[b + 4];
+                this.candleIndexArray[i] = i;
+            }
+            this.candleOHLCBuffer.update();
+            this.candleIndexBuffer.update();
+            this.lastSyncedLength = len;
+            this.lastSyncedLiveClose = liveC;
+            this.lastSyncedLiveHigh = liveH;
+            this.lastSyncedLiveLow = liveL;
+            return;
+        }
+
+        // 3. Fast Tick (Only live forming candle changed)
+        if (this.lastSyncedLiveClose !== liveC || this.lastSyncedLiveHigh !== liveH || this.lastSyncedLiveLow !== liveL) {
+            const d = lastIdx * 4;
+            this.candleOHLCArray[d] = this.dataStore.data[lastBase + 1];
+            this.candleOHLCArray[d + 1] = liveH;
+            this.candleOHLCArray[d + 2] = liveL;
+            this.candleOHLCArray[d + 3] = liveC;
+            this.candleOHLCBuffer.update();
+            this.lastSyncedLiveClose = liveC;
+            this.lastSyncedLiveHigh = liveH;
+            this.lastSyncedLiveLow = liveL;
+        }
+    }
+
+    private renderInstancedCandles(mainChartHeight: number, visStart: number, visEnd: number) {
+        if (this.dataStore.length === 0) {
+            this.candleGeometry.instanceCount = 0;
+            return;
+        }
+
+        this.syncInstancedData();
+
+        const u = this.candleUniforms.uniforms;
+        u.uCameraX = this.cameraX;
+        u.uCameraY = this.cameraY;
+        u.uZoom = this.zoom;
+        u.uCandleSpacing = this.candleSpacing;
+        u.uMinPrice = this.currentMinPrice;
+        u.uMaxPrice = this.currentMaxPrice;
+        u.uChartHeight = mainChartHeight;
+        u.uVisStart = visStart;
+        u.uVisEnd = visEnd;
+
+        this.candleGeometry.instanceCount = this.dataStore.length;
     }
 }
