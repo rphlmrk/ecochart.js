@@ -3302,8 +3302,15 @@ export class WorkspaceManager {
             }
         });
 
+        window.addEventListener('offline', () => {
+            WorkspaceManager.charts.forEach(c => c.network.handleOffline());
+        });
+
         window.addEventListener('online', () => {
-            WorkspaceManager.charts.forEach(c => c.handleWakeup());
+            // 600ms stabilization delay allows OS DNS and gateway routing to become ready
+            setTimeout(() => {
+                WorkspaceManager.charts.forEach(c => c.handleWakeup());
+            }, 600);
         });
     }
 }

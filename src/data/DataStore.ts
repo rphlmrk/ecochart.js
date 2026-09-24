@@ -30,7 +30,7 @@ export class DataStore {
         let formingCandle: number[] | null = null;
         if (this.length > 0) {
             const base = (this.length - 1) * 6;
-            formingCandle = [this.data[base], this.data[base+1], this.data[base+2], this.data[base+3], this.data[base+4], this.data[base+5]];
+            formingCandle = [this.data[base], this.data[base + 1], this.data[base + 2], this.data[base + 3], this.data[base + 4], this.data[base + 5]];
         }
 
         this.clear();
@@ -44,8 +44,8 @@ export class DataStore {
         for (let i = 0; i < candles.length; i++) {
             const base = i * 6;
             const c = candles[i];
-            this.data[base] = c[0]; this.data[base+1] = c[1]; this.data[base+2] = c[2];
-            this.data[base+3] = c[3]; this.data[base+4] = c[4]; this.data[base+5] = c[5];
+            this.data[base] = c[0]; this.data[base + 1] = c[1]; this.data[base + 2] = c[2];
+            this.data[base + 3] = c[3]; this.data[base + 4] = c[4]; this.data[base + 5] = c[5];
         }
         this.length = candles.length;
 
@@ -58,7 +58,7 @@ export class DataStore {
         }
         return prependedCount;
     }
-    
+
     // Mirrors your Go `mergeCandles` logic
     public appendOrUpdate(time: number, o: number, h: number, l: number, c: number, v: number): boolean {
         let isNewCandle = false;
@@ -82,9 +82,37 @@ export class DataStore {
                 this.setCandle(this.length, time, o, h, l, c, v);
                 this.length++;
                 isNewCandle = true;
+            } else {
+                // Out-of-order or gap-filling candle: insert chronologically instead of dropping
+                this.insertOrUpdateCandle(time, o, h, l, c, v);
+                isNewCandle = true;
             }
         }
         return isNewCandle; // Tell the renderer if it needs to shift the camera
+    }
+
+    private insertOrUpdateCandle(time: number, o: number, h: number, l: number, c: number, v: number) {
+        let low = 0;
+        let high = this.length - 1;
+        while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            const t = this.data[mid * ITEMS_PER_CANDLE];
+            if (t === time) {
+                this.updateCandle(mid, h, l, c, v);
+                return;
+            }
+            if (t < time) low = mid + 1;
+            else high = mid - 1;
+        }
+
+        if (this.length >= this.capacity) this.resize();
+        const insertIdx = low;
+        const srcStart = insertIdx * ITEMS_PER_CANDLE;
+        const copyLength = (this.length - insertIdx) * ITEMS_PER_CANDLE;
+
+        this.data.copyWithin(srcStart + ITEMS_PER_CANDLE, srcStart, srcStart + copyLength);
+        this.setCandle(insertIdx, time, o, h, l, c, v);
+        this.length++;
     }
 
     private updateCandle(idx: number, h: number, l: number, c: number, v: number) {

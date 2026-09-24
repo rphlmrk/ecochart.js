@@ -270,13 +270,16 @@ export class BinanceClient {
                 const k = data.k;
                 const o = parseFloat(k.o), h = parseFloat(k.h), l = parseFloat(k.l), c = parseFloat(k.c), v = parseFloat(k.v);
 
-                // Gap Check: If incoming candle skipped ahead, backfill missing bars first
+                // Gap Check: If incoming candle skipped ahead, force backfill of missing bars
                 if (this.dataStore.length > 0) {
                     const lastCandleTime = this.dataStore.data[(this.dataStore.length - 1) * 6];
                     if (k.t - lastCandleTime > targetIntervalMs) {
-                        await this.syncMissingGap(symbol, interval);
+                        await this.syncMissingGap(symbol, interval, true);
                     }
                 }
+
+                // Don't append live bar until in-flight gap backfill has finished
+                if (this.isSyncingGap) return;
 
                 // Update RAM immediately for smooth UI
                 if (isNative) {
@@ -388,6 +391,14 @@ export class BinanceClient {
             return false;
         } finally {
             this.isSyncingGap = false;
+        }
+    }
+
+    public handleOffline() {
+        if (this.ws) {
+            this.ws.onclose = null;
+            this.ws.close();
+            this.ws = null;
         }
     }
 
