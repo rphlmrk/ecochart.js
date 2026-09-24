@@ -7,6 +7,14 @@ export class BinanceClient {
     private dataStore: DataStore;
     private isReconnecting = false;
 
+    // Wakeup & Health State
+    private lastMessageTime = Date.now();
+    private savedSymbol = '';
+    private savedInterval = '';
+    private savedOnUpdate: ((prependedCount?: number, isClosed?: boolean) => void) | null = null;
+    private savedOnTicker: ((changePct: number) => void) | null = null;
+    private isSyncingGap = false;
+
     // Rate Limiter & Queue State
     private static requestQueue: Array<() => Promise<void>> = [];
     private static isProcessingQueue = false;
@@ -202,6 +210,11 @@ export class BinanceClient {
     public async connect(symbol: string, interval: string, onUpdate: (prependedCount?: number, isClosed?: boolean) => void, onTicker: (changePct: number) => void) {
         this.disconnect();
         this.currentSyncKey = `${symbol}_${interval}`;
+        this.savedSymbol = symbol;
+        this.savedInterval = interval;
+        this.savedOnUpdate = onUpdate;
+        this.savedOnTicker = onTicker;
+        this.lastMessageTime = Date.now();
 
         const isNative = TimeframeResampler.isNative(interval);
         const baseInterval = TimeframeResampler.getBaseNativeInterval(interval);
@@ -240,10 +253,14 @@ export class BinanceClient {
 
         this.ws = new WebSocket(url);
 
-        this.ws.onopen = () => { this.isReconnecting = false; };
+        this.ws.onopen = () => {
+            this.isReconnecting = false;
+            this.lastMessageTime = Date.now();
+        };
 
-        this.ws.onmessage = (event) => {
+        this.ws.onmessage = async (event) => {
             if (this.currentSyncKey !== `${symbol}_${interval}`) return; // Abort if switched
+            this.lastMessageTime = Date.now();
 
             const raw = JSON.parse(event.data);
             const data = raw.data;
@@ -252,6 +269,14 @@ export class BinanceClient {
             if (data.e === 'kline') {
                 const k = data.k;
                 const o = parseFloat(k.o), h = parseFloat(k.h), l = parseFloat(k.l), c = parseFloat(k.c), v = parseFloat(k.v);
+
+                // Gap Check: If incoming candle skipped ahead, backfill missing bars first
+                if (this.dataStore.length > 0) {
+                    const lastCandleTime = this.dataStore.data[(this.dataStore.length - 1) * 6];
+                    if (k.t - lastCandleTime > targetIntervalMs) {
+                        await this.syncMissingGap(symbol, interval);
+                    }
+                }
 
                 // Update RAM immediately for smooth UI
                 if (isNative) {
@@ -295,5 +320,115 @@ export class BinanceClient {
             this.ws = null;
         }
         this.isReconnecting = false;
+    }
+
+    /**
+     * Backfills missing historical candles between the last bar in RAM and now.
+     */
+    public async syncMissingGap(symbol = this.savedSymbol, interval = this.savedInterval, force = false): Promise<boolean> {
+        const sym = symbol.toUpperCase();
+        if (!sym || !interval || this.dataStore.length === 0 || this.isSyncingGap) return false;
+
+        const lastIdx = this.dataStore.length - 1;
+        const lastCandleTime = this.dataStore.data[lastIdx * 6];
+        const targetIntervalMs = TimeframeResampler.parseMs(interval);
+        const now = Date.now();
+
+        // Only fetch if at least 1 full bar is missing (or if watchdog forced recovery)
+        if (!force && (now - lastCandleTime) < (targetIntervalMs * 1.5)) return false;
+
+        this.isSyncingGap = true;
+        try {
+            const baseInterval = TimeframeResampler.getBaseNativeInterval(interval);
+            const isNative = TimeframeResampler.isNative(interval);
+
+            const url = `https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${baseInterval}&startTime=${lastCandleTime}&endTime=${now}&limit=1000`;
+            const res = await BinanceClient.safeFetch(url);
+            const data = await res.json();
+
+            if (!Array.isArray(data) || data.length === 0) return false;
+
+            // 1. Persist fetched records to IndexedDB
+            const records: CandleRecord[] = data.map((k: any) => ({
+                id: `${sym}_${baseInterval}_${k[0]}`,
+                symbol: sym,
+                interval: baseInterval,
+                time: k[0],
+                o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4]), v: parseFloat(k[5])
+            }));
+            await db.candles.bulkPut(records);
+
+            // 2. Format or resample bars into DataStore
+            let candlesToAppend: Array<[number, number, number, number, number, number]>;
+            if (isNative) {
+                candlesToAppend = data.map((k: any) => [
+                    k[0],
+                    parseFloat(k[1]),
+                    parseFloat(k[2]),
+                    parseFloat(k[3]),
+                    parseFloat(k[4]),
+                    parseFloat(k[5])
+                ]);
+            } else {
+                candlesToAppend = TimeframeResampler.resampleHistory(data, interval);
+            }
+
+            // 3. Sequentially update/append missing candles into DataStore
+            for (const c of candlesToAppend) {
+                this.dataStore.appendOrUpdate(c[0], c[1], c[2], c[3], c[4], c[5]);
+            }
+
+            // 4. Force chart layers & indicators to refresh
+            if (this.savedOnUpdate) {
+                this.savedOnUpdate(0, true);
+            }
+            return true;
+        } catch (err) {
+            console.warn('[Binance] Gap backfill failed:', err);
+            return false;
+        } finally {
+            this.isSyncingGap = false;
+        }
+    }
+
+    public async handleWakeup() {
+        if (!this.currentSyncKey) return;
+        const now = Date.now();
+        // If no message arrived in 6+ seconds, connection is dead/zombie
+        const isZombie = (now - this.lastMessageTime) > 6000;
+        const isClosed = !this.ws || this.ws.readyState !== WebSocket.OPEN;
+
+        if (isClosed || isZombie) {
+            this.disconnect();
+            if (this.savedOnUpdate && this.savedOnTicker) {
+                await this.connect(this.savedSymbol, this.savedInterval, this.savedOnUpdate, this.savedOnTicker);
+            }
+        } else {
+            // Socket is alive, but check if we missed any candles while suspended/minimized
+            await this.syncMissingGap();
+        }
+    }
+
+    /**
+     * Watchdog Recovery: Triggered when countdown timer hangs at 00:00 for 3+ seconds.
+     */
+    public async handleWatchdogRecovery() {
+        if (!this.currentSyncKey) return;
+
+        // 1. Immediately backfill missing candle(s) via REST
+        const backfilled = await this.syncMissingGap(this.savedSymbol, this.savedInterval, true);
+
+        // 2. If socket is dead or hasn't received messages in 3+ seconds, reset it
+        const isClosed = !this.ws || this.ws.readyState !== WebSocket.OPEN;
+        const isStalled = (Date.now() - this.lastMessageTime) > 3000;
+
+        if (isClosed || isStalled) {
+            this.disconnect();
+            if (this.savedOnUpdate && this.savedOnTicker) {
+                await this.connect(this.savedSymbol, this.savedInterval, this.savedOnUpdate, this.savedOnTicker);
+            }
+        } else if (backfilled && this.savedOnUpdate) {
+            this.savedOnUpdate(0, true);
+        }
     }
 }

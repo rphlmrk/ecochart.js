@@ -1319,17 +1319,23 @@ export class ChartRenderer {
             return;
         }
 
-        // 2. Single New Candle Appended at the end (Uploads ONLY the 1 new candle)
-        if (len === this.lastSyncedLength + 1) {
-            const d = lastIdx * 4;
-            this.candleOHLCArray[d] = this.dataStore.data[lastBase + 1];
-            this.candleOHLCArray[d + 1] = liveH;
-            this.candleOHLCArray[d + 2] = liveL;
-            this.candleOHLCArray[d + 3] = liveC;
-            this.candleIndexArray[lastIdx] = lastIdx;
+        // 2. Single or Batch Candles Appended at the end (Sub-buffer upload for appended range only)
+        if (len > this.lastSyncedLength && this.lastSyncedLength > 0) {
+            const startIdx = Math.max(0, this.lastSyncedLength - 1);
+            const count = len - startIdx;
 
-            this.candleOHLCBuffer.update(16, d * 4);
-            this.candleIndexBuffer.update(4, lastIdx * 4);
+            for (let i = startIdx; i < len; i++) {
+                const b = i * 6;
+                const d = i * 4;
+                this.candleOHLCArray[d] = this.dataStore.data[b + 1];
+                this.candleOHLCArray[d + 1] = this.dataStore.data[b + 2];
+                this.candleOHLCArray[d + 2] = this.dataStore.data[b + 3];
+                this.candleOHLCArray[d + 3] = this.dataStore.data[b + 4];
+                this.candleIndexArray[i] = i;
+            }
+
+            this.candleOHLCBuffer.update(count * 16, startIdx * 16);
+            this.candleIndexBuffer.update(count * 4, startIdx * 4);
             this.lastSyncedLength = len;
             this.lastSyncedLiveClose = liveC;
             this.lastSyncedLiveHigh = liveH;
@@ -1578,14 +1584,28 @@ export class ChartRenderer {
             if (entry.array.length < len * 3) {
                 entry.array = new Float32Array(Math.max(10000, len * 2) * 3);
             }
-            // Full pack on length or capacity change
-            for (let i = 0; i < len; i++) {
-                entry.array[i * 3] = i;
-                entry.array[i * 3 + 1] = values[i];
-                entry.array[i * 3 + 2] = values[i + 1];
+
+            // Fast-path: Batch append for indicator lines
+            if (entry.lastSyncedLength > 0 && len > entry.lastSyncedLength && entry.array.length >= len * 3) {
+                const startIdx = Math.max(0, entry.lastSyncedLength - 1);
+                for (let i = startIdx; i < len; i++) {
+                    entry.array[i * 3] = i;
+                    entry.array[i * 3 + 1] = values[i];
+                    entry.array[i * 3 + 2] = values[i + 1];
+                }
+                const count = len - startIdx;
+                entry.buffer.update(count * 12, startIdx * 12);
+            } else {
+                // Full pack on initial load or capacity resize
+                for (let i = 0; i < len; i++) {
+                    entry.array[i * 3] = i;
+                    entry.array[i * 3 + 1] = values[i];
+                    entry.array[i * 3 + 2] = values[i + 1];
+                }
+                entry.buffer.data = entry.array;
+                entry.buffer.update();
             }
-            entry.buffer.data = entry.array;
-            entry.buffer.update();
+
             entry.lastSyncedLength = len;
             entry.lastSyncedLiveValue = liveVal;
         } else if (entry.lastSyncedLiveValue !== liveVal) {

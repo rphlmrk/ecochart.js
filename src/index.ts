@@ -66,6 +66,7 @@ export class EcoChart {
     private themeUnsubscribe: (() => void) | null = null;
 
     private lastThemeIsDark: boolean = true;
+    private lastWatchdogRecovery = 0;
 
     // Per-Pane Controls & Legend
     public autoBtn: HTMLButtonElement | null = null;
@@ -205,6 +206,14 @@ export class EcoChart {
             this.navBar.style.pointerEvents = 'none';
             this.navBar.style.transform = 'translateX(-50%) translateY(6px)';
         }
+    }
+
+    public handleWakeup() {
+        this.renderer.forceNextRender = true;
+        this.isDirty = true;
+        this.priceAxisRenderer.render();
+        this.timeAxisRenderer.render();
+        this.network.handleWakeup();
     }
 
     private createPaneControls() {
@@ -1423,6 +1432,8 @@ export class EcoChart {
             }
             // Propagate live unclosed tick state to indicator pipeline
             this.indicatorManager.update(this.dataStore, isClosed);
+            this.renderer.forceNextRender = true;
+            this.renderer.isSessionDirty = true;
             this.isDirty = true;
             if (this.isLockedToEdge) {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
@@ -1449,6 +1460,24 @@ export class EcoChart {
                 if (themeChanged) {
                     this.isDirty = true;
                 }
+
+                // 🕒 Watchdog: Detect 00:00 countdown hang (overdue by 3+ seconds)
+                if (this.dataStore.length > 0) {
+                    const lastBase = (this.dataStore.length - 1) * 6;
+                    const lastTime = this.dataStore.data[lastBase];
+                    const intervalMs = this.renderer.parseIntervalMs(this.currentInterval);
+                    const remainingMs = (lastTime + intervalMs) - Date.now();
+
+                    if (remainingMs <= -3000) {
+                        const now = Date.now();
+                        // 5s cooldown between recovery attempts
+                        if (now - this.lastWatchdogRecovery > 5000) {
+                            this.lastWatchdogRecovery = now;
+                            this.network.handleWatchdogRecovery();
+                        }
+                    }
+                }
+
                 // Isolated partial update: Only repaints the countdown pill and clock badges
                 this.priceAxisRenderer.updateCountdownOnly();
                 this.timeAxisRenderer.updateClocksOnly();
@@ -3264,6 +3293,17 @@ export class WorkspaceManager {
                 document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
                 (e.currentTarget as HTMLElement).classList.add('active');
             }
+        });
+
+        // Tab Wakeup & Network Reconnect Listeners
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                WorkspaceManager.charts.forEach(c => c.handleWakeup());
+            }
+        });
+
+        window.addEventListener('online', () => {
+            WorkspaceManager.charts.forEach(c => c.handleWakeup());
         });
     }
 }
