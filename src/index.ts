@@ -116,6 +116,12 @@ export class EcoChart {
         // Build per-pane Auto button and Navigation Bar
         this.createPaneControls();
 
+        // Ensure browser window resize triggers on-demand render
+        window.addEventListener('resize', () => {
+            this.isDirty = true;
+            this.renderer.forceNextRender = true;
+        });
+
         // Initialize the tracking variable
         this.lastThemeIsDark = themeManager.getTheme().isDark;
 
@@ -1311,9 +1317,11 @@ export class EcoChart {
                     this.renderer.renderCrosshair();
                     this.isDirty = false;
                     this.isCrosshairDirty = false;
+                    this.renderer.render(); // 🎯 Submit frame only when dirty
                 } else if (this.isCrosshairDirty) {
                     this.renderer.renderCrosshair();
                     this.isCrosshairDirty = false;
+                    this.renderer.render(); // 🎯 Submit frame for crosshair move only
                 }
             }
             requestAnimationFrame(loop);

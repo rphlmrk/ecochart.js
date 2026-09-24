@@ -255,9 +255,11 @@ export class ChartRenderer {
             resizeTo: canvas.parentElement!,
             backgroundColor: this.bgColor,
             antialias: false,
+            autoStart: false, // 🛑 Kill Pixi's continuous 60 FPS auto-loop
             // Optimization: Cap resolution at 2. High-DPI Androids (3x+) choke on heavy Canvas fills
             resolution: Math.min(window.devicePixelRatio || 1, 2),
         });
+        this.app.ticker.stop(); // 🛑 Ensure the internal ticker is completely halted
 
         // GPU BITMAP FONT
         BitmapFont.install({
@@ -930,6 +932,7 @@ export class ChartRenderer {
                 }
             }
         }
+        this.render(); // Submit 1 isolated frame to display the new second
     }
 
     public renderCrosshair() {
@@ -1228,6 +1231,15 @@ export class ChartRenderer {
             if (minPixelDist <= thresholdPx) return { time: this.dataStore.data[base], price: closestPrice };
         }
         return { time, price: rawPrice };
+    }
+
+    /**
+     * Dispatches an explicit on-demand draw call to the GPU.
+     */
+    public render() {
+        if (this.app && this.app.renderer) {
+            this.app.render();
+        }
     }
 
     public destroy() {
