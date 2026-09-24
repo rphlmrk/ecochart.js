@@ -52,11 +52,13 @@ export class IndicatorManager {
     public update(dataStore: DataStore, isClosed: boolean = true) {
         for (const ind of this.activeIndicators) {
             // ALWAYS calculate the math so it's ready if toggled visible
-            ind.update(dataStore, isClosed); 
+            ind.update(dataStore, isClosed);
         }
     }
 
     public render(renderer: ChartRenderer, mainGraphics: Graphics, oscGraphics: Graphics) {
+        if (!(renderer as any).isRenderDirty) return; // 🛑 ECO-MODE: Skip rebuilding indicators if chart is idle
+
         const totalOscH = this.getTotalOscillatorHeight();
         const screenH = renderer.app.screen.height - renderer.timeAxisHeight;
         const mainChartHeight = screenH - totalOscH;

@@ -401,6 +401,7 @@ export class EcoChart {
             eyeBtn.onclick = (e) => {
                 e.stopPropagation();
                 ind.visible = !ind.visible;
+                this.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
                 this.indicatorManager.update(this.dataStore);
                 this.updateControlsLayout();
                 this.updateLegend();
@@ -1267,9 +1268,13 @@ export class EcoChart {
 
         setInterval(() => {
             if (this.isRunning) {
-                // Evaluate dynamic schedule, session, system, or solar-session transitions
-                themeManager.evaluateDynamicTheme();
-                this.isDirty = true;
+                // Only mark chart dirty if theme actually changed
+                const themeChanged = themeManager.evaluateDynamicTheme();
+                if (themeChanged) {
+                    this.isDirty = true;
+                }
+                // Update isolated timer text & clock badges without redrawing candles or grid
+                this.renderer.updateTimeAndCountdown();
             }
         }, 1000);
 
@@ -2713,6 +2718,7 @@ export class WorkspaceManager {
                         const num = parseFloat(input.value);
                         if (!isNaN(num)) {
                             indicator.updateParams({ [param.id]: num });
+                            this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
                             this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
                             this.activeChart!.updateLegend();
                             this.activeChart!.isDirty = true;
@@ -2737,6 +2743,7 @@ export class WorkspaceManager {
                             onChange: (res) => {
                                 swatch.style.backgroundColor = res.color;
                                 indicator.updateParams({ [param.id]: res.color });
+                                this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
                                 this.activeChart!.updateLegend();
                                 this.activeChart!.isDirty = true;
                                 WorkspaceManager.triggerAutoSave();
@@ -2754,6 +2761,7 @@ export class WorkspaceManager {
 
                     check.onchange = () => {
                         indicator.updateParams({ [param.id]: check.checked });
+                        this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
                         this.activeChart!.updateLegend();
                         this.activeChart!.isDirty = true;
                         WorkspaceManager.triggerAutoSave();
@@ -2775,6 +2783,7 @@ export class WorkspaceManager {
 
                     select.onchange = () => {
                         indicator.updateParams({ [param.id]: select.value });
+                        this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
                         this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
                         this.activeChart!.updateLegend();
                         this.activeChart!.isDirty = true;
@@ -2833,6 +2842,7 @@ export class WorkspaceManager {
 
                 toggleBtn.onclick = (e) => {
                     e.stopPropagation();
+                    this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
                     if (isActive) {
                         this.activeChart!.indicatorManager.removeIndicator(activeInstance.id);
                         this.activeChart!.renderer.indicatorMainGraphics.clear(); // Force buffer clear

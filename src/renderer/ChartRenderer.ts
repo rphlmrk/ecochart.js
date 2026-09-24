@@ -41,6 +41,7 @@ export class ChartRenderer {
     private gridGeometry!: Geometry;
     private gridUniforms!: UniformGroup;
     private candlesGraphics!: Graphics;
+    private clockGraphics!: Graphics; // Dedicated layer for world clock badges
 
     // GPU Session Instancing Engine
     private sessionMesh!: Mesh<Geometry, Shader>;
@@ -120,7 +121,14 @@ export class ChartRenderer {
     public crosshairColor = 0x9598A1;
     public isMagnetEnabled = true;
 
+    // --- ECO-MODE STATE ---
+    public isRenderDirty = true;
+    public forceNextRender = true;
+    private lastRenderState = { camX: 0, camY: 0, zoom: 0, len: 0, close: 0, high: 0, low: 0, mode: '', w: 0, h: 0, oscH: 0, interval: '' };
+    private lastCrosshairState = { x: -100, y: -100, visible: false, w: 0, h: 0, syncTime: null as number | null };
+
     public applyTheme(theme: ChartTheme) {
+        this.forceNextRender = true; // Force redraw on theme change
         this.isDarkTheme = theme.isDark; // <-- Store dark/light state
         this.bgColor = ThemeManager.hexToInt(theme.background);
 
@@ -288,9 +296,11 @@ export class ChartRenderer {
         this.app.stage.addChild(this.indicatorMainGraphics); // Indicators behind crosshair
         this.app.stage.addChild(this.indicatorOscGraphics);
         this.drawingGraphics = new Graphics();
+        this.clockGraphics = new Graphics();
         this.app.stage.addChild(this.drawingGraphics);
         this.app.stage.addChild(this.oscHeaderContainer); // Bottom panel header text
         this.app.stage.addChild(this.uiGraphics);
+        this.app.stage.addChild(this.clockGraphics); // Sits on top of time axis without redrawing it
         this.app.stage.addChild(this.textContainer);
 
         // Crosshairs sit above grid/candles and beneath badges
@@ -329,10 +339,50 @@ export class ChartRenderer {
     public renderFrame() {
         if (!this.candlesGraphics || this.dataStore.length === 0) return;
 
+        // --- ECO-MODE: Thermal Throttling (Prevents device heating) ---
+        const len = this.dataStore.length;
+        const lastBase = (len - 1) * 6;
+        const liveC = this.dataStore.data[lastBase + 4];
+        const liveH = this.dataStore.data[lastBase + 2];
+        const liveL = this.dataStore.data[lastBase + 3];
+        const width = this.app.screen.width;
+        const height = this.app.screen.height;
+
+        if (
+            !this.forceNextRender &&
+            this.lastRenderState.camX === this.cameraX &&
+            this.lastRenderState.camY === this.cameraY &&
+            this.lastRenderState.zoom === this.zoom &&
+            this.lastRenderState.len === len &&
+            this.lastRenderState.close === liveC &&
+            this.lastRenderState.high === liveH &&
+            this.lastRenderState.low === liveL &&
+            this.lastRenderState.mode === this.chartMode &&
+            this.lastRenderState.w === width &&
+            this.lastRenderState.h === height &&
+            this.lastRenderState.oscH === this.oscHeight &&
+            this.lastRenderState.interval === this.currentInterval
+        ) {
+            this.isRenderDirty = false;
+            return; // 🛑 ABORT: Nothing changed on screen. Skip heavy CPU math!
+        }
+
+        this.isRenderDirty = true;
+        this.forceNextRender = false;
+        this.lastRenderState = {
+            camX: this.cameraX, camY: this.cameraY, zoom: this.zoom,
+            len: len, close: liveC, high: liveH, low: liveL,
+            mode: this.chartMode, w: width, h: height,
+            oscH: this.oscHeight, interval: this.currentInterval
+        };
+        // --- END ECO-MODE ---
+
         this.candlesGraphics.clear();
         this.gridGraphics.clear();
         this.uiGraphics.clear();
         this.liveBadgeGraphics.clear();
+        this.indicatorMainGraphics.clear();
+        this.indicatorOscGraphics.clear();
 
         // Reset pooled axis label counters without tearing down the reused WebGL textures
         this.activePriceLabels = 0;
@@ -340,8 +390,6 @@ export class ChartRenderer {
         this.activeOscLabels = 0;
 
         // Layout Constants
-        const width = this.app.screen.width;
-        const height = this.app.screen.height;
         const chartWidth = width - this.priceAxisWidth;
         const timeAxisY = height - this.timeAxisHeight; // The strict Y-coordinate where the time axis starts
 
@@ -483,6 +531,7 @@ export class ChartRenderer {
         gu.uCandleStep = candleStep;
         gu.uGridThickness = this.gridThickness;
         gu.uGridStyle = this.gridStyle === 'solid' ? 0.0 : 1.0;
+        this.gridUniforms.update(); // <-- FLUSH TO GPU
 
         // --- 2. MULTI-MODE CHART DRAWING (OPTIMIZED BATCHING) ---
         const candleWidth = Math.max(1, actualSpacing * 0.8);
@@ -686,128 +735,10 @@ export class ChartRenderer {
             this.oscLabelPool[i].visible = false;
         }
 
-        // --- 3.8 DRAW WORLD TIMEZONE CLOCKS IN EMPTY TIME AXIS SPACE ---
-        if (this.clock1BadgeText) this.clock1BadgeText.visible = false;
-        if (this.clock2BadgeText) this.clock2BadgeText.visible = false;
-
-        if (this.clockConfig.enabled && this.dataStore.length > 0) {
-            const lastCandleIdx = this.dataStore.length - 1;
-            const lastCandleX = (lastCandleIdx * actualSpacing) - this.cameraX + actualSpacing;
-            const availableSpace = chartWidth - lastCandleX;
-
-            // Only show if there is enough empty space beyond the live candle (auto-hides on history scroll)
-            if (availableSpace >= 100) {
-                const now = new Date();
-                const isMobile = width < 768 || availableSpace < 220;
-
-                const formatTime = (tz: string) => {
-                    try {
-                        const opt: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
-                        if (tz !== 'local') opt.timeZone = tz;
-                        return new Intl.DateTimeFormat([], opt).format(now);
-                    } catch {
-                        return '--:--:--';
-                    }
-                };
-
-                // Detects Morning Open (🔔), Active Hours (🟢), or Closed (🌙)
-                const getSessionStatus = (tz: string) => {
-                    try {
-                        const parts = new Intl.DateTimeFormat('en-US', {
-                            timeZone: tz === 'local' ? undefined : tz,
-                            hour: 'numeric', minute: 'numeric', hour12: false
-                        }).formatToParts(now);
-
-                        const h = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
-                        const m = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
-                        const t = h + (m / 60);
-
-                        let isOpening = false;
-                        let isOpen = false;
-
-                        if (tz === 'America/New_York') {
-                            isOpening = (t >= 9.5 && t < 10.5); // 09:30 - 10:30 Morning Opening Session
-                            isOpen = (t >= 9.5 && t < 16.0);    // 09:30 - 16:00 Regular Open
-                        } else if (tz === 'Europe/London') {
-                            isOpening = (t >= 8.0 && t < 9.0);   // 08:00 - 09:00 Morning Opening Session
-                            isOpen = (t >= 8.0 && t < 16.5);    // 08:00 - 16:30 Regular Open
-                        } else if (tz === 'Asia/Tokyo') {
-                            isOpening = (t >= 9.0 && t < 10.0);  // 09:00 - 10:00 Morning Open
-                            isOpen = (t >= 9.0 && t < 15.0);
-                        } else if (tz === 'Asia/Hong_Kong') {
-                            isOpening = (t >= 9.5 && t < 10.5);
-                            isOpen = (t >= 9.5 && t < 16.0);
-                        } else if (tz === 'Europe/Frankfurt') {
-                            isOpening = (t >= 8.0 && t < 9.0);
-                            isOpen = (t >= 8.0 && t < 16.5);
-                        } else {
-                            isOpening = (t >= 8.0 && t < 9.5);
-                            isOpen = (t >= 8.0 && t < 17.0);
-                        }
-
-                        if (isOpening) {
-                            // Morning Opening Drive: Gold Accent & Bell
-                            return { icon: '🔔', textColor: 0xFFD600, borderColor: 0xFFD600, borderWidth: 1.5 };
-                        } else if (isOpen) {
-                            // Open Regular Session: Green Active Dot & Teal Accent
-                            return { icon: '🟢', textColor: 0x26A69A, borderColor: 0x26A69A, borderWidth: 1.5 };
-                        } else {
-                            // Closed Session: Moon Icon & Standard Border
-                            return { icon: '🌙', textColor: this.axisTextColor, borderColor: this.gridColor, borderWidth: 1 };
-                        }
-                    } catch {
-                        return { icon: '', textColor: this.axisTextColor, borderColor: this.gridColor, borderWidth: 1 };
-                    }
-                };
-
-                const badgeH = 18;
-                const badgeY = timeAxisY + Math.floor((this.timeAxisHeight - badgeH) / 2);
-                let rightAnchor = chartWidth - 8;
-
-                // Clock 1 (Primary)
-                const st1 = getSessionStatus(this.clockConfig.primaryTz);
-                const timeStr1 = `${st1.icon} ${this.clockConfig.primaryLabel} ${formatTime(this.clockConfig.primaryTz)}`;
-                this.clock1BadgeText.text = timeStr1;
-                this.clock1BadgeText.tint = st1.textColor;
-                const badgeW1 = Math.ceil(this.clock1BadgeText.width) + 12;
-                const badgeX1 = rightAnchor - badgeW1;
-
-                if (badgeX1 > lastCandleX + 8) {
-                    this.uiGraphics.roundRect(badgeX1, badgeY, badgeW1, badgeH, 3)
-                        .fill({ color: this.axisBgColor, alpha: 0.95 })
-                        .stroke({ color: st1.borderColor, width: st1.borderWidth, alpha: 0.9 });
-
-                    this.clock1BadgeText.x = badgeX1 + 6;
-                    this.clock1BadgeText.y = badgeY + 2;
-                    this.clock1BadgeText.visible = true;
-                    rightAnchor = badgeX1 - 6;
-
-                    // Clock 2 (Secondary) - Desktop only when space allows
-                    if (!isMobile && this.clockConfig.secondaryTz) {
-                        const st2 = getSessionStatus(this.clockConfig.secondaryTz);
-                        const timeStr2 = `${st2.icon} ${this.clockConfig.secondaryLabel} ${formatTime(this.clockConfig.secondaryTz)}`;
-                        this.clock2BadgeText.text = timeStr2;
-                        this.clock2BadgeText.tint = st2.textColor;
-                        const badgeW2 = Math.ceil(this.clock2BadgeText.width) + 12;
-                        const badgeX2 = rightAnchor - badgeW2;
-
-                        if (badgeX2 > lastCandleX + 8) {
-                            this.uiGraphics.roundRect(badgeX2, badgeY, badgeW2, badgeH, 3)
-                                .fill({ color: this.axisBgColor, alpha: 0.95 })
-                                .stroke({ color: st2.borderColor, width: st2.borderWidth, alpha: 0.9 });
-
-                            this.clock2BadgeText.x = badgeX2 + 6;
-                            this.clock2BadgeText.y = badgeY + 2;
-                            this.clock2BadgeText.visible = true;
-                        }
-                    }
-                }
-            }
-        }
+        // --- 3.8 UPDATE WORLD TIMEZONE CLOCKS & COUNTDOWN ---
+        this.updateTimeAndCountdown();
 
         // --- 4. DRAW LIVE PRICE LINE & COUNTDOWN BADGE ---
-        const lastIdx = this.dataStore.length - 1;
-        const lastBase = lastIdx * 6;
         const lastOpen = this.dataStore.data[lastBase + 1];
         const lastClose = this.dataStore.data[lastBase + 4];
         const lastTime = this.dataStore.data[lastBase];
@@ -853,8 +784,179 @@ export class ChartRenderer {
         this.updateOscillatorHeaders();
     }
 
+    /**
+     * Isolated sub-renderer: updates only the world clocks and countdown timer
+     * without redrawing the chart, grid, sessions, or indicator math.
+     */
+    public updateTimeAndCountdown() {
+        if (!this.clockGraphics || this.dataStore.length === 0) return;
+
+        const width = this.app.screen.width;
+        const height = this.app.screen.height;
+        const chartWidth = width - this.priceAxisWidth;
+        const timeAxisY = height - this.timeAxisHeight;
+        const actualSpacing = this.candleSpacing * this.zoom;
+
+        const lastIdx = this.dataStore.length - 1;
+        const lastBase = lastIdx * 6;
+        const lastTime = this.dataStore.data[lastBase];
+
+        // 1. Update Candle Countdown Text
+        if (this.liveCountdownBadgeText && this.liveCountdownBadgeText.visible) {
+            const intervalMs = this.parseIntervalMs(this.currentInterval);
+            const remainingMs = Math.max(0, (lastTime + intervalMs) - Date.now());
+            const totalSeconds = Math.floor(remainingMs / 1000);
+            const hours = Math.floor(totalSeconds / 3600);
+            const mins = Math.floor((totalSeconds % 3600) / 60);
+            const secs = totalSeconds % 60;
+
+            let countdownStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            if (hours > 0) countdownStr = `${hours}:${countdownStr}`;
+            if (this.liveCountdownBadgeText.text !== countdownStr) {
+                this.liveCountdownBadgeText.text = countdownStr;
+            }
+        }
+
+        // 2. Update World Clocks on Time Axis
+        this.clockGraphics.clear();
+        if (this.clock1BadgeText) this.clock1BadgeText.visible = false;
+        if (this.clock2BadgeText) this.clock2BadgeText.visible = false;
+
+        if (this.clockConfig.enabled && this.dataStore.length > 0) {
+            const lastCandleX = (lastIdx * actualSpacing) - this.cameraX + actualSpacing;
+            const availableSpace = chartWidth - lastCandleX;
+
+            if (availableSpace >= 100) {
+                const now = new Date();
+                const isMobile = width < 768 || availableSpace < 220;
+
+                const formatTime = (tz: string) => {
+                    try {
+                        const opt: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+                        if (tz !== 'local') opt.timeZone = tz;
+                        return new Intl.DateTimeFormat([], opt).format(now);
+                    } catch {
+                        return '--:--:--';
+                    }
+                };
+
+                const getSessionStatus = (tz: string) => {
+                    try {
+                        const parts = new Intl.DateTimeFormat('en-US', {
+                            timeZone: tz === 'local' ? undefined : tz,
+                            hour: 'numeric', minute: 'numeric', hour12: false
+                        }).formatToParts(now);
+
+                        const h = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
+                        const m = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+                        const t = h + (m / 60);
+
+                        let isOpening = false;
+                        let isOpen = false;
+
+                        if (tz === 'America/New_York') {
+                            isOpening = (t >= 9.5 && t < 10.5);
+                            isOpen = (t >= 9.5 && t < 16.0);
+                        } else if (tz === 'Europe/London') {
+                            isOpening = (t >= 8.0 && t < 9.0);
+                            isOpen = (t >= 8.0 && t < 16.5);
+                        } else if (tz === 'Asia/Tokyo') {
+                            isOpening = (t >= 9.0 && t < 10.0);
+                            isOpen = (t >= 9.0 && t < 15.0);
+                        } else if (tz === 'Asia/Hong_Kong') {
+                            isOpening = (t >= 9.5 && t < 10.5);
+                            isOpen = (t >= 9.5 && t < 16.0);
+                        } else if (tz === 'Europe/Frankfurt') {
+                            isOpening = (t >= 8.0 && t < 9.0);
+                            isOpen = (t >= 8.0 && t < 16.5);
+                        } else {
+                            isOpening = (t >= 8.0 && t < 9.5);
+                            isOpen = (t >= 8.0 && t < 17.0);
+                        }
+
+                        if (isOpening) {
+                            return { icon: '🔔', textColor: 0xFFD600, borderColor: 0xFFD600, borderWidth: 1.5 };
+                        } else if (isOpen) {
+                            return { icon: '🟢', textColor: 0x26A69A, borderColor: 0x26A69A, borderWidth: 1.5 };
+                        } else {
+                            return { icon: '🌙', textColor: this.axisTextColor, borderColor: this.gridColor, borderWidth: 1 };
+                        }
+                    } catch {
+                        return { icon: '', textColor: this.axisTextColor, borderColor: this.gridColor, borderWidth: 1 };
+                    }
+                };
+
+                const badgeH = 18;
+                const badgeY = timeAxisY + Math.floor((this.timeAxisHeight - badgeH) / 2);
+                let rightAnchor = chartWidth - 8;
+
+                // Clock 1 (Primary)
+                const st1 = getSessionStatus(this.clockConfig.primaryTz);
+                const timeStr1 = `${st1.icon} ${this.clockConfig.primaryLabel} ${formatTime(this.clockConfig.primaryTz)}`;
+                this.clock1BadgeText.text = timeStr1;
+                this.clock1BadgeText.tint = st1.textColor;
+                const badgeW1 = Math.ceil(this.clock1BadgeText.width) + 12;
+                const badgeX1 = rightAnchor - badgeW1;
+
+                if (badgeX1 > lastCandleX + 8) {
+                    this.clockGraphics.roundRect(badgeX1, badgeY, badgeW1, badgeH, 3)
+                        .fill({ color: this.axisBgColor, alpha: 0.95 })
+                        .stroke({ color: st1.borderColor, width: st1.borderWidth, alpha: 0.9 });
+
+                    this.clock1BadgeText.x = badgeX1 + 6;
+                    this.clock1BadgeText.y = badgeY + 2;
+                    this.clock1BadgeText.visible = true;
+                    rightAnchor = badgeX1 - 6;
+
+                    // Clock 2 (Secondary)
+                    if (!isMobile && this.clockConfig.secondaryTz) {
+                        const st2 = getSessionStatus(this.clockConfig.secondaryTz);
+                        const timeStr2 = `${st2.icon} ${this.clockConfig.secondaryLabel} ${formatTime(this.clockConfig.secondaryTz)}`;
+                        this.clock2BadgeText.text = timeStr2;
+                        this.clock2BadgeText.tint = st2.textColor;
+                        const badgeW2 = Math.ceil(this.clock2BadgeText.width) + 12;
+                        const badgeX2 = rightAnchor - badgeW2;
+
+                        if (badgeX2 > lastCandleX + 8) {
+                            this.clockGraphics.roundRect(badgeX2, badgeY, badgeW2, badgeH, 3)
+                                .fill({ color: this.axisBgColor, alpha: 0.95 })
+                                .stroke({ color: st2.borderColor, width: st2.borderWidth, alpha: 0.9 });
+
+                            this.clock2BadgeText.x = badgeX2 + 6;
+                            this.clock2BadgeText.y = badgeY + 2;
+                            this.clock2BadgeText.visible = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     public renderCrosshair() {
         if (!this.crosshairGraphics || !this.syncCrosshairGraphics) return;
+
+        const width = this.app.screen.width;
+        const height = this.app.screen.height;
+
+        // --- ECO-MODE: Crosshair Throttling ---
+        if (
+            !this.isRenderDirty && // Force sync if main chart moved
+            this.lastCrosshairState.x === this.crosshairX &&
+            this.lastCrosshairState.y === this.crosshairY &&
+            this.lastCrosshairState.visible === this.isCrosshairVisible &&
+            this.lastCrosshairState.w === width &&
+            this.lastCrosshairState.h === height &&
+            this.lastCrosshairState.syncTime === this.syncHoverTimeMs
+        ) {
+            return; // 🛑 ABORT: Crosshair hasn't moved!
+        }
+
+        this.lastCrosshairState = {
+            x: this.crosshairX, y: this.crosshairY,
+            visible: this.isCrosshairVisible,
+            w: width, h: height, syncTime: this.syncHoverTimeMs
+        };
+        // --- END ECO-MODE ---
 
         this.crosshairGraphics.clear();
         this.syncCrosshairGraphics.clear();
@@ -862,9 +964,6 @@ export class ChartRenderer {
 
         this.persistentPriceBadgeText.visible = false;
         this.persistentTimeBadgeText.visible = false;
-
-        const width = this.app.screen.width;
-        const height = this.app.screen.height;
         const chartWidth = width - this.priceAxisWidth;
         const timeAxisY = height - this.timeAxisHeight;
 
@@ -1334,6 +1433,7 @@ export class ChartRenderer {
             uniform vec4 uBearWickColor;
 
             varying vec4 vColor;
+            varying float vY; // Removed strict highp requirement
 
             void main() {
                 // Instantly discard geometry outside the visible camera view
@@ -1381,15 +1481,28 @@ export class ChartRenderer {
                 float posX = centerX + (aVertexPosition.x * w);
                 float posY = mix(bottomY, topY, aVertexPosition.y);
                 
+                vY = posY;
+
                 mat3 mvp = uProjectionMatrix * uWorldTransformMatrix;
                 gl_Position = vec4((mvp * vec3(posX, posY, 1.0)).xy, 0.0, 1.0);
             }
         `;
 
         const fragmentSrc = `
-            precision mediump float;
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+                precision highp float;
+            #else
+                precision mediump float;
+            #endif
+
             varying vec4 vColor;
+            varying float vY;
+            uniform float uChartHeight;
+
             void main() {
+                if (vY > uChartHeight || vY < 0.0) {
+                    discard;
+                }
                 gl_FragColor = vColor;
             }
         `;
@@ -1416,9 +1529,11 @@ export class ChartRenderer {
         u.uBearBodyColor = toVec4(this.bearColor, this.bearAlpha);
         u.uBullWickColor = toVec4(this.bullWickColor, this.bullWickAlpha);
         u.uBearWickColor = toVec4(this.bearWickColor, this.bearWickAlpha);
+        this.candleUniforms.update(); // <-- FLUSH TO GPU
 
         if (this.gridUniforms) {
             this.gridUniforms.uniforms.uGridColor = toVec4(this.gridColor, this.gridAlpha);
+            this.gridUniforms.update(); // <-- FLUSH TO GPU
         }
     }
 
@@ -1590,7 +1705,7 @@ export class ChartRenderer {
                 uniform float uOscMin;
                 uniform float uOscMax;
 
-                varying float vY; // <-- ADDED: Pass Y position to fragment shader
+                varying float vY; // Removed strict highp requirement
 
                 float getScreenY(float val) {
                     if (uIsOscillator > 0.5) {
@@ -1614,8 +1729,7 @@ export class ChartRenderer {
                     float valThis = aLineData.y;
                     float valNext = aLineData.z;
                     
-                    // Discard starting zeroes
-                    if (valThis == 0.0 && valNext == 0.0) {
+                    if (uIsOscillator < 0.5 && valThis == 0.0 && valNext == 0.0) {
                         gl_Position = vec4(0.0);
                         return;
                     }
@@ -1643,7 +1757,12 @@ export class ChartRenderer {
             `;
 
             const fragmentSrc = `
-                precision mediump float;
+                #ifdef GL_FRAGMENT_PRECISION_HIGH
+                    precision highp float;
+                #else
+                    precision mediump float;
+                #endif
+
                 uniform vec4 uColor;
                 uniform float uIsOscillator;
                 uniform float uOscY;
@@ -1653,14 +1772,11 @@ export class ChartRenderer {
 
                 void main() {
                     if (uIsOscillator > 0.5) {
-                        // Pixel-perfect clipping for oscillator panels
-                        if (vY < uOscY || vY > uOscY + uOscHeight) {
+                        if (vY < uOscY || vY > (uOscY + uOscHeight)) {
                             discard;
                         }
                     } else {
-                        // Pixel-perfect clipping for the main chart (SMA/EMA)
-                        // Prevents lines from bleeding down into the sub-panels or time axis
-                        if (vY > uChartHeight) {
+                        if (vY > uChartHeight || vY < 0.0) {
                             discard;
                         }
                     }
@@ -1733,6 +1849,7 @@ export class ChartRenderer {
             u.uOscMax = oscScale.max;
         }
 
+        entry.uniforms.update(); // <-- FLUSH TO GPU: Immediately applies new line colors & scale bounds
         entry.mesh.geometry.instanceCount = len;
     }
 

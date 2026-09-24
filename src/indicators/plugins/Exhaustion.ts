@@ -58,17 +58,32 @@ export class ExhaustionIndicator extends BaseIndicator {
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
-        const bullColor = parseColor(this.getParam('bullColor', '#00FFEA'));
-        const bearColor = parseColor(this.getParam('bearColor', '#FF9800'));
-        const rawLineColor = String(this.getParam('lineColor', '#FFFFFF')).toUpperCase();
+        // 1. Detect if the chart background is light (checks theme flag AND background brightness)
+        const bgR = (r.bgColor >> 16) & 0xff;
+        const bgG = (r.bgColor >> 8) & 0xff;
+        const bgB = r.bgColor & 0xff;
+        const isLightMode = !r.isDarkTheme || (0.299 * bgR + 0.587 * bgG + 0.114 * bgB) > 130;
 
-        const lineColor = (rawLineColor === '#FFFFFF' && !r.isDarkTheme)
-            ? r.axisTextColor
-            : parseColor(rawLineColor);
+        // 2. Resolve line color: If white on a light background, force to solid black
+        const rawLineColor = String(this.getParam('lineColor', '#FFFFFF')).trim().toUpperCase();
+        let lineColor = parseColor(rawLineColor);
+        const lR = (lineColor >> 16) & 0xff;
+        const lG = (lineColor >> 8) & 0xff;
+        const lB = lineColor & 0xff;
+        const isWhite = (lR > 200 && lG > 200 && lB > 200) || rawLineColor.startsWith('#FFF');
 
-        g.rect(0, layout.oscY, layout.chartWidth, layout.oscHeight).fill({ color: r.axisBgColor, alpha: 0.35 });
+        if (isLightMode && isWhite) {
+            lineColor = 0x000000; // Force solid black
+        }
 
-        const bandAlpha = r.isDarkTheme ? 0.12 : 0.22;
+        // 3. Resolve Bull/Bear band colors
+        const rawBull = String(this.getParam('bullColor', '#00FFEA')).toUpperCase();
+        const bullColor = rawBull === '#00FFEA' ? r.bullColor : parseColor(rawBull);
+
+        const rawBear = String(this.getParam('bearColor', '#FF9800')).toUpperCase();
+        const bearColor = rawBear === '#FF9800' ? r.bearColor : parseColor(rawBear);
+
+        const bandAlpha = isLightMode ? 0.18 : 0.12;
         const yUpperBand = layout.oscY + layout.oscHeight * 0.25;
         const yLowerBand = layout.oscY + layout.oscHeight * 0.75;
         const midY = layout.oscY + (layout.oscHeight / 2);
@@ -76,9 +91,10 @@ export class ExhaustionIndicator extends BaseIndicator {
         g.rect(0, layout.oscY, layout.chartWidth, layout.oscHeight * 0.25).fill({ color: bullColor, alpha: bandAlpha });
         g.rect(0, yLowerBand, layout.chartWidth, layout.oscHeight * 0.25).fill({ color: bearColor, alpha: bandAlpha });
 
-        const zeroLineColor = r.isDarkTheme ? 0xFFFFFF : r.axisTextColor;
+        // Zero center line: black on light mode, white on dark mode
+        const zeroLineColor = isLightMode ? 0x000000 : 0xFFFFFF;
         StrokeEngine.drawLine(g, 0, midY, layout.chartWidth, midY, {
-            color: zeroLineColor, width: 1, alpha: 0.25, style: 'solid'
+            color: zeroLineColor, width: 1, alpha: isLightMode ? 0.35 : 0.25, style: 'solid'
         });
 
         StrokeEngine.drawLine(g, 0, yUpperBand, layout.chartWidth, yUpperBand, {
@@ -93,13 +109,22 @@ export class ExhaustionIndicator extends BaseIndicator {
         r.drawGPUIndicatorLine(this.id, this.values, lineColor, 1.5, true, layout, this.oscillatorScale);
     }
 
-    public getValueAt(idx: number, ds: DataStore, _isDark: boolean, defaultTextClr: number) {
+    public getValueAt(idx: number, ds: DataStore, isDark: boolean, defaultTextClr: number) {
         const val = (idx >= 0 && idx < ds.length) ? this.values[idx] : 0;
         const thresh = this.getParam<number>('threshold', 80);
-        const bullColor = parseColor(this.getParam('bullColor', '#00FFEA'));
-        const bearColor = parseColor(this.getParam('bearColor', '#FF9800'));
 
-        let valueColor = defaultTextClr;
+        const rawBull = String(this.getParam('bullColor', '#00FFEA')).toUpperCase();
+        const rawBear = String(this.getParam('bearColor', '#FF9800')).toUpperCase();
+
+        let bullColor = parseColor(rawBull);
+        let bearColor = parseColor(rawBear);
+
+        if (!isDark) {
+            if (rawBull === '#00FFEA') bullColor = 0x089981;
+            if (rawBear === '#FF9800') bearColor = 0xF23645;
+        }
+
+        let valueColor = !isDark ? 0x000000 : defaultTextClr;
         if (val >= thresh) valueColor = bullColor;
         else if (val <= -thresh) valueColor = bearColor;
 

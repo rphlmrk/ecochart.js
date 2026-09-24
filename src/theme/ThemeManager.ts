@@ -155,8 +155,8 @@ export class ThemeManager {
     /**
      * Evaluates active mode (A, B, C, D) and smoothly transitions theme if changed
      */
-    public evaluateDynamicTheme() {
-        if (this.dynamicConfig.mode === 'manual') return;
+    public evaluateDynamicTheme(): boolean {
+        if (this.dynamicConfig.mode === 'manual') return false;
 
         const now = new Date();
         const localHour = now.getHours();
@@ -174,11 +174,11 @@ export class ThemeManager {
         // --- OPTION B: MARKET SESSION PRESETS ---
         else if (this.dynamicConfig.mode === 'session') {
             if (floatHourUTC >= 13.5 && floatHourUTC < 20.0) {
-                targetThemeId = 'solar-spark';      // New York Open (Energetic daylight)
+                targetThemeId = 'solar-spark';      // New York Open
             } else if (floatHourUTC >= 8.0 && floatHourUTC < 16.5) {
-                targetThemeId = 'corporate-trust';  // London Open (Crisp European finance)
+                targetThemeId = 'corporate-trust';  // London Open
             } else if (floatHourUTC >= 0.0 && floatHourUTC < 9.0) {
-                targetThemeId = 'cyberpunk-neon';   // Tokyo/Asia Open (Futuristic dark)
+                targetThemeId = 'cyberpunk-neon';   // Tokyo/Asia Open
             } else {
                 targetThemeId = 'midnight-abyss';   // Off-hours dark
             }
@@ -191,27 +191,24 @@ export class ThemeManager {
         }
 
         // --- OPTION D: SOLAR SESSION FLOW ---
-        // Transitions Day (Light) -> Night (Dark) with the active market session color injected
         else if (this.dynamicConfig.mode === 'solar-session') {
             const isDay = localHour >= this.dynamicConfig.dayStartHour && localHour < this.dynamicConfig.nightStartHour;
             targetThemeId = isDay ? this.dynamicConfig.dayThemeId : this.dynamicConfig.nightThemeId;
 
-            // Session opening colors
             if (floatHourUTC >= 13.5 && floatHourUTC < 20.0) {
-                targetAccentOverride = '#EF5350'; // New York Coral
+                targetAccentOverride = '#EF5350';
             } else if (floatHourUTC >= 8.0 && floatHourUTC < 16.5) {
-                targetAccentOverride = '#2962FF'; // London Royal Blue
+                targetAccentOverride = '#2962FF';
             } else if (floatHourUTC >= 0.0 && floatHourUTC < 9.0) {
-                targetAccentOverride = '#FBC02D'; // Asia Gold
+                targetAccentOverride = '#FBC02D';
             }
         }
 
         const basePreset = THEME_PRESETS[targetThemeId];
-        if (!basePreset) return;
+        if (!basePreset) return false;
 
         const resolvedAccent = targetAccentOverride || (basePreset.accentSource === 'bull' ? basePreset.bullBody : basePreset.accentColor);
 
-        // Guard: Only fire updates if the preset ID or accent color actually transitioned
         const hasIdChanged = this.currentTheme.id !== targetThemeId;
         const hasAccentChanged = this.getResolvedAccentColor().toUpperCase() !== resolvedAccent.toUpperCase();
 
@@ -223,7 +220,9 @@ export class ThemeManager {
                 newTheme.crosshair = targetAccentOverride;
             }
             this.applyTheme(newTheme);
+            return true;
         }
+        return false;
     }
 
     private saveDynamicConfig(config: DynamicThemeConfig) {
