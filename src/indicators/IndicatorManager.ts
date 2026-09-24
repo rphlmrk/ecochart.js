@@ -41,11 +41,18 @@ export class IndicatorManager {
         return this.activeIndicators.find(i => i.isOscillator && i.visible);
     }
 
+    public resetAll() {
+        for (const ind of this.activeIndicators) {
+            if (typeof ind.reset === 'function') {
+                ind.reset();
+            }
+        }
+    }
+
     public update(dataStore: DataStore, isClosed: boolean = true) {
         for (const ind of this.activeIndicators) {
-            if (ind.visible) {
-                ind.update(dataStore, isClosed);
-            }
+            // ALWAYS calculate the math so it's ready if toggled visible
+            ind.update(dataStore, isClosed); 
         }
     }
 

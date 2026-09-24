@@ -92,6 +92,10 @@ export class HTFProjectionsIndicator extends BaseIndicator {
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
+        const chartTfMs = r.parseIntervalMs(r.currentInterval);
+        const tfMs = this.getEffectiveTfMins() * 60 * 1000;
+        if (chartTfMs > tfMs) return; // <-- ADDED: Hide if chart TF > HTF
+
         const count = this.getParam<number>('count', 4);
         const widthBars = this.getParam<number>('widthBars', 5);
         const gapBars = this.getParam<number>('gapBars', 2);

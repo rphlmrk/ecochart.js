@@ -101,6 +101,14 @@ export abstract class BaseIndicator {
         };
     }
 
+    public reset() {
+        this.lastCalculatedIdx = -1;
+        this.values.fill(0);
+        this.state = {};
+        this.confirmedState = {};
+        this.setup();
+    }
+
     public update(ds: DataStore, isClosedTick: boolean) {
         if (ds.length === 0) {
             this.lastCalculatedIdx = -1;
@@ -115,7 +123,6 @@ export abstract class BaseIndicator {
         }
 
         // --- BACKWARDS COMPATIBILITY ---
-        // If the indicator hasn't been migrated to Phase 3 yet, run the old loop
         if (this.calculate !== BaseIndicator.prototype.calculate) {
             this.calculate(ds);
             return;
@@ -136,12 +143,12 @@ export abstract class BaseIndicator {
         // 2. Live Tick Updates
         const liveIdx = ds.length - 1;
 
-        // Restore safe state before processing unclosed tick (Fast Clone)
+        // Restore safe state before processing unclosed tick
         this.state = { ...this.confirmedState };
 
         this.next(liveIdx, isClosedTick, ds);
 
-        // 3. Lock in state if the candle officially closed (Fast Clone)
+        // 3. Lock in state if the candle officially closed
         if (isClosedTick) {
             this.confirmedState = { ...this.state };
             this.lastCalculatedIdx = liveIdx;

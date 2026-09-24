@@ -1175,6 +1175,7 @@ export class EcoChart {
         this.renderer.currentInterval = newInterval;
         this.network.disconnect();
         this.dataStore.clear();
+        this.indicatorManager.resetAll();
         this.isDirty = true;
 
         await this.network.connect(this.currentSymbol, this.currentInterval, (prependedCount = 0, isClosed = true) => {
@@ -1205,6 +1206,7 @@ export class EcoChart {
         this.drawingManager.loadDrawings(newSymbol); // Load DB drawings!
         this.network.disconnect();
         this.dataStore.clear();
+        this.indicatorManager.resetAll();
         this.isDirty = true;
 
         await this.network.connect(this.currentSymbol, this.currentInterval, (prependedCount = 0, isClosed = true) => {

@@ -39,21 +39,37 @@ export class VolumeIndicator extends BaseIndicator {
         if (maxVol === 0) return;
 
         const maxH = layout.mainChartHeight * heightPct;
-        const barW = Math.max(2, sp * 0.8);
+        const barW = Math.max(1, sp * 0.8);
 
+        // BATcH RENDER: UP CANDLES
+        g.beginPath();
         for (let i = visStart; i < visEnd; i++) {
             const base = i * 6;
             const open = r.dataStore.data[base + 1];
             const close = r.dataStore.data[base + 4];
-            const vol = r.dataStore.data[base + 5];
-
-            const x = (i * sp) - r.cameraX;
-            const h = (vol / maxVol) * maxH;
-            const y = layout.mainChartHeight - h;
-
-            const color = close >= open ? upColor : downColor;
-            g.rect(x, y, barW, h).fill({ color, alpha: opacity });
+            if (close >= open) {
+                const vol = r.dataStore.data[base + 5];
+                const x = (i * sp) - r.cameraX;
+                const h = (vol / maxVol) * maxH;
+                g.rect(x, layout.mainChartHeight - h, barW, h);
+            }
         }
+        g.fill({ color: upColor, alpha: opacity });
+
+        // BATCH RENDER: DOWN CANDLES
+        g.beginPath();
+        for (let i = visStart; i < visEnd; i++) {
+            const base = i * 6;
+            const open = r.dataStore.data[base + 1];
+            const close = r.dataStore.data[base + 4];
+            if (close < open) {
+                const vol = r.dataStore.data[base + 5];
+                const x = (i * sp) - r.cameraX;
+                const h = (vol / maxVol) * maxH;
+                g.rect(x, layout.mainChartHeight - h, barW, h);
+            }
+        }
+        g.fill({ color: downColor, alpha: opacity });
     }
 
     public getValueAt(idx: number, ds: DataStore, _isDark: boolean, _defaultTextClr: number) {

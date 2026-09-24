@@ -76,6 +76,10 @@ export class HTFBiasIndicator extends BaseIndicator {
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
+        const chartTfMs = r.parseIntervalMs(r.currentInterval);
+        const tfMs = this.getEffectiveTfMins() * 60 * 1000;
+        if (chartTfMs > tfMs) return; // <-- ADDED: Hide if chart TF > HTF
+
         const displayMode = this.getParam<string>('displayMode', 'Top Ribbon');
         const bullClr = parseColor(this.getParam('bullColor', '#089981'));
         const bearClr = parseColor(this.getParam('bearColor', '#F23645'));
@@ -89,7 +93,6 @@ export class HTFBiasIndicator extends BaseIndicator {
         const showRibbon = displayMode === 'Top Ribbon' || displayMode === 'Both';
         const showLines = displayMode === 'Overlay Lines' || displayMode === 'Both';
 
-        const tfMs = this.getEffectiveTfMins() * 60 * 1000;
         const intervalMs = r.parseIntervalMs(r.currentInterval);
         const barsPerBlock = Math.max(1, Math.round(tfMs / intervalMs));
 

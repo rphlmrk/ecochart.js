@@ -2,7 +2,7 @@ import { BaseIndicator, parseColor, type IndicatorLayout } from '../Indicator';
 import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { StrokeEngine } from '../../renderer/StrokeEngine';
-import { Graphics, Container, Text } from 'pixi.js';
+import { Graphics, Container, BitmapText } from 'pixi.js';
 
 interface ZigZagPoint {
     barIdx: number;
@@ -31,7 +31,7 @@ export class ZigZag123Indicator extends BaseIndicator {
 
     // Zero-GC text pooling for "1-2-3" labels
     private labelContainer = new Container();
-    private labelTextPool: Text[] = [];
+    private labelTextPool: BitmapText[] = [];
     private isContainerMounted = false;
 
     constructor(zzLength = 4) {
@@ -434,14 +434,14 @@ export class ZigZag123Indicator extends BaseIndicator {
                 g.circle(x, y + 6, 8).fill({ color: badgeColor, alpha: 0.85 });
                 g.circle(x, y + 6, 8).stroke({ color: r.gridColor, width: 1 });
 
-                // Fetch pooled text
-                let textItem: Text;
+                // Fetch pooled GPU text
+                let textItem: BitmapText;
                 if (activeTextCount < this.labelTextPool.length) {
                     textItem = this.labelTextPool[activeTextCount];
                 } else {
-                    textItem = new Text({
+                    textItem = new BitmapText({
                         text: '',
-                        style: { fontFamily: 'sans-serif', fontSize: 11, fontWeight: 'bold' }
+                        style: { fontFamily: 'ChartFont', fontSize: 11 }
                     });
                     textItem.anchor.set(0.5);
                     this.labelTextPool.push(textItem);
@@ -449,7 +449,7 @@ export class ZigZag123Indicator extends BaseIndicator {
                 }
 
                 textItem.text = lbl.text;
-                textItem.style.fill = labelColor;
+                textItem.tint = labelColor; // <-- GPU Tint instead of fill
                 textItem.x = x;
                 textItem.y = y + 6;
                 textItem.visible = true;

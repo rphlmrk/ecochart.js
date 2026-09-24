@@ -73,6 +73,10 @@ export class HTFBoxIndicator extends BaseIndicator {
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
+        const chartTfMs = r.parseIntervalMs(r.currentInterval);
+        const tfMs = this.getEffectiveTfMins() * 60 * 1000;
+        if (chartTfMs > tfMs) return; // <-- ADDED: Hide if chart TF > HTF
+
         const displayMode = this.getParam<string>('displayMode', 'Overlay');
         const customOpacity = this.getParam<number>('opacity', 0.2);
         const showWicks = this.getParam<boolean>('showWicks', true);
