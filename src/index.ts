@@ -614,8 +614,9 @@ export class EcoChart {
             this.canvas.setPointerCapture(e.pointerId);
         });
 
-        // Dedicated Price Axis Drag Listener
+        // Dedicated Price Axis Drag Listener (Desktop)
         this.priceCanvas.addEventListener('pointerdown', (e) => {
+            if (e.pointerType === 'touch') return;
             this.isDraggingPriceAxis = true;
             this.lastMouseX = e.clientX;
             this.lastMouseY = e.clientY;
@@ -623,8 +624,53 @@ export class EcoChart {
             this.priceCanvas.setPointerCapture(e.pointerId);
         });
 
-        // Dedicated Time Axis Drag Listener
+        // Mobile Touch Engine for Price Axis
+        let priceTouchStartY = 0;
+        this.priceCanvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            WorkspaceManager.setActiveChart(this);
+            if (e.touches.length === 1) {
+                this.isDraggingPriceAxis = true;
+                priceTouchStartY = e.touches[0].clientY;
+            }
+        }, { passive: false });
+
+        this.priceCanvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!this.isDraggingPriceAxis || e.touches.length === 0) return;
+            const clientY = e.touches[0].clientY;
+            const deltaY = clientY - priceTouchStartY;
+            priceTouchStartY = clientY;
+
+            this.renderer.isAutoScale = false;
+            if (this.autoBtn) this.autoBtn.style.color = 'var(--chart-text, #787B86)';
+
+            const canvasHeight = this.chartCanvas.clientHeight || 600;
+            const priceRange = this.renderer.currentMaxPrice - this.renderer.currentMinPrice;
+            const stretchFactor = deltaY * (priceRange / canvasHeight) * 2;
+            const nextMin = this.renderer.currentMinPrice - stretchFactor;
+            const nextMax = this.renderer.currentMaxPrice + stretchFactor;
+            if (nextMax - nextMin > 0.000001) {
+                this.renderer.currentMinPrice = nextMin;
+                this.renderer.currentMaxPrice = nextMax;
+            }
+            this.renderer.forceNextRender = true;
+            this.isDirty = true;
+            this.priceAxisRenderer.render();
+        }, { passive: false });
+
+        const endPriceTouch = (e: TouchEvent) => {
+            e.preventDefault();
+            this.isDraggingPriceAxis = false;
+        };
+        this.priceCanvas.addEventListener('touchend', endPriceTouch);
+        this.priceCanvas.addEventListener('touchcancel', endPriceTouch);
+
+        // Dedicated Time Axis Drag Listener (Desktop)
         this.timeCanvas.addEventListener('pointerdown', (e) => {
+            if (e.pointerType === 'touch') return;
             this.isDraggingTimeAxis = true;
             const chartRect = this.chartCanvas.getBoundingClientRect();
             const localX = e.clientX - chartRect.left;
@@ -635,6 +681,46 @@ export class EcoChart {
             WorkspaceManager.setActiveChart(this);
             this.timeCanvas.setPointerCapture(e.pointerId);
         });
+
+        // Mobile Touch Engine for Time Axis
+        let timeTouchStartX = 0;
+        this.timeCanvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            WorkspaceManager.setActiveChart(this);
+            if (e.touches.length === 1) {
+                this.isDraggingTimeAxis = true;
+                const chartRect = this.chartCanvas.getBoundingClientRect();
+                const localX = e.touches[0].clientX - chartRect.left;
+                this.timeAxisAnchorX = localX;
+                this.timeAxisWorldX = (localX + this.renderer.cameraX) / this.renderer.zoom;
+                timeTouchStartX = e.touches[0].clientX;
+            }
+        }, { passive: false });
+
+        this.timeCanvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!this.isDraggingTimeAxis || e.touches.length === 0) return;
+            const clientX = e.touches[0].clientX;
+            const deltaX = clientX - timeTouchStartX;
+            timeTouchStartX = clientX;
+
+            this.isLockedToEdge = false;
+            const zoomMultiplier = 1 + (deltaX * 0.005);
+            this.renderer.zoom = Math.max(0.1, Math.min(this.renderer.zoom * zoomMultiplier, 50));
+            this.renderer.cameraX = (this.timeAxisWorldX * this.renderer.zoom) - this.timeAxisAnchorX;
+            this.renderer.forceNextRender = true;
+            this.isDirty = true;
+            this.timeAxisRenderer.render();
+        }, { passive: false });
+
+        const endTimeTouch = (e: TouchEvent) => {
+            e.preventDefault();
+            this.isDraggingTimeAxis = false;
+        };
+        this.timeCanvas.addEventListener('touchend', endTimeTouch);
+        this.timeCanvas.addEventListener('touchcancel', endTimeTouch);
 
         const handlePointerMove = (e: PointerEvent) => {
             if (e.pointerType === 'touch') return; // Prevent double-speed drag & thumb crosshair
@@ -964,44 +1050,25 @@ export class EcoChart {
                     this.isDirty = true;
                 }
 
-                const chartWidth = this.renderer.app.screen.width - this.renderer.priceAxisWidth;
-                const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
-
                 if (this.isMobileCrosshairActive) {
                     // Crosshair is already active. Snap it to new touch location immediately.
                     this.renderer.crosshairX = x;
                     this.renderer.crosshairY = y;
                     this.isCrosshairDirty = true;
                     this.isDraggingChart = false;
-                    this.isDraggingPriceAxis = false;
-                    this.isDraggingTimeAxis = false;
                 } else {
-                    // Detect Touch Hit Zones
-                    if (x > chartWidth) {
-                        this.isDraggingPriceAxis = true;
-                        this.isDraggingChart = false;
-                        this.isDraggingTimeAxis = false;
-                    } else if (y > chartHeight) {
-                        this.isDraggingTimeAxis = true;
-                        this.isDraggingChart = false;
-                        this.isDraggingPriceAxis = false;
-                        this.timeAxisAnchorX = x;
-                        this.timeAxisWorldX = (x + this.renderer.cameraX) / this.renderer.zoom;
-                    } else {
-                        this.isDraggingChart = true;
-                        this.isDraggingPriceAxis = false;
-                        this.isDraggingTimeAxis = false;
+                    this.isDraggingChart = true;
 
-                        // Start Long-Press Timer (400ms) to activate mobile crosshair
-                        this.longPressTimeout = setTimeout(() => {
-                            this.isMobileCrosshairActive = true;
-                            this.renderer.isCrosshairVisible = true;
-                            this.renderer.crosshairX = this.touchStartX;
-                            this.renderer.crosshairY = this.touchStartY;
-                            this.isCrosshairDirty = true;
-                            this.isDraggingChart = false; // Stop panning
-                        }, 400);
-                    }
+                    // Start Long-Press Timer (400ms) to activate mobile crosshair
+                    this.longPressTimeout = setTimeout(() => {
+                        this.isMobileCrosshairActive = true;
+                        this.renderer.isCrosshairVisible = true;
+                        this.renderer.crosshairX = this.touchStartX;
+                        this.renderer.crosshairY = this.touchStartY;
+                        this.isCrosshairDirty = true;
+                        this.isDraggingChart = false; // Stop panning
+                    }, 400);
+
                     this.renderer.isCrosshairVisible = false;
                     this.isCrosshairDirty = true;
                 }
@@ -1043,9 +1110,20 @@ export class EcoChart {
                 const x = t.clientX - rect.left;
                 const y = t.clientY - rect.top;
 
-                // ---> NEW: Mobile Drawing Support <---
+                // ---> NEW: Mobile Drawing Creation Support <---
                 if (this.drawingManager.activeToolType) {
                     this.drawingManager.onPointerMove(this.renderer, x, y);
+                    this.isDirty = true;
+                    return; // Stop here, do not pan chart
+                }
+
+                // ---> NEW: Mobile Drawing Handle Drag Support <---
+                if (this.drawingManager.selectedDrawing && this.drawingManager.draggingHandle !== null) {
+                    let { time, price } = this.drawingManager.isMagnetEnabled
+                        ? this.renderer.getMagnetPoint(x, y)
+                        : { time: this.renderer.xToTime(x), price: this.renderer.yToPrice(y) };
+
+                    this.drawingManager.selectedDrawing.points[this.drawingManager.draggingHandle] = { time, price };
                     this.isDirty = true;
                     return; // Stop here, do not pan chart
                 }
@@ -1108,7 +1186,18 @@ export class EcoChart {
             }
         }, { passive: false });
 
+        let lastMobileTapTime = 0;
         const endTouch = (e: TouchEvent) => {
+            // Mobile Double-Tap to Reset AutoScale
+            const now = Date.now();
+            const duration = now - this.touchStartTime;
+            if (this.activeTouches.size === 1 && duration < 250) {
+                if (now - lastMobileTapTime < 300) {
+                    this.toggleAutoScale(true);
+                }
+                lastMobileTapTime = now;
+            }
+
             // Dismiss crosshair if the user does a quick tap anywhere while it's active
             if (this.activeTouches.size === 1 && this.isMobileCrosshairActive) {
                 const t = e.changedTouches[0];
@@ -1116,7 +1205,6 @@ export class EcoChart {
                 const x = t.clientX - rect.left;
                 const y = t.clientY - rect.top;
                 const dist = Math.hypot(x - this.touchStartX, y - this.touchStartY);
-                const duration = Date.now() - this.touchStartTime;
 
                 if (dist < 15 && duration < 300) {
                     this.isMobileCrosshairActive = false;
@@ -1131,6 +1219,12 @@ export class EcoChart {
             if (this.longPressTimeout) {
                 clearTimeout(this.longPressTimeout);
                 this.longPressTimeout = null;
+            }
+
+            // Save modified drawing to DB and reset handle
+            if (this.drawingManager.draggingHandle !== null && this.drawingManager.selectedDrawing) {
+                this.drawingManager.saveDrawing(this.drawingManager.selectedDrawing);
+                this.drawingManager.draggingHandle = null;
             }
 
             for (let i = 0; i < e.changedTouches.length; i++) {
