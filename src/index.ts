@@ -39,6 +39,8 @@ export interface SavedWorkspaceState {
     topBarDisplayMode?: 'change' | 'none';
     isAutoHideNav?: boolean;
     isCrosshairSyncEnabled?: boolean;
+    showPaintFpsHud?: boolean;
+    logPaintFps?: boolean;
     dataLimits?: Record<string, number>;
     sessionConfig?: any;
     clockConfig?: any;
@@ -66,6 +68,7 @@ export class EcoChart {
     private themeUnsubscribe: (() => void) | null = null;
     private resizeObserver: ResizeObserver | null = null; // <-- ADDED
     private watchdogTimer: any = null;                   // <-- ADDED
+    public requestRender: () => void = () => { };
 
     private lastThemeIsDark: boolean = true;
     private lastWatchdogRecovery = 0;
@@ -152,11 +155,24 @@ export class EcoChart {
         this.createPaneControls();
 
         // Store observer reference for cleanup
+        let lastObservedW = 0;
+        let lastObservedH = 0;
+
         this.resizeObserver = new ResizeObserver(() => {
             const chartRect = this.chartCanvas.getBoundingClientRect();
-            if (chartRect.width > 0 && chartRect.height > 0) {
+            const newW = Math.round(chartRect.width);
+            const newH = Math.round(chartRect.height);
+
+            // Ignore subpixel jitters on Android WebView (prevents infinite 30 FPS loop)
+            if (Math.abs(newW - lastObservedW) < 1 && Math.abs(newH - lastObservedH) < 1) {
+                return;
+            }
+
+            if (newW > 0 && newH > 0) {
+                lastObservedW = newW;
+                lastObservedH = newH;
                 if (this.renderer.app && this.renderer.app.renderer) {
-                    this.renderer.resize(chartRect.width, chartRect.height);
+                    this.renderer.resize(newW, newH);
                     this.isDirty = true;
                     this.priceAxisRenderer.render();
                     this.timeAxisRenderer.render();
@@ -1498,6 +1514,19 @@ export class EcoChart {
         }, 1000);
 
         let lastFrameTime = performance.now();
+        let actualDrawCount = 0;
+        let lastFpsLog = performance.now();
+
+        // On-screen HUD for mobile & desktop
+        let hud = this.container.querySelector('#engine-hud') as HTMLElement;
+        if (!hud) {
+            hud = document.createElement('div');
+            hud.id = 'engine-hud';
+            hud.style.cssText = 'position: absolute; top: 42px; right: 70px; z-index: 999; background: rgba(0,0,0,0.7); color: #00F5D4; font-family: monospace; font-size: 11px; padding: 2px 6px; border-radius: 4px; pointer-events: none; border: 1px solid rgba(0,245,212,0.3);';
+            hud.textContent = 'Paint: 0.0 FPS';
+            this.container.appendChild(hud);
+        }
+        hud.style.display = WorkspaceManager.showPaintFpsHud ? 'block' : 'none';
 
         const loop = (now: number) => {
             if (!this.isRunning) return;
@@ -1511,7 +1540,7 @@ export class EcoChart {
                     // Update stacked oscillator height and dock AUTO button
                     const oscHeight = this.indicatorManager.getTotalOscillatorHeight();
                     this.renderer.oscHeight = oscHeight;
-                    this.renderer.indicatorOscContainer.visible = oscHeight > 0; // <-- UPDATED
+                    this.renderer.indicatorOscContainer.visible = oscHeight > 0;
                     this.updateControlsLayout();
 
                     const activeOsc = this.indicatorManager.getActiveOscillator();
@@ -1536,9 +1565,10 @@ export class EcoChart {
                         this.renderer.renderCrosshair();
                         this.priceAxisRenderer.render();
 
-                        this.renderer.render(); // 🎯 Only refreshes main canvas when dragging or on-screen bar changes
+                        this.renderer.render(); // 🎯 Refreshes WebGL canvas on pan/drag
+                        actualDrawCount++;
                     } else {
-                        // Main canvas is idle in history: update only the price axis badge without touching main canvas
+                        // Main canvas is idle in history: update only the price axis badge
                         this.priceAxisRenderer.updateCountdownOnly();
                     }
 
@@ -1552,7 +1582,19 @@ export class EcoChart {
                     this.timeAxisRenderer.render();
 
                     this.isCrosshairDirty = false;
-                    this.renderer.render(); // 🎯 Submit frame for crosshair move only
+                    this.renderer.render(); // 🎯 Submit frame for crosshair move
+                }
+                // Update live paint rate on-screen and in console every 1 second
+                if (now - lastFpsLog >= 1000) {
+                    const trueFps = (actualDrawCount / ((now - lastFpsLog) / 1000)).toFixed(1);
+                    if (hud && WorkspaceManager.showPaintFpsHud) {
+                        hud.textContent = `Paint: ${trueFps} FPS`;
+                    }
+                    if (WorkspaceManager.logPaintFps) {
+                        console.log(`[Engine] True Canvas Paint Rate: ${trueFps} FPS`);
+                    }
+                    actualDrawCount = 0;
+                    lastFpsLog = now;
                 }
             }
             requestAnimationFrame(loop);
@@ -1569,8 +1611,16 @@ export class WorkspaceManager {
     private static activeChart: EcoChart | null = null;
     public static isAutoHideNav = true;
     public static isCrosshairSyncEnabled = true;
+    public static showPaintFpsHud = true;
+    public static logPaintFps = true;
     public static targetFPS = 60;
     public static showIndicatorSettingsFn: ((ind: any) => void) | null = null; // <-- Bridge to settings view
+
+    public static updateHudVisibility() {
+        document.querySelectorAll('#engine-hud').forEach(el => {
+            (el as HTMLElement).style.display = this.showPaintFpsHud ? 'block' : 'none';
+        });
+    }
 
     public static currentLayout = '1';
     private static saveTimeout: any = null;
@@ -1753,6 +1803,8 @@ export class WorkspaceManager {
             topBarDisplayMode: this.topBarDisplayMode,
             isAutoHideNav: this.isAutoHideNav,
             isCrosshairSyncEnabled: this.isCrosshairSyncEnabled,
+            showPaintFpsHud: this.showPaintFpsHud,
+            logPaintFps: this.logPaintFps,
             dataLimits: this.dataLimits,
             sessionConfig: this.sessionConfig,
             clockConfig: this.clockConfig,
@@ -1803,6 +1855,8 @@ export class WorkspaceManager {
                     if (state.topBarDisplayMode) this.topBarDisplayMode = state.topBarDisplayMode;
                     if (state.isAutoHideNav !== undefined) this.isAutoHideNav = state.isAutoHideNav;
                     if (state.isCrosshairSyncEnabled !== undefined) this.isCrosshairSyncEnabled = state.isCrosshairSyncEnabled;
+                    if (state.showPaintFpsHud !== undefined) this.showPaintFpsHud = state.showPaintFpsHud;
+                    if (state.logPaintFps !== undefined) this.logPaintFps = state.logPaintFps;
                     if (state.dataLimits) this.dataLimits = { ...this.dataLimits, ...state.dataLimits };
 
                     if (state.sessionConfig) this.sessionConfig = { ...this.sessionConfig, ...state.sessionConfig };
@@ -2682,6 +2736,12 @@ export class WorkspaceManager {
             if (selectFPS) selectFPS.value = WorkspaceManager.targetFPS.toString();
             const checkSync = document.getElementById('check-sync-crosshair') as HTMLInputElement;
             if (checkSync) checkSync.checked = WorkspaceManager.isCrosshairSyncEnabled;
+
+            const checkPaintHud = document.getElementById('check-paint-hud') as HTMLInputElement;
+            if (checkPaintHud) checkPaintHud.checked = WorkspaceManager.showPaintFpsHud;
+
+            const checkPaintLog = document.getElementById('check-paint-log') as HTMLInputElement;
+            if (checkPaintLog) checkPaintLog.checked = WorkspaceManager.logPaintFps;
             modalSettings?.showModal();
         });
 
@@ -2707,6 +2767,17 @@ export class WorkspaceManager {
         selectTopBar?.addEventListener('change', (e) => {
             WorkspaceManager.topBarDisplayMode = (e.target as HTMLSelectElement).value as 'change' | 'none';
             WorkspaceManager.syncTopBar();
+            WorkspaceManager.triggerAutoSave();
+        });
+
+        document.getElementById('check-paint-hud')?.addEventListener('change', (e) => {
+            WorkspaceManager.showPaintFpsHud = (e.target as HTMLInputElement).checked;
+            WorkspaceManager.updateHudVisibility();
+            WorkspaceManager.triggerAutoSave();
+        });
+
+        document.getElementById('check-paint-log')?.addEventListener('change', (e) => {
+            WorkspaceManager.logPaintFps = (e.target as HTMLInputElement).checked;
             WorkspaceManager.triggerAutoSave();
         });
 
