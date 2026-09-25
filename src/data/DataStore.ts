@@ -5,9 +5,20 @@ export class DataStore {
     public length: number = 0;
     private capacity: number;
 
+    private createArray(capacity: number): Float64Array {
+        const bytes = capacity * ITEMS_PER_CANDLE * 8; // 8 bytes per Float64
+        if (typeof SharedArrayBuffer !== 'undefined') {
+            try {
+                const sab = new SharedArrayBuffer(bytes);
+                return new Float64Array(sab);
+            } catch (e) { } // Graceful fallback if browser restricts SharedArrayBuffer
+        }
+        return new Float64Array(capacity * ITEMS_PER_CANDLE);
+    }
+
     constructor(initialCapacity = 10000) {
         this.capacity = initialCapacity;
-        this.data = new Float64Array(this.capacity * ITEMS_PER_CANDLE);
+        this.data = this.createArray(this.capacity);
     }
 
     public clear() {
@@ -37,8 +48,8 @@ export class DataStore {
         while (this.capacity < candles.length + 1) {
             this.capacity *= 2;
         }
-        if (this.data.length < this.capacity * 6) {
-            this.data = new Float64Array(this.capacity * 6);
+        if (this.data.length < this.capacity * ITEMS_PER_CANDLE) {
+            this.data = this.createArray(this.capacity);
         }
 
         for (let i = 0; i < candles.length; i++) {
@@ -52,6 +63,45 @@ export class DataStore {
         // Restore the live forming candle if it belongs at the end
         if (formingCandle && this.length > 0) {
             const lastTime = this.data[(this.length - 1) * 6];
+            if (formingCandle[0] >= lastTime) {
+                this.appendOrUpdate(formingCandle[0], formingCandle[1], formingCandle[2], formingCandle[3], formingCandle[4], formingCandle[5]);
+            }
+        }
+        return prependedCount;
+    }
+
+    public setFromBuffer(buffer: Float64Array): number {
+        let prependedCount = 0;
+        if (this.length > 0 && buffer.length > 0) {
+            const oldOldest = this.data[0];
+            for (let i = 0; i < buffer.length; i += ITEMS_PER_CANDLE) {
+                if (buffer[i] === oldOldest) {
+                    prependedCount = i / ITEMS_PER_CANDLE;
+                    break;
+                }
+            }
+        }
+
+        let formingCandle: number[] | null = null;
+        if (this.length > 0) {
+            const base = (this.length - 1) * ITEMS_PER_CANDLE;
+            formingCandle = [this.data[base], this.data[base + 1], this.data[base + 2], this.data[base + 3], this.data[base + 4], this.data[base + 5]];
+        }
+
+        const newLen = buffer.length / ITEMS_PER_CANDLE;
+        this.clear();
+        while (this.capacity < newLen + 1) {
+            this.capacity *= 2;
+        }
+        if (this.data.length < this.capacity * ITEMS_PER_CANDLE) {
+            this.data = this.createArray(this.capacity);
+        }
+
+        this.data.set(buffer);
+        this.length = newLen;
+
+        if (formingCandle && this.length > 0) {
+            const lastTime = this.data[(this.length - 1) * ITEMS_PER_CANDLE];
             if (formingCandle[0] >= lastTime) {
                 this.appendOrUpdate(formingCandle[0], formingCandle[1], formingCandle[2], formingCandle[3], formingCandle[4], formingCandle[5]);
             }
@@ -135,7 +185,7 @@ export class DataStore {
 
     private resize() {
         this.capacity *= 2;
-        const newData = new Float64Array(this.capacity * ITEMS_PER_CANDLE);
+        const newData = this.createArray(this.capacity);
         newData.set(this.data);
         this.data = newData;
     }

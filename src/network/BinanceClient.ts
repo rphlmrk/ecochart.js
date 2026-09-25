@@ -1,6 +1,6 @@
 import { DataStore } from '../data/DataStore';
 import { TimeframeResampler } from '../data/TimeframeResampler';
-import { db, type CandleRecord } from '../data/db';
+import { DataWorkerClient } from '../workers/DataWorkerClient';
 
 export class BinanceClient {
     private ws: WebSocket | null = null;
@@ -57,54 +57,27 @@ export class BinanceClient {
         return days === -1 ? Infinity : days * 24 * 60 * 60 * 1000;
     }
 
-    private async reloadFromDB(symbol: string, baseInterval: string, interval: string, cutoffTime: number): Promise<number> {
-        const records = await db.candles.where('[symbol+interval]').equals([symbol.toUpperCase(), baseInterval])
-            .filter(r => r.time >= cutoffTime).sortBy('time');
-
-        const isNative = TimeframeResampler.isNative(interval);
-        const candles: Array<[number, number, number, number, number, number]> = [];
-
-        if (isNative) {
-            for (const r of records) candles.push([r.time, r.o, r.h, r.l, r.c, r.v]);
-        } else {
-            const rawFormat = records.map(r => [r.time, r.o, r.h, r.l, r.c, r.v]);
-            const resampled = TimeframeResampler.resampleHistory(rawFormat, interval);
-            candles.push(...resampled);
+    private async reloadFromDB(symbol: string, baseInterval: string, interval: string, cutoffTime: number): Promise<{ prepended: number, oldest: number }> {
+        const buffer = await DataWorkerClient.loadHistory(symbol, baseInterval, interval, cutoffTime);
+        if (buffer && buffer.length > 0) {
+            const prepended = this.dataStore.setFromBuffer(buffer);
+            return { prepended, oldest: buffer[0] };
         }
-        return this.dataStore.setAll(candles);
+        return { prepended: 0, oldest: Date.now() };
     }
 
     private async fetchAndSaveChunk(symbol: string, baseInterval: string, startTime: number | undefined, endTime: number) {
-        let url = `https://api.binance.com/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${baseInterval}&limit=1000`;
-        if (startTime) url += `&startTime=${startTime}`;
-        if (endTime) url += `&endTime=${endTime}`;
-
-        try {
-            const res = await BinanceClient.safeFetch(url);
-            const data = await res.json();
-            if (!Array.isArray(data) || data.length === 0) return 0;
-
-            const records: CandleRecord[] = data.map((k: any) => ({
-                id: `${symbol.toUpperCase()}_${baseInterval}_${k[0]}`,
-                symbol: symbol.toUpperCase(),
-                interval: baseInterval,
-                time: k[0],
-                o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4]), v: parseFloat(k[5])
-            }));
-
-            await db.candles.bulkPut(records);
-            return data[0][0]; // Return oldest fetched time
-        } catch (e) { return 0; }
+        return await DataWorkerClient.fetchAndSaveChunk(symbol, baseInterval, startTime, endTime);
     }
 
     private async startBackgroundSync(symbol: string, baseInterval: string, oldestLocal: number, cutoffTime: number, interval: string, onUpdate: (prependedCount?: number) => void) {
         let currentEnd = oldestLocal - 1;
         while (currentEnd > cutoffTime && this.currentSyncKey === `${symbol}_${interval}`) {
             const oldestFetched = await this.fetchAndSaveChunk(symbol, baseInterval, undefined, currentEnd);
-            if (oldestFetched === 0) break; // End of market data reached
+            if (oldestFetched === 0) break;
             currentEnd = oldestFetched - 1;
 
-            const prepended = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
+            const { prepended } = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
             onUpdate(prepended);
         }
     }
@@ -228,23 +201,17 @@ export class BinanceClient {
 
         // --- 1. LOCAL FIRST DATA LOAD & SYNC ---
         try {
-            const prepended = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
-            if (this.dataStore.length > 0) onUpdate(prepended);
+            const res1 = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
+            if (this.dataStore.length > 0) onUpdate(res1.prepended);
 
             // 1. Force fetch the latest 1,000 candles to bridge any offline gap seamlessly
             await this.fetchAndSaveChunk(symbol, baseInterval, undefined, Date.now());
 
-            // 2. Determine the absolute oldest candle we have, so we can paginate backward
-            let oldestLocal = Date.now();
-            const freshRecords = await db.candles.where('[symbol+interval]').equals([symbol.toUpperCase(), baseInterval]).filter(r => r.time >= cutoffTime).sortBy('time');
-            if (freshRecords.length > 0) {
-                oldestLocal = freshRecords[0].time;
-            }
+            // 2. Reload unified state from DB & start paginating backwards infinitely
+            const res2 = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
 
-            // Reload unified state from DB & start paginating backwards infinitely
-            const prepended2 = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
-            onUpdate(prepended2, true);
-            this.startBackgroundSync(symbol, baseInterval, oldestLocal, cutoffTime, interval, (prep) => onUpdate(prep, true));
+            onUpdate(res2.prepended, true);
+            this.startBackgroundSync(symbol, baseInterval, res2.oldest, cutoffTime, interval, (prep) => onUpdate(prep, true));
         } catch (err) {
             console.error('[Binance] Sync error', err);
         }
@@ -292,14 +259,14 @@ export class BinanceClient {
                     this.dataStore.appendOrUpdate(bucketTime, o, h, l, c, v);
                 }
 
-                // If candle closes, persist to IndexedDB
+                // If candle closes, persist via background data worker
                 if (k.x) {
-                    db.candles.put({
+                    DataWorkerClient.saveCandle({
                         id: `${symbol.toUpperCase()}_${baseInterval}_${k.t}`,
                         symbol: symbol.toUpperCase(),
                         interval: baseInterval,
                         time: k.t, o, h, l, c, v
-                    }).catch(() => { });
+                    });
                 }
                 onUpdate(0, k.x);
             }
@@ -346,49 +313,19 @@ export class BinanceClient {
         this.isSyncingGap = true;
         try {
             const baseInterval = TimeframeResampler.getBaseNativeInterval(interval);
-            const isNative = TimeframeResampler.isNative(interval);
+            const buffer = await DataWorkerClient.fetchGap(sym, baseInterval, interval, lastCandleTime, now);
 
-            const url = `https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${baseInterval}&startTime=${lastCandleTime}&endTime=${now}&limit=1000`;
-            const res = await BinanceClient.safeFetch(url);
-            const data = await res.json();
-
-            if (!Array.isArray(data) || data.length === 0) return false;
-
-            // 1. Persist fetched records to IndexedDB
-            const records: CandleRecord[] = data.map((k: any) => ({
-                id: `${sym}_${baseInterval}_${k[0]}`,
-                symbol: sym,
-                interval: baseInterval,
-                time: k[0],
-                o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4]), v: parseFloat(k[5])
-            }));
-            await db.candles.bulkPut(records);
-
-            // 2. Format or resample bars into DataStore
-            let candlesToAppend: Array<[number, number, number, number, number, number]>;
-            if (isNative) {
-                candlesToAppend = data.map((k: any) => [
-                    k[0],
-                    parseFloat(k[1]),
-                    parseFloat(k[2]),
-                    parseFloat(k[3]),
-                    parseFloat(k[4]),
-                    parseFloat(k[5])
-                ]);
-            } else {
-                candlesToAppend = TimeframeResampler.resampleHistory(data, interval);
+            if (buffer && buffer.length > 0) {
+                for (let i = 0; i < buffer.length; i += 6) {
+                    this.dataStore.appendOrUpdate(buffer[i], buffer[i + 1], buffer[i + 2], buffer[i + 3], buffer[i + 4], buffer[i + 5]);
+                }
+                // 4. Force chart layers & indicators to refresh
+                if (this.savedOnUpdate) {
+                    this.savedOnUpdate(0, true);
+                }
+                return true;
             }
-
-            // 3. Sequentially update/append missing candles into DataStore
-            for (const c of candlesToAppend) {
-                this.dataStore.appendOrUpdate(c[0], c[1], c[2], c[3], c[4], c[5]);
-            }
-
-            // 4. Force chart layers & indicators to refresh
-            if (this.savedOnUpdate) {
-                this.savedOnUpdate(0, true);
-            }
-            return true;
+            return false;
         } catch (err) {
             console.warn('[Binance] Gap backfill failed:', err);
             return false;

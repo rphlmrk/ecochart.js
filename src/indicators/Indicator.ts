@@ -47,6 +47,7 @@ export abstract class BaseIndicator {
     protected lastCalculatedIdx = -1;
 
     // Core State Machine variables
+    public isCalculating = false;
     protected state: any = {};
     protected confirmedState: any = {};
 
@@ -165,37 +166,4 @@ export abstract class BaseIndicator {
     // Legacy fallback
     protected calculate(_ds: DataStore): void { }
     public abstract render(renderer: ChartRenderer, layout: IndicatorLayout, graphics: Graphics): void;
-}
-
-// --- CORE MATH ENGINES ---
-
-export class SMAEngine {
-    public static calculate(dataStore: DataStore, period: number, output: Float64Array, lastIdx: number): number {
-        const start = Math.max(period - 1, lastIdx === -1 ? 0 : lastIdx);
-        for (let i = start; i < dataStore.length; i++) {
-            let sum = 0;
-            for (let j = 0; j < period; j++) {
-                sum += dataStore.data[(i - j) * 6 + 4]; // Close price
-            }
-            output[i] = sum / period;
-        }
-        return dataStore.length - 1;
-    }
-}
-
-export class EMAEngine {
-    public static calculate(dataStore: DataStore, period: number, output: Float64Array, lastIdx: number): number {
-        const k = 2 / (period + 1);
-        const start = Math.max(1, lastIdx === -1 ? 1 : lastIdx);
-
-        if (lastIdx <= 0 && dataStore.length > 0) {
-            output[0] = dataStore.data[4]; // Initialize first point with first Close
-        }
-
-        for (let i = start; i < dataStore.length; i++) {
-            const close = dataStore.data[i * 6 + 4];
-            output[i] = (close - output[i - 1]) * k + output[i - 1];
-        }
-        return dataStore.length - 1;
-    }
 }

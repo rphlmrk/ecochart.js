@@ -2,6 +2,7 @@ import { BaseIndicator, parseColor, type IndicatorLayout } from '../Indicator';
 import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { Graphics } from 'pixi.js';
+import { MathWorkerClient } from '../../workers/MathWorkerClient';
 
 export class EMAIndicator extends BaseIndicator {
     constructor(period = 20, color = '#00BCD4') {
@@ -20,17 +21,34 @@ export class EMAIndicator extends BaseIndicator {
 
     protected setup(): void { }
 
-    protected next(index: number, _isClosed: boolean, ds: DataStore): void {
-        const period = Math.max(1, this.getParam<number>('length', 20));
-        const k = 2 / (period + 1);
+    protected async calculate(ds: DataStore) {
+        if (this.isCalculating || ds.length === 0) return;
 
-        if (index === 0) {
-            this.values[0] = ds.data[4]; // Initialize first point with first Close
-            return;
+        if (this.lastCalculatedIdx === -1) {
+            this.isCalculating = true;
+            const period = this.getParam<number>('length', 20);
+            try {
+                const activeData = ds.data.subarray(0, ds.length * 6);
+                const res = await MathWorkerClient.calculate('EMA', activeData, { period });
+                if (res) this.values.set(res.values);
+                this.lastCalculatedIdx = ds.length - 1;
+            } finally {
+                this.isCalculating = false;
+                window.dispatchEvent(new Event('ecochart-indicator-ready'));
+            }
+        } else {
+            // Live fast-tick sync (no worker needed for 1 bar)
+            const period = this.getParam<number>('length', 20);
+            const k = 2 / (period + 1);
+            const liveIdx = ds.length - 1;
+            if (liveIdx === 0) {
+                this.values[0] = ds.data[4];
+                return;
+            }
+            const close = ds.data[liveIdx * 6 + 4];
+            this.values[liveIdx] = (close - this.values[liveIdx - 1]) * k + this.values[liveIdx - 1];
+            this.lastCalculatedIdx = liveIdx;
         }
-
-        const close = ds.data[index * 6 + 4];
-        this.values[index] = (close - this.values[index - 1]) * k + this.values[index - 1];
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, _g: Graphics) {

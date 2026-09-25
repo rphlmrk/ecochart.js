@@ -2,6 +2,7 @@ import { BaseIndicator, parseColor, type IndicatorLayout } from '../Indicator';
 import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { Graphics } from 'pixi.js';
+import { MathWorkerClient } from '../../workers/MathWorkerClient';
 
 export class SMAIndicator extends BaseIndicator {
     constructor(period = 20, color = '#FFC107') {
@@ -20,15 +21,34 @@ export class SMAIndicator extends BaseIndicator {
 
     protected setup(): void { }
 
-    protected next(index: number, _isClosed: boolean, ds: DataStore): void {
-        const length = Math.max(1, this.getParam<number>('length', 20));
-        if (index < length - 1) return;
+    protected async calculate(ds: DataStore) {
+        if (this.isCalculating || ds.length === 0) return;
 
-        let sum = 0;
-        for (let j = 0; j < length; j++) {
-            sum += ds.data[(index - j) * 6 + 4]; // Close price
+        if (this.lastCalculatedIdx === -1) {
+            this.isCalculating = true;
+            const period = this.getParam<number>('length', 20);
+            try {
+                const activeData = ds.data.subarray(0, ds.length * 6);
+                const res = await MathWorkerClient.calculate('SMA', activeData, { period });
+                if (res) this.values.set(res.values);
+                this.lastCalculatedIdx = ds.length - 1;
+            } finally {
+                this.isCalculating = false;
+                window.dispatchEvent(new Event('ecochart-indicator-ready'));
+            }
+        } else {
+            // Live fast-tick sync (no worker needed for 1 bar)
+            const period = this.getParam<number>('length', 20);
+            const liveIdx = ds.length - 1;
+            if (liveIdx < period - 1) return;
+
+            let sum = 0;
+            for (let j = 0; j < period; j++) {
+                sum += ds.data[(liveIdx - j) * 6 + 4];
+            }
+            this.values[liveIdx] = sum / period;
+            this.lastCalculatedIdx = liveIdx;
         }
-        this.values[index] = sum / length;
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, _g: Graphics) {

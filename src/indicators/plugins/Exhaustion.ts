@@ -3,6 +3,7 @@ import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { StrokeEngine } from '../../renderer/StrokeEngine';
 import { Graphics } from 'pixi.js';
+import { MathWorkerClient } from '../../workers/MathWorkerClient';
 
 export class ExhaustionIndicator extends BaseIndicator {
     constructor(period = 20, threshold = 80) {
@@ -30,36 +31,47 @@ export class ExhaustionIndicator extends BaseIndicator {
         }
     }
 
-    private reusableTps = new Float64Array(200); // Pre-allocated to prevent GC allocation on ticks
+    private reusableTps = new Float64Array(200);
 
-    protected calculate(ds: DataStore) {
-        const period = Math.max(2, this.getParam<number>('length', 20));
-        const start = Math.max(period - 1, this.lastCalculatedIdx === -1 ? 0 : this.lastCalculatedIdx);
+    protected async calculate(ds: DataStore) {
+        if (this.isCalculating || ds.length === 0) return;
 
-        if (this.reusableTps.length < period) {
-            this.reusableTps = new Float64Array(period * 2);
-        }
-        const tps = this.reusableTps;
-        for (let i = start; i < ds.length; i++) {
+        if (this.lastCalculatedIdx === -1) {
+            this.isCalculating = true;
+            const period = this.getParam<number>('length', 20);
+            try {
+                const activeData = ds.data.subarray(0, ds.length * 6);
+                const res = await MathWorkerClient.calculate('EXHAUSTION', activeData, { period });
+                if (res) this.values.set(res.values);
+                this.lastCalculatedIdx = ds.length - 1;
+            } finally {
+                this.isCalculating = false;
+                window.dispatchEvent(new Event('ecochart-indicator-ready'));
+            }
+        } else {
+            const period = Math.max(2, this.getParam<number>('length', 20));
+            const liveIdx = ds.length - 1;
+            if (liveIdx < period - 1) return;
+
+            if (this.reusableTps.length < period) this.reusableTps = new Float64Array(period * 2);
+            const tps = this.reusableTps;
+
             let sum = 0;
             for (let j = 0; j < period; j++) {
-                const base = (i - j) * 6;
+                const base = (liveIdx - j) * 6;
                 const tp = (ds.data[base + 2] + ds.data[base + 3] + ds.data[base + 4]) / 3;
                 tps[j] = tp;
                 sum += tp;
             }
             const sma = sum / period;
             let madSum = 0;
-            for (let j = 0; j < period; j++) {
-                madSum += Math.abs(tps[j] - sma);
-            }
-            const mad = madSum / period;
+            for (let j = 0; j < period; j++) madSum += Math.abs(tps[j] - sma);
 
-            // Clamp math immediately
+            const mad = madSum / period;
             const rawVal = mad === 0 ? 0 : (tps[0] - sma) / (0.015 * mad);
-            this.values[i] = Math.max(-300, Math.min(300, rawVal));
+            this.values[liveIdx] = Math.max(-300, Math.min(300, rawVal));
+            this.lastCalculatedIdx = liveIdx;
         }
-        this.lastCalculatedIdx = ds.length - 1;
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {

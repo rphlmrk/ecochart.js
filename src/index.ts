@@ -165,6 +165,12 @@ export class EcoChart {
         });
         this.resizeObserver.observe(this.container);
 
+        // Listen for Web Worker math completions
+        window.addEventListener('ecochart-indicator-ready', () => {
+            this.renderer.forceNextRender = true;
+            this.isDirty = true;
+        });
+
         // Initialize the tracking variable
         this.lastThemeIsDark = themeManager.getTheme().isDark;
 
