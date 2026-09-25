@@ -165,8 +165,24 @@ export class PriceAxisRenderer {
         if (this.renderer.isCrosshairVisible && this.renderer.crosshairY >= 0 && this.renderer.crosshairY <= h) {
             const cy = this.renderer.crosshairY;
             let text = '';
+            let pctText = '';
+            let pctColor = '#ffffff';
+
             if (cy <= mainChartHeight) {
-                text = this.renderer.yToPrice(cy).toFixed(2);
+                const hoverPrice = this.renderer.yToPrice(cy);
+                text = hoverPrice.toFixed(2);
+
+                if (len > 0) {
+                    const lastClose = this.renderer.dataStore.data[(len - 1) * 6 + 4];
+                    if (lastClose > 0) {
+                        const diffPct = ((hoverPrice - lastClose) / lastClose) * 100;
+                        const sign = diffPct > 0 ? '+' : '';
+                        pctText = `${sign}${diffPct.toFixed(2)}%`;
+                        pctColor = diffPct >= 0
+                            ? this.hexToCSS(this.renderer.bullColor)
+                            : this.hexToCSS(this.renderer.bearColor);
+                    }
+                }
             } else if (this.renderer.activeOscillatorScale) {
                 const localY = cy - mainChartHeight;
                 const normVal = (oscHeight - localY) / oscHeight;
@@ -176,14 +192,33 @@ export class PriceAxisRenderer {
             }
 
             if (text) {
-                const pillH = 18;
-                const pillY = Math.max(0, Math.min(h - pillH, cy - 9));
-                this.ctx.fillStyle = '#363A45';
-                this.ctx.fillRect(0, pillY, w, pillH);
+                if (pctText) {
+                    // Two-line pill for main chart: Price on top, % diff from live price below
+                    const pillH = 34;
+                    const pillY = Math.max(0, Math.min(mainChartHeight - pillH, cy - 17));
 
-                this.ctx.fillStyle = '#ffffff';
-                this.ctx.font = '11px sans-serif';
-                this.ctx.fillText(text, w / 2, pillY + 10);
+                    this.ctx.fillStyle = '#363A45';
+                    this.ctx.fillRect(0, pillY, w, pillH);
+
+                    this.ctx.fillStyle = '#ffffff';
+                    this.ctx.font = 'bold 11px sans-serif';
+                    this.ctx.fillText(text, w / 2, pillY + 11);
+
+                    this.ctx.fillStyle = pctColor;
+                    this.ctx.font = '10px sans-serif';
+                    this.ctx.fillText(pctText, w / 2, pillY + 24);
+                } else {
+                    // Single-line pill for bottom oscillator panels (CCI, etc.)
+                    const pillH = 18;
+                    const pillY = Math.max(0, Math.min(h - pillH, cy - 9));
+
+                    this.ctx.fillStyle = '#363A45';
+                    this.ctx.fillRect(0, pillY, w, pillH);
+
+                    this.ctx.fillStyle = '#ffffff';
+                    this.ctx.font = '11px sans-serif';
+                    this.ctx.fillText(text, w / 2, pillY + 10);
+                }
             }
         }
     }

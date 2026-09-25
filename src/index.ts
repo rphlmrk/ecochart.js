@@ -1629,16 +1629,16 @@ export class WorkspaceManager {
 
     // Global Timeframe Download Limits (Stored in days, -1 = Infinity)
     public static dataLimits: Record<string, number> = {
-        'limit_1m_3m': 21,
-        'limit_4m_8m': 30,
-        'limit_9m_12m': 90,
-        'limit_15m': 180,
-        'limit_30m_45m': 365,
-        'limit_1h_3h': 730,
-        'limit_4h_6h': 1460,
-        'limit_7h_12h': 1825,
-        'limit_13h_1d': 3650,
-        'limit_1w_1M': -1
+        'limit_1m_3m': 7,
+        'limit_4m_8m': 7,
+        'limit_9m_12m': 30,
+        'limit_15m': 90,
+        'limit_30m_45m': 180,
+        'limit_1h_3h': 365,
+        'limit_4h_6h': 730,
+        'limit_7h_12h': 1460,
+        'limit_13h_1d': 1825,
+        'limit_1w_1M': 3650
     };
 
     public static sessionConfig = {
@@ -3382,22 +3382,35 @@ export class WorkspaceManager {
             }
         });
 
-        // Tab Wakeup & Network Reconnect Listeners
+        // Aggressive Mobile Sleep & Wakeup Detection (Tab switch, screen unlock, app resume)
+        let lastWakeupTrigger = 0;
+        const triggerAggressiveWakeup = () => {
+            const now = Date.now();
+            if (now - lastWakeupTrigger < 1500) return; // Prevent duplicate rapid firings
+            lastWakeupTrigger = now;
+
+            // Immediate reconnect attempt
+            WorkspaceManager.charts.forEach(c => c.handleWakeup());
+
+            // Secondary stabilized retry (allows mobile OS to re-establish cellular/Wi-Fi routing)
+            setTimeout(() => {
+                WorkspaceManager.charts.forEach(c => c.handleWakeup());
+            }, 800);
+        };
+
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') {
-                WorkspaceManager.charts.forEach(c => c.handleWakeup());
+                triggerAggressiveWakeup();
             }
         });
+
+        window.addEventListener('pageshow', triggerAggressiveWakeup);
+        window.addEventListener('focus', triggerAggressiveWakeup);
 
         window.addEventListener('offline', () => {
             WorkspaceManager.charts.forEach(c => c.network.handleOffline());
         });
 
-        window.addEventListener('online', () => {
-            // 600ms stabilization delay allows OS DNS and gateway routing to become ready
-            setTimeout(() => {
-                WorkspaceManager.charts.forEach(c => c.handleWakeup());
-            }, 600);
-        });
+        window.addEventListener('online', triggerAggressiveWakeup);
     }
 }

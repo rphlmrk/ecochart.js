@@ -414,8 +414,6 @@ export class ChartRenderer {
         }
         this.liveCandlesGraphics.clear();
         this.uiGraphics.clear();
-        this.indicatorMainGraphics.clear();
-        this.indicatorOscGraphics.clear();
 
         // Update render state cache for next cycle
         this.lastRenderState = {
@@ -1135,7 +1133,8 @@ export class ChartRenderer {
         const liveL = this.dataStore.data[lastBase + 3];
 
         const isHA = this.chartMode === 'heikinAshi';
-        const needsFullSync = (this.candleOHLCArray.length < len * 4) || (this.lastSyncedLength !== len) || (this.lastSyncedMode !== this.chartMode);
+        const isNewBarAppended = (len === this.lastSyncedLength + 1) && (this.lastSyncedMode === this.chartMode) && (this.candleOHLCArray.length >= len * 4);
+        const needsFullSync = (this.candleOHLCArray.length < len * 4) || (this.lastSyncedMode !== this.chartMode) || (!isNewBarAppended && this.lastSyncedLength !== len);
 
         if (needsFullSync) {
             const newCap = Math.max(10000, len * 2);
@@ -1180,7 +1179,41 @@ export class ChartRenderer {
             return;
         }
 
-        // Fast Tick: Only upload last bar (16 bytes)
+        // Fast Append: When a new candle opens, only add that 1 bar
+        if (isNewBarAppended) {
+            const b = lastIdx * 6;
+            const d = lastIdx * 4;
+            const o = this.dataStore.data[b + 1];
+
+            this.mainClosePrices[lastIdx] = liveC;
+            this.candleIndexArray[lastIdx] = lastIdx;
+
+            if (isHA) {
+                const haC = (o + liveH + liveL + liveC) / 4;
+                const haO = (this.haPrevO + this.haPrevC) / 2;
+                this.candleOHLCArray[d] = haO;
+                this.candleOHLCArray[d + 1] = Math.max(liveH, haO, haC);
+                this.candleOHLCArray[d + 2] = Math.min(liveL, haO, haC);
+                this.candleOHLCArray[d + 3] = haC;
+                this.haPrevO = haO; this.haPrevC = haC;
+            } else {
+                this.candleOHLCArray[d] = o;
+                this.candleOHLCArray[d + 1] = liveH;
+                this.candleOHLCArray[d + 2] = liveL;
+                this.candleOHLCArray[d + 3] = liveC;
+            }
+
+            this.candleOHLCBuffer.update();
+            this.candleIndexBuffer.update();
+
+            this.lastSyncedLength = len;
+            this.lastSyncedLiveClose = liveC;
+            this.lastSyncedLiveHigh = liveH;
+            this.lastSyncedLiveLow = liveL;
+            return;
+        }
+
+        // Fast Live-Tick: Only update forming bar in RAM & GPU
         if (this.lastSyncedLiveClose !== liveC || this.lastSyncedLiveHigh !== liveH || this.lastSyncedLiveLow !== liveL) {
             const d = lastIdx * 4;
             const o = this.dataStore.data[lastBase + 1];
@@ -1197,7 +1230,7 @@ export class ChartRenderer {
                 this.candleOHLCArray[d + 3] = liveC;
             }
 
-            this.candleOHLCBuffer.update(16, d * 4);
+            this.candleOHLCBuffer.update();
             this.lastSyncedLiveClose = liveC;
             this.lastSyncedLiveHigh = liveH;
             this.lastSyncedLiveLow = liveL;
@@ -1299,9 +1332,13 @@ export class ChartRenderer {
                     float index = aLineData.x;
                     if (index < uVisStart || index > uVisEnd) { gl_Position = vec4(0.0); return; }
                     float valThis = aLineData.y; float valNext = aLineData.z;
-                    if (uIsOscillator < 0.5 && valThis == 0.0 && valNext == 0.0) { gl_Position = vec4(0.0); return; }
+                if (uIsOscillator < 0.5) {
+                    if (valThis <= 0.0 || valNext <= 0.0) { gl_Position = vec4(0.0); return; }
+                } else {
+                    if (valThis == 0.0 && valNext == 0.0) { gl_Position = vec4(0.0); return; }
+                }
 
-                    float actualSpacing = uCandleSpacing * uZoom;
+                float actualSpacing = uCandleSpacing * uZoom;
                     float topY_A = getScreenY(valThis);
                     float topY_B = getScreenY(valNext);
                     vec2 A = vec2((index * actualSpacing) - uCameraX + (actualSpacing * 0.5), topY_A);
@@ -1349,7 +1386,7 @@ export class ChartRenderer {
             });
 
             const mesh = new Mesh({ geometry: geom, shader });
-            entry = { mesh, uniforms, buffer: instBuffer, array: new Float32Array(0), lastSyncedLength: 0, lastSyncedLiveValue: 0 };
+            entry = { mesh, uniforms, buffer: instBuffer, array: new Float32Array(0), lastSyncedLength: 0, lastSyncedLiveValue: 0, lastSyncedRevision: -1 };
             this.indicatorMeshes.set(id, entry);
         }
 
@@ -1365,30 +1402,40 @@ export class ChartRenderer {
             return;
         }
 
+        const activeInd = this.indicatorManager?.activeIndicators?.find((ind: any) => ind.id === id);
+        const currentRevision = activeInd ? activeInd.revision : 0;
+
         const liveVal = values[len];
-        if (entry.array.length < len * 3 || entry.lastSyncedLength !== len) {
+        const isRevisionDirty = entry.lastSyncedRevision !== currentRevision;
+        const needsCapacityGrowth = entry.array.length < len * 3;
+        const isNewBarAppended = (len === entry.lastSyncedLength + 1) && !isRevisionDirty;
+        const needsFullSync = isRevisionDirty || needsCapacityGrowth || entry.lastSyncedLength === 0 || (entry.lastSyncedLength !== len && !isNewBarAppended);
+
+        if (needsFullSync) {
             if (entry.array.length < len * 3) {
                 entry.array = new Float32Array(Math.max(10000, len * 2) * 3);
             }
 
-            if (entry.lastSyncedLength > 0 && len > entry.lastSyncedLength && entry.array.length >= len * 3) {
-                const startIdx = Math.max(0, entry.lastSyncedLength - 1);
-                for (let i = startIdx; i < len; i++) {
-                    entry.array[i * 3] = i;
-                    entry.array[i * 3 + 1] = values[i];
-                    entry.array[i * 3 + 2] = values[i + 1];
-                }
-                const count = len - startIdx;
-                entry.buffer.update(count * 12, startIdx * 12);
-            } else {
-                for (let i = 0; i < len; i++) {
-                    entry.array[i * 3] = i;
-                    entry.array[i * 3 + 1] = values[i];
-                    entry.array[i * 3 + 2] = values[i + 1];
-                }
-                entry.buffer.data = entry.array;
-                entry.buffer.update();
+            for (let i = 0; i < len; i++) {
+                entry.array[i * 3] = i;
+                entry.array[i * 3 + 1] = values[i];
+                entry.array[i * 3 + 2] = values[i + 1];
             }
+            entry.buffer.data = entry.array;
+            entry.buffer.update();
+
+            entry.lastSyncedLength = len;
+            entry.lastSyncedRevision = currentRevision;
+            entry.lastSyncedLiveValue = liveVal;
+        } else if (isNewBarAppended) {
+            const startIdx = Math.max(0, entry.lastSyncedLength - 1);
+            for (let i = startIdx; i < len; i++) {
+                entry.array[i * 3] = i;
+                entry.array[i * 3 + 1] = values[i];
+                entry.array[i * 3 + 2] = values[i + 1];
+            }
+            const count = len - startIdx;
+            entry.buffer.update(count * 12, startIdx * 12);
 
             entry.lastSyncedLength = len;
             entry.lastSyncedLiveValue = liveVal;
@@ -1431,6 +1478,7 @@ export class ChartRenderer {
         entry.uniforms.update();
         entry.mesh.geometry.instanceCount = len;
     }
+
 
     private initSessionMesh() {
         const baseVertices = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);

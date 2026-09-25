@@ -54,6 +54,16 @@ self.onmessage = async (e) => {
     try {
         if (type === 'LOAD_HISTORY') {
             const { symbol, baseInterval, interval, cutoffTime } = payload;
+
+            // Auto-Prune: Silently purge expired candles older than the cutoff threshold in the background
+            if (cutoffTime > 0) {
+                db.candles.where('[symbol+interval]')
+                    .equals([symbol.toUpperCase(), baseInterval])
+                    .filter(r => r.time < cutoffTime)
+                    .delete()
+                    .catch(() => { });
+            }
+
             const records = await db.candles.where('[symbol+interval]')
                 .equals([symbol.toUpperCase(), baseInterval])
                 .filter(r => r.time >= cutoffTime).sortBy('time');

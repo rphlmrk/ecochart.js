@@ -45,6 +45,7 @@ export abstract class BaseIndicator {
     public values: Float64Array;
     public params: ParamDef[] = [];
     protected lastCalculatedIdx = -1;
+    public revision = 0;
 
     // Core State Machine variables
     public isCalculating = false;
@@ -82,6 +83,7 @@ export abstract class BaseIndicator {
         if (hasChanges) {
             this.onParamsUpdated();
             this.lastCalculatedIdx = -1; // Invalidate cache to force math recalculation
+            this.revision++;
         }
     }
 
@@ -107,6 +109,7 @@ export abstract class BaseIndicator {
         this.values.fill(0);
         this.state = {};
         this.confirmedState = {};
+        this.revision++;
         this.setup();
     }
 
@@ -131,7 +134,15 @@ export abstract class BaseIndicator {
         }
 
         if (this.calculate !== BaseIndicator.prototype.calculate) {
-            this.calculate(ds);
+            const wasInitial = this.lastCalculatedIdx === -1;
+            const promise = this.calculate(ds) as any;
+            if (promise && typeof promise.then === 'function') {
+                promise.then(() => {
+                    if (wasInitial && this.lastCalculatedIdx !== -1) {
+                        this.revision++;
+                    }
+                });
+            }
             return;
         }
 
@@ -143,6 +154,7 @@ export abstract class BaseIndicator {
             }
             this.lastCalculatedIdx = ds.length - 1;
             this.confirmedState = this.cloneState(this.state);
+            this.revision++;
             return;
         }
 

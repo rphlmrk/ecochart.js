@@ -36,14 +36,25 @@ export class ExhaustionIndicator extends BaseIndicator {
     protected async calculate(ds: DataStore) {
         if (this.isCalculating || ds.length === 0) return;
 
+        // If historical candles were prepended or data reset, invalidate cache so worker recalculates
+        if (this.lastCalculatedIdx !== -1 && (ds.length > this.lastCalculatedIdx + 2 || ds.length <= this.lastCalculatedIdx)) {
+            this.lastCalculatedIdx = -1;
+        }
+
         if (this.lastCalculatedIdx === -1) {
             this.isCalculating = true;
             const period = this.getParam<number>('length', 20);
             try {
                 const activeData = ds.data.subarray(0, ds.length * 6);
                 const res = await MathWorkerClient.calculate('EXHAUSTION', activeData, { period });
-                if (res) this.values.set(res.values);
+                if (res) {
+                    if (res.values.length > this.values.length) {
+                        this.values = new Float64Array(res.values.length * 2);
+                    }
+                    this.values.set(res.values);
+                }
                 this.lastCalculatedIdx = ds.length - 1;
+                this.revision++;
             } finally {
                 this.isCalculating = false;
                 window.dispatchEvent(new Event('ecochart-indicator-ready'));

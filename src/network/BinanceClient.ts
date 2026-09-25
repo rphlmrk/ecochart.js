@@ -29,9 +29,9 @@ export class BinanceClient {
 
     private getLimitMs(interval: string): number {
         let limits: Record<string, number> = {
-            'limit_1m_3m': 21, 'limit_4m_8m': 30, 'limit_9m_12m': 90, 'limit_15m': 180,
-            'limit_30m_45m': 365, 'limit_1h_3h': 730, 'limit_4h_6h': 1460, 'limit_7h_12h': 1825,
-            'limit_13h_1d': 3650, 'limit_1w_1M': -1
+            'limit_1m_3m': 7, 'limit_4m_8m': 7, 'limit_9m_12m': 30, 'limit_15m': 90,
+            'limit_30m_45m': 180, 'limit_1h_3h': 365, 'limit_4h_6h': 730, 'limit_7h_12h': 1460,
+            'limit_13h_1d': 1825, 'limit_1w_1M': 3650
         };
         try {
             const raw = localStorage.getItem('ecochart_workspace_v1');
@@ -199,29 +199,51 @@ export class BinanceClient {
         // Snap the cutoff time to the exact timeframe boundary to prevent partial/broken historical candles
         const cutoffTime = rawCutoffTime === 0 ? 0 : TimeframeResampler.getBucketStart(rawCutoffTime, targetIntervalMs);
 
-        // --- 1. LOCAL FIRST DATA LOAD & SYNC ---
+        // --- 1. ONLINE-FIRST: FETCH LATEST 1,000 BARS DIRECT FROM BINANCE ---
         try {
-            const res1 = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
-            if (this.dataStore.length > 0) onUpdate(res1.prepended);
-
-            // 1. Force fetch the latest 1,000 candles to bridge any offline gap seamlessly
-            await this.fetchAndSaveChunk(symbol, baseInterval, undefined, Date.now());
-
-            // 2. Reload unified state from DB & start paginating backwards infinitely
-            const res2 = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
-
-            onUpdate(res2.prepended, true);
-            this.startBackgroundSync(symbol, baseInterval, res2.oldest, cutoffTime, interval, (prep) => onUpdate(prep, true));
-        } catch (err) {
-            console.error('[Binance] Sync error', err);
+            const liveBuffer = await DataWorkerClient.fetchGap(symbol, baseInterval, interval, 0, Date.now());
+            if (liveBuffer && liveBuffer.length > 0 && this.currentSyncKey === `${symbol}_${interval}`) {
+                this.dataStore.setFromBuffer(liveBuffer);
+                onUpdate(0, true);
+            }
+        } catch (e) {
+            console.warn('[Binance] Online-first fetch failed, falling back to local DB', e);
         }
 
-        // --- 2. WEBSOCKET FOR LIVE DATA ---
+        // Offline fallback: If online fetch returned nothing, load whatever local DB has
+        if (this.dataStore.length === 0) {
+            try {
+                const resDB = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
+                if (this.dataStore.length > 0) onUpdate(resDB.prepended, true);
+            } catch { }
+        }
+
+        // --- 2. CONNECT WEBSOCKET IMMEDIATELY (LIVE CANDLES NEVER STALL) ---
         const klineStream = `${symbol.toLowerCase()}@kline_${baseInterval}`;
         const tickerStream = `${symbol.toLowerCase()}@ticker`;
         const url = `wss://stream.binance.com:9443/stream?streams=${klineStream}/${tickerStream}`;
 
         this.ws = new WebSocket(url);
+
+        // --- 3. BACKGROUND STITCH: LOAD OLDER LOCAL & DEEP HISTORY LAST ---
+        (async () => {
+            try {
+                if (this.currentSyncKey !== `${symbol}_${interval}`) return;
+
+                // Load older cached candles from phone storage and stitch them behind current view
+                const resDB = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
+                if (resDB.prepended > 0 && this.currentSyncKey === `${symbol}_${interval}`) {
+                    onUpdate(resDB.prepended, true);
+                }
+
+                // Paginate deep historical data backwards in background worker
+                if (this.currentSyncKey === `${symbol}_${interval}`) {
+                    this.startBackgroundSync(symbol, baseInterval, resDB.oldest, cutoffTime, interval, (prep) => onUpdate(prep, true));
+                }
+            } catch (err) {
+                console.error('[Binance] Background history stitch error', err);
+            }
+        })();
 
         this.ws.onopen = () => {
             this.isReconnecting = false;
@@ -240,18 +262,15 @@ export class BinanceClient {
                 const k = data.k;
                 const o = parseFloat(k.o), h = parseFloat(k.h), l = parseFloat(k.l), c = parseFloat(k.c), v = parseFloat(k.v);
 
-                // Gap Check: If incoming candle skipped ahead, force backfill of missing bars
-                if (this.dataStore.length > 0) {
+                // Gap Check: Backfill missing history in the background without blocking live ticks
+                if (this.dataStore.length > 0 && !this.isSyncingGap) {
                     const lastCandleTime = this.dataStore.data[(this.dataStore.length - 1) * 6];
                     if (k.t - lastCandleTime > targetIntervalMs) {
-                        await this.syncMissingGap(symbol, interval, true);
+                        this.syncMissingGap(symbol, interval, true);
                     }
                 }
 
-                // Don't append live bar until in-flight gap backfill has finished
-                if (this.isSyncingGap) return;
-
-                // Update RAM immediately for smooth UI
+                // Always update the live candle immediately so candles never stall
                 if (isNative) {
                     this.dataStore.appendOrUpdate(k.t, o, h, l, c, v);
                 } else {
@@ -286,6 +305,7 @@ export class BinanceClient {
 
     public disconnect() {
         this.currentSyncKey = ''; // Stops active background sync loop
+        this.isSyncingGap = false; // Reset lock to prevent deadlocking new connections
         this.isReconnecting = true;
         if (this.ws) {
             this.ws.onclose = null;
@@ -313,13 +333,19 @@ export class BinanceClient {
         this.isSyncingGap = true;
         try {
             const baseInterval = TimeframeResampler.getBaseNativeInterval(interval);
-            const buffer = await DataWorkerClient.fetchGap(sym, baseInterval, interval, lastCandleTime, now);
+
+            // Strict 4-second timeout to prevent mobile network lag from hanging the engine
+            const fetchPromise = DataWorkerClient.fetchGap(sym, baseInterval, interval, lastCandleTime, now);
+            const timeoutPromise = new Promise<Float64Array>((_, reject) =>
+                setTimeout(() => reject(new Error('Gap sync timed out (4s)')), 4000)
+            );
+
+            const buffer = await Promise.race([fetchPromise, timeoutPromise]);
 
             if (buffer && buffer.length > 0) {
                 for (let i = 0; i < buffer.length; i += 6) {
                     this.dataStore.appendOrUpdate(buffer[i], buffer[i + 1], buffer[i + 2], buffer[i + 3], buffer[i + 4], buffer[i + 5]);
                 }
-                // 4. Force chart layers & indicators to refresh
                 if (this.savedOnUpdate) {
                     this.savedOnUpdate(0, true);
                 }
@@ -327,7 +353,7 @@ export class BinanceClient {
             }
             return false;
         } catch (err) {
-            console.warn('[Binance] Gap backfill failed:', err);
+            console.warn('[Binance] Gap backfill skipped or timed out:', err);
             return false;
         } finally {
             this.isSyncingGap = false;
@@ -345,8 +371,8 @@ export class BinanceClient {
     public async handleWakeup() {
         if (!this.currentSyncKey) return;
         const now = Date.now();
-        // If no message arrived in 6+ seconds, connection is dead/zombie
-        const isZombie = (now - this.lastMessageTime) > 6000;
+        // Aggressive Mobile Check: If no tick received for 4+ seconds, drop the zombie socket and reconnect fresh
+        const isZombie = (now - this.lastMessageTime) > 4000;
         const isClosed = !this.ws || this.ws.readyState !== WebSocket.OPEN;
 
         if (isClosed || isZombie) {
@@ -355,8 +381,8 @@ export class BinanceClient {
                 await this.connect(this.savedSymbol, this.savedInterval, this.savedOnUpdate, this.savedOnTicker);
             }
         } else {
-            // Socket is alive, but check if we missed any candles while suspended/minimized
-            await this.syncMissingGap();
+            // Socket is alive, but immediately backfill any gap missed while the phone was locked
+            await this.syncMissingGap(this.savedSymbol, this.savedInterval, true);
         }
     }
 
