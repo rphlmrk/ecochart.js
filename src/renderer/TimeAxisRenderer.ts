@@ -21,6 +21,80 @@ export class TimeAxisRenderer {
         return '#' + (hex & 0xFFFFFF).toString(16).padStart(6, '0');
     }
 
+    private getSessionStatus(tz: string, now: Date, isFlashTick: boolean) {
+        const isDark = this.renderer.isDarkTheme;
+        const defaultText = this.hexToCSS(this.renderer.axisTextColor);
+        const defaultBorder = this.hexToCSS(this.renderer.gridColor);
+        const defaultBg = this.hexToCSS(this.renderer.axisBgColor);
+        const bullHex = this.hexToCSS(this.renderer.bullColor);
+        const bearHex = this.hexToCSS(this.renderer.bearColor);
+
+        try {
+            const targetTz = tz === 'local' ? undefined : tz;
+            const dayStr = new Intl.DateTimeFormat('en-US', { timeZone: targetTz, weekday: 'short' }).format(now);
+            if (dayStr === 'Sat' || dayStr === 'Sun') {
+                return { icon: '🌙', textColor: defaultText, borderColor: defaultBorder, borderWidth: 1, bgColor: defaultBg };
+            }
+
+            const parts = new Intl.DateTimeFormat('en-US', { timeZone: targetTz, hour: 'numeric', minute: 'numeric', hour12: false }).formatToParts(now);
+            const hVal = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
+            const mVal = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+            const t = (hVal % 24) + (mVal / 60);
+
+            let isOpening = false, isClosing = false, isOpen = false;
+            if (tz === 'America/New_York') {
+                isOpening = (t >= 9.5 && t < 10.0); isClosing = (t >= 15.75 && t < 16.0); isOpen = (t >= 9.5 && t < 16.0);
+            } else if (tz === 'Europe/London') {
+                isOpening = (t >= 8.0 && t < 8.5); isClosing = (t >= 16.0 && t < 16.5); isOpen = (t >= 8.0 && t < 16.5);
+            } else if (tz === 'Asia/Tokyo') {
+                isOpening = (t >= 9.0 && t < 9.5) || (t >= 12.5 && t < 12.75); isClosing = (t >= 11.25 && t < 11.5) || (t >= 15.25 && t < 15.5); isOpen = (t >= 9.0 && t < 11.5) || (t >= 12.5 && t < 15.5);
+            } else if (tz === 'Asia/Hong_Kong') {
+                isOpening = (t >= 9.5 && t < 10.0) || (t >= 13.0 && t < 13.25); isClosing = (t >= 11.75 && t < 12.0) || (t >= 15.75 && t < 16.0); isOpen = (t >= 9.5 && t < 12.0) || (t >= 13.0 && t < 16.0);
+            } else if (tz === 'Europe/Frankfurt') {
+                isOpening = (t >= 9.0 && t < 9.5); isClosing = (t >= 17.0 && t < 17.5); isOpen = (t >= 9.0 && t < 17.5);
+            } else {
+                isOpening = (t >= 8.0 && t < 8.5); isClosing = (t >= 16.5 && t < 17.0); isOpen = (t >= 8.0 && t < 17.0);
+            }
+
+            if (isOpening) {
+                // Static colors for Opening state (No background flashing)
+                const openText = isDark ? '#FFD600' : '#B45309';
+                const openBorder = isDark ? '#FFD600' : '#D97706';
+                const openBg = isDark ? 'rgba(255, 214, 0, 0.18)' : 'rgba(217, 119, 6, 0.15)';
+
+                // ONLY the icon flashes (alternates between Bell and Bolt)
+                return {
+                    icon: isFlashTick ? '🔔' : '⚡',
+                    textColor: openText,
+                    borderColor: openBorder,
+                    borderWidth: 1.5,
+                    bgColor: openBg
+                };
+            }
+            if (isClosing) {
+                return {
+                    icon: '⚠️',
+                    textColor: isDark ? '#FFAB91' : '#C2410C',
+                    borderColor: isDark ? '#FF5722' : bearHex,
+                    borderWidth: 1.5,
+                    bgColor: isDark ? 'rgba(255, 87, 34, 0.12)' : 'rgba(194, 65, 12, 0.1)'
+                };
+            }
+            if (isOpen) {
+                return {
+                    icon: '🟢',
+                    textColor: isDark ? bullHex : '#047857',
+                    borderColor: bullHex,
+                    borderWidth: 1.5,
+                    bgColor: isDark ? 'rgba(38, 166, 154, 0.12)' : 'rgba(4, 120, 87, 0.08)'
+                };
+            }
+            return { icon: '🌙', textColor: defaultText, borderColor: defaultBorder, borderWidth: 1, bgColor: defaultBg };
+        } catch {
+            return { icon: '', textColor: defaultText, borderColor: defaultBorder, borderWidth: 1, bgColor: defaultBg };
+        }
+    }
+
     public render() {
         if (!this.renderer.app || !this.renderer.app.renderer) return;
 
@@ -38,9 +112,8 @@ export class TimeAxisRenderer {
 
         this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-        // 1. Background Fill
-        this.ctx.fillStyle = this.hexToCSS(this.renderer.axisBgColor);
-        this.ctx.fillRect(0, 0, w, h);
+        // 1. Clear Background to allow GPU Session Shading to show through
+        this.ctx.clearRect(0, 0, w, h);
 
         // 2. Top Border Line
         this.ctx.strokeStyle = this.hexToCSS(this.renderer.gridColor);
@@ -91,55 +164,12 @@ export class TimeAxisRenderer {
                 }
             };
 
-            const getSessionStatus = (tz: string) => {
-                try {
-                    const targetTz = tz === 'local' ? undefined : tz;
-                    const dayStr = new Intl.DateTimeFormat('en-US', { timeZone: targetTz, weekday: 'short' }).format(now);
-                    if (dayStr === 'Sat' || dayStr === 'Sun') {
-                        return { icon: '🌙', textColor: this.hexToCSS(this.renderer.axisTextColor), borderColor: this.hexToCSS(this.renderer.gridColor), borderWidth: 1, bgColor: this.hexToCSS(this.renderer.axisBgColor) };
-                    }
-
-                    const parts = new Intl.DateTimeFormat('en-US', { timeZone: targetTz, hour: 'numeric', minute: 'numeric', hour12: false }).formatToParts(now);
-                    const hVal = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
-                    const mVal = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
-                    const t = (hVal % 24) + (mVal / 60);
-
-                    let isOpening = false, isClosing = false, isOpen = false;
-                    if (tz === 'America/New_York') {
-                        isOpening = (t >= 9.5 && t < 10.0); isClosing = (t >= 15.75 && t < 16.0); isOpen = (t >= 9.5 && t < 16.0);
-                    } else if (tz === 'Europe/London') {
-                        isOpening = (t >= 8.0 && t < 8.5); isClosing = (t >= 16.0 && t < 16.5); isOpen = (t >= 8.0 && t < 16.5);
-                    } else if (tz === 'Asia/Tokyo') {
-                        isOpening = (t >= 9.0 && t < 9.5) || (t >= 12.5 && t < 12.75); isClosing = (t >= 11.25 && t < 11.5) || (t >= 15.25 && t < 15.5); isOpen = (t >= 9.0 && t < 11.5) || (t >= 12.5 && t < 15.5);
-                    } else if (tz === 'Asia/Hong_Kong') {
-                        isOpening = (t >= 9.5 && t < 10.0) || (t >= 13.0 && t < 13.25); isClosing = (t >= 11.75 && t < 12.0) || (t >= 15.75 && t < 16.0); isOpen = (t >= 9.5 && t < 12.0) || (t >= 13.0 && t < 16.0);
-                    } else if (tz === 'Europe/Frankfurt') {
-                        isOpening = (t >= 9.0 && t < 9.5); isClosing = (t >= 17.0 && t < 17.5); isOpen = (t >= 9.0 && t < 17.5);
-                    } else {
-                        isOpening = (t >= 8.0 && t < 8.5); isClosing = (t >= 16.5 && t < 17.0); isOpen = (t >= 8.0 && t < 17.0);
-                    }
-
-                    if (isOpening) {
-                        return { icon: isFlashTick ? '🔔' : '⚡', textColor: isFlashTick ? '#FFD600' : '#FFF9C4', borderColor: isFlashTick ? '#FFD600' : '#787B86', borderWidth: isFlashTick ? 2 : 1, bgColor: isFlashTick ? 'rgba(255, 214, 0, 0.15)' : this.hexToCSS(this.renderer.axisBgColor) };
-                    }
-                    if (isClosing) {
-                        return { icon: '⚠️', textColor: '#FFAB91', borderColor: '#FF5722', borderWidth: 1, bgColor: this.hexToCSS(this.renderer.axisBgColor) };
-                    }
-                    if (isOpen) {
-                        return { icon: '🟢', textColor: '#26A69A', borderColor: '#26A69A', borderWidth: 1.5, bgColor: this.hexToCSS(this.renderer.axisBgColor) };
-                    }
-                    return { icon: '🌙', textColor: this.hexToCSS(this.renderer.axisTextColor), borderColor: this.hexToCSS(this.renderer.gridColor), borderWidth: 1, bgColor: this.hexToCSS(this.renderer.axisBgColor) };
-                } catch {
-                    return { icon: '', textColor: this.hexToCSS(this.renderer.axisTextColor), borderColor: this.hexToCSS(this.renderer.gridColor), borderWidth: 1, bgColor: this.hexToCSS(this.renderer.axisBgColor) };
-                }
-            };
-
             const badgeH = 18;
             const badgeY = Math.floor((h - badgeH) / 2);
             let rightAnchor = w - 8;
 
             const prepareBadge = (tz: string, label: string) => {
-                const st = getSessionStatus(tz);
+                const st = this.getSessionStatus(tz, now, isFlashTick);
                 const timeStr = `${st.icon} ${label} ${formatTime(tz)}`;
                 this.ctx.font = '10px sans-serif';
                 const textW = this.ctx.measureText(timeStr).width;
@@ -262,10 +292,9 @@ export class TimeAxisRenderer {
         const clockConfig = (this.renderer as any).clockConfig;
         if (!clockConfig?.enabled) return;
 
-        // Clear only the previous badge bounding boxes using the axis background color
-        this.ctx.fillStyle = this.hexToCSS(this.renderer.axisBgColor);
+        // Clear only the previous badge bounding boxes
         for (const b of this.lastBadges) {
-            this.ctx.fillRect(b.x - 2, b.y - 1, b.w + 4, b.h + 2);
+            this.ctx.clearRect(b.x - 2, b.y - 1, b.w + 4, b.h + 2);
         }
 
         const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
@@ -294,56 +323,13 @@ export class TimeAxisRenderer {
             }
         };
 
-        const getSessionStatus = (tz: string) => {
-            try {
-                const targetTz = tz === 'local' ? undefined : tz;
-                const dayStr = new Intl.DateTimeFormat('en-US', { timeZone: targetTz, weekday: 'short' }).format(now);
-                if (dayStr === 'Sat' || dayStr === 'Sun') {
-                    return { icon: '🌙', textColor: this.hexToCSS(this.renderer.axisTextColor), borderColor: this.hexToCSS(this.renderer.gridColor), borderWidth: 1, bgColor: this.hexToCSS(this.renderer.axisBgColor) };
-                }
-
-                const parts = new Intl.DateTimeFormat('en-US', { timeZone: targetTz, hour: 'numeric', minute: 'numeric', hour12: false }).formatToParts(now);
-                const hVal = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
-                const mVal = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
-                const t = (hVal % 24) + (mVal / 60);
-
-                let isOpening = false, isClosing = false, isOpen = false;
-                if (tz === 'America/New_York') {
-                    isOpening = (t >= 9.5 && t < 10.0); isClosing = (t >= 15.75 && t < 16.0); isOpen = (t >= 9.5 && t < 16.0);
-                } else if (tz === 'Europe/London') {
-                    isOpening = (t >= 8.0 && t < 8.5); isClosing = (t >= 16.0 && t < 16.5); isOpen = (t >= 8.0 && t < 16.5);
-                } else if (tz === 'Asia/Tokyo') {
-                    isOpening = (t >= 9.0 && t < 9.5) || (t >= 12.5 && t < 12.75); isClosing = (t >= 11.25 && t < 11.5) || (t >= 15.25 && t < 15.5); isOpen = (t >= 9.0 && t < 11.5) || (t >= 12.5 && t < 15.5);
-                } else if (tz === 'Asia/Hong_Kong') {
-                    isOpening = (t >= 9.5 && t < 10.0) || (t >= 13.0 && t < 13.25); isClosing = (t >= 11.75 && t < 12.0) || (t >= 15.75 && t < 16.0); isOpen = (t >= 9.5 && t < 12.0) || (t >= 13.0 && t < 16.0);
-                } else if (tz === 'Europe/Frankfurt') {
-                    isOpening = (t >= 9.0 && t < 9.5); isClosing = (t >= 17.0 && t < 17.5); isOpen = (t >= 9.0 && t < 17.5);
-                } else {
-                    isOpening = (t >= 8.0 && t < 8.5); isClosing = (t >= 16.5 && t < 17.0); isOpen = (t >= 8.0 && t < 17.0);
-                }
-
-                if (isOpening) {
-                    return { icon: isFlashTick ? '🔔' : '⚡', textColor: isFlashTick ? '#FFD600' : '#FFF9C4', borderColor: isFlashTick ? '#FFD600' : '#787B86', borderWidth: isFlashTick ? 2 : 1, bgColor: isFlashTick ? 'rgba(255, 214, 0, 0.15)' : this.hexToCSS(this.renderer.axisBgColor) };
-                }
-                if (isClosing) {
-                    return { icon: '⚠️', textColor: '#FFAB91', borderColor: '#FF5722', borderWidth: 1, bgColor: this.hexToCSS(this.renderer.axisBgColor) };
-                }
-                if (isOpen) {
-                    return { icon: '🟢', textColor: '#26A69A', borderColor: '#26A69A', borderWidth: 1.5, bgColor: this.hexToCSS(this.renderer.axisBgColor) };
-                }
-                return { icon: '🌙', textColor: this.hexToCSS(this.renderer.axisTextColor), borderColor: this.hexToCSS(this.renderer.gridColor), borderWidth: 1, bgColor: this.hexToCSS(this.renderer.axisBgColor) };
-            } catch {
-                return { icon: '', textColor: this.hexToCSS(this.renderer.axisTextColor), borderColor: this.hexToCSS(this.renderer.gridColor), borderWidth: 1, bgColor: this.hexToCSS(this.renderer.axisBgColor) };
-            }
-        };
-
         const badgeH = 18;
         const badgeY = Math.floor((h - badgeH) / 2);
         let rightAnchor = w - 8;
         this.lastBadges = [];
 
         const drawBadge = (tz: string, label: string) => {
-            const st = getSessionStatus(tz);
+            const st = this.getSessionStatus(tz, now, isFlashTick);
             const timeStr = `${st.icon} ${label} ${formatTime(tz)}`;
             this.ctx.font = '10px sans-serif';
             const textW = this.ctx.measureText(timeStr).width;

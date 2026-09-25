@@ -341,11 +341,29 @@ export class ZigZag123Indicator extends BaseIndicator {
         this.labelContainer.visible = true;
 
         const showZigZag = this.getParam<boolean>('showZigZag', true);
-        const zzColor = parseColor(this.getParam('zzColor', '#FF9800'));
-        const zzWidth = this.getParam<number>('zzWidth', 2);
+        const rawZzColor = String(this.getParam('zzColor', '#FF9800')).trim().toUpperCase();
+        let zzColor = parseColor(rawZzColor);
 
         const showLevels = this.getParam<boolean>('showLevels', true);
-        const breakoutColor = parseColor(this.getParam('breakoutColor', '#EF5350'));
+        const rawBreakout = String(this.getParam('breakoutColor', '#EF5350')).trim().toUpperCase();
+        let breakoutColor = parseColor(rawBreakout);
+
+        // Luminous Check: Flip bright lines to dark slate in Light Mode
+        if (!r.isDarkTheme) {
+            const cR1 = (zzColor >> 16) & 0xff, cG1 = (zzColor >> 8) & 0xff, cB1 = zzColor & 0xff;
+            if ((0.299 * cR1 + 0.587 * cG1 + 0.114 * cB1) > 180) {
+                zzColor = 0x131722;
+            } else if (rawZzColor === '#FF9800') {
+                zzColor = 0xD97706; // Deep orange adjust
+            }
+
+            const cR2 = (breakoutColor >> 16) & 0xff, cG2 = (breakoutColor >> 8) & 0xff, cB2 = breakoutColor & 0xff;
+            if ((0.299 * cR2 + 0.587 * cG2 + 0.114 * cB2) > 180) {
+                breakoutColor = 0x131722;
+            }
+        }
+
+        const zzWidth = this.getParam<number>('zzWidth', 2);
         const lineWidth = this.getParam<number>('lineWidth', 1.5);
 
         const showLabels = this.getParam<boolean>('showLabels', true);
@@ -429,8 +447,8 @@ export class ZigZag123Indicator extends BaseIndicator {
                 let y = layout.mainChartHeight - (normY * layout.mainChartHeight) + r.cameraY;
                 y += lbl.isHigh ? -20 : 6;
 
-                // Draw subtle badge circle behind label number
-                const badgeColor = lbl.text === '3' ? (lbl.isHigh ? 0x26A69A : 0xEF5350) : r.axisBgColor;
+                // Draw subtle badge circle behind label number, dynamically aware of active theme colors
+                const badgeColor = lbl.text === '3' ? (lbl.isHigh ? r.bullColor : r.bearColor) : r.axisBgColor;
                 g.circle(x, y + 6, 8).fill({ color: badgeColor, alpha: 0.85 });
                 g.circle(x, y + 6, 8).stroke({ color: r.gridColor, width: 1 });
 
@@ -464,12 +482,19 @@ export class ZigZag123Indicator extends BaseIndicator {
         }
     }
 
-    public getValueAt(idx: number, ds: DataStore, _isDark: boolean, _defaultTextClr: number) {
+    public getValueAt(idx: number, ds: DataStore, isDark: boolean, _defaultTextClr: number) {
         const close = (idx >= 0 && idx < ds.length) ? ds.data[idx * 6 + 4] : 0;
+        const rawZz = String(this.getParam('zzColor', '#FF9800')).toUpperCase();
+        let zzColor = parseColor(rawZz);
+
+        if (!isDark && rawZz === '#FF9800') {
+            zzColor = 0xD97706; // Adjust to deep orange on light theme
+        }
+
         return {
             label: this.name,
             valueStr: close > 0 ? close.toFixed(2) : 'n/a',
-            valueColor: parseColor(this.getParam('zzColor', '#FF9800'))
+            valueColor: zzColor
         };
     }
 

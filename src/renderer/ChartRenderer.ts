@@ -40,8 +40,7 @@ export class ChartRenderer {
     private gridUniforms!: UniformGroup;
     private historicalCandlesGraphics!: Graphics; // Cached bars 0 to N-2
     private liveCandlesGraphics!: Graphics;       // Forming bar N-1 only
-    private candlesGraphics!: Graphics;           // Backward-compatible alias
-    private liveHaOpen = 0;                       // Cached Heikin-Ashi open for forming bar
+
 
     // GPU Session Instancing Engine
     private sessionMesh!: Mesh<Geometry, Shader>;
@@ -64,8 +63,16 @@ export class ChartRenderer {
     private lastSyncedLiveClose = 0;
     private lastSyncedLiveHigh = 0;
     private lastSyncedLiveLow = 0;
+    private lastSyncedMode = ''; // <-- ADDED
+
+    // Caches for GPU modes
+    public mainClosePrices = new Float64Array(0);
+    private haPrevO = 0;
+    private haPrevC = 0;
 
     private uiGraphics!: Graphics; // Dividers & live price line
+    public indicatorMainContainer!: Container; // <-- ADDED
+    public indicatorOscContainer!: Container;  // <-- ADDED
     public indicatorMainGraphics!: Graphics;
     public indicatorOscGraphics!: Graphics;
     public drawingGraphics!: Graphics;
@@ -251,9 +258,17 @@ export class ChartRenderer {
         this.gridGraphics = new Graphics();
         this.historicalCandlesGraphics = new Graphics();
         this.liveCandlesGraphics = new Graphics();
-        this.candlesGraphics = this.historicalCandlesGraphics; // Alias
+
+        // Setup new containers for Pixi v8 compatibility
+        this.indicatorMainContainer = new Container();
+        this.indicatorOscContainer = new Container();
         this.indicatorMainGraphics = new Graphics();
         this.indicatorOscGraphics = new Graphics();
+
+        // Put CPU graphics inside the new containers
+        this.indicatorMainContainer.addChild(this.indicatorMainGraphics);
+        this.indicatorOscContainer.addChild(this.indicatorOscGraphics);
+
         this.drawingGraphics = new Graphics();
         this.uiGraphics = new Graphics();
         this.crosshairGraphics = new Graphics();
@@ -265,13 +280,13 @@ export class ChartRenderer {
         this.initInstancedCandleMesh();
 
         this.app.stage.addChild(this.gridMesh);
-        this.app.stage.addChild(this.sessionMesh);
-        this.app.stage.addChild(this.gridGraphics);
+        this.app.stage.addChild(this.gridGraphics); // 1. Opaque axis background drawn here
+        this.app.stage.addChild(this.sessionMesh);  // 2. Session shade drawn OVER the background!
         this.app.stage.addChild(this.historicalCandlesGraphics); // Static layer
         this.app.stage.addChild(this.liveCandlesGraphics);       // Dynamic live layer
         this.app.stage.addChild(this.candleMesh);
-        this.app.stage.addChild(this.indicatorMainGraphics);
-        this.app.stage.addChild(this.indicatorOscGraphics);
+        this.app.stage.addChild(this.indicatorMainContainer); // <-- UPDATED
+        this.app.stage.addChild(this.indicatorOscContainer);  // <-- UPDATED
         this.app.stage.addChild(this.drawingGraphics);
         this.app.stage.addChild(this.oscHeaderContainer);
         this.app.stage.addChild(this.uiGraphics);
@@ -282,7 +297,7 @@ export class ChartRenderer {
     }
 
     public renderFrame() {
-        if (!this.candlesGraphics || this.dataStore.length === 0) return;
+        if (!this.historicalCandlesGraphics || this.dataStore.length === 0) return;
 
         // --- ECO-MODE: Thermal Throttling (Prevents device heating) ---
         const len = this.dataStore.length;
@@ -309,8 +324,9 @@ export class ChartRenderer {
         this.forceNextRender = false;
 
         // Layout Constants
+        this.timeAxisHeight = 24; // Explicitly reserve bottom 24px
         const chartWidth = width;
-        const timeAxisY = height;
+        const timeAxisY = height - this.timeAxisHeight; // Offset for 2-row span
         const oscHeight = this.oscHeight;
         const mainChartHeight = timeAxisY - oscHeight;
         const actualSpacing = this.candleSpacing * this.zoom;
@@ -389,6 +405,8 @@ export class ChartRenderer {
         if (isHistoricalDirty) {
             this.historicalCandlesGraphics.clear();
             this.gridGraphics.clear();
+            // Draw opaque background for the Time Axis so GPU candles don't bleed under it, but the Session Mesh sits ON TOP
+            this.gridGraphics.rect(0, timeAxisY, width, this.timeAxisHeight).fill(this.axisBgColor);
         }
         this.liveCandlesGraphics.clear();
         this.uiGraphics.clear();
@@ -455,224 +473,28 @@ export class ChartRenderer {
         gu.uGridStyle = this.gridStyle === 'solid' ? 0.0 : 1.0;
         this.gridUniforms.update(); // <-- FLUSH TO GPU
 
-        // --- 2. MULTI-MODE CHART DRAWING (OPTIMIZED BATCHING) ---
-        const candleWidth = Math.max(1, actualSpacing * 0.8);
+        // --- 2. MULTI-MODE CHART DRAWING (HARDWARE ACCELERATED) ---
+        if (this.chartMode === 'line' || this.chartMode === 'area') {
+            // Mode 1: Vector Splines (Line / Area)
+            this.candleMesh.visible = false;
+            this.syncInstancedData(); // Ensures mainClosePrices is up to date
 
-        this.candleMesh.visible = (this.chartMode === 'candles');
+            const isArea = this.chartMode === 'area';
+            const layout = { mainChartHeight, oscY: 0, oscHeight: 0, chartWidth };
 
-        // Precise boundary slicing: live bar rendered dynamically only when in visible window
-        const isLiveVisible = (visEnd >= len && len > 0);
-        const histEnd = isLiveVisible ? (len - 1) : visEnd;
-
-        if (this.chartMode === 'line') {
-            // Historical Line (Redrawn only when camera or historical scale is dirty)
-            if (isHistoricalDirty && histEnd > visStart) {
-                for (let i = visStart; i < histEnd; i++) {
-                    const c = this.dataStore.data[i * 6 + 4];
-                    const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
-                    const y = priceToY(c);
-                    if (i === visStart) this.historicalCandlesGraphics.moveTo(x, y);
-                    else this.historicalCandlesGraphics.lineTo(x, y);
-                }
-                this.historicalCandlesGraphics.stroke({ color: this.accentColor, width: this.mainLineWidth });
-            }
-            // Live Line Segment (0.001ms dynamic tick connecting bar N-2 to bar N-1)
-            if (isLiveVisible && len >= 2) {
-                const prevC = this.dataStore.data[(len - 2) * 6 + 4];
-                const prevX = ((len - 2) * actualSpacing) - this.cameraX + (candleWidth / 2);
-                const prevY = priceToY(prevC);
-                const liveX = ((len - 1) * actualSpacing) - this.cameraX + (candleWidth / 2);
-                const liveY = priceToY(liveC);
-                this.liveCandlesGraphics.moveTo(prevX, prevY).lineTo(liveX, liveY).stroke({ color: this.accentColor, width: this.mainLineWidth });
-            }
-
-        } else if (this.chartMode === 'area') {
-            // Historical Area
-            if (isHistoricalDirty && histEnd > visStart) {
-                const firstX = (visStart * actualSpacing) - this.cameraX + (candleWidth / 2);
-                const lastX = ((histEnd - 1) * actualSpacing) - this.cameraX + (candleWidth / 2);
-
-                this.historicalCandlesGraphics.moveTo(firstX, mainChartHeight);
-                for (let i = visStart; i < histEnd; i++) {
-                    const c = this.dataStore.data[i * 6 + 4];
-                    const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
-                    this.historicalCandlesGraphics.lineTo(x, priceToY(c));
-                }
-                this.historicalCandlesGraphics.lineTo(lastX, mainChartHeight).closePath().fill({ color: this.accentColor, alpha: 0.2 });
-
-                for (let i = visStart; i < histEnd; i++) {
-                    const c = this.dataStore.data[i * 6 + 4];
-                    const x = (i * actualSpacing) - this.cameraX + (candleWidth / 2);
-                    const y = priceToY(c);
-                    if (i === visStart) this.historicalCandlesGraphics.moveTo(x, y);
-                    else this.historicalCandlesGraphics.lineTo(x, y);
-                }
-                this.historicalCandlesGraphics.stroke({ color: this.accentColor, width: this.mainLineWidth });
-            }
-            // Live Area Segment
-            if (isLiveVisible && len >= 2) {
-                const prevC = this.dataStore.data[(len - 2) * 6 + 4];
-                const prevX = ((len - 2) * actualSpacing) - this.cameraX + (candleWidth / 2);
-                const prevY = priceToY(prevC);
-                const liveX = ((len - 1) * actualSpacing) - this.cameraX + (candleWidth / 2);
-                const liveY = priceToY(liveC);
-                this.liveCandlesGraphics.moveTo(prevX, mainChartHeight).lineTo(prevX, prevY).lineTo(liveX, liveY).lineTo(liveX, mainChartHeight).closePath().fill({ color: this.accentColor, alpha: 0.2 });
-                this.liveCandlesGraphics.moveTo(prevX, prevY).lineTo(liveX, liveY).stroke({ color: this.accentColor, width: this.mainLineWidth });
-            }
-
-        } else if (this.chartMode === 'bars') {
-            const spineWidth = Math.max(1, Math.min(2, Math.floor(candleWidth * 0.2)));
-            const tickWidth = Math.max(2, candleWidth / 2);
-
-            // Historical Bars (0 to histEnd - 1)
-            if (isHistoricalDirty && histEnd > visStart) {
-                this.historicalCandlesGraphics.beginPath();
-                for (let i = visStart; i < histEnd; i++) {
-                    const base = i * 6;
-                    const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
-                    if (c >= o) {
-                        const x = (i * actualSpacing) - this.cameraX, xMid = x + (candleWidth / 2);
-                        this.historicalCandlesGraphics.rect(xMid - (spineWidth / 2), priceToY(h), spineWidth, Math.max(1, priceToY(l) - priceToY(h)));
-                        this.historicalCandlesGraphics.rect(x, priceToY(o) - (spineWidth / 2), tickWidth, spineWidth);
-                        this.historicalCandlesGraphics.rect(xMid, priceToY(c) - (spineWidth / 2), tickWidth, spineWidth);
-                    }
-                }
-                this.historicalCandlesGraphics.fill({ color: this.bullColor, alpha: this.bullAlpha });
-
-                this.historicalCandlesGraphics.beginPath();
-                for (let i = visStart; i < histEnd; i++) {
-                    const base = i * 6;
-                    const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
-                    if (c < o) {
-                        const x = (i * actualSpacing) - this.cameraX, xMid = x + (candleWidth / 2);
-                        this.historicalCandlesGraphics.rect(xMid - (spineWidth / 2), priceToY(h), spineWidth, Math.max(1, priceToY(l) - priceToY(h)));
-                        this.historicalCandlesGraphics.rect(x, priceToY(o) - (spineWidth / 2), tickWidth, spineWidth);
-                        this.historicalCandlesGraphics.rect(xMid, priceToY(c) - (spineWidth / 2), tickWidth, spineWidth);
-                    }
-                }
-                this.historicalCandlesGraphics.fill({ color: this.bearColor, alpha: this.bearAlpha });
-            }
-
-            // Live Forming Bar (Updated on tick in < 0.005ms)
-            if (isLiveVisible) {
-                const liveIdx = len - 1;
-                const base = liveIdx * 6;
-                const o = this.dataStore.data[base + 1];
-                const x = (liveIdx * actualSpacing) - this.cameraX, xMid = x + (candleWidth / 2);
-                const isBull = liveC >= o;
-                const clr = isBull ? this.bullColor : this.bearColor;
-                const alpha = isBull ? this.bullAlpha : this.bearAlpha;
-
-                this.liveCandlesGraphics.beginPath();
-                this.liveCandlesGraphics.rect(xMid - (spineWidth / 2), priceToY(liveH), spineWidth, Math.max(1, priceToY(liveL) - priceToY(liveH)));
-                this.liveCandlesGraphics.rect(x, priceToY(o) - (spineWidth / 2), tickWidth, spineWidth);
-                this.liveCandlesGraphics.rect(xMid, priceToY(liveC) - (spineWidth / 2), tickWidth, spineWidth);
-                this.liveCandlesGraphics.fill({ color: clr, alpha });
-            }
-
-        } else if (this.chartMode === 'heikinAshi') {
-            // Historical Heikin-Ashi (Calculated & drawn only when camera or history is dirty)
-            if (isHistoricalDirty && histEnd > 0) {
-                const haData: { haO: number, haH: number, haL: number, haC: number }[] = new Array(histEnd);
-                let prevHaOpen = (this.dataStore.data[1] + this.dataStore.data[4]) / 2;
-                let prevHaClose = (this.dataStore.data[1] + this.dataStore.data[2] + this.dataStore.data[3] + this.dataStore.data[4]) / 4;
-
-                for (let i = 0; i < histEnd; i++) {
-                    const base = i * 6;
-                    const o = this.dataStore.data[base + 1], h = this.dataStore.data[base + 2], l = this.dataStore.data[base + 3], c = this.dataStore.data[base + 4];
-                    const haClose = (o + h + l + c) / 4;
-                    const haOpen = i === 0 ? prevHaOpen : (prevHaOpen + prevHaClose) / 2;
-                    if (i >= visStart) {
-                        haData[i] = { haO: haOpen, haH: Math.max(h, haOpen, haClose), haL: Math.min(l, haOpen, haClose), haC: haClose };
-                    }
-                    prevHaOpen = haOpen;
-                    prevHaClose = haClose;
-                }
-
-                // Cache next open value for the live forming bar
-                this.liveHaOpen = (prevHaOpen + prevHaClose) / 2;
-
-                // Draw Historical Bull
-                this.historicalCandlesGraphics.beginPath();
-                for (let i = visStart; i < histEnd; i++) {
-                    const d = haData[i];
-                    if (d.haC >= d.haO) {
-                        const x = (i * actualSpacing) - this.cameraX, yH = priceToY(d.haH), yL = priceToY(d.haL);
-                        this.historicalCandlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
-                    }
-                }
-                this.historicalCandlesGraphics.fill({ color: this.bullWickColor, alpha: this.bullWickAlpha });
-
-                this.historicalCandlesGraphics.beginPath();
-                for (let i = visStart; i < histEnd; i++) {
-                    const d = haData[i];
-                    if (d.haC >= d.haO) {
-                        const x = (i * actualSpacing) - this.cameraX, yO = priceToY(d.haO), yC = priceToY(d.haC);
-                        this.historicalCandlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
-                    }
-                }
-                this.historicalCandlesGraphics.fill({ color: this.bullColor, alpha: this.bullAlpha }).stroke({ color: this.bullBorderColor, width: 1, alpha: this.bullBorderAlpha });
-
-                // Draw Historical Bear
-                this.historicalCandlesGraphics.beginPath();
-                for (let i = visStart; i < histEnd; i++) {
-                    const d = haData[i];
-                    if (d.haC < d.haO) {
-                        const x = (i * actualSpacing) - this.cameraX, yH = priceToY(d.haH), yL = priceToY(d.haL);
-                        this.historicalCandlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
-                    }
-                }
-                this.historicalCandlesGraphics.fill({ color: this.bearWickColor, alpha: this.bearWickAlpha });
-
-                this.historicalCandlesGraphics.beginPath();
-                for (let i = visStart; i < histEnd; i++) {
-                    const d = haData[i];
-                    if (d.haC < d.haO) {
-                        const x = (i * actualSpacing) - this.cameraX, yO = priceToY(d.haO), yC = priceToY(d.haC);
-                        this.historicalCandlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
-                    }
-                }
-                this.historicalCandlesGraphics.fill({ color: this.bearColor, alpha: this.bearAlpha }).stroke({ color: this.bearBorderColor, width: 1, alpha: this.bearBorderAlpha });
-            }
-
-            // Live Forming Heikin-Ashi Candle (O(1) execution on tick)
-            if (isLiveVisible) {
-                const liveIdx = len - 1;
-                const base = liveIdx * 6;
-                const o = this.dataStore.data[base + 1];
-                const haOpen = liveIdx === 0 ? ((o + liveC) / 2) : this.liveHaOpen;
-                const haClose = (o + liveH + liveL + liveC) / 4;
-                const haHigh = Math.max(liveH, haOpen, haClose);
-                const haLow = Math.min(liveL, haOpen, haClose);
-                const isBull = haClose >= haOpen;
-
-                const x = (liveIdx * actualSpacing) - this.cameraX;
-                const yH = priceToY(haHigh);
-                const yL = priceToY(haLow);
-                const yO = priceToY(haOpen);
-                const yC = priceToY(haClose);
-
-                const wickColor = isBull ? this.bullWickColor : this.bearWickColor;
-                const wickAlpha = isBull ? this.bullWickAlpha : this.bearWickAlpha;
-                const bodyColor = isBull ? this.bullColor : this.bearColor;
-                const bodyAlpha = isBull ? this.bullAlpha : this.bearAlpha;
-                const borderColor = isBull ? this.bullBorderColor : this.bearBorderColor;
-                const borderAlpha = isBull ? this.bullBorderAlpha : this.bearBorderAlpha;
-
-                // Live Wick
-                this.liveCandlesGraphics.beginPath();
-                this.liveCandlesGraphics.rect(x + (candleWidth / 2) - 0.5, yH, 1, Math.max(1, yL - yH));
-                this.liveCandlesGraphics.fill({ color: wickColor, alpha: wickAlpha });
-
-                // Live Body
-                this.liveCandlesGraphics.beginPath();
-                this.liveCandlesGraphics.rect(x, Math.min(yO, yC), candleWidth, Math.max(1, Math.abs(yO - yC)));
-                this.liveCandlesGraphics.fill({ color: bodyColor, alpha: bodyAlpha }).stroke({ color: borderColor, width: 1, alpha: borderAlpha });
-            }
-
+            this.drawGPUIndicatorLine(
+                'MAIN_CHART_LINE', this.mainClosePrices,
+                this.accentColor, this.mainLineWidth, false, layout, undefined, isArea
+            );
         } else {
-            // GPU INSTANCED CANDLES (Approach 2)
+            // Mode 2: Instanced Rects (Candles, Bars, Heikin-Ashi)
+            this.candleMesh.visible = true;
+            this.candleUniforms.uniforms.uChartMode = this.chartMode === 'bars' ? 1.0 : 0.0;
             this.renderInstancedCandles(mainChartHeight, visStart, visEnd);
+
+            // Hide the Line/Area mesh if we switched back to candles
+            const lineEntry = this.indicatorMeshes.get('MAIN_CHART_LINE');
+            if (lineEntry) lineEntry.mesh.visible = false;
         }
 
         // --- 3. DRAW AXIS BACKGROUNDS & DIVIDERS ---
@@ -977,6 +799,29 @@ export class ChartRenderer {
     }
 
     public destroy() {
+        // 1. Destroy all custom GPU Buffers and Geometries to free VRAM instantly
+        if (this.gridGeometry) this.gridGeometry.destroy();
+        if (this.candleGeometry) this.candleGeometry.destroy();
+        if (this.candleIndexBuffer) this.candleIndexBuffer.destroy();
+        if (this.candleOHLCBuffer) this.candleOHLCBuffer.destroy();
+        if (this.sessionGeometry) this.sessionGeometry.destroy();
+        if (this.sessionBuffer) this.sessionBuffer.destroy();
+
+        // 2. Destroy dynamically generated Indicator Meshes
+        for (const entry of this.indicatorMeshes.values()) {
+            if (entry.mesh && entry.mesh.geometry) entry.mesh.geometry.destroy();
+            if (entry.buffer) entry.buffer.destroy();
+            if (entry.mesh) entry.mesh.destroy();
+        }
+        this.indicatorMeshes.clear();
+
+        // 3. Clear CPU memory arrays
+        this.candleIndexArray = new Float32Array(0);
+        this.candleOHLCArray = new Float32Array(0);
+        this.mainClosePrices = new Float64Array(0);
+        this.sessionArray = new Float32Array(0);
+
+        // 4. Destroy Pixi Application and Canvas references
         if (this.app) {
             this.app.destroy(true, { children: true, texture: true });
         }
@@ -1093,14 +938,16 @@ export class ChartRenderer {
     }
 
     private initInstancedCandleMesh() {
-        // 1. Base Geometry: 8 vertices forming 2 quads (Wick + Body)
+        // 1. Base Geometry: 12 vertices forming 3 quads (Spine, Open Tick, Close Tick)
         const baseVertices = new Float32Array([
-            -0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 0.5, 1.0, 0.0, -0.5, 1.0, 0.0, // Wick Quad
-            -0.5, 0.0, 1.0, 0.5, 0.0, 1.0, 0.5, 1.0, 1.0, -0.5, 1.0, 1.0  // Body Quad
+            -0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 0.5, 1.0, 0.0, -0.5, 1.0, 0.0, // Quad 0
+            -0.5, 0.0, 1.0, 0.5, 0.0, 1.0, 0.5, 1.0, 1.0, -0.5, 1.0, 1.0, // Quad 1
+            -0.5, 0.0, 2.0, 0.5, 0.0, 2.0, 0.5, 1.0, 2.0, -0.5, 1.0, 2.0  // Quad 2
         ]);
         const baseIndices = new Uint32Array([
-            0, 1, 2, 0, 2, 3, // Wick Triangles
-            4, 5, 6, 4, 6, 7  // Body Triangles
+            0, 1, 2, 0, 2, 3,
+            4, 5, 6, 4, 6, 7,
+            8, 9, 10, 8, 10, 11
         ]);
 
         this.candleIndexBuffer = new Buffer({
@@ -1114,119 +961,96 @@ export class ChartRenderer {
 
         this.candleGeometry = new Geometry({
             attributes: {
-                aVertexPosition: {
-                    buffer: new Buffer({
-                        data: baseVertices,
-                        usage: BufferUsage.VERTEX
-                    }),
-                    format: 'float32x3'
-                },
-                aCandleIndex: {
-                    buffer: this.candleIndexBuffer,
-                    format: 'float32',
-                    instance: true
-                },
-                aCandleOHLC: {
-                    buffer: this.candleOHLCBuffer,
-                    format: 'float32x4', // Open, High, Low, Close
-                    instance: true
-                }
+                aVertexPosition: { buffer: new Buffer({ data: baseVertices, usage: BufferUsage.VERTEX }), format: 'float32x3' },
+                aCandleIndex: { buffer: this.candleIndexBuffer, format: 'float32', instance: true },
+                aCandleOHLC: { buffer: this.candleOHLCBuffer, format: 'float32x4', instance: true }
             },
             indexBuffer: baseIndices,
             instanceCount: 0
         });
 
-        // 2. Uniforms Group
         this.candleUniforms = new UniformGroup({
-            uCameraX: { value: 0, type: 'f32' },
-            uCameraY: { value: 0, type: 'f32' },
-            uZoom: { value: 1, type: 'f32' },
-            uCandleSpacing: { value: 8, type: 'f32' },
-            uMinPrice: { value: 0, type: 'f32' },
-            uMaxPrice: { value: 1, type: 'f32' },
-            uChartHeight: { value: 500, type: 'f32' },
-            uVisStart: { value: 0, type: 'f32' },
-            uVisEnd: { value: 10000, type: 'f32' },
+            uCameraX: { value: 0, type: 'f32' }, uCameraY: { value: 0, type: 'f32' },
+            uZoom: { value: 1, type: 'f32' }, uCandleSpacing: { value: 8, type: 'f32' },
+            uMinPrice: { value: 0, type: 'f32' }, uMaxPrice: { value: 1, type: 'f32' },
+            uChartHeight: { value: 500, type: 'f32' }, uVisStart: { value: 0, type: 'f32' }, uVisEnd: { value: 10000, type: 'f32' },
+            uChartMode: { value: 0, type: 'f32' }, // <-- 0 = Candle/HA, 1 = Bars
             uBullBodyColor: { value: [0.15, 0.65, 0.60, 1.0], type: 'vec4<f32>' },
             uBearBodyColor: { value: [0.94, 0.33, 0.31, 1.0], type: 'vec4<f32>' },
             uBullWickColor: { value: [0.15, 0.65, 0.60, 1.0], type: 'vec4<f32>' },
             uBearWickColor: { value: [0.94, 0.33, 0.31, 1.0], type: 'vec4<f32>' }
         });
 
-        // 3. GLSL Vertex & Fragment Shaders
         const vertexSrc = `
             precision highp float;
             attribute vec3 aVertexPosition;
             attribute float aCandleIndex;
-            attribute vec4 aCandleOHLC; // Open, High, Low, Close
+            attribute vec4 aCandleOHLC; 
 
-            uniform mat3 uProjectionMatrix;
-            uniform mat3 uWorldTransformMatrix;
+            uniform mat3 uProjectionMatrix; uniform mat3 uWorldTransformMatrix;
+            uniform float uCameraX; uniform float uCameraY; uniform float uZoom;
+            uniform float uCandleSpacing; uniform float uMinPrice; uniform float uMaxPrice;
+            uniform float uChartHeight; uniform float uVisStart; uniform float uVisEnd;
+            uniform float uChartMode;
 
-            uniform float uCameraX;
-            uniform float uCameraY;
-            uniform float uZoom;
-            uniform float uCandleSpacing;
-            uniform float uMinPrice;
-            uniform float uMaxPrice;
-            uniform float uChartHeight;
-            uniform float uVisStart;
-            uniform float uVisEnd;
+            uniform vec4 uBullBodyColor; uniform vec4 uBearBodyColor;
+            uniform vec4 uBullWickColor; uniform vec4 uBearWickColor;
 
-            uniform vec4 uBullBodyColor;
-            uniform vec4 uBearBodyColor;
-            uniform vec4 uBullWickColor;
-            uniform vec4 uBearWickColor;
-
-            varying vec4 vColor;
-            varying float vY; // Removed strict highp requirement
+            varying vec4 vColor; varying float vY;
 
             void main() {
-                // Instantly discard geometry outside the visible camera view
                 if (aCandleIndex < uVisStart || aCandleIndex > uVisEnd) {
-                    gl_Position = vec4(0.0);
-                    return;
+                    gl_Position = vec4(0.0); return;
                 }
 
-                float openP  = aCandleOHLC.x;
-                float highP  = aCandleOHLC.y;
-                float lowP   = aCandleOHLC.z;
-                float closeP = aCandleOHLC.w;
-                
+                float openP = aCandleOHLC.x; float highP = aCandleOHLC.y;
+                float lowP = aCandleOHLC.z; float closeP = aCandleOHLC.w;
                 bool isBull = closeP >= openP;
                 
                 float actualSpacing = uCandleSpacing * uZoom;
                 float candleWidth = max(1.0, actualSpacing * 0.8);
                 float centerX = (aCandleIndex * actualSpacing) - uCameraX + (candleWidth * 0.5);
-                
-                float priceRange = max(0.000001, uMaxPrice - uMinPrice);
-                float yRatio = uChartHeight / priceRange;
+                float yRatio = uChartHeight / max(0.000001, uMaxPrice - uMinPrice);
                 float yOffset = uChartHeight + uCameraY;
                 
-                float topY = 0.0;
-                float bottomY = 0.0;
-                float w = 1.0;
+                float topY = 0.0; float bottomY = 0.0;
+                float w = 1.0; float shiftX = 0.0;
                 
-                if (aVertexPosition.z < 0.5) {
-                    // Wick Quad
-                    topY = yOffset - ((highP - uMinPrice) * yRatio);
-                    bottomY = yOffset - ((lowP - uMinPrice) * yRatio);
-                    w = 1.0;
-                    vColor = isBull ? uBullWickColor : uBearWickColor;
+                if (uChartMode < 0.5) { 
+                    // CANDLES
+                    if (aVertexPosition.z < 0.5) { // Wick
+                        topY = yOffset - ((highP - uMinPrice) * yRatio);
+                        bottomY = yOffset - ((lowP - uMinPrice) * yRatio);
+                        w = 1.0; vColor = isBull ? uBullWickColor : uBearWickColor;
+                    } else if (aVertexPosition.z < 1.5) { // Body
+                        topY = yOffset - ((max(openP, closeP) - uMinPrice) * yRatio);
+                        bottomY = yOffset - ((min(openP, closeP) - uMinPrice) * yRatio);
+                        if (bottomY - topY < 1.0) bottomY = topY + 1.0;
+                        w = candleWidth; vColor = isBull ? uBullBodyColor : uBearBodyColor;
+                    } else { gl_Position = vec4(0.0); return; } // Quad 2 Unused
                 } else {
-                    // Body Quad
-                    float maxOC = max(openP, closeP);
-                    float minOC = min(openP, closeP);
-                    topY = yOffset - ((maxOC - uMinPrice) * yRatio);
-                    bottomY = yOffset - ((minOC - uMinPrice) * yRatio);
-                    if (bottomY - topY < 1.0) bottomY = topY + 1.0;
-                    w = candleWidth;
-                    vColor = isBull ? uBullBodyColor : uBearBodyColor;
+                    // BARS (OHLC)
+                    float spineW = max(1.0, candleWidth * 0.2);
+                    float tickW = max(2.0, candleWidth * 0.5);
+                    if (aVertexPosition.z < 0.5) { // Spine
+                        topY = yOffset - ((highP - uMinPrice) * yRatio);
+                        bottomY = yOffset - ((lowP - uMinPrice) * yRatio);
+                        w = spineW; vColor = isBull ? uBullBodyColor : uBearBodyColor;
+                    } else if (aVertexPosition.z < 1.5) { // Open Tick
+                        topY = yOffset - ((openP - uMinPrice) * yRatio) - (spineW * 0.5);
+                        bottomY = topY + spineW;
+                        shiftX = -tickW * 0.5; w = tickW;
+                        vColor = isBull ? uBullBodyColor : uBearBodyColor;
+                    } else { // Close Tick
+                        topY = yOffset - ((closeP - uMinPrice) * yRatio) - (spineW * 0.5);
+                        bottomY = topY + spineW;
+                        shiftX = tickW * 0.5; w = tickW;
+                        vColor = isBull ? uBullBodyColor : uBearBodyColor;
+                    }
                 }
                 
-                float posX = centerX + (aVertexPosition.x * w);
+                float posX = centerX + shiftX + (aVertexPosition.x * w);
                 float posY = mix(bottomY, topY, aVertexPosition.y);
-                
                 vY = posY;
 
                 mat3 mvp = uProjectionMatrix * uWorldTransformMatrix;
@@ -1264,12 +1088,12 @@ export class ChartRenderer {
 
     private updateInstancedThemeUniforms() {
         if (!this.candleUniforms) return;
-        const toVec4 = (hex: number, alpha: number) => [
+        const toVec4 = (hex: number, alpha: number) => new Float32Array([
             ((hex >> 16) & 0xff) / 255,
             ((hex >> 8) & 0xff) / 255,
             (hex & 0xff) / 255,
             alpha
-        ];
+        ]);
         const u = this.candleUniforms.uniforms;
         u.uBullBodyColor = toVec4(this.bullColor, this.bullAlpha);
         u.uBearBodyColor = toVec4(this.bearColor, this.bearAlpha);
@@ -1293,84 +1117,69 @@ export class ChartRenderer {
         const liveH = this.dataStore.data[lastBase + 2];
         const liveL = this.dataStore.data[lastBase + 3];
 
-        // 1. Capacity Resize
-        if (this.candleOHLCArray.length < len * 4) {
+        const isHA = this.chartMode === 'heikinAshi';
+        const needsFullSync = (this.candleOHLCArray.length < len * 4) || (this.lastSyncedLength !== len) || (this.lastSyncedMode !== this.chartMode);
+
+        if (needsFullSync) {
             const newCap = Math.max(10000, len * 2);
-            this.candleOHLCArray = new Float32Array(newCap * 4);
-            this.candleIndexArray = new Float32Array(newCap);
+            if (this.candleOHLCArray.length < newCap * 4) {
+                this.candleOHLCArray = new Float32Array(newCap * 4);
+                this.candleIndexArray = new Float32Array(newCap);
+                this.mainClosePrices = new Float64Array(newCap);
+            }
 
             for (let i = 0; i < len; i++) {
                 const b = i * 6;
                 const d = i * 4;
-                this.candleOHLCArray[d] = this.dataStore.data[b + 1];
-                this.candleOHLCArray[d + 1] = this.dataStore.data[b + 2];
-                this.candleOHLCArray[d + 2] = this.dataStore.data[b + 3];
-                this.candleOHLCArray[d + 3] = this.dataStore.data[b + 4];
+                const o = this.dataStore.data[b + 1], h = this.dataStore.data[b + 2], l = this.dataStore.data[b + 3], c = this.dataStore.data[b + 4];
+
+                this.mainClosePrices[i] = c;
                 this.candleIndexArray[i] = i;
+
+                if (isHA) {
+                    const haC = (o + h + l + c) / 4;
+                    const haO = i === 0 ? (o + c) / 2 : (this.haPrevO + this.haPrevC) / 2;
+                    this.candleOHLCArray[d] = haO;
+                    this.candleOHLCArray[d + 1] = Math.max(h, haO, haC);
+                    this.candleOHLCArray[d + 2] = Math.min(l, haO, haC);
+                    this.candleOHLCArray[d + 3] = haC;
+                    this.haPrevO = haO; this.haPrevC = haC;
+                } else {
+                    this.candleOHLCArray[d] = o; this.candleOHLCArray[d + 1] = h;
+                    this.candleOHLCArray[d + 2] = l; this.candleOHLCArray[d + 3] = c;
+                }
             }
+
             this.candleOHLCBuffer.data = this.candleOHLCArray;
             this.candleIndexBuffer.data = this.candleIndexArray;
             this.candleOHLCBuffer.update();
             this.candleIndexBuffer.update();
+
             this.lastSyncedLength = len;
+            this.lastSyncedMode = this.chartMode;
             this.lastSyncedLiveClose = liveC;
             this.lastSyncedLiveHigh = liveH;
             this.lastSyncedLiveLow = liveL;
             return;
         }
 
-        // 2. Single or Batch Candles Appended at the end (Sub-buffer upload for appended range only)
-        if (len > this.lastSyncedLength && this.lastSyncedLength > 0) {
-            const startIdx = Math.max(0, this.lastSyncedLength - 1);
-            const count = len - startIdx;
-
-            for (let i = startIdx; i < len; i++) {
-                const b = i * 6;
-                const d = i * 4;
-                this.candleOHLCArray[d] = this.dataStore.data[b + 1];
-                this.candleOHLCArray[d + 1] = this.dataStore.data[b + 2];
-                this.candleOHLCArray[d + 2] = this.dataStore.data[b + 3];
-                this.candleOHLCArray[d + 3] = this.dataStore.data[b + 4];
-                this.candleIndexArray[i] = i;
-            }
-
-            this.candleOHLCBuffer.update(count * 16, startIdx * 16);
-            this.candleIndexBuffer.update(count * 4, startIdx * 4);
-            this.lastSyncedLength = len;
-            this.lastSyncedLiveClose = liveC;
-            this.lastSyncedLiveHigh = liveH;
-            this.lastSyncedLiveLow = liveL;
-            return;
-        }
-
-        // 3. Full History Loaded or Historical Data Prepended
-        if (this.lastSyncedLength !== len) {
-            for (let i = 0; i < len; i++) {
-                const b = i * 6;
-                const d = i * 4;
-                this.candleOHLCArray[d] = this.dataStore.data[b + 1];
-                this.candleOHLCArray[d + 1] = this.dataStore.data[b + 2];
-                this.candleOHLCArray[d + 2] = this.dataStore.data[b + 3];
-                this.candleOHLCArray[d + 3] = this.dataStore.data[b + 4];
-                this.candleIndexArray[i] = i;
-            }
-            this.candleOHLCBuffer.update();
-            this.candleIndexBuffer.update();
-            this.lastSyncedLength = len;
-            this.lastSyncedLiveClose = liveC;
-            this.lastSyncedLiveHigh = liveH;
-            this.lastSyncedLiveLow = liveL;
-            return;
-        }
-
-        // 3. Fast Tick: Sub-buffer upload (Only 16 bytes uploaded to GPU instead of full buffer)
+        // Fast Tick: Only upload last bar (16 bytes)
         if (this.lastSyncedLiveClose !== liveC || this.lastSyncedLiveHigh !== liveH || this.lastSyncedLiveLow !== liveL) {
             const d = lastIdx * 4;
-            this.candleOHLCArray[d] = this.dataStore.data[lastBase + 1];
-            this.candleOHLCArray[d + 1] = liveH;
-            this.candleOHLCArray[d + 2] = liveL;
-            this.candleOHLCArray[d + 3] = liveC;
-            // Task 2.1: Upload only the 16 bytes (4 floats) of the active forming candle
+            const o = this.dataStore.data[lastBase + 1];
+            this.mainClosePrices[lastIdx] = liveC;
+
+            if (isHA) {
+                const haC = (o + liveH + liveL + liveC) / 4;
+                this.candleOHLCArray[d + 1] = Math.max(liveH, this.haPrevO, haC);
+                this.candleOHLCArray[d + 2] = Math.min(liveL, this.haPrevO, haC);
+                this.candleOHLCArray[d + 3] = haC;
+            } else {
+                this.candleOHLCArray[d + 1] = liveH;
+                this.candleOHLCArray[d + 2] = liveL;
+                this.candleOHLCArray[d + 3] = liveC;
+            }
+
             this.candleOHLCBuffer.update(16, d * 4);
             this.lastSyncedLiveClose = liveC;
             this.lastSyncedLiveHigh = liveH;
@@ -1407,17 +1216,11 @@ export class ChartRenderer {
     }
 
     public drawGPUIndicatorLine(
-        id: string,
-        values: Float64Array,
-        color: number,
-        width: number,
-        isOscillator: boolean,
-        layout: any,
-        oscScale?: OscillatorScale
+        id: string, values: Float64Array, color: number, width: number,
+        isOscillator: boolean, layout: any, oscScale?: OscillatorScale, isArea: boolean = false
     ) {
         let entry = this.indicatorMeshes.get(id);
 
-        // 1. Initialize GPU Mesh exactly once per indicator
         if (!entry) {
             // A simple 1x1 Vector Quad
             const baseVertices = new Float32Array([0, -0.5, 1, -0.5, 1, 0.5, 0, 0.5]);
@@ -1433,22 +1236,15 @@ export class ChartRenderer {
             });
 
             const uniforms = new UniformGroup({
-                uCameraX: { value: 0, type: 'f32' },
-                uCameraY: { value: 0, type: 'f32' },
-                uZoom: { value: 1, type: 'f32' },
-                uCandleSpacing: { value: 8, type: 'f32' },
-                uMinPrice: { value: 0, type: 'f32' },
-                uMaxPrice: { value: 1, type: 'f32' },
-                uChartHeight: { value: 500, type: 'f32' },
-                uColor: { value: [1, 1, 1, 1], type: 'vec4<f32>' },
-                uWidth: { value: 2, type: 'f32' },
-                uVisStart: { value: 0, type: 'f32' },
-                uVisEnd: { value: 10000, type: 'f32' },
-                uIsOscillator: { value: 0, type: 'f32' },
-                uOscY: { value: 0, type: 'f32' },
-                uOscHeight: { value: 100, type: 'f32' },
-                uOscMin: { value: 0, type: 'f32' },
-                uOscMax: { value: 100, type: 'f32' }
+                uCameraX: { value: 0, type: 'f32' }, uCameraY: { value: 0, type: 'f32' },
+                uZoom: { value: 1, type: 'f32' }, uCandleSpacing: { value: 8, type: 'f32' },
+                uMinPrice: { value: 0, type: 'f32' }, uMaxPrice: { value: 1, type: 'f32' },
+                uChartHeight: { value: 500, type: 'f32' }, uColor: { value: [1, 1, 1, 1], type: 'vec4<f32>' },
+                uWidth: { value: 2, type: 'f32' }, uVisStart: { value: 0, type: 'f32' },
+                uVisEnd: { value: 10000, type: 'f32' }, uIsOscillator: { value: 0, type: 'f32' },
+                uOscY: { value: 0, type: 'f32' }, uOscHeight: { value: 100, type: 'f32' },
+                uOscMin: { value: 0, type: 'f32' }, uOscMax: { value: 100, type: 'f32' },
+                uIsArea: { value: 0, type: 'f32' } // <-- ADDED
             });
 
             const vertexSrc = `
@@ -1456,102 +1252,72 @@ export class ChartRenderer {
                 attribute vec2 aVertexPosition;
                 attribute vec3 aLineData;
 
-                uniform mat3 uProjectionMatrix;
-                uniform mat3 uWorldTransformMatrix;
+                uniform mat3 uProjectionMatrix; uniform mat3 uWorldTransformMatrix;
+                uniform float uCameraX; uniform float uCameraY; uniform float uZoom;
+                uniform float uCandleSpacing; uniform float uMinPrice; uniform float uMaxPrice;
+                uniform float uChartHeight; uniform float uWidth; uniform float uVisStart; uniform float uVisEnd;
+                uniform float uIsOscillator; uniform float uOscY; uniform float uOscHeight;
+                uniform float uOscMin; uniform float uOscMax; uniform float uIsArea;
 
-                uniform float uCameraX;
-                uniform float uCameraY;
-                uniform float uZoom;
-                uniform float uCandleSpacing;
-                uniform float uMinPrice;
-                uniform float uMaxPrice;
-                uniform float uChartHeight;
-                uniform float uWidth;
-                uniform float uVisStart;
-                uniform float uVisEnd;
-
-                uniform float uIsOscillator;
-                uniform float uOscY;
-                uniform float uOscHeight;
-                uniform float uOscMin;
-                uniform float uOscMax;
-
-                varying float vY; // Removed strict highp requirement
+                varying float vY;
 
                 float getScreenY(float val) {
                     if (uIsOscillator > 0.5) {
                         float norm = (val - uOscMin) / max(0.0001, uOscMax - uOscMin);
                         return uOscY + uOscHeight - (norm * uOscHeight);
                     } else {
-                        float priceRange = max(0.000001, uMaxPrice - uMinPrice);
-                        float yRatio = uChartHeight / priceRange;
-                        float yOffset = uChartHeight + uCameraY;
-                        return yOffset - ((val - uMinPrice) * yRatio);
+                        float yRatio = uChartHeight / max(0.000001, uMaxPrice - uMinPrice);
+                        return uChartHeight + uCameraY - ((val - uMinPrice) * yRatio);
                     }
                 }
 
                 void main() {
                     float index = aLineData.x;
-                    if (index < uVisStart || index > uVisEnd) {
-                        gl_Position = vec4(0.0);
-                        return;
-                    }
-
-                    float valThis = aLineData.y;
-                    float valNext = aLineData.z;
-                    
-                    if (uIsOscillator < 0.5 && valThis == 0.0 && valNext == 0.0) {
-                        gl_Position = vec4(0.0);
-                        return;
-                    }
+                    if (index < uVisStart || index > uVisEnd) { gl_Position = vec4(0.0); return; }
+                    float valThis = aLineData.y; float valNext = aLineData.z;
+                    if (uIsOscillator < 0.5 && valThis == 0.0 && valNext == 0.0) { gl_Position = vec4(0.0); return; }
 
                     float actualSpacing = uCandleSpacing * uZoom;
-                    
-                    vec2 A = vec2((index * actualSpacing) - uCameraX + (actualSpacing * 0.4), getScreenY(valThis));
-                    vec2 B = vec2(((index + 1.0) * actualSpacing) - uCameraX + (actualSpacing * 0.4), getScreenY(valNext));
+                    float topY_A = getScreenY(valThis);
+                    float topY_B = getScreenY(valNext);
+                    vec2 A = vec2((index * actualSpacing) - uCameraX + (actualSpacing * 0.5), topY_A);
+                    vec2 B = vec2(((index + 1.0) * actualSpacing) - uCameraX + (actualSpacing * 0.5), topY_B);
 
-                    vec2 dir = B - A;
-                    if (length(dir) < 0.0001) {
-                        gl_Position = vec4(0.0);
-                        return;
+                    vec2 pos;
+                    if (uIsArea > 0.5) {
+                        // AREA MODE: Stretch polygon bottom to the floor
+                        float isTop = (aVertexPosition.y < 0.0) ? 1.0 : 0.0;
+                        pos.x = mix(A.x, B.x, aVertexPosition.x);
+                        pos.y = mix(uChartHeight, mix(A.y, B.y, aVertexPosition.x), isTop);
+                    } else {
+                        // LINE MODE: Strict segment extrusion
+                        vec2 dir = B - A;
+                        if (length(dir) < 0.0001) { gl_Position = vec4(0.0); return; }
+                        vec2 normal = normalize(vec2(-dir.y, dir.x));
+                        pos = A + (dir * aVertexPosition.x) + (normal * aVertexPosition.y * uWidth);
                     }
 
-                    // Dynamically calculate thickness normal
-                    vec2 normal = normalize(vec2(-dir.y, dir.x));
-                    vec2 pos = A + (dir * aVertexPosition.x) + (normal * aVertexPosition.y * uWidth);
-
-                    vY = pos.y; // <-- ADDED: Assign exact screen Y
-
+                    vY = pos.y;
                     mat3 mvp = uProjectionMatrix * uWorldTransformMatrix;
                     gl_Position = vec4((mvp * vec3(pos, 1.0)).xy, 0.0, 1.0);
                 }
             `;
 
             const fragmentSrc = `
-                #ifdef GL_FRAGMENT_PRECISION_HIGH
-                    precision highp float;
-                #else
-                    precision mediump float;
-                #endif
-
-                uniform vec4 uColor;
-                uniform float uIsOscillator;
-                uniform float uOscY;
-                uniform float uOscHeight;
-                uniform float uChartHeight;
+                precision mediump float;
+                uniform vec4 uColor; uniform float uIsOscillator; uniform float uOscY;
+                uniform float uOscHeight; uniform float uChartHeight; uniform float uIsArea;
                 varying float vY;
 
                 void main() {
                     if (uIsOscillator > 0.5) {
-                        if (vY < uOscY || vY > (uOscY + uOscHeight)) {
-                            discard;
-                        }
+                        if (vY < uOscY || vY > (uOscY + uOscHeight)) discard;
                     } else {
-                        if (vY > uChartHeight || vY < 0.0) {
-                            discard;
-                        }
+                        if (vY > uChartHeight || vY < 0.0) discard;
                     }
-                    gl_FragColor = uColor;
+                    float alpha = uColor.a;
+                    if (uIsArea > 0.5) alpha *= 0.15; // Semi-transparent fill for Area Chart
+                    gl_FragColor = vec4(uColor.rgb * alpha, alpha);
                 }
             `;
 
@@ -1566,7 +1332,7 @@ export class ChartRenderer {
         }
 
         // Add to the correct parent layer so they sit perfectly behind the crosshair
-        const parent = isOscillator ? this.indicatorOscGraphics : this.indicatorMainGraphics;
+        const parent = isOscillator ? this.indicatorOscContainer : this.indicatorMainContainer; // <-- UPDATED
         if (entry.mesh.parent !== parent) {
             parent.addChild(entry.mesh);
         }
@@ -1625,7 +1391,13 @@ export class ChartRenderer {
         u.uMinPrice = this.currentMinPrice;
         u.uMaxPrice = this.currentMaxPrice;
         u.uChartHeight = layout.mainChartHeight;
-        u.uColor = [((color >> 16) & 0xff) / 255, ((color >> 8) & 0xff) / 255, (color & 0xff) / 255, 1.0];
+
+        // PixiJS v8 WebGPU/WebGL uniform reactivity fix: assign a new Float32Array
+        const rC = ((color >> 16) & 0xff) / 255;
+        const gC = ((color >> 8) & 0xff) / 255;
+        const bC = (color & 0xff) / 255;
+        u.uColor = new Float32Array([rC, gC, bC, 1.0]);
+
         u.uWidth = width;
 
         // Frustum Culling bounds
@@ -1633,6 +1405,7 @@ export class ChartRenderer {
         u.uVisEnd = Math.floor((this.cameraX + layout.chartWidth) / (this.candleSpacing * this.zoom)) + 2;
 
         u.uIsOscillator = isOscillator ? 1.0 : 0.0;
+        u.uIsArea = isArea ? 1.0 : 0.0;
         if (isOscillator && oscScale) {
             u.uOscY = layout.oscY;
             u.uOscHeight = layout.oscHeight;

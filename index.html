@@ -190,7 +190,8 @@
     /* 2x2 Dedicated Canvas Elements with strict boundary locks */
     .chart-canvas {
       grid-column: 1;
-      grid-row: 1;
+      grid-row: 1 / span 2;
+      /* <-- IMPORTANT: Span both chart and time axis rows */
       width: 100% !important;
       height: 100% !important;
       min-width: 0 !important;
@@ -198,6 +199,7 @@
       display: block;
       touch-action: none;
     }
+
 
     .price-axis-canvas {
       grid-column: 2;
@@ -223,7 +225,8 @@
       display: block;
       touch-action: none;
       border-top: 1px solid var(--chart-grid, #2A2E39);
-      background: var(--chart-panel-bg, #161a25);
+      background: transparent !important;
+      /* <-- IMPORTANT: Let GPU session shading show through */
       box-sizing: border-box;
     }
 

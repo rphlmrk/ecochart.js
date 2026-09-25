@@ -221,7 +221,10 @@ export class BinanceClient {
         const targetIntervalMs = TimeframeResampler.parseMs(interval);
 
         const limitMs = this.getLimitMs(interval);
-        const cutoffTime = limitMs === Infinity ? 0 : Date.now() - limitMs;
+        const rawCutoffTime = limitMs === Infinity ? 0 : Date.now() - limitMs;
+
+        // Snap the cutoff time to the exact timeframe boundary to prevent partial/broken historical candles
+        const cutoffTime = rawCutoffTime === 0 ? 0 : TimeframeResampler.getBucketStart(rawCutoffTime, targetIntervalMs);
 
         // --- 1. LOCAL FIRST DATA LOAD & SYNC ---
         try {

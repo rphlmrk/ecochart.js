@@ -48,6 +48,18 @@ export class TimeframeResampler {
     }
 
     public static getBucketStart(timestamp: number, intervalMs: number): number {
+        const DAY_MS = 24 * 60 * 60 * 1000;
+
+        // For intra-day timeframes (e.g., 45m, 2h), anchor to the start of the UTC day.
+        // This ensures consistent candle boundaries (00:00, 00:45, 01:30) instead of floating based on the 1970 UNIX epoch.
+        if (intervalMs < DAY_MS) {
+            const dayStart = Math.floor(timestamp / DAY_MS) * DAY_MS;
+            const msSinceDayStart = timestamp - dayStart;
+            const bucketOffset = Math.floor(msSinceDayStart / intervalMs) * intervalMs;
+            return dayStart + bucketOffset;
+        }
+
+        // For 1D or higher, standard epoch math anchors to 00:00 UTC naturally.
         return Math.floor(timestamp / intervalMs) * intervalMs;
     }
 

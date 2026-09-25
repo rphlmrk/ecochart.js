@@ -1498,7 +1498,7 @@ export class EcoChart {
                     // Update stacked oscillator height and dock AUTO button
                     const oscHeight = this.indicatorManager.getTotalOscillatorHeight();
                     this.renderer.oscHeight = oscHeight;
-                    this.renderer.indicatorOscGraphics.visible = oscHeight > 0;
+                    this.renderer.indicatorOscContainer.visible = oscHeight > 0; // <-- UPDATED
                     this.updateControlsLayout();
 
                     const activeOsc = this.indicatorManager.getActiveOscillator();
@@ -2969,6 +2969,7 @@ export class WorkspaceManager {
                             onChange: (res) => {
                                 swatch.style.backgroundColor = res.color;
                                 indicator.updateParams({ [param.id]: res.color });
+                                this.activeChart!.indicatorManager.update(this.activeChart!.dataStore); // <-- ADDED: Forces math pipeline flush
                                 this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
                                 this.activeChart!.updateLegend();
                                 this.activeChart!.isDirty = true;

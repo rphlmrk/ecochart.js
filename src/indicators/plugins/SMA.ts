@@ -32,23 +32,41 @@ export class SMAIndicator extends BaseIndicator {
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, _g: Graphics) {
-        const rawColor = this.getParam('color', '#FFC107');
-
+        const rawColor = String(this.getParam('color', '#FFC107')).trim().toUpperCase();
         let color = parseColor(rawColor);
-        if (!r.isDarkTheme && String(rawColor).toUpperCase() === '#FFC107') {
+
+        // Default adjustments
+        if (!r.isDarkTheme && rawColor === '#FFC107') {
             color = 0xD97706;
+        }
+
+        // Luminous Check: Flip bright lines (like white) to dark slate in Light Mode
+        if (!r.isDarkTheme) {
+            const cR = (color >> 16) & 0xff;
+            const cG = (color >> 8) & 0xff;
+            const cB = color & 0xff;
+            const luminance = (0.299 * cR + 0.587 * cG + 0.114 * cB);
+            if (luminance > 180) {
+                color = 0x131722; // Force to dark slate so it remains visible
+            }
         }
 
         // Fire directly to the GPU!
         r.drawGPUIndicatorLine(this.id, this.values, color, 2, false, layout);
     }
 
-    public getValueAt(idx: number, ds: DataStore, _isDark: boolean, _defaultTextClr: number) {
+    public getValueAt(idx: number, ds: DataStore, isDark: boolean, _defaultTextClr: number) {
         const val = (idx >= 0 && idx < ds.length) ? this.values[idx] : 0;
+        const rawColor = String(this.getParam('color', '#FFC107')).toUpperCase();
+        let valueColor = parseColor(rawColor);
+        if (!isDark && rawColor === '#FFC107') {
+            valueColor = 0xD97706; // Adjust to deep orange on light theme
+        }
+
         return {
             label: this.name,
             valueStr: val > 0 ? val.toFixed(2) : 'n/a',
-            valueColor: parseColor(this.getParam('color', '#FFC107'))
+            valueColor
         };
     }
 }

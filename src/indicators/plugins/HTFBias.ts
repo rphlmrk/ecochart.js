@@ -88,8 +88,13 @@ export class HTFBiasIndicator extends BaseIndicator {
         if (chartTfMs > tfMs) return; // <-- ADDED: Hide if chart TF > HTF
 
         const displayMode = this.getParam<string>('displayMode', 'Top Ribbon');
-        const bullClr = parseColor(this.getParam('bullColor', '#089981'));
-        const bearClr = parseColor(this.getParam('bearColor', '#F23645'));
+
+        // Dynamically link to theme colors if default params are used
+        const rawBull = String(this.getParam('bullColor', '#089981')).toUpperCase();
+        const rawBear = String(this.getParam('bearColor', '#F23645')).toUpperCase();
+        const bullClr = rawBull === '#089981' ? r.bullColor : parseColor(rawBull);
+        const bearClr = rawBear === '#F23645' ? r.bearColor : parseColor(rawBear);
+
         const sweepsOnly = this.getParam<boolean>('sweepsOnly', false);
 
         const showInsideBar = this.getParam<boolean>('showInsideBar', true);
@@ -233,10 +238,22 @@ export class HTFBiasIndicator extends BaseIndicator {
         const close = (idx >= 0 && idx < ds.length) ? ds.data[idx * 6 + 4] : 0;
         const open = (idx >= 0 && idx < ds.length) ? ds.data[idx * 6 + 1] : 0;
         const isBull = close >= open;
+
+        const rawBull = String(this.getParam('bullColor', '#089981')).toUpperCase();
+        const rawBear = String(this.getParam('bearColor', '#F23645')).toUpperCase();
+        let bullClr = parseColor(rawBull);
+        let bearClr = parseColor(rawBear);
+
+        // Adjust defaults for light mode readability if using standard colors
+        if (!_isDark) {
+            if (rawBull === '#089981') bullClr = 0x056656;
+            if (rawBear === '#F23645') bearClr = 0xB91C1C;
+        }
+
         return {
             label: this.name,
             valueStr: isBull ? '▲ Bull Bias' : '▼ Bear Bias',
-            valueColor: isBull ? 0x089981 : 0xF23645
+            valueColor: isBull ? bullClr : bearClr
         };
     }
 }

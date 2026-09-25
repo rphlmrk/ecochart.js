@@ -63,22 +63,23 @@ export class ExhaustionIndicator extends BaseIndicator {
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
-        // 1. Detect if the chart background is light (checks theme flag AND background brightness)
+        // 1. Detect if the chart background is light
         const bgR = (r.bgColor >> 16) & 0xff;
         const bgG = (r.bgColor >> 8) & 0xff;
         const bgB = r.bgColor & 0xff;
         const isLightMode = !r.isDarkTheme || (0.299 * bgR + 0.587 * bgG + 0.114 * bgB) > 130;
 
-        // 2. Resolve line color: If white on a light background, force to solid black
+        // 2. Resolve line color: If white/light on a light background, force to solid dark slate
         const rawLineColor = String(this.getParam('lineColor', '#FFFFFF')).trim().toUpperCase();
         let lineColor = parseColor(rawLineColor);
-        const lR = (lineColor >> 16) & 0xff;
-        const lG = (lineColor >> 8) & 0xff;
-        const lB = lineColor & 0xff;
-        const isWhite = (lR > 200 && lG > 200 && lB > 200) || rawLineColor.startsWith('#FFF');
 
-        if (isLightMode && isWhite) {
-            lineColor = 0x000000; // Force solid black
+        if (isLightMode) {
+            const lR = (lineColor >> 16) & 0xff;
+            const lG = (lineColor >> 8) & 0xff;
+            const lB = lineColor & 0xff;
+            if ((0.299 * lR + 0.587 * lG + 0.114 * lB) > 180) {
+                lineColor = 0x131722; // Force to dark slate
+            }
         }
 
         // 3. Resolve Bull/Bear band colors
@@ -96,7 +97,6 @@ export class ExhaustionIndicator extends BaseIndicator {
         g.rect(0, layout.oscY, layout.chartWidth, layout.oscHeight * 0.25).fill({ color: bullColor, alpha: bandAlpha });
         g.rect(0, yLowerBand, layout.chartWidth, layout.oscHeight * 0.25).fill({ color: bearColor, alpha: bandAlpha });
 
-        // Zero center line: black on light mode, white on dark mode
         const zeroLineColor = isLightMode ? 0x000000 : 0xFFFFFF;
         StrokeEngine.drawLine(g, 0, midY, layout.chartWidth, midY, {
             color: zeroLineColor, width: 1, alpha: isLightMode ? 0.35 : 0.25, style: 'solid'
