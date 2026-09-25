@@ -1495,7 +1495,7 @@ export class EcoChart {
                     const lastBase = (this.dataStore.length - 1) * 6;
                     const lastTime = this.dataStore.data[lastBase];
                     const intervalMs = this.renderer.parseIntervalMs(this.currentInterval);
-                    const remainingMs = (lastTime + intervalMs) - Date.now();
+                    const remainingMs = (lastTime + intervalMs) - BinanceClient.getServerTime();
 
                     if (remainingMs <= -3000) {
                         const now = Date.now();

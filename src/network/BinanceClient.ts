@@ -21,6 +21,12 @@ export class BinanceClient {
     private static rateLimitUntil = 0;
     private static readonly MIN_REQUEST_INTERVAL_MS = 120; // Max ~8 req/sec safely under 1200 weight/min
 
+    // Binance Server Clock Drift Calibration
+    public static serverTimeOffset = 0;
+    public static getServerTime(): number {
+        return Date.now() + BinanceClient.serverTimeOffset;
+    }
+
     constructor(dataStore: DataStore) {
         this.dataStore = dataStore;
     }
@@ -257,6 +263,11 @@ export class BinanceClient {
             const raw = JSON.parse(event.data);
             const data = raw.data;
             if (!data) return;
+
+            // Zero-cost clock synchronization using Binance's exact server event timestamp (E)
+            if (data.E) {
+                BinanceClient.serverTimeOffset = data.E - Date.now();
+            }
 
             if (data.e === 'kline') {
                 const k = data.k;

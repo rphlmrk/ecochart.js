@@ -1,4 +1,5 @@
 import type { ChartRenderer } from './ChartRenderer';
+import { BinanceClient } from '../network/BinanceClient';
 
 export class PriceAxisRenderer {
     private canvas: HTMLCanvasElement;
@@ -138,7 +139,7 @@ export class PriceAxisRenderer {
                 this.ctx.fillText(lastClose.toFixed(2), w / 2, badgeY + 11);
 
                 const intervalMs = this.renderer.parseIntervalMs(this.renderer.currentInterval);
-                const remainingMs = Math.max(0, (lastTime + intervalMs) - Date.now());
+                const remainingMs = Math.max(0, (lastTime + intervalMs) - BinanceClient.getServerTime());
                 const totalSecs = Math.floor(remainingMs / 1000);
                 const hours = Math.floor(totalSecs / 3600);
                 const mins = Math.floor((totalSecs % 3600) / 60);
@@ -237,7 +238,7 @@ export class PriceAxisRenderer {
         const lastBase = (len - 1) * 6;
         const lastTime = this.renderer.dataStore.data[lastBase];
         const intervalMs = this.renderer.parseIntervalMs(this.renderer.currentInterval);
-        const remainingMs = Math.max(0, (lastTime + intervalMs) - Date.now());
+        const remainingMs = Math.max(0, (lastTime + intervalMs) - BinanceClient.getServerTime());
         const totalSecs = Math.floor(remainingMs / 1000);
         const hours = Math.floor(totalSecs / 3600);
         const mins = Math.floor((totalSecs % 3600) / 60);
