@@ -3382,20 +3382,14 @@ export class WorkspaceManager {
             }
         });
 
-        // Aggressive Mobile Sleep & Wakeup Detection (Tab switch, screen unlock, app resume)
+        // Clean Mobile Sleep & Wakeup Detection (Single non-competing reconnect)
         let lastWakeupTrigger = 0;
         const triggerAggressiveWakeup = () => {
             const now = Date.now();
-            if (now - lastWakeupTrigger < 1500) return; // Prevent duplicate rapid firings
+            if (now - lastWakeupTrigger < 2000) return; // Prevent duplicate rapid firings
             lastWakeupTrigger = now;
 
-            // Immediate reconnect attempt
             WorkspaceManager.charts.forEach(c => c.handleWakeup());
-
-            // Secondary stabilized retry (allows mobile OS to re-establish cellular/Wi-Fi routing)
-            setTimeout(() => {
-                WorkspaceManager.charts.forEach(c => c.handleWakeup());
-            }, 800);
         };
 
         document.addEventListener('visibilitychange', () => {

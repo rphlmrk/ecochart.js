@@ -6,6 +6,7 @@ export class BinanceClient {
     private ws: WebSocket | null = null;
     private dataStore: DataStore;
     private isReconnecting = false;
+    private isConnecting = false;
 
     // Wakeup & Health State
     private lastMessageTime = Date.now();
@@ -187,6 +188,9 @@ export class BinanceClient {
 
     // UPDATED: Added onTicker callback and Combined Streams
     public async connect(symbol: string, interval: string, onUpdate: (prependedCount?: number, isClosed?: boolean) => void, onTicker: (changePct: number) => void) {
+        if (this.isConnecting) return; // Prevent duplicate overlapping connections
+        this.isConnecting = true;
+
         this.disconnect();
         this.currentSyncKey = `${symbol}_${interval}`;
         this.savedSymbol = symbol;
@@ -252,6 +256,7 @@ export class BinanceClient {
         })();
 
         this.ws.onopen = () => {
+            this.isConnecting = false;
             this.isReconnecting = false;
             this.lastMessageTime = Date.now();
         };
@@ -390,10 +395,13 @@ export class BinanceClient {
     }
 
     public async handleWakeup() {
-        if (!this.currentSyncKey) return;
+        if (!this.currentSyncKey || this.isConnecting) return;
+
+        // If the socket is currently opening (CONNECTING), do NOT kill it!
+        if (this.ws && this.ws.readyState === WebSocket.CONNECTING) return;
+
         const now = Date.now();
-        const isClosed = !this.ws || this.ws.readyState !== WebSocket.OPEN;
-        // Only drop the socket if it is actually closed or has been stalled with zero messages for over 15 seconds
+        const isClosed = !this.ws || this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING;
         const isStalled = (now - this.lastMessageTime) > 15000;
 
         if (isClosed || isStalled) {
@@ -401,9 +409,8 @@ export class BinanceClient {
             if (this.savedOnUpdate && this.savedOnTicker) {
                 await this.connect(this.savedSymbol, this.savedInterval, this.savedOnUpdate, this.savedOnTicker);
             }
-        } else {
-            // Socket is still alive and healthy: do NOT disconnect or overwrite fresh RAM with stale REST data!
-            // Backfill any candle that closed while you were on another tab
+        } else if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            // Socket is healthy: smoothly backfill any gaps without restarting
             await this.syncMissingGap(this.savedSymbol, this.savedInterval, true);
         }
     }

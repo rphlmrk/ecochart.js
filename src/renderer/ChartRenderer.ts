@@ -307,9 +307,10 @@ export class ChartRenderer {
         // --- ECO-MODE: Thermal Throttling (Prevents device heating) ---
         const len = this.dataStore.length;
         const lastBase = (len - 1) * 6;
-        const liveC = this.dataStore.data[lastBase + 4];
+        const liveO = this.dataStore.data[lastBase + 1];
         const liveH = this.dataStore.data[lastBase + 2];
         const liveL = this.dataStore.data[lastBase + 3];
+        const liveC = this.dataStore.data[lastBase + 4];
         const width = this.app.screen.width;
         const height = this.app.screen.height;
 
@@ -365,7 +366,8 @@ export class ChartRenderer {
         const livePriceChanged = liveBarInView && (
             this.lastRenderState.close !== liveC ||
             this.lastRenderState.high !== liveH ||
-            this.lastRenderState.low !== liveL
+            this.lastRenderState.low !== liveL ||
+            (this.lastRenderState as any).open !== liveO
         );
 
         // Eco-Mode: If scrolled in history and nothing visible changed, stop immediately!
@@ -420,10 +422,10 @@ export class ChartRenderer {
         this.lastRenderState = {
             camX: this.cameraX, camY: this.cameraY, zoom: this.zoom,
             minP: this.currentMinPrice, maxP: this.currentMaxPrice,
-            len: len, close: liveC, high: liveH, low: liveL,
+            len: len, close: liveC, high: liveH, low: liveL, open: liveO,
             mode: this.chartMode, w: width, h: height,
             oscH: oscHeight, interval: this.currentInterval
-        };
+        } as any;
 
         // CPU Optimization: Pre-calculate Y-axis ratio to avoid division in hot loops
         const priceRange = this.currentMaxPrice - this.currentMinPrice || 1;
@@ -1130,22 +1132,25 @@ export class ChartRenderer {
         const lastIdx = len - 1;
         const lastBase = lastIdx * 6;
         const liveT = this.dataStore.data[lastBase];
-        const liveC = this.dataStore.data[lastBase + 4];
+        const liveO = this.dataStore.data[lastBase + 1];
         const liveH = this.dataStore.data[lastBase + 2];
         const liveL = this.dataStore.data[lastBase + 3];
+        const liveC = this.dataStore.data[lastBase + 4];
 
         const isHA = this.chartMode === 'heikinAshi';
 
         // Check if the previous bar's time matches what we had cached.
-        // If a missing bar was inserted into the middle to heal a gap, this will be false!
         const prevBarTimeMatches = (lastIdx > 0) && (this.dataStore.data[(lastIdx - 1) * 6] === this.lastSyncedLiveTime);
-        const isNewBarAppended = (len === this.lastSyncedLength + 1)
+        const isNewBarAppended = !this.isHistoricalDirty
+            && (len === this.lastSyncedLength + 1)
             && (this.lastSyncedMode === this.chartMode)
             && (this.candleOHLCArray.length >= len * 4)
             && (liveT > this.lastSyncedLiveTime)
             && prevBarTimeMatches;
 
-        const needsFullSync = (this.candleOHLCArray.length < len * 4)
+        // If returning from another tab (isHistoricalDirty) or multiple candles were added, force full sync
+        const needsFullSync = this.isHistoricalDirty
+            || (this.candleOHLCArray.length < len * 4)
             || (this.lastSyncedMode !== this.chartMode)
             || (!isNewBarAppended && this.lastSyncedLength !== len);
 
@@ -1193,17 +1198,33 @@ export class ChartRenderer {
             return;
         }
 
-        // Fast Append: Only used when the new candle is strictly at the end
+        // Fast Append: Sync BOTH the finalized previous candle (lastIdx - 1) AND the new live candle (lastIdx)
         if (isNewBarAppended) {
-            const b = lastIdx * 6;
-            const d = lastIdx * 4;
-            const o = this.dataStore.data[b + 1];
+            // 1. Finalize the candle that just closed
+            if (lastIdx > 0) {
+                const pb = (lastIdx - 1) * 6;
+                const pd = (lastIdx - 1) * 4;
+                const pO = this.dataStore.data[pb + 1];
+                const pH = this.dataStore.data[pb + 2];
+                const pL = this.dataStore.data[pb + 3];
+                const pC = this.dataStore.data[pb + 4];
 
+                this.mainClosePrices[lastIdx - 1] = pC;
+                if (!isHA) {
+                    this.candleOHLCArray[pd] = pO;
+                    this.candleOHLCArray[pd + 1] = pH;
+                    this.candleOHLCArray[pd + 2] = pL;
+                    this.candleOHLCArray[pd + 3] = pC;
+                }
+            }
+
+            // 2. Add the new forming candle
+            const d = lastIdx * 4;
             this.mainClosePrices[lastIdx] = liveC;
             this.candleIndexArray[lastIdx] = lastIdx;
 
             if (isHA) {
-                const haC = (o + liveH + liveL + liveC) / 4;
+                const haC = (liveO + liveH + liveL + liveC) / 4;
                 const haO = (this.haPrevO + this.haPrevC) / 2;
                 this.candleOHLCArray[d] = haO;
                 this.candleOHLCArray[d + 1] = Math.max(liveH, haO, haC);
@@ -1211,7 +1232,7 @@ export class ChartRenderer {
                 this.candleOHLCArray[d + 3] = haC;
                 this.haPrevO = haO; this.haPrevC = haC;
             } else {
-                this.candleOHLCArray[d] = o;
+                this.candleOHLCArray[d] = liveO;
                 this.candleOHLCArray[d + 1] = liveH;
                 this.candleOHLCArray[d + 2] = liveL;
                 this.candleOHLCArray[d + 3] = liveC;
@@ -1228,18 +1249,18 @@ export class ChartRenderer {
             return;
         }
 
-        // Fast Live-Tick: Only update forming bar in RAM & GPU
-        if (this.lastSyncedLiveClose !== liveC || this.lastSyncedLiveHigh !== liveH || this.lastSyncedLiveLow !== liveL) {
+        // Fast Live-Tick: Update Open, High, Low, and Close for the active forming bar
+        if (this.lastSyncedLiveClose !== liveC || this.lastSyncedLiveHigh !== liveH || this.lastSyncedLiveLow !== liveL || this.candleOHLCArray[lastIdx * 4] !== liveO) {
             const d = lastIdx * 4;
-            const o = this.dataStore.data[lastBase + 1];
             this.mainClosePrices[lastIdx] = liveC;
 
             if (isHA) {
-                const haC = (o + liveH + liveL + liveC) / 4;
+                const haC = (liveO + liveH + liveL + liveC) / 4;
                 this.candleOHLCArray[d + 1] = Math.max(liveH, this.haPrevO, haC);
                 this.candleOHLCArray[d + 2] = Math.min(liveL, this.haPrevO, haC);
                 this.candleOHLCArray[d + 3] = haC;
             } else {
+                this.candleOHLCArray[d] = liveO;
                 this.candleOHLCArray[d + 1] = liveH;
                 this.candleOHLCArray[d + 2] = liveL;
                 this.candleOHLCArray[d + 3] = liveC;
