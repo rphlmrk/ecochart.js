@@ -64,6 +64,8 @@ export class EcoChart {
     public container: HTMLElement;
     public isRunning = true;
     private themeUnsubscribe: (() => void) | null = null;
+    private resizeObserver: ResizeObserver | null = null; // <-- ADDED
+    private watchdogTimer: any = null;                   // <-- ADDED
 
     private lastThemeIsDark: boolean = true;
     private lastWatchdogRecovery = 0;
@@ -149,8 +151,8 @@ export class EcoChart {
         // Build per-pane Auto button and Navigation Bar
         this.createPaneControls();
 
-        // Zero-delay ResizeObserver: syncs Pixi & axis canvases safely once renderer is ready
-        const ro = new ResizeObserver(() => {
+        // Store observer reference for cleanup
+        this.resizeObserver = new ResizeObserver(() => {
             const chartRect = this.chartCanvas.getBoundingClientRect();
             if (chartRect.width > 0 && chartRect.height > 0) {
                 if (this.renderer.app && this.renderer.app.renderer) {
@@ -161,7 +163,7 @@ export class EcoChart {
                 }
             }
         });
-        ro.observe(this.container);
+        this.resizeObserver.observe(this.container);
 
         // Initialize the tracking variable
         this.lastThemeIsDark = themeManager.getTheme().isDark;
@@ -390,6 +392,16 @@ export class EcoChart {
     public destroy() {
         this.isRunning = false;
 
+        // Clean up intervals and observers to allow JS Garbage Collection
+        if (this.watchdogTimer) {
+            clearInterval(this.watchdogTimer);
+            this.watchdogTimer = null;
+        }
+        if (this.resizeObserver) {
+            this.resizeObserver.disconnect();
+            this.resizeObserver = null;
+        }
+
         if (this.themeUnsubscribe) {
             this.themeUnsubscribe();
             this.themeUnsubscribe = null;
@@ -488,6 +500,7 @@ export class EcoChart {
             removeBtn.title = 'Remove';
             removeBtn.onclick = (e) => {
                 e.stopPropagation();
+                this.renderer.removeIndicatorMesh(ind.id); // <-- Free GPU buffer
                 this.indicatorManager.removeIndicator(ind.id);
                 this.indicatorManager.update(this.dataStore);
                 this.updateControlsLayout();
@@ -781,13 +794,10 @@ export class EcoChart {
                 return; // Stop chart from panning
             }
 
-            // Broadcast time to other panes
+            // Broadcast exact timestamp to other panes
             if (WorkspaceManager.isCrosshairSyncEnabled) {
-                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
-                const logicalIndex = Math.round((this.renderer.crosshairX + this.renderer.cameraX) / actualSpacing);
-                const firstTime = this.dataStore.length > 0 ? this.dataStore.data[0] : 0;
-                const intervalMs = this.renderer.parseIntervalMs(this.renderer.currentInterval);
-                WorkspaceManager.broadcastCrosshair(firstTime + (logicalIndex * intervalMs), this);
+                const hoverTime = this.renderer.xToTime(this.renderer.crosshairX);
+                WorkspaceManager.broadcastCrosshair(hoverTime, this);
             }
 
             const deltaX = e.clientX - this.lastMouseX;
@@ -1152,13 +1162,10 @@ export class EcoChart {
                     this.isCrosshairDirty = true;
                     this.updateLegendValues();
 
-                    // Broadcast crosshair sync to other panes
+                    // Broadcast exact timestamp to other panes
                     if (WorkspaceManager.isCrosshairSyncEnabled) {
-                        const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
-                        const logicalIndex = Math.round((x + this.renderer.cameraX) / actualSpacing);
-                        const firstTime = this.dataStore.length > 0 ? this.dataStore.data[0] : 0;
-                        const intervalMs = this.renderer.parseIntervalMs(this.renderer.currentInterval);
-                        WorkspaceManager.broadcastCrosshair(firstTime + (logicalIndex * intervalMs), this);
+                        const hoverTime = this.renderer.xToTime(x);
+                        WorkspaceManager.broadcastCrosshair(hoverTime, this);
                     }
                 } else {
                     // Normal Drag Panning
@@ -1453,7 +1460,7 @@ export class EcoChart {
         const initialMaxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
         this.renderer.cameraX = initialMaxScroll + 150;
 
-        setInterval(() => {
+        this.watchdogTimer = setInterval(() => {
             if (this.isRunning) {
                 // Only mark WebGL chart dirty if theme actually changed
                 const themeChanged = themeManager.evaluateDynamicTheme();
@@ -2173,6 +2180,7 @@ export class WorkspaceManager {
                         }
                         if (action === 'indicators' || action === 'all') {
                             if (await WorkspaceManager.confirmAction('Remove Indicators', 'Delete all indicators from the active chart?')) {
+                                cm.indicatorManager.activeIndicators.forEach(i => cm.renderer.removeIndicatorMesh(i.id));
                                 cm.indicatorManager.clearAll();
                                 cm.updateLegend();
                                 cm.updateControlsLayout();
@@ -3071,6 +3079,7 @@ export class WorkspaceManager {
                     e.stopPropagation();
                     this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
                     if (isActive) {
+                        this.activeChart!.renderer.removeIndicatorMesh(activeInstance.id);
                         this.activeChart!.indicatorManager.removeIndicator(activeInstance.id);
                         this.activeChart!.renderer.indicatorMainGraphics.clear(); // Force buffer clear
                         this.activeChart!.renderer.indicatorOscGraphics.clear();

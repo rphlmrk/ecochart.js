@@ -140,6 +140,10 @@ export class ChartRenderer {
         this.bearColor = bear.color;
         this.bearAlpha = bear.alpha;
 
+        // Synchronize main line chart accent color on theme switch
+        const resolvedAccent = theme.accentSource === 'bull' ? theme.bullBody : theme.accentColor;
+        this.accentColor = ThemeManager.hexToInt(resolvedAccent);
+
         const bWick = ThemeManager.hexToColorAndAlpha(theme.bullWick);
         this.bullWickColor = bWick.color;
         this.bullWickAlpha = bWick.alpha;
@@ -578,7 +582,6 @@ export class ChartRenderer {
         const timeAxisY = height;
         const oscHeight = this.oscHeight;
         const mainChartHeight = timeAxisY - oscHeight;
-        const actualSpacing = this.candleSpacing * this.zoom;
 
         // 1. Draw Local Crosshair Lines
         if (this.isCrosshairVisible && this.crosshairX >= 0 && this.crosshairX <= chartWidth && this.crosshairY >= 0 && this.crosshairY <= timeAxisY) {
@@ -605,14 +608,11 @@ export class ChartRenderer {
             this.crosshairY = drawY;
         }
 
-        // 2. Draw Synchronized Crosshair from other panes
+        // 2. Draw Synchronized Crosshair from other panes (Multi-Timeframe Aware)
         if (this.syncHoverTimeMs !== null && this.dataStore.length > 0) {
-            const intervalMs = this.parseIntervalMs(this.currentInterval);
-            const firstTime = this.dataStore.data[0];
-            const logicalIndex = Math.round((this.syncHoverTimeMs - firstTime) / intervalMs);
-            const syncX = (logicalIndex * actualSpacing) - this.cameraX;
+            const syncX = this.timeToX(this.syncHoverTimeMs);
 
-            if (syncX >= 0 && syncX < chartWidth) {
+            if (syncX >= 0 && syncX <= chartWidth) {
                 StrokeEngine.drawLine(this.syncCrosshairGraphics, syncX, 0, syncX, timeAxisY, {
                     color: this.crosshairColor, width: 1, alpha: 0.45, style: this.crosshairStyle, dashLength: 4, gapLength: 3
                 });
@@ -798,8 +798,25 @@ export class ChartRenderer {
         }
     }
 
+    /**
+     * Explicitly frees GPU buffers and geometry when an individual indicator is deleted
+     */
+    public removeIndicatorMesh(id: string) {
+        const entry = this.indicatorMeshes.get(id);
+        if (entry) {
+            if (entry.mesh && entry.mesh.geometry) entry.mesh.geometry.destroy();
+            if (entry.buffer) entry.buffer.destroy();
+            if (entry.mesh) {
+                if (entry.mesh.parent) entry.mesh.parent.removeChild(entry.mesh);
+                entry.mesh.destroy();
+            }
+            this.indicatorMeshes.delete(id);
+        }
+    }
+
     public destroy() {
         // 1. Destroy all custom GPU Buffers and Geometries to free VRAM instantly
+
         if (this.gridGeometry) this.gridGeometry.destroy();
         if (this.candleGeometry) this.candleGeometry.destroy();
         if (this.candleIndexBuffer) this.candleIndexBuffer.destroy();
@@ -1210,8 +1227,11 @@ export class ChartRenderer {
     }
 
     public hideAllIndicatorMeshes() {
-        for (const entry of this.indicatorMeshes.values()) {
-            entry.mesh.visible = false;
+        for (const [id, entry] of this.indicatorMeshes.entries()) {
+            // Keep the main chart line/area visible; only hide custom indicators before re-render
+            if (id !== 'MAIN_CHART_LINE') {
+                entry.mesh.visible = false;
+            }
         }
     }
 
@@ -1222,7 +1242,7 @@ export class ChartRenderer {
         let entry = this.indicatorMeshes.get(id);
 
         if (!entry) {
-            // A simple 1x1 Vector Quad
+            // 1x1 Base Quad
             const baseVertices = new Float32Array([0, -0.5, 1, -0.5, 1, 0.5, 0, 0.5]);
             const baseIndices = new Uint32Array([0, 1, 2, 0, 2, 3]);
             const instBuffer = new Buffer({ data: new Float32Array(0), usage: BufferUsage.VERTEX | BufferUsage.COPY_DST });
@@ -1244,7 +1264,7 @@ export class ChartRenderer {
                 uVisEnd: { value: 10000, type: 'f32' }, uIsOscillator: { value: 0, type: 'f32' },
                 uOscY: { value: 0, type: 'f32' }, uOscHeight: { value: 100, type: 'f32' },
                 uOscMin: { value: 0, type: 'f32' }, uOscMax: { value: 100, type: 'f32' },
-                uIsArea: { value: 0, type: 'f32' } // <-- ADDED
+                uIsArea: { value: 0, type: 'f32' }
             });
 
             const vertexSrc = `
@@ -1259,15 +1279,19 @@ export class ChartRenderer {
                 uniform float uIsOscillator; uniform float uOscY; uniform float uOscHeight;
                 uniform float uOscMin; uniform float uOscMax; uniform float uIsArea;
 
-                varying float vY;
+                varying vec2 vPos;
 
                 float getScreenY(float val) {
                     if (uIsOscillator > 0.5) {
-                        float norm = (val - uOscMin) / max(0.0001, uOscMax - uOscMin);
-                        return uOscY + uOscHeight - (norm * uOscHeight);
+                        // Clamp norm to [0.0, 1.0] and add a 2px padding buffer to keep lines inside the panel bounds
+                        float norm = clamp((val - uOscMin) / max(0.0001, uOscMax - uOscMin), 0.0, 1.0);
+                        float usableH = uOscHeight - 4.0;
+                        return uOscY + 2.0 + usableH - (norm * usableH);
                     } else {
-                        float yRatio = uChartHeight / max(0.000001, uMaxPrice - uMinPrice);
-                        return uChartHeight + uCameraY - ((val - uMinPrice) * yRatio);
+                        float priceRange = max(0.000001, uMaxPrice - uMinPrice);
+                        float yRatio = uChartHeight / priceRange;
+                        float yOffset = uChartHeight + uCameraY;
+                        return yOffset - ((val - uMinPrice) * yRatio);
                     }
                 }
 
@@ -1283,40 +1307,38 @@ export class ChartRenderer {
                     vec2 A = vec2((index * actualSpacing) - uCameraX + (actualSpacing * 0.5), topY_A);
                     vec2 B = vec2(((index + 1.0) * actualSpacing) - uCameraX + (actualSpacing * 0.5), topY_B);
 
-                    vec2 pos;
+                    vec2 pos = vec2(0.0);
                     if (uIsArea > 0.5) {
-                        // AREA MODE: Stretch polygon bottom to the floor
-                        float isTop = (aVertexPosition.y < 0.0) ? 1.0 : 0.0;
+                        float isTop = aVertexPosition.y < 0.0 ? 1.0 : 0.0;
                         pos.x = mix(A.x, B.x, aVertexPosition.x);
                         pos.y = mix(uChartHeight, mix(A.y, B.y, aVertexPosition.x), isTop);
                     } else {
-                        // LINE MODE: Strict segment extrusion
                         vec2 dir = B - A;
                         if (length(dir) < 0.0001) { gl_Position = vec4(0.0); return; }
                         vec2 normal = normalize(vec2(-dir.y, dir.x));
                         pos = A + (dir * aVertexPosition.x) + (normal * aVertexPosition.y * uWidth);
                     }
 
-                    vY = pos.y;
+                    vPos = pos;
                     mat3 mvp = uProjectionMatrix * uWorldTransformMatrix;
                     gl_Position = vec4((mvp * vec3(pos, 1.0)).xy, 0.0, 1.0);
                 }
             `;
 
             const fragmentSrc = `
-                precision mediump float;
+                precision highp float;
                 uniform vec4 uColor; uniform float uIsOscillator; uniform float uOscY;
                 uniform float uOscHeight; uniform float uChartHeight; uniform float uIsArea;
-                varying float vY;
+                varying vec2 vPos;
 
                 void main() {
                     if (uIsOscillator > 0.5) {
-                        if (vY < uOscY || vY > (uOscY + uOscHeight)) discard;
+                        if (vPos.y < uOscY || vPos.y > (uOscY + uOscHeight)) discard;
                     } else {
-                        if (vY > uChartHeight || vY < 0.0) discard;
+                        if (vPos.y > uChartHeight || vPos.y < 0.0) discard;
                     }
                     float alpha = uColor.a;
-                    if (uIsArea > 0.5) alpha *= 0.15; // Semi-transparent fill for Area Chart
+                    if (uIsArea > 0.5) alpha *= 0.2;
                     gl_FragColor = vec4(uColor.rgb * alpha, alpha);
                 }
             `;
@@ -1331,14 +1353,12 @@ export class ChartRenderer {
             this.indicatorMeshes.set(id, entry);
         }
 
-        // Add to the correct parent layer so they sit perfectly behind the crosshair
-        const parent = isOscillator ? this.indicatorOscContainer : this.indicatorMainContainer; // <-- UPDATED
+        const parent = isOscillator ? this.indicatorOscContainer : this.indicatorMainContainer;
         if (entry.mesh.parent !== parent) {
             parent.addChild(entry.mesh);
         }
         entry.mesh.visible = true;
 
-        // 2. Synchronize Data (Only when new candles form!)
         const len = this.dataStore.length - 1;
         if (len <= 0) {
             entry.mesh.geometry.instanceCount = 0;
@@ -1351,7 +1371,6 @@ export class ChartRenderer {
                 entry.array = new Float32Array(Math.max(10000, len * 2) * 3);
             }
 
-            // Fast-path: Batch append for indicator lines
             if (entry.lastSyncedLength > 0 && len > entry.lastSyncedLength && entry.array.length >= len * 3) {
                 const startIdx = Math.max(0, entry.lastSyncedLength - 1);
                 for (let i = startIdx; i < len; i++) {
@@ -1362,7 +1381,6 @@ export class ChartRenderer {
                 const count = len - startIdx;
                 entry.buffer.update(count * 12, startIdx * 12);
             } else {
-                // Full pack on initial load or capacity resize
                 for (let i = 0; i < len; i++) {
                     entry.array[i * 3] = i;
                     entry.array[i * 3 + 1] = values[i];
@@ -1375,14 +1393,13 @@ export class ChartRenderer {
             entry.lastSyncedLength = len;
             entry.lastSyncedLiveValue = liveVal;
         } else if (entry.lastSyncedLiveValue !== liveVal) {
-            // Upload only the 12 bytes (3 floats) of the forming line segment to GPU
             const d = (len - 1) * 3;
             entry.array[d + 2] = liveVal;
             entry.buffer.update(12, d * 4);
             entry.lastSyncedLiveValue = liveVal;
         }
 
-        // 3. Update GPU Uniforms
+        // Uniforms Update
         const u = entry.uniforms.uniforms;
         u.uCameraX = this.cameraX;
         u.uCameraY = this.cameraY;
@@ -1392,15 +1409,13 @@ export class ChartRenderer {
         u.uMaxPrice = this.currentMaxPrice;
         u.uChartHeight = layout.mainChartHeight;
 
-        // PixiJS v8 WebGPU/WebGL uniform reactivity fix: assign a new Float32Array
+        // Compatible vector array setter for WebGL
         const rC = ((color >> 16) & 0xff) / 255;
         const gC = ((color >> 8) & 0xff) / 255;
         const bC = (color & 0xff) / 255;
-        u.uColor = new Float32Array([rC, gC, bC, 1.0]);
+        u.uColor = [rC, gC, bC, 1.0];
 
         u.uWidth = width;
-
-        // Frustum Culling bounds
         u.uVisStart = Math.floor(this.cameraX / (this.candleSpacing * this.zoom)) - 2;
         u.uVisEnd = Math.floor((this.cameraX + layout.chartWidth) / (this.candleSpacing * this.zoom)) + 2;
 
@@ -1413,7 +1428,7 @@ export class ChartRenderer {
             u.uOscMax = oscScale.max;
         }
 
-        entry.uniforms.update(); // <-- FLUSH TO GPU: Immediately applies new line colors & scale bounds
+        entry.uniforms.update();
         entry.mesh.geometry.instanceCount = len;
     }
 

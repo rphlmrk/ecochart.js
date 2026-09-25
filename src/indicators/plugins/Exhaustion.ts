@@ -89,13 +89,45 @@ export class ExhaustionIndicator extends BaseIndicator {
         const rawBear = String(this.getParam('bearColor', '#FF9800')).toUpperCase();
         const bearColor = rawBear === '#FF9800' ? r.bearColor : parseColor(rawBear);
 
-        const bandAlpha = isLightMode ? 0.18 : 0.12;
-        const yUpperBand = layout.oscY + layout.oscHeight * 0.25;
-        const yLowerBand = layout.oscY + layout.oscHeight * 0.75;
-        const midY = layout.oscY + (layout.oscHeight / 2);
+        // 4. Dynamic Auto-Scale: Scan visible bars to fit peaks & troughs inside the panel
+        const thresh = this.getParam<number>('threshold', 80);
+        const sp = r.candleSpacing * r.zoom;
+        const visStart = Math.max(0, Math.floor(r.cameraX / sp) - 5);
+        const visEnd = Math.min(r.dataStore.length, Math.floor((r.cameraX + layout.chartWidth) / sp) + 5);
 
-        g.rect(0, layout.oscY, layout.chartWidth, layout.oscHeight * 0.25).fill({ color: bullColor, alpha: bandAlpha });
-        g.rect(0, yLowerBand, layout.chartWidth, layout.oscHeight * 0.25).fill({ color: bearColor, alpha: bandAlpha });
+        let maxVal = thresh * 1.3;
+        let minVal = -thresh * 1.3;
+
+        for (let i = visStart; i < visEnd; i++) {
+            const v = this.values[i];
+            if (v > maxVal) maxVal = v;
+            if (v < minVal) minVal = v;
+        }
+
+        // Keep scale symmetric around 0 with 15% breathing room at the extremes
+        const absMax = Math.max(Math.abs(maxVal), Math.abs(minVal));
+        const scaleMax = Math.ceil(absMax * 1.15);
+        const scaleMin = -scaleMax;
+
+        if (this.oscillatorScale) {
+            this.oscillatorScale.min = scaleMin;
+            this.oscillatorScale.max = scaleMax;
+            this.oscillatorScale.steps = [thresh, 0, -thresh];
+        }
+
+        // 5. Calculate Y positions aligned with dynamic scale bounds
+        const oscRange = scaleMax - scaleMin;
+        const normUpper = (thresh - scaleMin) / oscRange;
+        const normLower = (-thresh - scaleMin) / oscRange;
+
+        const yUpperBand = layout.oscY + layout.oscHeight - (normUpper * layout.oscHeight);
+        const yLowerBand = layout.oscY + layout.oscHeight - (normLower * layout.oscHeight);
+        const midY = layout.oscY + (layout.oscHeight / 2);
+        const bandAlpha = isLightMode ? 0.18 : 0.12;
+
+        // Extreme shaded zones
+        g.rect(0, layout.oscY, layout.chartWidth, Math.max(0, yUpperBand - layout.oscY)).fill({ color: bullColor, alpha: bandAlpha });
+        g.rect(0, yLowerBand, layout.chartWidth, Math.max(0, (layout.oscY + layout.oscHeight) - yLowerBand)).fill({ color: bearColor, alpha: bandAlpha });
 
         const zeroLineColor = isLightMode ? 0x000000 : 0xFFFFFF;
         StrokeEngine.drawLine(g, 0, midY, layout.chartWidth, midY, {

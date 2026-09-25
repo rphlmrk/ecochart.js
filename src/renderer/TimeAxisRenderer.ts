@@ -6,7 +6,7 @@ export class TimeAxisRenderer {
     private renderer: ChartRenderer;
 
     // Cache state for partial badge updates (0% CPU idle)
-    private lastBadges: Array<{ x: number; y: number; w: number; h: number }> = [];
+    private lastBadges: Array<{ x: number; y: number; w: number; h: number; timeStr?: string }> = [];
     private lastWidth = 0;
     private lastHeight = 24;
 
@@ -33,7 +33,7 @@ export class TimeAxisRenderer {
             const targetTz = tz === 'local' ? undefined : tz;
             const dayStr = new Intl.DateTimeFormat('en-US', { timeZone: targetTz, weekday: 'short' }).format(now);
             if (dayStr === 'Sat' || dayStr === 'Sun') {
-                return { icon: '🌙', textColor: defaultText, borderColor: defaultBorder, borderWidth: 1, bgColor: defaultBg };
+                return { icon: '🌙', textColor: defaultText, borderColor: defaultBorder, borderWidth: 1, bgColor: defaultBg, isFlashing: false };
             }
 
             const parts = new Intl.DateTimeFormat('en-US', { timeZone: targetTz, hour: 'numeric', minute: 'numeric', hour12: false }).formatToParts(now);
@@ -57,27 +57,27 @@ export class TimeAxisRenderer {
             }
 
             if (isOpening) {
-                // Static colors for Opening state (No background flashing)
                 const openText = isDark ? '#FFD600' : '#B45309';
                 const openBorder = isDark ? '#FFD600' : '#D97706';
                 const openBg = isDark ? 'rgba(255, 214, 0, 0.18)' : 'rgba(217, 119, 6, 0.15)';
 
-                // ONLY the icon flashes (alternates between Bell and Bolt)
                 return {
-                    icon: isFlashTick ? '🔔' : '⚡',
+                    icon: isFlashTick ? '🔔' : '⏳',
                     textColor: openText,
                     borderColor: openBorder,
                     borderWidth: 1.5,
-                    bgColor: openBg
+                    bgColor: openBg,
+                    isFlashing: true
                 };
             }
             if (isClosing) {
                 return {
-                    icon: '⚠️',
+                    icon: isFlashTick ? '⚠️' : '⏳',
                     textColor: isDark ? '#FFAB91' : '#C2410C',
                     borderColor: isDark ? '#FF5722' : bearHex,
                     borderWidth: 1.5,
-                    bgColor: isDark ? 'rgba(255, 87, 34, 0.12)' : 'rgba(194, 65, 12, 0.1)'
+                    bgColor: isDark ? 'rgba(255, 87, 34, 0.12)' : 'rgba(194, 65, 12, 0.1)',
+                    isFlashing: true
                 };
             }
             if (isOpen) {
@@ -86,12 +86,13 @@ export class TimeAxisRenderer {
                     textColor: isDark ? bullHex : '#047857',
                     borderColor: bullHex,
                     borderWidth: 1.5,
-                    bgColor: isDark ? 'rgba(38, 166, 154, 0.12)' : 'rgba(4, 120, 87, 0.08)'
+                    bgColor: isDark ? 'rgba(38, 166, 154, 0.12)' : 'rgba(4, 120, 87, 0.08)',
+                    isFlashing: false
                 };
             }
-            return { icon: '🌙', textColor: defaultText, borderColor: defaultBorder, borderWidth: 1, bgColor: defaultBg };
+            return { icon: '🌙', textColor: defaultText, borderColor: defaultBorder, borderWidth: 1, bgColor: defaultBg, isFlashing: false };
         } catch {
-            return { icon: '', textColor: defaultText, borderColor: defaultBorder, borderWidth: 1, bgColor: defaultBg };
+            return { icon: '', textColor: defaultText, borderColor: defaultBorder, borderWidth: 1, bgColor: defaultBg, isFlashing: false };
         }
     }
 
@@ -154,13 +155,16 @@ export class TimeAxisRenderer {
             const isMobile = w < 600 || availableSpace < 220;
             const isFlashTick = now.getSeconds() % 2 === 0;
 
-            const formatTime = (tz: string) => {
+            const formatTime = (tz: string, isFlashing: boolean) => {
                 try {
-                    const opt: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
-                    if (tz !== 'local') opt.timeZone = tz;
-                    return new Intl.DateTimeFormat([], opt).format(now);
+                    const targetTz = tz === 'local' ? undefined : tz;
+                    const parts = new Intl.DateTimeFormat('en-US', { timeZone: targetTz, hour: 'numeric', minute: 'numeric', hour12: false }).formatToParts(now);
+                    const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10) % 24;
+                    const min = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+                    const sep = (isFlashing && !isFlashTick) ? ' ' : ':';
+                    return `${hour.toString().padStart(2, '0')}${sep}${min.toString().padStart(2, '0')}`;
                 } catch {
-                    return '--:--:--';
+                    return '--:--';
                 }
             };
 
@@ -170,9 +174,11 @@ export class TimeAxisRenderer {
 
             const prepareBadge = (tz: string, label: string) => {
                 const st = this.getSessionStatus(tz, now, isFlashTick);
-                const timeStr = `${st.icon} ${label} ${formatTime(tz)}`;
+                const timeStr = `${st.icon} ${label} ${formatTime(tz, st.isFlashing)}`;
+                const measureStr = `${st.icon} ${label} ${formatTime(tz, false)}`; // Measure with colon to prevent width jumping
+
                 this.ctx.font = '10px sans-serif';
-                const textW = this.ctx.measureText(timeStr).width;
+                const textW = this.ctx.measureText(measureStr).width;
                 const badgeW = Math.ceil(textW) + 14;
                 const badgeX = rightAnchor - badgeW;
 
@@ -254,7 +260,7 @@ export class TimeAxisRenderer {
             this.ctx.textBaseline = 'middle';
             this.ctx.fillText(b.timeStr, b.badgeX + b.badgeW / 2, (h / 2) + 1);
 
-            this.lastBadges.push({ x: b.badgeX, y: b.badgeY, w: b.badgeW, h: b.badgeH });
+            this.lastBadges.push({ x: b.badgeX, y: b.badgeY, w: b.badgeW, h: b.badgeH, timeStr: b.timeStr });
         }
 
         // 4. Crosshair Date Pill
@@ -292,11 +298,6 @@ export class TimeAxisRenderer {
         const clockConfig = (this.renderer as any).clockConfig;
         if (!clockConfig?.enabled) return;
 
-        // Clear only the previous badge bounding boxes
-        for (const b of this.lastBadges) {
-            this.ctx.clearRect(b.x - 2, b.y - 1, b.w + 4, b.h + 2);
-        }
-
         const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
         const len = this.renderer.dataStore.length;
         const lastCandleX = ((len - 1) * actualSpacing) - this.renderer.cameraX + actualSpacing;
@@ -305,7 +306,10 @@ export class TimeAxisRenderer {
         const availableSpace = w - lastCandleX;
 
         if (availableSpace < 100) {
-            this.lastBadges = [];
+            if (this.lastBadges.length > 0) {
+                for (const b of this.lastBadges) this.ctx.clearRect(b.x - 2, b.y - 1, b.w + 4, b.h + 2);
+                this.lastBadges = [];
+            }
             return;
         }
 
@@ -313,54 +317,87 @@ export class TimeAxisRenderer {
         const isMobile = w < 600 || availableSpace < 220;
         const isFlashTick = now.getSeconds() % 2 === 0;
 
-        const formatTime = (tz: string) => {
+        const formatTime = (tz: string, isFlashing: boolean) => {
             try {
-                const opt: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
-                if (tz !== 'local') opt.timeZone = tz;
-                return new Intl.DateTimeFormat([], opt).format(now);
+                const targetTz = tz === 'local' ? undefined : tz;
+                const parts = new Intl.DateTimeFormat('en-US', { timeZone: targetTz, hour: 'numeric', minute: 'numeric', hour12: false }).formatToParts(now);
+                const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10) % 24;
+                const min = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+                const sep = (isFlashing && !isFlashTick) ? ' ' : ':';
+                return `${hour.toString().padStart(2, '0')}${sep}${min.toString().padStart(2, '0')}`;
             } catch {
-                return '--:--:--';
+                return '--:--';
             }
         };
 
         const badgeH = 18;
         const badgeY = Math.floor((h - badgeH) / 2);
         let rightAnchor = w - 8;
-        this.lastBadges = [];
 
-        const drawBadge = (tz: string, label: string) => {
+        const newBadges: Array<{ x: number, y: number, w: number, h: number, timeStr: string, st: any }> = [];
+
+        const prepareBadge = (tz: string, label: string) => {
             const st = this.getSessionStatus(tz, now, isFlashTick);
-            const timeStr = `${st.icon} ${label} ${formatTime(tz)}`;
+            const timeStr = `${st.icon} ${label} ${formatTime(tz, st.isFlashing)}`;
+            const measureStr = `${st.icon} ${label} ${formatTime(tz, false)}`; // Measure with colon to prevent width jumping
+
             this.ctx.font = '10px sans-serif';
-            const textW = this.ctx.measureText(timeStr).width;
+            const textW = this.ctx.measureText(measureStr).width;
             const badgeW = Math.ceil(textW) + 14;
             const badgeX = rightAnchor - badgeW;
 
             if (badgeX > lastCandleX + 8) {
-                this.ctx.fillStyle = st.bgColor;
-                this.ctx.strokeStyle = st.borderColor;
-                this.ctx.lineWidth = st.borderWidth;
-
-                this.ctx.beginPath();
-                if (typeof this.ctx.roundRect === 'function') {
-                    this.ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 4);
-                } else {
-                    this.ctx.rect(badgeX, badgeY, badgeW, badgeH);
-                }
-                this.ctx.fill();
-                this.ctx.stroke();
-
-                this.ctx.fillStyle = st.textColor;
-                this.ctx.textAlign = 'center';
-                this.ctx.textBaseline = 'middle';
-                this.ctx.fillText(timeStr, badgeX + badgeW / 2, (h / 2) + 1);
-
-                this.lastBadges.push({ x: badgeX, y: badgeY, w: badgeW, h: badgeH });
+                newBadges.push({ x: badgeX, y: badgeY, w: badgeW, h: badgeH, timeStr, st });
                 rightAnchor = badgeX - 6;
             }
         };
 
-        if (clockConfig.primaryTz) drawBadge(clockConfig.primaryTz, clockConfig.primaryLabel || 'NYC');
-        if (!isMobile && clockConfig.secondaryTz) drawBadge(clockConfig.secondaryTz, clockConfig.secondaryLabel || 'LON');
+        if (clockConfig.primaryTz) prepareBadge(clockConfig.primaryTz, clockConfig.primaryLabel || 'NYC');
+        if (!isMobile && clockConfig.secondaryTz) prepareBadge(clockConfig.secondaryTz, clockConfig.secondaryLabel || 'LON');
+
+        // Check if anything actually changed visually
+        let changed = false;
+        if (newBadges.length !== this.lastBadges.length) {
+            changed = true;
+        } else {
+            for (let i = 0; i < newBadges.length; i++) {
+                if (newBadges[i].timeStr !== this.lastBadges[i].timeStr || newBadges[i].x !== this.lastBadges[i].x) {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+
+        if (!changed) return; // <-- Prevents the 1-second flicker!
+
+        // Clear previous bounding boxes
+        for (const b of this.lastBadges) {
+            this.ctx.clearRect(b.x - 2, b.y - 1, b.w + 4, b.h + 2);
+        }
+
+        this.lastBadges = [];
+
+        // Draw new badges
+        for (const b of newBadges) {
+            this.ctx.fillStyle = b.st.bgColor;
+            this.ctx.strokeStyle = b.st.borderColor;
+            this.ctx.lineWidth = b.st.borderWidth;
+
+            this.ctx.beginPath();
+            if (typeof this.ctx.roundRect === 'function') {
+                this.ctx.roundRect(b.x, b.y, b.w, b.h, 4);
+            } else {
+                this.ctx.rect(b.x, b.y, b.w, b.h);
+            }
+            this.ctx.fill();
+            this.ctx.stroke();
+
+            this.ctx.fillStyle = b.st.textColor;
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'middle';
+            this.ctx.fillText(b.timeStr, b.x + b.w / 2, (h / 2) + 1);
+
+            this.lastBadges.push({ x: b.x, y: b.y, w: b.w, h: b.h, timeStr: b.timeStr });
+        }
     }
 }
