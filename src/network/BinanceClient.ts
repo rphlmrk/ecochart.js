@@ -262,11 +262,11 @@ export class BinanceClient {
                 const k = data.k;
                 const o = parseFloat(k.o), h = parseFloat(k.h), l = parseFloat(k.l), c = parseFloat(k.c), v = parseFloat(k.v);
 
-                // Gap Check: Backfill missing history in the background without blocking live ticks
+                // Gap Check: Backfill missing history in the background using the exact missing time window
                 if (this.dataStore.length > 0 && !this.isSyncingGap) {
                     const lastCandleTime = this.dataStore.data[(this.dataStore.length - 1) * 6];
                     if (k.t - lastCandleTime > targetIntervalMs) {
-                        this.syncMissingGap(symbol, interval, true);
+                        this.syncMissingGap(symbol, interval, true, lastCandleTime, k.t);
                     }
                 }
 
@@ -316,9 +316,15 @@ export class BinanceClient {
     }
 
     /**
-     * Backfills missing historical candles between the last bar in RAM and now.
+     * Backfills missing historical candles between the specified gap range or from the last bar in RAM to now.
      */
-    public async syncMissingGap(symbol = this.savedSymbol, interval = this.savedInterval, force = false): Promise<boolean> {
+    public async syncMissingGap(
+        symbol = this.savedSymbol,
+        interval = this.savedInterval,
+        force = false,
+        fromTime?: number,
+        toTime?: number
+    ): Promise<boolean> {
         const sym = symbol.toUpperCase();
         if (!sym || !interval || this.dataStore.length === 0 || this.isSyncingGap) return false;
 
@@ -327,15 +333,19 @@ export class BinanceClient {
         const targetIntervalMs = TimeframeResampler.parseMs(interval);
         const now = Date.now();
 
+        // Use the exact missing window if provided; otherwise fallback to lastCandleTime -> now
+        const startFetchTime = fromTime !== undefined ? fromTime : lastCandleTime;
+        const endFetchTime = toTime !== undefined ? toTime : now;
+
         // Only fetch if at least 1 full bar is missing (or if watchdog forced recovery)
-        if (!force && (now - lastCandleTime) < (targetIntervalMs * 1.5)) return false;
+        if (!force && (endFetchTime - startFetchTime) < (targetIntervalMs * 1.5)) return false;
 
         this.isSyncingGap = true;
         try {
             const baseInterval = TimeframeResampler.getBaseNativeInterval(interval);
 
             // Strict 4-second timeout to prevent mobile network lag from hanging the engine
-            const fetchPromise = DataWorkerClient.fetchGap(sym, baseInterval, interval, lastCandleTime, now);
+            const fetchPromise = DataWorkerClient.fetchGap(sym, baseInterval, interval, startFetchTime, endFetchTime);
             const timeoutPromise = new Promise<Float64Array>((_, reject) =>
                 setTimeout(() => reject(new Error('Gap sync timed out (4s)')), 4000)
             );
@@ -371,17 +381,18 @@ export class BinanceClient {
     public async handleWakeup() {
         if (!this.currentSyncKey) return;
         const now = Date.now();
-        // Aggressive Mobile Check: If no tick received for 4+ seconds, drop the zombie socket and reconnect fresh
-        const isZombie = (now - this.lastMessageTime) > 4000;
         const isClosed = !this.ws || this.ws.readyState !== WebSocket.OPEN;
+        // Only drop the socket if it is actually closed or has been stalled with zero messages for over 15 seconds
+        const isStalled = (now - this.lastMessageTime) > 15000;
 
-        if (isClosed || isZombie) {
+        if (isClosed || isStalled) {
             this.disconnect();
             if (this.savedOnUpdate && this.savedOnTicker) {
                 await this.connect(this.savedSymbol, this.savedInterval, this.savedOnUpdate, this.savedOnTicker);
             }
         } else {
-            // Socket is alive, but immediately backfill any gap missed while the phone was locked
+            // Socket is still alive and healthy: do NOT disconnect or overwrite fresh RAM with stale REST data!
+            // Backfill any candle that closed while you were on another tab
             await this.syncMissingGap(this.savedSymbol, this.savedInterval, true);
         }
     }

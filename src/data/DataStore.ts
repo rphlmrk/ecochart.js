@@ -60,11 +60,17 @@ export class DataStore {
         }
         this.length = candles.length;
 
-        // Restore the live forming candle if it belongs at the end
+        // Reconcile forming candle without letting older tab snapshots corrupt finalized close prices
         if (formingCandle && this.length > 0) {
-            const lastTime = this.data[(this.length - 1) * 6];
-            if (formingCandle[0] >= lastTime) {
+            const lastBase = (this.length - 1) * ITEMS_PER_CANDLE;
+            const lastTime = this.data[lastBase];
+
+            if (formingCandle[0] > lastTime) {
                 this.appendOrUpdate(formingCandle[0], formingCandle[1], formingCandle[2], formingCandle[3], formingCandle[4], formingCandle[5]);
+            } else if (formingCandle[0] === lastTime) {
+                if (formingCandle[2] > this.data[lastBase + 2]) this.data[lastBase + 2] = formingCandle[2];
+                if (formingCandle[3] < this.data[lastBase + 3]) this.data[lastBase + 3] = formingCandle[3];
+                this.data[lastBase + 5] = Math.max(this.data[lastBase + 5], formingCandle[5]);
             }
         }
         return prependedCount;
@@ -100,10 +106,19 @@ export class DataStore {
         this.data.set(buffer);
         this.length = newLen;
 
+        // Reconcile forming candle without letting older tab snapshots corrupt finalized close prices
         if (formingCandle && this.length > 0) {
-            const lastTime = this.data[(this.length - 1) * ITEMS_PER_CANDLE];
-            if (formingCandle[0] >= lastTime) {
+            const lastBase = (this.length - 1) * ITEMS_PER_CANDLE;
+            const lastTime = this.data[lastBase];
+
+            if (formingCandle[0] > lastTime) {
+                // formingCandle is a newer live candle that hasn't made it into buffer yet: append it
                 this.appendOrUpdate(formingCandle[0], formingCandle[1], formingCandle[2], formingCandle[3], formingCandle[4], formingCandle[5]);
+            } else if (formingCandle[0] === lastTime) {
+                // Same candle: merge extremes (High, Low, Volume) but preserve authoritative close price
+                if (formingCandle[2] > this.data[lastBase + 2]) this.data[lastBase + 2] = formingCandle[2]; // High
+                if (formingCandle[3] < this.data[lastBase + 3]) this.data[lastBase + 3] = formingCandle[3]; // Low
+                this.data[lastBase + 5] = Math.max(this.data[lastBase + 5], formingCandle[5]);              // Volume
             }
         }
         return prependedCount;

@@ -60,6 +60,7 @@ export class ChartRenderer {
     private candleIndexArray = new Float32Array(0);
     private candleOHLCArray = new Float32Array(0);
     private lastSyncedLength = 0;
+    private lastSyncedLiveTime = 0;
     private lastSyncedLiveClose = 0;
     private lastSyncedLiveHigh = 0;
     private lastSyncedLiveLow = 0;
@@ -1128,13 +1129,25 @@ export class ChartRenderer {
 
         const lastIdx = len - 1;
         const lastBase = lastIdx * 6;
+        const liveT = this.dataStore.data[lastBase];
         const liveC = this.dataStore.data[lastBase + 4];
         const liveH = this.dataStore.data[lastBase + 2];
         const liveL = this.dataStore.data[lastBase + 3];
 
         const isHA = this.chartMode === 'heikinAshi';
-        const isNewBarAppended = (len === this.lastSyncedLength + 1) && (this.lastSyncedMode === this.chartMode) && (this.candleOHLCArray.length >= len * 4);
-        const needsFullSync = (this.candleOHLCArray.length < len * 4) || (this.lastSyncedMode !== this.chartMode) || (!isNewBarAppended && this.lastSyncedLength !== len);
+
+        // Check if the previous bar's time matches what we had cached.
+        // If a missing bar was inserted into the middle to heal a gap, this will be false!
+        const prevBarTimeMatches = (lastIdx > 0) && (this.dataStore.data[(lastIdx - 1) * 6] === this.lastSyncedLiveTime);
+        const isNewBarAppended = (len === this.lastSyncedLength + 1)
+            && (this.lastSyncedMode === this.chartMode)
+            && (this.candleOHLCArray.length >= len * 4)
+            && (liveT > this.lastSyncedLiveTime)
+            && prevBarTimeMatches;
+
+        const needsFullSync = (this.candleOHLCArray.length < len * 4)
+            || (this.lastSyncedMode !== this.chartMode)
+            || (!isNewBarAppended && this.lastSyncedLength !== len);
 
         if (needsFullSync) {
             const newCap = Math.max(10000, len * 2);
@@ -1173,13 +1186,14 @@ export class ChartRenderer {
 
             this.lastSyncedLength = len;
             this.lastSyncedMode = this.chartMode;
+            this.lastSyncedLiveTime = liveT;
             this.lastSyncedLiveClose = liveC;
             this.lastSyncedLiveHigh = liveH;
             this.lastSyncedLiveLow = liveL;
             return;
         }
 
-        // Fast Append: When a new candle opens, only add that 1 bar
+        // Fast Append: Only used when the new candle is strictly at the end
         if (isNewBarAppended) {
             const b = lastIdx * 6;
             const d = lastIdx * 4;
@@ -1207,6 +1221,7 @@ export class ChartRenderer {
             this.candleIndexBuffer.update();
 
             this.lastSyncedLength = len;
+            this.lastSyncedLiveTime = liveT;
             this.lastSyncedLiveClose = liveC;
             this.lastSyncedLiveHigh = liveH;
             this.lastSyncedLiveLow = liveL;
@@ -1231,6 +1246,7 @@ export class ChartRenderer {
             }
 
             this.candleOHLCBuffer.update();
+            this.lastSyncedLiveTime = liveT;
             this.lastSyncedLiveClose = liveC;
             this.lastSyncedLiveHigh = liveH;
             this.lastSyncedLiveLow = liveL;
