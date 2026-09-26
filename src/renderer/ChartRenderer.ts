@@ -1320,7 +1320,7 @@ export class ChartRenderer {
             const geom = new Geometry({
                 attributes: {
                     aVertexPosition: { buffer: new Buffer({ data: baseVertices, usage: BufferUsage.VERTEX }), format: 'float32x2' },
-                    aLineData: { buffer: instBuffer, format: 'float32x3', instance: true } // [index, valThis, valNext]
+                    aLineData: { buffer: instBuffer, format: 'float32x3', instance: true }
                 },
                 indexBuffer: baseIndices
             });
@@ -1329,7 +1329,7 @@ export class ChartRenderer {
                 uCameraX: { value: 0, type: 'f32' }, uCameraY: { value: 0, type: 'f32' },
                 uZoom: { value: 1, type: 'f32' }, uCandleSpacing: { value: 8, type: 'f32' },
                 uMinPrice: { value: 0, type: 'f32' }, uMaxPrice: { value: 1, type: 'f32' },
-                uChartHeight: { value: 500, type: 'f32' }, uColor: { value: [1, 1, 1, 1], type: 'vec4<f32>' },
+                uChartHeight: { value: 500, type: 'f32' }, uLineColor: { value: new Float32Array([1.0, 1.0, 1.0, 1.0]), type: 'vec4<f32>' },
                 uWidth: { value: 2, type: 'f32' }, uVisStart: { value: 0, type: 'f32' },
                 uVisEnd: { value: 10000, type: 'f32' }, uIsOscillator: { value: 0, type: 'f32' },
                 uOscY: { value: 0, type: 'f32' }, uOscHeight: { value: 100, type: 'f32' },
@@ -1353,7 +1353,6 @@ export class ChartRenderer {
 
                 float getScreenY(float val) {
                     if (uIsOscillator > 0.5) {
-                        // Clamp norm to [0.0, 1.0] and add a 2px padding buffer to keep lines inside the panel bounds
                         float norm = clamp((val - uOscMin) / max(0.0001, uOscMax - uOscMin), 0.0, 1.0);
                         float usableH = uOscHeight - 4.0;
                         return uOscY + 2.0 + usableH - (norm * usableH);
@@ -1369,13 +1368,13 @@ export class ChartRenderer {
                     float index = aLineData.x;
                     if (index < uVisStart || index > uVisEnd) { gl_Position = vec4(0.0); return; }
                     float valThis = aLineData.y; float valNext = aLineData.z;
-                if (uIsOscillator < 0.5) {
-                    if (valThis <= 0.0 || valNext <= 0.0) { gl_Position = vec4(0.0); return; }
-                } else {
-                    if (valThis == 0.0 && valNext == 0.0) { gl_Position = vec4(0.0); return; }
-                }
+                    if (uIsOscillator < 0.5) {
+                        if (valThis <= 0.0 || valNext <= 0.0) { gl_Position = vec4(0.0); return; }
+                    } else {
+                        if (valThis == 0.0 && valNext == 0.0) { gl_Position = vec4(0.0); return; }
+                    }
 
-                float actualSpacing = uCandleSpacing * uZoom;
+                    float actualSpacing = uCandleSpacing * uZoom;
                     float topY_A = getScreenY(valThis);
                     float topY_B = getScreenY(valNext);
                     vec2 A = vec2((index * actualSpacing) - uCameraX + (actualSpacing * 0.5), topY_A);
@@ -1401,7 +1400,7 @@ export class ChartRenderer {
 
             const fragmentSrc = `
                 precision highp float;
-                uniform vec4 uColor; uniform float uIsOscillator; uniform float uOscY;
+                uniform vec4 uLineColor; uniform float uIsOscillator; uniform float uOscY;
                 uniform float uOscHeight; uniform float uChartHeight; uniform float uIsArea;
                 varying vec2 vPos;
 
@@ -1411,9 +1410,9 @@ export class ChartRenderer {
                     } else {
                         if (vPos.y > uChartHeight || vPos.y < 0.0) discard;
                     }
-                    float alpha = uColor.a;
+                    float alpha = uLineColor.a;
                     if (uIsArea > 0.5) alpha *= 0.2;
-                    gl_FragColor = vec4(uColor.rgb * alpha, alpha);
+                    gl_FragColor = vec4(uLineColor.rgb * alpha, alpha);
                 }
             `;
 
@@ -1493,11 +1492,18 @@ export class ChartRenderer {
         u.uMaxPrice = this.currentMaxPrice;
         u.uChartHeight = layout.mainChartHeight;
 
-        // Compatible vector array setter for WebGL
         const rC = ((color >> 16) & 0xff) / 255;
         const gC = ((color >> 8) & 0xff) / 255;
         const bC = (color & 0xff) / 255;
-        u.uColor = [rC, gC, bC, 1.0];
+
+        // Safest approach: ensure stable reference, then mutate to bypass PixiJS v8 quirks
+        if (!(u.uLineColor instanceof Float32Array) || u.uLineColor.length < 4) {
+            u.uLineColor = new Float32Array(4);
+        }
+        u.uLineColor[0] = rC;
+        u.uLineColor[1] = gC;
+        u.uLineColor[2] = bC;
+        u.uLineColor[3] = 1.0;
 
         u.uWidth = width;
         u.uVisStart = Math.floor(this.cameraX / (this.candleSpacing * this.zoom)) - 2;

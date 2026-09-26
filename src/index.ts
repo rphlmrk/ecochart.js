@@ -201,7 +201,7 @@ export class EcoChart {
                 this.resetBtn.style.color = accent;
             }
 
-            // ---> 2. CHECK FOR LIGHT/DARK TRANSITION <---
+            //// ---> 2. CHECK FOR LIGHT/DARK TRANSITION <---
             if (theme.isDark !== this.lastThemeIsDark) {
                 this.lastThemeIsDark = theme.isDark;
                 const drawingsChanged = this.drawingManager.adaptDrawingsToTheme(theme.isDark);
@@ -210,6 +210,8 @@ export class EcoChart {
                 }
             }
 
+            this.updateLegend();
+            this.renderer.forceNextRender = true;
             this.isDirty = true;
         });
 

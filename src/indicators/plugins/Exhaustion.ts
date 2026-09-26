@@ -86,23 +86,17 @@ export class ExhaustionIndicator extends BaseIndicator {
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
-        // 1. Detect if the chart background is light
-        const bgR = (r.bgColor >> 16) & 0xff;
-        const bgG = (r.bgColor >> 8) & 0xff;
-        const bgB = r.bgColor & 0xff;
-        const isLightMode = !r.isDarkTheme || (0.299 * bgR + 0.587 * bgG + 0.114 * bgB) > 130;
+        const isLightMode = !r.isDarkTheme;
 
-        // 2. Resolve line color: If white/light on a light background, force to solid dark slate
+        // 2. Resolve line color: Exact clash prevention
         const rawLineColor = String(this.getParam('lineColor', '#FFFFFF')).trim().toUpperCase();
         let lineColor = parseColor(rawLineColor);
 
-        if (isLightMode) {
-            const lR = (lineColor >> 16) & 0xff;
-            const lG = (lineColor >> 8) & 0xff;
-            const lB = lineColor & 0xff;
-            if ((0.299 * lR + 0.587 * lG + 0.114 * lB) > 180) {
-                lineColor = 0x131722; // Force to dark slate
-            }
+        // Only flip pure white or pure black
+        if (isLightMode && lineColor === 0xFFFFFF) {
+            lineColor = 0x131722;
+        } else if (!isLightMode && lineColor === 0x000000) {
+            lineColor = 0xD1D4DC;
         }
 
         // 3. Resolve Bull/Bear band colors

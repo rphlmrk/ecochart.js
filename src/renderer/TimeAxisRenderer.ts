@@ -276,10 +276,19 @@ export class TimeAxisRenderer {
                 const textW = this.ctx.measureText(dateStr).width + 16;
                 const pillX = Math.max(0, Math.min(w - textW, this.renderer.crosshairX - textW / 2));
 
-                this.ctx.fillStyle = '#363A45';
+                // Dynamic High-Contrast Colors based on Crosshair Color
+                const pillBgHex = this.renderer.crosshairColor;
+                const pillBgCSS = this.hexToCSS(pillBgHex);
+                const r = (pillBgHex >> 16) & 0xff;
+                const g = (pillBgHex >> 8) & 0xff;
+                const b = pillBgHex & 0xff;
+                const bgLuminance = (0.299 * r + 0.587 * g + 0.114 * b);
+                const textColorCSS = bgLuminance > 140 ? '#000000' : '#ffffff';
+
+                this.ctx.fillStyle = pillBgCSS;
                 this.ctx.fillRect(pillX, 0, textW, h);
 
-                this.ctx.fillStyle = '#ffffff';
+                this.ctx.fillStyle = textColorCSS;
                 this.ctx.fillText(dateStr, pillX + textW / 2, (h / 2) + 1);
             }
         }

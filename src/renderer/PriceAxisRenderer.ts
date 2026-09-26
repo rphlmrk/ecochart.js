@@ -167,7 +167,7 @@ export class PriceAxisRenderer {
             const cy = this.renderer.crosshairY;
             let text = '';
             let pctText = '';
-            let pctColor = '#ffffff';
+            let diffPct = 0;
 
             if (cy <= mainChartHeight) {
                 const hoverPrice = this.renderer.yToPrice(cy);
@@ -176,12 +176,9 @@ export class PriceAxisRenderer {
                 if (len > 0) {
                     const lastClose = this.renderer.dataStore.data[(len - 1) * 6 + 4];
                     if (lastClose > 0) {
-                        const diffPct = ((hoverPrice - lastClose) / lastClose) * 100;
+                        diffPct = ((hoverPrice - lastClose) / lastClose) * 100;
                         const sign = diffPct > 0 ? '+' : '';
                         pctText = `${sign}${diffPct.toFixed(2)}%`;
-                        pctColor = diffPct >= 0
-                            ? this.hexToCSS(this.renderer.bullColor)
-                            : this.hexToCSS(this.renderer.bearColor);
                     }
                 }
             } else if (this.renderer.activeOscillatorScale) {
@@ -193,15 +190,36 @@ export class PriceAxisRenderer {
             }
 
             if (text) {
+                // Dynamic High-Contrast Colors based on Crosshair Color
+                const pillBgHex = this.renderer.crosshairColor;
+                const pillBgCSS = this.hexToCSS(pillBgHex);
+                const r = (pillBgHex >> 16) & 0xff;
+                const g = (pillBgHex >> 8) & 0xff;
+                const b = pillBgHex & 0xff;
+                const bgLuminance = (0.299 * r + 0.587 * g + 0.114 * b);
+                const textColorCSS = bgLuminance > 140 ? '#000000' : '#ffffff';
+
                 if (pctText) {
+                    let rawPctColor = diffPct >= 0 ? this.renderer.bullColor : this.renderer.bearColor;
+                    const pr = (rawPctColor >> 16) & 0xff;
+                    const pg = (rawPctColor >> 8) & 0xff;
+                    const pb = rawPctColor & 0xff;
+                    const pctLuminance = (0.299 * pr + 0.587 * pg + 0.114 * pb);
+
+                    // If the percentage color clashes with the pill background, force it to match text color
+                    let pctColor = this.hexToCSS(rawPctColor);
+                    if (Math.abs(bgLuminance - pctLuminance) < 60) {
+                        pctColor = textColorCSS;
+                    }
+
                     // Two-line pill for main chart: Price on top, % diff from live price below
                     const pillH = 34;
                     const pillY = Math.max(0, Math.min(mainChartHeight - pillH, cy - 17));
 
-                    this.ctx.fillStyle = '#363A45';
+                    this.ctx.fillStyle = pillBgCSS;
                     this.ctx.fillRect(0, pillY, w, pillH);
 
-                    this.ctx.fillStyle = '#ffffff';
+                    this.ctx.fillStyle = textColorCSS;
                     this.ctx.font = 'bold 11px sans-serif';
                     this.ctx.fillText(text, w / 2, pillY + 11);
 
@@ -213,10 +231,10 @@ export class PriceAxisRenderer {
                     const pillH = 18;
                     const pillY = Math.max(0, Math.min(h - pillH, cy - 9));
 
-                    this.ctx.fillStyle = '#363A45';
+                    this.ctx.fillStyle = pillBgCSS;
                     this.ctx.fillRect(0, pillY, w, pillH);
 
-                    this.ctx.fillStyle = '#ffffff';
+                    this.ctx.fillStyle = textColorCSS;
                     this.ctx.font = '11px sans-serif';
                     this.ctx.fillText(text, w / 2, pillY + 10);
                 }

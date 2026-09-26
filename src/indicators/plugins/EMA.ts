@@ -71,15 +71,11 @@ export class EMAIndicator extends BaseIndicator {
             color = 0x00838F; // Deep teal for light theme
         }
 
-        // Luminous Check: Flip bright lines (like white) to dark slate in Light Mode
-        if (!r.isDarkTheme) {
-            const cR = (color >> 16) & 0xff;
-            const cG = (color >> 8) & 0xff;
-            const cB = color & 0xff;
-            const luminance = (0.299 * cR + 0.587 * cG + 0.114 * cB);
-            if (luminance > 180) {
-                color = 0x131722; // Force to dark slate so it remains visible
-            }
+        // Exact Clash Prevention: Only flip pure white or pure black
+        if (!r.isDarkTheme && color === 0xFFFFFF) {
+            color = 0x131722; // Pure white flips to dark slate
+        } else if (r.isDarkTheme && color === 0x000000) {
+            color = 0xD1D4DC; // Pure black flips to light gray
         }
 
         // Fire directly to the GPU!
@@ -90,8 +86,16 @@ export class EMAIndicator extends BaseIndicator {
         const val = (idx >= 0 && idx < ds.length) ? this.values[idx] : 0;
         const rawColor = String(this.getParam('color', '#00BCD4')).toUpperCase();
         let valueColor = parseColor(rawColor);
+
         if (!isDark && rawColor === '#00BCD4') {
             valueColor = 0x00838F; // Adjust to deep teal on light theme
+        }
+
+        // Exact Clash Prevention for Legend Text
+        if (!isDark && valueColor === 0xFFFFFF) {
+            valueColor = 0x131722;
+        } else if (isDark && valueColor === 0x000000) {
+            valueColor = 0xD1D4DC;
         }
 
         return {
