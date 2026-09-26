@@ -1561,8 +1561,8 @@ export class EcoChart {
 
                     // 2. Only submit GPU draw call if something visible actually changed
                     if (this.renderer.isRenderDirty) {
-                        // Only rebuild indicators, drawings & time axis if camera moved or candle closed
-                        if (this.renderer.isHistoricalDirty) {
+                        // Only rebuild indicators, drawings & time axis if camera moved, candle closed, OR live price changed
+                        if (this.renderer.isHistoricalDirty || this.renderer.isLivePriceDirty) {
                             this.renderer.indicatorMainGraphics.clear();
                             this.renderer.indicatorOscGraphics.clear();
                             this.renderer.hideAllIndicatorMeshes();

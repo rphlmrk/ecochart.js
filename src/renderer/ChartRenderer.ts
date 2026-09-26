@@ -111,6 +111,7 @@ export class ChartRenderer {
     // --- ECO-MODE STATE ---
     public isRenderDirty = true;
     public isHistoricalDirty = true;
+    public isLivePriceDirty = false;
     public forceNextRender = true;
     private lastRenderState = { camX: 0, camY: 0, zoom: 0, minP: 0, maxP: 0, len: 0, close: 0, high: 0, low: 0, mode: '', w: 0, h: 0, oscH: 0, interval: '' };
     private lastCrosshairState = { x: -100, y: -100, visible: false, w: 0, h: 0, syncTime: null as number | null };
@@ -369,6 +370,8 @@ export class ChartRenderer {
             this.lastRenderState.low !== liveL ||
             (this.lastRenderState as any).open !== liveO
         );
+
+        this.isLivePriceDirty = livePriceChanged;
 
         // Eco-Mode: If scrolled in history and nothing visible changed, stop immediately!
         if (

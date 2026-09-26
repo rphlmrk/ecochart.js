@@ -273,10 +273,16 @@ export class BinanceClient {
 
         // --- 1. ONLINE-FIRST: FETCH LATEST 1,000 BARS DIRECT FROM BINANCE ---
         try {
-            const liveBuffer = await DataWorkerClient.fetchGap(symbol, baseInterval, interval, 0, Date.now(), shouldPersist);
-            if (liveBuffer && liveBuffer.length > 0 && this.currentSyncKey === `${symbol}_${interval}`) {
-                this.dataStore.setFromBuffer(liveBuffer);
+            if (this.dataStore.length > 0) {
+                // FIX: If we are reconnecting, just patch the gap! Wiping the array causes the BLANK CHART.
+                await this.syncMissingGap(symbol, interval, true);
                 onUpdate(0, true);
+            } else {
+                const liveBuffer = await DataWorkerClient.fetchGap(symbol, baseInterval, interval, 0, Date.now(), shouldPersist);
+                if (liveBuffer && liveBuffer.length > 0 && this.currentSyncKey === `${symbol}_${interval}`) {
+                    this.dataStore.setFromBuffer(liveBuffer);
+                    onUpdate(0, true);
+                }
             }
         } catch (e) {
             console.warn('[Binance] Online-first fetch failed, falling back to local DB', e);
@@ -323,10 +329,10 @@ export class BinanceClient {
             this.lastMessageTime = Date.now();
         };
 
-        // --- PHASE 2 FIX: Prevent Reconnection Deadlock if internet drops ---
+        // FIX: Prevent deadlock if internet is disconnected during connection
         this.ws.onerror = (err) => {
             console.error('[Binance] WebSocket error:', err);
-            this.isConnecting = false;
+            this.isConnecting = false; 
         };
 
         this.ws.onmessage = async (event) => {
@@ -337,7 +343,6 @@ export class BinanceClient {
             const data = raw.data;
             if (!data) return;
 
-            // Zero-cost clock synchronization using Binance's exact server event timestamp (E)
             if (data.E) {
                 BinanceClient.serverTimeOffset = data.E - Date.now();
             }
@@ -346,7 +351,6 @@ export class BinanceClient {
                 const k = data.k;
                 const o = parseFloat(k.o), h = parseFloat(k.h), l = parseFloat(k.l), c = parseFloat(k.c), v = parseFloat(k.v);
 
-                // Gap Check: Backfill missing history in the background using the exact missing time window
                 if (this.dataStore.length > 0 && !this.isSyncingGap) {
                     const lastCandleTime = this.dataStore.data[(this.dataStore.length - 1) * 6];
                     if (k.t - lastCandleTime > targetIntervalMs) {
@@ -354,7 +358,7 @@ export class BinanceClient {
                     }
                 }
 
-                // --- PHASE 3 FIX: True HTF Shape Locking & Live Forming ---
+                // FIX: True HTF Shape Locking (Checks if the exact bucket boundary is reached)
                 const isBaseClosed = k.x;
                 let isHTFClosed = isBaseClosed;
                 let bucketTime = k.t;
@@ -364,13 +368,11 @@ export class BinanceClient {
                 } else {
                     bucketTime = TimeframeResampler.getBucketStart(k.t, targetIntervalMs);
                     this.dataStore.appendOrUpdate(bucketTime, o, h, l, c, v);
-
+                    
                     const baseMs = TimeframeResampler.parseMs(baseInterval);
-                    // HTF candle ONLY closes if the base candle closes AND it pushes against the HTF boundary
                     isHTFClosed = isBaseClosed && ((k.t + baseMs) >= (bucketTime + targetIntervalMs));
                 }
 
-                // IMPORTANT: We STILL save the base candle to IndexedDB so we don't lose granular history
                 if (isBaseClosed && shouldPersist) {
                     DataWorkerClient.saveCandle({
                         id: `${symbol.toUpperCase()}_${baseInterval}_${k.t}`,
@@ -379,8 +381,8 @@ export class BinanceClient {
                         time: k.t, o, h, l, c, v
                     }, shouldPersist);
                 }
-
-                // BUT we ONLY tell the indicator math engine that the candle closed if the HTF is completely finished
+                
+                // Pass true HTF closure state to the Indicator Math Engine
                 onUpdate(0, isHTFClosed);
             }
             else if (data.e === '24hrTicker') {
@@ -390,7 +392,7 @@ export class BinanceClient {
         };
 
         this.ws.onclose = () => {
-            this.isConnecting = false; // <-- PHASE 2 FIX: Clear lock so reconnects work
+            this.isConnecting = false; // FIX: Release lock so reconnect works
             if (!this.isReconnecting && this.currentSyncKey === `${symbol}_${interval}`) {
                 this.isReconnecting = true;
                 setTimeout(() => this.connect(symbol, interval, onUpdate, onTicker), 2000);
