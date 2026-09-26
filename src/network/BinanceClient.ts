@@ -1,6 +1,13 @@
 import { DataStore } from '../data/DataStore';
 import { TimeframeResampler } from '../data/TimeframeResampler';
 import { DataWorkerClient } from '../workers/DataWorkerClient';
+import { favoritesManager } from '../data/FavoritesManager';
+
+export interface TickerData {
+    lastPrice: number;
+    changePct: number;
+    quoteVolume: number; // 24h Volume in USDT
+}
 
 export class BinanceClient {
     private ws: WebSocket | null = null;
@@ -21,6 +28,11 @@ export class BinanceClient {
     private static isProcessingQueue = false;
     private static rateLimitUntil = 0;
     private static readonly MIN_REQUEST_INTERVAL_MS = 120; // Max ~8 req/sec safely under 1200 weight/min
+
+    // 24h Mini-Ticker Cache (120s TTL to prevent rate limits)
+    public static tickerCache: Record<string, TickerData> = {};
+    private static tickerCacheTime = 0;
+    private static readonly TICKER_CACHE_TTL = 120_000; // 2 minutes
 
     // Binance Server Clock Drift Calibration
     public static serverTimeOffset = 0;
@@ -186,6 +198,53 @@ export class BinanceClient {
         ];
     }
 
+    /**
+     * Fetches lightweight 24h mini-tickers in a single bulk request.
+     * Cached in RAM for 120 seconds to prevent eating API rate limits.
+     */
+    public async fetch24hTickers(): Promise<Record<string, TickerData>> {
+        const now = Date.now();
+        // Return cached data if still within the 120s TTL window
+        if (
+            now - BinanceClient.tickerCacheTime < BinanceClient.TICKER_CACHE_TTL &&
+            Object.keys(BinanceClient.tickerCache).length > 0
+        ) {
+            return BinanceClient.tickerCache;
+        }
+
+        try {
+            // Uses lightweight MINI endpoint (only ~40 weight vs 80 full)
+            const res = await BinanceClient.safeFetch('https://api.binance.com/api/v3/ticker/24hr?type=MINI');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+
+            if (Array.isArray(data)) {
+                const map: Record<string, TickerData> = {};
+                for (let i = 0; i < data.length; i++) {
+                    const item = data[i];
+                    const lastPrice = parseFloat(item.lastPrice) || 0;
+                    const openPrice = parseFloat(item.openPrice) || 0;
+                    const quoteVolume = parseFloat(item.quoteVolume) || 0;
+                    const changePct = openPrice > 0 ? ((lastPrice - openPrice) / openPrice) * 100 : 0;
+
+                    map[item.symbol] = {
+                        lastPrice,
+                        changePct,
+                        quoteVolume
+                    };
+                }
+
+                BinanceClient.tickerCache = map;
+                BinanceClient.tickerCacheTime = now;
+                return map;
+            }
+        } catch (err) {
+            console.warn('[Binance] Failed to fetch 24h mini tickers, returning cached data:', err);
+        }
+
+        return BinanceClient.tickerCache;
+    }
+
     // UPDATED: Added onTicker callback and Combined Streams
     public async connect(symbol: string, interval: string, onUpdate: (prependedCount?: number, isClosed?: boolean) => void, onTicker: (changePct: number) => void) {
         if (this.isConnecting) return; // Prevent duplicate overlapping connections
@@ -209,9 +268,12 @@ export class BinanceClient {
         // Snap the cutoff time to the exact timeframe boundary to prevent partial/broken historical candles
         const cutoffTime = rawCutoffTime === 0 ? 0 : TimeframeResampler.getBucketStart(rawCutoffTime, targetIntervalMs);
 
+        // Check if this symbol should be written to IndexedDB
+        const shouldPersist = !favoritesManager.onlySaveFavorites || favoritesManager.isFavorite(symbol);
+
         // --- 1. ONLINE-FIRST: FETCH LATEST 1,000 BARS DIRECT FROM BINANCE ---
         try {
-            const liveBuffer = await DataWorkerClient.fetchGap(symbol, baseInterval, interval, 0, Date.now());
+            const liveBuffer = await DataWorkerClient.fetchGap(symbol, baseInterval, interval, 0, Date.now(), shouldPersist);
             if (liveBuffer && liveBuffer.length > 0 && this.currentSyncKey === `${symbol}_${interval}`) {
                 this.dataStore.setFromBuffer(liveBuffer);
                 onUpdate(0, true);
@@ -220,8 +282,8 @@ export class BinanceClient {
             console.warn('[Binance] Online-first fetch failed, falling back to local DB', e);
         }
 
-        // Offline fallback: If online fetch returned nothing, load whatever local DB has
-        if (this.dataStore.length === 0) {
+        // Offline fallback: Only query IndexedDB if this symbol is persisted
+        if (this.dataStore.length === 0 && shouldPersist) {
             try {
                 const resDB = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
                 if (this.dataStore.length > 0) onUpdate(resDB.prepended, true);
@@ -235,25 +297,25 @@ export class BinanceClient {
 
         this.ws = new WebSocket(url);
 
-        // --- 3. BACKGROUND STITCH: LOAD OLDER LOCAL & DEEP HISTORY LAST ---
-        (async () => {
-            try {
-                if (this.currentSyncKey !== `${symbol}_${interval}`) return;
+        // --- 3. BACKGROUND STITCH: ONLY FOR PERSISTED SYMBOLS ---
+        if (shouldPersist) {
+            (async () => {
+                try {
+                    if (this.currentSyncKey !== `${symbol}_${interval}`) return;
 
-                // Load older cached candles from phone storage and stitch them behind current view
-                const resDB = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
-                if (resDB.prepended > 0 && this.currentSyncKey === `${symbol}_${interval}`) {
-                    onUpdate(resDB.prepended, true);
-                }
+                    const resDB = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
+                    if (resDB.prepended > 0 && this.currentSyncKey === `${symbol}_${interval}`) {
+                        onUpdate(resDB.prepended, true);
+                    }
 
-                // Paginate deep historical data backwards in background worker
-                if (this.currentSyncKey === `${symbol}_${interval}`) {
-                    this.startBackgroundSync(symbol, baseInterval, resDB.oldest, cutoffTime, interval, (prep) => onUpdate(prep, true));
+                    if (this.currentSyncKey === `${symbol}_${interval}`) {
+                        this.startBackgroundSync(symbol, baseInterval, resDB.oldest, cutoffTime, interval, (prep) => onUpdate(prep, true));
+                    }
+                } catch (err) {
+                    console.error('[Binance] Background history stitch error', err);
                 }
-            } catch (err) {
-                console.error('[Binance] Background history stitch error', err);
-            }
-        })();
+            })();
+        }
 
         this.ws.onopen = () => {
             this.isConnecting = false;
@@ -294,14 +356,14 @@ export class BinanceClient {
                     this.dataStore.appendOrUpdate(bucketTime, o, h, l, c, v);
                 }
 
-                // If candle closes, persist via background data worker
-                if (k.x) {
+                // If candle closes, persist only if selective persistence allows it
+                if (k.x && shouldPersist) {
                     DataWorkerClient.saveCandle({
                         id: `${symbol.toUpperCase()}_${baseInterval}_${k.t}`,
                         symbol: symbol.toUpperCase(),
                         interval: baseInterval,
                         time: k.t, o, h, l, c, v
-                    });
+                    }, shouldPersist);
                 }
                 onUpdate(0, k.x);
             }

@@ -21,6 +21,8 @@ import { DrawingManager } from './tools/DrawingManager';
 import { IndicatorRegistry, type SavedIndicatorState } from './indicators/IndicatorRegistry';
 import { PriceAxisRenderer } from './renderer/PriceAxisRenderer';
 import { TimeAxisRenderer } from './renderer/TimeAxisRenderer';
+import { favoritesManager } from './data/FavoritesManager';
+import { DataWorkerClient } from './workers/DataWorkerClient';
 
 export interface SavedPaneState {
     symbol: string;
@@ -44,6 +46,8 @@ export interface SavedWorkspaceState {
     dataLimits?: Record<string, number>;
     sessionConfig?: any;
     clockConfig?: any;
+    favoriteSymbols?: string[];
+    onlySaveFavorites?: boolean;
     panes: SavedPaneState[];
 }
 
@@ -1810,6 +1814,8 @@ export class WorkspaceManager {
             dataLimits: this.dataLimits,
             sessionConfig: this.sessionConfig,
             clockConfig: this.clockConfig,
+            favoriteSymbols: favoritesManager.getFavorites(),
+            onlySaveFavorites: favoritesManager.onlySaveFavorites,
             panes: this.charts.map(c => c.serialize())
         };
         try {
@@ -1864,6 +1870,14 @@ export class WorkspaceManager {
                     if (state.sessionConfig) this.sessionConfig = { ...this.sessionConfig, ...state.sessionConfig };
                     if (state.clockConfig) this.clockConfig = { ...this.clockConfig, ...state.clockConfig };
 
+                    // Restore favorites from saved workspace
+                    if (Array.isArray(state.favoriteSymbols)) {
+                        favoritesManager.setFavorites(state.favoriteSymbols);
+                    }
+                    if (state.onlySaveFavorites !== undefined) {
+                        favoritesManager.setOnlySaveFavorites(state.onlySaveFavorites);
+                    }
+
                     this.updateToolbarDock();
 
                     this.setLayout(state.layout, state.panes);
@@ -1875,6 +1889,14 @@ export class WorkspaceManager {
             }
         } catch (err) {
             console.warn('Failed to load workspace', err);
+        }
+
+        // Multi-Pane Safe Storage Cleanup on startup
+        if (favoritesManager.onlySaveFavorites) {
+            DataWorkerClient.pruneNonFavorites(
+                favoritesManager.getFavorites(),
+                this.charts.map(c => c.currentSymbol)
+            );
         }
 
         this.setLayout('1'); // Fallback if no save exists
@@ -1898,6 +1920,14 @@ export class WorkspaceManager {
         if (!chart) return;
 
         const accent = themeManager.getResolvedAccentColor();
+
+        // 0. Sync Top Bar Quick-Star Button
+        const btnQuickStar = document.getElementById('btn-quick-star');
+        if (btnQuickStar) {
+            const isFav = favoritesManager.isFavorite(chart.currentSymbol);
+            btnQuickStar.textContent = isFav ? '★' : '☆';
+            btnQuickStar.style.color = isFav ? '#FFB703' : '#787B86';
+        }
 
         // 1. Symbol Button Label & Browser Title (Telemetry)
         const symLabel = document.getElementById('btn-symbol')?.querySelector('span');
@@ -2484,6 +2514,10 @@ export class WorkspaceManager {
             const selectFPS = document.getElementById('select-fps-limit') as HTMLSelectElement;
             if (selectFPS) selectFPS.value = WorkspaceManager.targetFPS.toString();
 
+            // Sync Selective Persistence Checkbox
+            const checkOnlyFavs = document.getElementById('check-only-save-favorites') as HTMLInputElement;
+            if (checkOnlyFavs) checkOnlyFavs.checked = favoritesManager.onlySaveFavorites;
+
             const checkAutoHide = document.getElementById('check-autohide-nav') as HTMLInputElement;
             if (checkAutoHide) checkAutoHide.checked = WorkspaceManager.isAutoHideNav;
 
@@ -2904,65 +2938,331 @@ export class WorkspaceManager {
         btnCloseSettings?.addEventListener('click', closeSettings);
         btnModalCloseX?.addEventListener('click', closeSettings);
 
-        // Symbol Search Modal
+        // ==========================================================
+        // 🔍 MODERNIZED SYMBOL SEARCH CONTROLLER (Virtual Slice & Tabs)
+        // ==========================================================
         const btnSymbol = document.getElementById('btn-symbol');
         const modalSymbol = document.getElementById('symbol-modal') as HTMLDialogElement;
         const inputSearch = document.getElementById('symbol-search-input') as HTMLInputElement;
+        const btnClearSearch = document.getElementById('btn-search-clear') as HTMLButtonElement;
         const listContainer = document.getElementById('symbol-list');
         const btnCloseSymbol = document.getElementById('btn-symbol-modal-close');
+        const matchCountLabel = document.getElementById('symbol-match-count');
+        const tabButtons = document.querySelectorAll('.symbol-tab-btn');
 
         let allSymbols: Array<{ symbol: string; baseAsset: string; quoteAsset: string }> = [];
+        let tickerMap: Record<string, { lastPrice: number; changePct: number; quoteVolume: number }> = {};
         let filteredSymbols: Array<{ symbol: string; baseAsset: string; quoteAsset: string }> = [];
+        let activeTab: 'all' | 'favorites' | 'volume' = 'all';
         let selectedIndex = 0;
+        let renderedBatchCount = 50;
+
+        // 1. Sort State Variables
+        let sortField: 'symbol' | 'change' | 'volume' = 'volume';
+        let sortDirection: 'asc' | 'desc' = 'desc';
+
+        // Column Header Elements
+        const colSortSymbol = document.getElementById('col-sort-symbol');
+        const colSortChange = document.getElementById('col-sort-change');
+        const colSortVolume = document.getElementById('col-sort-volume');
+        const arrowSortSymbol = document.getElementById('arrow-sort-symbol');
+        const arrowSortChange = document.getElementById('arrow-sort-change');
+        const arrowSortVolume = document.getElementById('arrow-sort-volume');
+
+        // Number Formatter: $1.24B, $45.2M, $850K
+        const formatVolume = (vol: number): string => {
+            if (vol >= 1_000_000_000) return `$${(vol / 1_000_000_000).toFixed(2)}B`;
+            if (vol >= 1_000_000) return `$${(vol / 1_000_000).toFixed(2)}M`;
+            if (vol >= 1_000) return `$${(vol / 1_000).toFixed(1)}K`;
+            return `$${vol.toFixed(0)}`;
+        };
+
+        // 2. Header State UI Updater
+        const updateHeaderIndicators = () => {
+            colSortSymbol?.classList.remove('active');
+            colSortChange?.classList.remove('active');
+            colSortVolume?.classList.remove('active');
+            if (arrowSortSymbol) arrowSortSymbol.textContent = '↕';
+            if (arrowSortChange) arrowSortChange.textContent = '↕';
+            if (arrowSortVolume) arrowSortVolume.textContent = '↕';
+
+            const arrowChar = sortDirection === 'asc' ? '▲' : '▼';
+            if (sortField === 'symbol') {
+                colSortSymbol?.classList.add('active');
+                if (arrowSortSymbol) arrowSortSymbol.textContent = arrowChar;
+            } else if (sortField === 'change') {
+                colSortChange?.classList.add('active');
+                if (arrowSortChange) arrowSortChange.textContent = arrowChar;
+            } else if (sortField === 'volume') {
+                colSortVolume?.classList.add('active');
+                if (arrowSortVolume) arrowSortVolume.textContent = arrowChar;
+            }
+        };
+
+        // 3. Unified Sorting Engine
+        const filterAndSortList = () => {
+            const query = (inputSearch?.value || '').trim().toUpperCase();
+
+            // A. Filter by Search Query
+            let list = allSymbols;
+            if (query) {
+                list = list.filter(s => s.symbol.includes(query) || s.baseAsset.toUpperCase().includes(query));
+            }
+
+            // B. Filter by Favorites Tab
+            if (activeTab === 'favorites') {
+                list = list.filter(s => favoritesManager.isFavorite(s.symbol));
+            }
+
+            // C. Apply Unified Sort Direction
+            list = [...list].sort((a, b) => {
+                let comparison = 0;
+                if (sortField === 'symbol') {
+                    comparison = a.symbol.localeCompare(b.symbol);
+                } else if (sortField === 'change') {
+                    const valA = tickerMap[a.symbol]?.changePct ?? -Infinity;
+                    const valB = tickerMap[b.symbol]?.changePct ?? -Infinity;
+                    comparison = valA - valB;
+                } else if (sortField === 'volume') {
+                    const valA = tickerMap[a.symbol]?.quoteVolume ?? 0;
+                    const valB = tickerMap[b.symbol]?.quoteVolume ?? 0;
+                    comparison = valA - valB;
+                }
+                return sortDirection === 'asc' ? comparison : -comparison;
+            });
+
+            filteredSymbols = list;
+            selectedIndex = 0;
+            renderedBatchCount = 50;
+            renderSymbolList();
+        };
+
+        // 4. Bind Header Column Clicks
+        const handleSortClick = (field: 'symbol' | 'change' | 'volume') => {
+            if (sortField === field) {
+                // Same column: Toggle direction
+                sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+                // New column: Default to A-Z for Symbol, High-to-Low for Metrics
+                sortField = field;
+                sortDirection = field === 'symbol' ? 'asc' : 'desc';
+            }
+            updateHeaderIndicators();
+            filterAndSortList();
+        };
+
+        colSortSymbol?.addEventListener('click', () => handleSortClick('symbol'));
+        colSortChange?.addEventListener('click', () => handleSortClick('change'));
+        colSortVolume?.addEventListener('click', () => handleSortClick('volume'));
 
         const renderSymbolList = () => {
             if (!listContainer) return;
             listContainer.innerHTML = '';
+
             if (filteredSymbols.length === 0) {
-                listContainer.innerHTML = '<div style="padding: 18px; text-align: center; color: #787B86; font-size: 12px;">No matching USDT pairs found</div>';
+                const emptyMsg = activeTab === 'favorites' && !inputSearch.value.trim()
+                    ? 'No starred symbols yet.<br><span style="font-size: 11px; opacity: 0.7;">Click ☆ to pin favorite pairs here.</span>'
+                    : 'No matching USDT pairs found';
+                listContainer.innerHTML = `<div style="padding: 32px 16px; text-align: center; color: #787B86; font-size: 13px; line-height: 1.6;">${emptyMsg}</div>`;
+                if (matchCountLabel) matchCountLabel.textContent = 'Showing 0 results';
                 return;
             }
-            const limit = Math.min(filteredSymbols.length, 50);
-            for (let i = 0; i < limit; i++) {
+
+            const activeSymbol = WorkspaceManager.activeChart?.currentSymbol || '';
+            const countToRender = Math.min(filteredSymbols.length, renderedBatchCount);
+
+            for (let i = 0; i < countToRender; i++) {
                 const item = filteredSymbols[i];
+                const isFav = favoritesManager.isFavorite(item.symbol);
+                const isCurrent = item.symbol === activeSymbol;
+                const ticker = tickerMap[item.symbol];
+
                 const row = document.createElement('div');
                 row.className = `symbol-item ${i === selectedIndex ? 'selected' : ''}`;
-                row.innerHTML = `
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        <span style="font-weight: 700; color: var(--chart-text, #D1D4DC);">${item.symbol}</span>
-                        <span style="font-size: 11px; color: var(--chart-text, #787B86); opacity: 0.65;">${item.baseAsset}</span>
+                row.dataset.index = String(i);
+                row.style.cssText = 'display: grid; grid-template-columns: 1fr 100px 90px; align-items: center; gap: 8px; padding: 7px 16px; cursor: pointer; user-select: none; border-left: 3px solid transparent;';
+                if (isCurrent) {
+                    row.style.background = 'rgba(41, 98, 255, 0.08)';
+                    row.style.borderLeftColor = 'var(--chart-accent, #2962FF)';
+                }
+
+                // Left cell: Star + Coin Badge + Ticker + Asset Name
+                const leftDiv = document.createElement('div');
+                leftDiv.style.cssText = 'display: flex; align-items: center; gap: 8px; min-width: 0;';
+
+                const starBtn = document.createElement('button');
+                starBtn.className = `symbol-star-btn ${isFav ? 'starred' : ''}`;
+                starBtn.textContent = isFav ? '★' : '☆';
+                starBtn.title = isFav ? 'Unstar' : 'Star';
+                starBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    const nowFav = favoritesManager.toggleFavorite(item.symbol);
+                    starBtn.textContent = nowFav ? '★' : '☆';
+                    starBtn.classList.toggle('starred', nowFav);
+                    WorkspaceManager.syncTopBar();
+                    WorkspaceManager.triggerAutoSave();
+                    if (activeTab === 'favorites') {
+                        filterAndSortList();
+                    }
+                };
+                leftDiv.appendChild(starBtn);
+
+                const avatar = document.createElement('div');
+                avatar.className = 'coin-badge';
+                avatar.textContent = item.baseAsset.slice(0, 3);
+                leftDiv.appendChild(avatar);
+
+                const nameDiv = document.createElement('div');
+                nameDiv.style.cssText = 'display: flex; flex-direction: column; min-width: 0;';
+                nameDiv.innerHTML = `
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="font-weight: 700; color: var(--chart-text, #D1D4DC); font-size: 13px;">${item.symbol}</span>
+                        <span class="badge-spot">SPOT</span>
                     </div>
-                    <span style="font-size: 11px; background: var(--chart-grid, rgba(0,0,0,0.08)); padding: 2px 6px; border-radius: 4px; color: var(--chart-text, #787B86); font-weight: 600;">${item.quoteAsset}</span>
+                    <span style="font-size: 11px; color: #787B86; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.baseAsset}</span>
                 `;
+                leftDiv.appendChild(nameDiv);
+                row.appendChild(leftDiv);
+
+                // Middle cell: 24h Change %
+                const changeDiv = document.createElement('div');
+                changeDiv.style.cssText = 'text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; font-weight: 600;';
+                if (ticker) {
+                    const sign = ticker.changePct >= 0 ? '+' : '';
+                    const color = ticker.changePct >= 0 ? 'var(--chart-bull, #26A69A)' : 'var(--chart-bear, #EF5350)';
+                    changeDiv.style.color = color;
+                    changeDiv.textContent = `${sign}${ticker.changePct.toFixed(2)}%`;
+                } else {
+                    changeDiv.style.color = '#787B86';
+                    changeDiv.textContent = '—';
+                }
+                row.appendChild(changeDiv);
+
+                // Right cell: 24h Volume in USDT
+                const volDiv = document.createElement('div');
+                volDiv.style.cssText = 'text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; color: var(--chart-text, #D1D4DC); opacity: 0.85;';
+                volDiv.textContent = ticker ? formatVolume(ticker.quoteVolume) : '—';
+                row.appendChild(volDiv);
+
+                // Row selection event
                 row.addEventListener('click', () => {
                     WorkspaceManager.activeChart?.switchSymbol(item.symbol);
                     WorkspaceManager.syncTopBar();
                     modalSymbol?.close();
                 });
+
                 listContainer.appendChild(row);
+            }
+
+            if (matchCountLabel) {
+                matchCountLabel.textContent = `Showing ${countToRender} of ${filteredSymbols.length} pairs`;
             }
         };
 
-        btnSymbol?.addEventListener('click', async () => {
-            modalSymbol?.showModal();
-            inputSearch.value = '';
-            inputSearch.focus();
-            if (allSymbols.length === 0 && WorkspaceManager.activeChart) {
-                allSymbols = await WorkspaceManager.activeChart.network.fetchTradableSymbols();
+        // Virtualized Infinite Scroll: Render next 30 items when reaching bottom
+        listContainer?.addEventListener('scroll', () => {
+            if (!listContainer) return;
+            const scrollBottom = listContainer.scrollHeight - listContainer.scrollTop - listContainer.clientHeight;
+            if (scrollBottom < 80 && renderedBatchCount < filteredSymbols.length) {
+                renderedBatchCount += 30;
+                renderSymbolList();
             }
-            filteredSymbols = allSymbols.slice(0, 50);
-            selectedIndex = 0;
-            renderSymbolList();
         });
 
-        inputSearch?.addEventListener('input', (e) => {
-            const clean = (e.target as HTMLInputElement).value.trim().toUpperCase();
-            filteredSymbols = clean
-                ? allSymbols.filter((s) => s.symbol.includes(clean) || s.baseAsset.includes(clean)).slice(0, 50)
-                : allSymbols.slice(0, 50);
-            selectedIndex = 0;
-            renderSymbolList();
+        // Tab Switching
+        tabButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                tabButtons.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                activeTab = (btn as HTMLElement).dataset.tab as any;
+
+                // If entering Top Volume tab, enforce volume descending sort naturally
+                if (activeTab === 'volume') {
+                    sortField = 'volume';
+                    sortDirection = 'desc';
+                    updateHeaderIndicators();
+                }
+
+                filterAndSortList();
+            });
         });
+
+        // Open Dialog
+        btnSymbol?.addEventListener('click', async () => {
+            modalSymbol?.showModal();
+            if (inputSearch) {
+                inputSearch.value = '';
+                inputSearch.focus();
+            }
+            if (btnClearSearch) btnClearSearch.style.display = 'none';
+
+            // Parallel background fetch: Tradable symbols + 24h Mini-Tickers
+            if (WorkspaceManager.activeChart) {
+                const [symbols, tickers] = await Promise.all([
+                    allSymbols.length === 0 ? WorkspaceManager.activeChart.network.fetchTradableSymbols() : Promise.resolve(allSymbols),
+                    WorkspaceManager.activeChart.network.fetch24hTickers()
+                ]);
+                allSymbols = symbols;
+                tickerMap = tickers;
+            }
+
+            updateHeaderIndicators();
+            filterAndSortList();
+        });
+
+        // Search Input Filtering & Clear Button Toggle
+        inputSearch?.addEventListener('input', (e) => {
+            const val = (e.target as HTMLInputElement).value;
+            if (btnClearSearch) {
+                btnClearSearch.style.display = val.length > 0 ? 'inline-block' : 'none';
+            }
+            filterAndSortList();
+        });
+
+        btnClearSearch?.addEventListener('click', () => {
+            if (inputSearch) {
+                inputSearch.value = '';
+                inputSearch.focus();
+            }
+            btnClearSearch.style.display = 'none';
+            filterAndSortList();
+        });
+
+        // Keyboard Navigation (ArrowUp, ArrowDown, Enter, Esc)
+        modalSymbol?.addEventListener('keydown', (e) => {
+            if (filteredSymbols.length === 0) return;
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                selectedIndex = Math.min(filteredSymbols.length - 1, selectedIndex + 1);
+                updateActiveSelection();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                selectedIndex = Math.max(0, selectedIndex - 1);
+                updateActiveSelection();
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                const chosen = filteredSymbols[selectedIndex];
+                if (chosen) {
+                    WorkspaceManager.activeChart?.switchSymbol(chosen.symbol);
+                    WorkspaceManager.syncTopBar();
+                    modalSymbol?.close();
+                }
+            }
+        });
+
+        const updateActiveSelection = () => {
+            const rows = listContainer?.querySelectorAll('.symbol-item');
+            if (!rows) return;
+            rows.forEach((r, idx) => {
+                if (idx === selectedIndex) {
+                    r.classList.add('selected');
+                    r.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                } else {
+                    r.classList.remove('selected');
+                }
+            });
+        };
 
         btnCloseSymbol?.addEventListener('click', () => modalSymbol?.close());
 

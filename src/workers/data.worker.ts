@@ -86,7 +86,7 @@ self.onmessage = async (e) => {
             (self as any).postMessage({ id, result: flatArray }, [flatArray.buffer]);
         }
         else if (type === 'FETCH_CHUNK') {
-            const { symbol, baseInterval, startTime, endTime } = payload;
+            const { symbol, baseInterval, startTime, endTime, persist = true } = payload;
             let url = `https://api.binance.com/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${baseInterval}&limit=1000`;
             if (startTime) url += `&startTime=${startTime}`;
             if (endTime) url += `&endTime=${endTime}`;
@@ -97,18 +97,20 @@ self.onmessage = async (e) => {
                 return;
             }
 
-            const records = data.map((k: any) => ({
-                id: `${symbol.toUpperCase()}_${baseInterval}_${k[0]}`,
-                symbol: symbol.toUpperCase(),
-                interval: baseInterval,
-                time: k[0], o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4]), v: parseFloat(k[5])
-            }));
-
-            await db.candles.bulkPut(records);
-            self.postMessage({ id, result: data[0][0] }); // Return oldest timestamp
+            // Only write to IndexedDB if persistence is enabled for this symbol
+            if (persist) {
+                const records = data.map((k: any) => ({
+                    id: `${symbol.toUpperCase()}_${baseInterval}_${k[0]}`,
+                    symbol: symbol.toUpperCase(),
+                    interval: baseInterval,
+                    time: k[0], o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4]), v: parseFloat(k[5])
+                }));
+                await db.candles.bulkPut(records);
+            }
+            self.postMessage({ id, result: data[0][0] });
         }
         else if (type === 'FETCH_GAP') {
-            const { symbol, baseInterval, interval, startTime, endTime } = payload;
+            const { symbol, baseInterval, interval, startTime, endTime, persist = true } = payload;
             const isNative = TimeframeResampler.isNative(interval);
             let url = `https://api.binance.com/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${baseInterval}&limit=1000`;
             if (startTime) url += `&startTime=${startTime}`;
@@ -120,13 +122,16 @@ self.onmessage = async (e) => {
                 return;
             }
 
-            const records = data.map((k: any) => ({
-                id: `${symbol.toUpperCase()}_${baseInterval}_${k[0]}`,
-                symbol: symbol.toUpperCase(),
-                interval: baseInterval,
-                time: k[0], o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4]), v: parseFloat(k[5])
-            }));
-            await db.candles.bulkPut(records);
+            // Only write to IndexedDB if persistence is enabled for this symbol
+            if (persist) {
+                const records = data.map((k: any) => ({
+                    id: `${symbol.toUpperCase()}_${baseInterval}_${k[0]}`,
+                    symbol: symbol.toUpperCase(),
+                    interval: baseInterval,
+                    time: k[0], o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4]), v: parseFloat(k[5])
+                }));
+                await db.candles.bulkPut(records);
+            }
 
             let rawFormat = data.map((k: any) => [
                 k[0], parseFloat(k[1]), parseFloat(k[2]), parseFloat(k[3]), parseFloat(k[4]), parseFloat(k[5])
@@ -144,10 +149,23 @@ self.onmessage = async (e) => {
                 flatArray[i * 6 + 5] = finalCandles[i][5];
             }
 
+            // Always returns data into RAM so charts render seamlessly
             (self as any).postMessage({ id, result: flatArray }, [flatArray.buffer]);
         }
         else if (type === 'SAVE_CANDLE') {
-            await db.candles.put(payload);
+            const persist = payload.persist ?? true;
+            const record = payload.record || payload;
+            if (persist && record && record.id) {
+                await db.candles.put(record);
+            }
+        }
+        else if (type === 'PRUNE_NON_FAVORITES') {
+            // Multi-Pane Safe: Purge only candles not in favorites AND not in any open pane
+            const { favorites = [], activeSymbols = [] } = payload;
+            const protectedSet = new Set([...favorites, ...activeSymbols].map((s: string) => s.toUpperCase()));
+            await db.candles.filter(r => !protectedSet.has(r.symbol.toUpperCase())).delete();
+            // Note: db.drawings is never touched!
+            self.postMessage({ id, result: true });
         }
     } catch (err: any) {
         self.postMessage({ id, error: err.message });

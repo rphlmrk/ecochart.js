@@ -27,26 +27,39 @@ export class DataWorkerClient {
         });
     }
 
-    public static async fetchAndSaveChunk(symbol: string, baseInterval: string, startTime: number | undefined, endTime: number): Promise<number> {
+    public static async fetchAndSaveChunk(symbol: string, baseInterval: string, startTime: number | undefined, endTime: number, persist = true): Promise<number> {
         this.init();
         return new Promise(resolve => {
             const id = this.msgId++;
             this.callbacks.set(id, resolve);
-            this.worker.postMessage({ id, type: 'FETCH_CHUNK', payload: { symbol, baseInterval, startTime, endTime } });
+            this.worker.postMessage({ id, type: 'FETCH_CHUNK', payload: { symbol, baseInterval, startTime, endTime, persist } });
         });
     }
 
-    public static async fetchGap(symbol: string, baseInterval: string, interval: string, startTime: number, endTime: number): Promise<Float64Array> {
+    public static async fetchGap(symbol: string, baseInterval: string, interval: string, startTime: number, endTime: number, persist = true): Promise<Float64Array> {
         this.init();
         return new Promise(resolve => {
             const id = this.msgId++;
             this.callbacks.set(id, resolve);
-            this.worker.postMessage({ id, type: 'FETCH_GAP', payload: { symbol, baseInterval, interval, startTime, endTime } });
+            this.worker.postMessage({ id, type: 'FETCH_GAP', payload: { symbol, baseInterval, interval, startTime, endTime, persist } });
         });
     }
 
-    public static saveCandle(record: any) {
+    public static saveCandle(record: any, persist = true) {
         this.init();
-        this.worker.postMessage({ id: this.msgId++, type: 'SAVE_CANDLE', payload: record });
+        this.worker.postMessage({ id: this.msgId++, type: 'SAVE_CANDLE', payload: { record, persist } });
+    }
+
+    /**
+     * Multi-Pane Safe Prune:
+     * Deletes from storage ONLY symbols that are neither favorites nor in an active pane.
+     */
+    public static async pruneNonFavorites(favorites: string[], activeSymbols: string[]): Promise<boolean> {
+        this.init();
+        return new Promise(resolve => {
+            const id = this.msgId++;
+            this.callbacks.set(id, resolve);
+            this.worker.postMessage({ id, type: 'PRUNE_NON_FAVORITES', payload: { favorites, activeSymbols } });
+        });
     }
 }

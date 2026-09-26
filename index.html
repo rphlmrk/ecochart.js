@@ -435,6 +435,126 @@
       background: rgba(41, 98, 255, 0.15);
       color: var(--chart-accent, #2962FF);
     }
+
+    /* --- Symbol Search Modern Dialog & Star Styling --- */
+    .symbol-tab-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--chart-text, #787B86);
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 4px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.15s ease;
+    }
+
+    .symbol-tab-btn:hover {
+      color: var(--chart-text, #D1D4DC);
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .symbol-tab-btn.active {
+      background: var(--chart-grid, #2A2E39);
+      color: var(--chart-accent, #2962FF);
+      border-color: var(--chart-grid, #363A45);
+    }
+
+    .symbol-star-btn {
+      background: transparent;
+      border: none;
+      font-size: 15px;
+      cursor: pointer;
+      color: #787B86;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      transition: color 0.15s ease, transform 0.1s ease;
+      flex-shrink: 0;
+      padding: 0;
+    }
+
+    .symbol-star-btn:hover {
+      color: #FFB703;
+      transform: scale(1.15);
+    }
+
+    .symbol-star-btn.starred {
+      color: #FFB703 !important;
+    }
+
+    .coin-badge {
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--chart-text, #D1D4DC);
+      font-size: 10px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      text-transform: uppercase;
+    }
+
+    .badge-spot {
+      font-size: 9px;
+      padding: 2px 5px;
+      border-radius: 3px;
+      font-weight: 700;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--chart-text, #787B86);
+      letter-spacing: 0.5px;
+    }
+
+    .symbol-col-btn {
+      background: transparent;
+      border: none;
+      padding: 3px 6px;
+      margin: 0;
+      color: #787B86;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border-radius: 4px;
+      transition: color 0.15s ease, background 0.15s ease;
+      font-family: inherit;
+      user-select: none;
+    }
+
+    .symbol-col-btn:hover {
+      color: var(--chart-text, #D1D4DC);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .symbol-col-btn.active {
+      color: var(--chart-accent, #2962FF);
+    }
+
+    .symbol-col-btn .sort-arrow {
+      font-size: 10px;
+      opacity: 0.5;
+      line-height: 1;
+      display: inline-block;
+      transition: opacity 0.15s ease, transform 0.15s ease;
+    }
+
+    .symbol-col-btn.active .sort-arrow {
+      opacity: 1;
+      color: var(--chart-accent, #2962FF);
+    }
   </style>
 </head>
 
@@ -451,12 +571,17 @@
       <div id="top-bar"
         style="pointer-events: auto; position: absolute; top: 0; left: 0; right: 0; height: 38px; background: var(--chart-panel-bg, #131722); border-bottom: 1px solid var(--chart-grid, #2A2E39); display: flex; align-items: center; padding: 0 8px; gap: 4px; user-select: none;">
 
-        <!-- Symbol Selector -->
-        <button id="btn-symbol"
-          style="background: transparent; color: var(--chart-text, #F0F3FA); border: 1px solid transparent; padding: 4px 8px; font-weight: 700; font-size: 13px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 4px;">
-          <span>BTCUSDT</span>
-          <span style="font-size: 9px; color: var(--chart-accent, #2962FF);">▼</span>
-        </button>
+        <!-- Quick-Favorite Star & Symbol Selector Group -->
+        <div style="display: flex; align-items: center; gap: 2px;">
+          <button id="btn-quick-star" title="Toggle Favorite"
+            style="background: transparent; border: none; font-size: 16px; cursor: pointer; color: #787B86; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; border-radius: 4px; padding: 0; transition: color 0.15s, transform 0.1s;">☆</button>
+
+          <button id="btn-symbol"
+            style="background: transparent; color: var(--chart-text, #F0F3FA); border: 1px solid transparent; padding: 4px 8px; font-weight: 700; font-size: 13px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 4px;">
+            <span>BTCUSDT</span>
+            <span style="font-size: 9px; color: var(--chart-accent, #2962FF);">▼</span>
+          </button>
+        </div>
 
         <div style="width: 1px; height: 18px; background: var(--chart-grid, #2A2E39); margin: 0 4px;"></div>
 
@@ -996,6 +1121,22 @@
 
       <!-- TAB 6: DATA & STORAGE LIMITS -->
       <div id="tab-content-data" class="modal-tab-content" style="display: none;">
+
+        <!-- Selective Persistence Card -->
+        <div
+          style="background: rgba(0, 0, 0, 0.25); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 6px; padding: 10px 12px; margin-bottom: 16px;">
+          <label
+            style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: var(--chart-text, #D1D4DC); font-weight: 600;">
+            <input type="checkbox" id="check-only-save-favorites"
+              style="cursor: pointer; width: 16px; height: 16px; accent-color: var(--chart-accent, #2962FF);">
+            Only Cache Favorite Symbols
+          </label>
+          <div style="font-size: 11px; color: #787B86; margin-top: 4px; margin-left: 24px; line-height: 1.4;">
+            Saves up to 90% mobile disk space. Non-favorite symbols load live directly into RAM during analysis, but are
+            never written to database storage.
+          </div>
+        </div>
+
         <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Historical Data
           Limits</span>
         <div style="font-size: 11px; color: #D1D4DC; margin-top: 6px; margin-bottom: 12px; opacity: 0.85;">
@@ -1269,30 +1410,78 @@
     </div>
   </dialog>
 
-  <!-- Layer 4: Direct Binance Symbol Search Modal -->
+  <!-- Layer 4: Redesigned Modern Symbol Search Modal -->
   <dialog id="symbol-modal"
-    style="background: var(--chart-panel-bg, #131722); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 8px; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif; width: 420px; max-width: 94vw; box-sizing: border-box; box-shadow: 0 16px 40px rgba(0,0,0,0.6); outline: none;">
+    style="background: var(--chart-panel-bg, #131722); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 10px; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif; width: 540px; max-width: 95vw; box-sizing: border-box; box-shadow: 0 20px 48px rgba(0,0,0,0.6); outline: none;">
 
-    <!-- Search Bar Header -->
+    <!-- 1. Search Bar Header -->
     <div
       style="padding: 12px 16px; border-bottom: 1px solid var(--chart-grid, #2A2E39); display: flex; align-items: center; gap: 10px;">
-      <span style="font-size: 14px; opacity: 0.7;">🔍</span>
+      <span style="font-size: 15px; opacity: 0.7;">🔍</span>
       <input id="symbol-search-input" type="text" placeholder="Search USDT pairs (e.g. BTC, ETH, SOL)..."
         autocomplete="off" spellcheck="false"
         style="flex: 1; background: transparent; border: none; outline: none; color: var(--chart-text, #D1D4DC); font-size: 14px; font-weight: 500;" />
+
+      <!-- Clear search input button (✕) -->
+      <button id="btn-search-clear"
+        style="display: none; background: none; border: none; color: #787B86; font-size: 14px; cursor: pointer; padding: 0 4px;"
+        title="Clear Search">✕</button>
+
+      <!-- Desktop Esc badge -->
+      <span class="desktop-only"
+        style="font-size: 10px; font-weight: 700; color: #787B86; border: 1px solid var(--chart-grid, #363A45); border-radius: 4px; padding: 2px 6px;">ESC</span>
+
       <button id="btn-symbol-modal-close"
-        style="background: none; border: none; color: #787B86; font-size: 16px; cursor: pointer;">✕</button>
+        style="background: none; border: none; color: #787B86; font-size: 16px; cursor: pointer; padding: 0 2px;">✕</button>
     </div>
 
-    <!-- Category Header -->
+    <!-- 2. Filter Tabs Bar -->
+    <div id="symbol-tabs"
+      style="display: flex; gap: 6px; padding: 8px 16px; background: rgba(0,0,0,0.15); border-bottom: 1px solid var(--chart-grid, #2A2E39);">
+      <button class="symbol-tab-btn active" data-tab="all">All</button>
+      <button class="symbol-tab-btn" data-tab="favorites">★ Favorites</button>
+      <button class="symbol-tab-btn" data-tab="volume">🔥 Top Volume</button>
+    </div>
+
+    <!-- 3. Table Column Headers (Interactive Sorting) -->
     <div
-      style="padding: 6px 16px; font-size: 11px; font-weight: 600; color: #787B86; border-bottom: 1px solid var(--chart-grid, #2A2E39); display: flex; justify-content: space-between; text-transform: uppercase;">
-      <span>Symbol</span>
-      <span>Market</span>
+      style="padding: 6px 16px; border-bottom: 1px solid var(--chart-grid, #2A2E39); display: grid; grid-template-columns: 1fr 100px 90px; align-items: center; gap: 8px; user-select: none;">
+
+      <!-- Column 1: Symbol / Asset -->
+      <div style="display: flex; align-items: center;">
+        <button id="col-sort-symbol" class="symbol-col-btn" style="margin-left: 32px;"
+          title="Sort by Symbol (A-Z / Z-A)">
+          <span>Symbol / Asset</span>
+          <span class="sort-arrow" id="arrow-sort-symbol">↕</span>
+        </button>
+      </div>
+
+      <!-- Column 2: 24h Change -->
+      <div style="display: flex; justify-content: flex-end;">
+        <button id="col-sort-change" class="symbol-col-btn" title="Sort by 24h Change (% Gain / Loss)">
+          <span>24h Change</span>
+          <span class="sort-arrow" id="arrow-sort-change">↕</span>
+        </button>
+      </div>
+
+      <!-- Column 3: 24h Volume -->
+      <div style="display: flex; justify-content: flex-end;">
+        <button id="col-sort-volume" class="symbol-col-btn" title="Sort by 24h Volume (USDT High / Low)">
+          <span>24h Volume</span>
+          <span class="sort-arrow" id="arrow-sort-volume">↕</span>
+        </button>
+      </div>
     </div>
 
-    <!-- Scrollable Results List -->
-    <div id="symbol-list" style="max-height: 340px; overflow-y: auto; padding: 4px 0;"></div>
+    <!-- 4. Virtualized Scrollable Results List -->
+    <div id="symbol-list" style="max-height: 350px; overflow-y: auto; padding: 2px 0;"></div>
+
+    <!-- 5. Modal Footer: Results Count & Navigation Hints -->
+    <div
+      style="padding: 8px 16px; background: rgba(0,0,0,0.2); border-top: 1px solid var(--chart-grid, #2A2E39); display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #787B86;">
+      <span id="symbol-match-count">Showing 0 results</span>
+      <span class="desktop-only">↑↓ Navigate • ↵ Select</span>
+    </div>
   </dialog>
 
   <!-- Layer 5: Custom Timeframe Modal -->
