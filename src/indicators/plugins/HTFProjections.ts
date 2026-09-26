@@ -5,20 +5,26 @@ import { StrokeEngine } from '../../renderer/StrokeEngine';
 import { Graphics } from 'pixi.js';
 
 export class HTFProjectionsIndicator extends BaseIndicator {
-    constructor(htfMins = 240) {
-        super(`HTF_PROJ_${htfMins}`, `HTF Projections (${htfMins}m)`);
+    constructor(htfMins = 'Custom', customMins = 21) {
+        // Calculate the initial effective minutes (21m if Custom)
+        const initialEffectiveMins = htfMins === 'Custom' ? customMins : (parseInt(String(htfMins), 10) || 240);
+
+        super(`HTF_PROJ_${initialEffectiveMins}`, `HTF Projections (${initialEffectiveMins}m)`);
+
         this.params = [
             { id: 'htfMins', name: 'Timeframe', type: 'select', value: String(htfMins), options: ['60', '120', '240', '480', '1440', 'Custom'] },
-            { id: 'customMins', name: 'Custom Minutes', type: 'number', value: 90, min: 1, max: 43200, step: 1 },
-            { id: 'count', name: 'Candle Count', type: 'number', value: 4, min: 2, max: 10 },
-            { id: 'widthBars', name: 'Candle Width', type: 'number', value: 5, min: 2, max: 15 },
-            { id: 'gapBars', name: 'Gap Bars', type: 'number', value: 2, min: 1, max: 6 },
-            { id: 'offsetBars', name: 'Offset from Live', type: 'number', value: 6, min: 2, max: 20 },
+            { id: 'customMins', name: 'Custom Minutes', type: 'number', value: customMins, min: 1, max: 43200, step: 1 },
+            { id: 'count', name: 'Candle Count', type: 'number', value: 8, min: 2, max: 10 },
+            { id: 'widthBars', name: 'Candle Width', type: 'number', value: 3, min: 2, max: 15 },
+            { id: 'gapBars', name: 'Gap Bars', type: 'number', value: 1, min: 1, max: 6 },
+            // Note: Increased max to 50 so value: 30 doesn't get clipped by the input
+            { id: 'offsetBars', name: 'Offset from Live', type: 'number', value: 30, min: 2, max: 50 },
             { id: 'showFifty', name: 'Show 50% Equilibrium', type: 'boolean', value: true },
             { id: 'showHL', name: 'Show Origin Lines', type: 'boolean', value: true },
             { id: 'lineThickness', name: 'Line Thickness', type: 'number', value: 1.5, min: 1, max: 4, step: 0.5 }
         ];
     }
+
 
     public getEffectiveTfMins(): number {
         const mode = this.getParam<string>('htfMins', '240');
@@ -154,7 +160,7 @@ export class HTFProjectionsIndicator extends BaseIndicator {
             if (showHL && (drawCandles.length - 1 - i) < 2) {
                 const xOriginHigh = Math.max(-10, (d.highIdx * sp) - r.cameraX);
                 const xOriginLow = Math.max(-10, (d.lowIdx * sp) - r.cameraX);
-                
+
                 if (xOriginHigh < xMid) {
                     StrokeEngine.drawLine(g, xOriginHigh, yH, xMid, yH, { color: helperLineColor, width: Math.max(1, lineThickness - 0.5), alpha: 0.45, style: 'dotted' });
                 }

@@ -785,6 +785,7 @@ export class EcoChart {
                 // 1. Pass e.shiftKey for New Drawings
                 this.drawingManager.onPointerMove(this.renderer, this.renderer.crosshairX, this.renderer.crosshairY, e.shiftKey);
                 this.isDirty = true;
+                this.renderer.forceNextRender = true; // <-- FIX: Bypass Eco-Mode throttle for smooth drawing
             } else if (this.drawingManager.selectedDrawing && this.drawingManager.draggingHandle !== null) {
                 // MODIFING EXISTING DRAWING
                 let { time, price } = this.drawingManager.isMagnetEnabled
@@ -819,6 +820,7 @@ export class EcoChart {
 
                 this.drawingManager.selectedDrawing.points[this.drawingManager.draggingHandle] = { time, price };
                 this.isDirty = true;
+                this.renderer.forceNextRender = true; // <-- FIX: Bypass Eco-Mode throttle for smooth dragging
                 return; // Stop chart from panning
             }
 
@@ -1161,6 +1163,7 @@ export class EcoChart {
                 if (this.drawingManager.activeToolType) {
                     this.drawingManager.onPointerMove(this.renderer, x, y);
                     this.isDirty = true;
+                    this.renderer.forceNextRender = true; // <-- FIX: Smooth mobile drawing
                     return; // Stop here, do not pan chart
                 }
 
@@ -1172,6 +1175,7 @@ export class EcoChart {
 
                     this.drawingManager.selectedDrawing.points[this.drawingManager.draggingHandle] = { time, price };
                     this.isDirty = true;
+                    this.renderer.forceNextRender = true; // <-- FIX: Smooth mobile dragging
                     return; // Stop here, do not pan chart
                 }
 
@@ -3286,7 +3290,7 @@ export class WorkspaceManager {
             { type: 'EXHAUST', name: 'Exhaustion (CCI)', factory: () => new ExhaustionIndicator() },
             { type: 'HTF_BOX', name: 'HTF Box', factory: () => new HTFBoxIndicator(60) },
             { type: 'HTF_BIAS', name: 'HTF Bias', factory: () => new HTFBiasIndicator(60) },
-            { type: 'HTF_PROJ', name: 'HTF Projections', factory: () => new HTFProjectionsIndicator(240) },
+            { type: 'HTF_PROJ', name: 'HTF Projections', factory: () => new HTFProjectionsIndicator('Custom', 21) },
             { type: 'ZZ123', name: 'ZigZag 1-2-3 Breakout', factory: () => new ZigZag123Indicator(4) }
         ];
 

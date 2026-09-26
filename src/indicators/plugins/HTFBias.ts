@@ -9,14 +9,14 @@ export class HTFBiasIndicator extends BaseIndicator {
         super(`HTF_BIAS_${tfMins}`, `HTF Bias (${tfMins}m)`);
         this.params = [
             { id: 'tfMins', name: 'Timeframe', type: 'select', value: String(tfMins), options: ['15', '30', '45', '60', '120', '240', '480', '1440', 'Custom'] },
-            { id: 'customMins', name: 'Custom Minutes', type: 'number', value: 45, min: 1, max: 43200, step: 1 },
+            { id: 'customMins', name: 'Custom Minutes', type: 'number', value: 21, min: 1, max: 43200, step: 1 },
             { id: 'displayMode', name: 'Display Mode', type: 'select', value: 'Top Ribbon', options: ['Top Ribbon', 'Overlay Lines', 'Both'] },
             { id: 'bullColor', name: 'Bull Bias Color', type: 'color', value: '#089981' },
             { id: 'bearColor', name: 'Bear Bias Color', type: 'color', value: '#F23645' },
             { id: 'showInsideBar', name: 'Show Inside Bar on Ribbon', type: 'boolean', value: true },
             { id: 'insideColor', name: 'Inside Bar Color', type: 'color', value: '#FFEB3B' },
             { id: 'showFutureClose', name: 'Show Future Close', type: 'boolean', value: true },
-            { id: 'futureLineWidth', name: 'Future Line Width', type: 'number', value: 1.5, min: 1, max: 4, step: 0.5 },
+            { id: 'futureLineWidth', name: 'Future Line Width', type: 'number', value: 1, min: 1, max: 4, step: 0.5 },
             { id: 'sweepsOnly', name: 'Sweeps Only', type: 'boolean', value: false }
         ];
     }

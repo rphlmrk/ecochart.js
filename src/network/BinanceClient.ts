@@ -323,6 +323,12 @@ export class BinanceClient {
             this.lastMessageTime = Date.now();
         };
 
+        // --- PHASE 2 FIX: Prevent Reconnection Deadlock if internet drops ---
+        this.ws.onerror = (err) => {
+            console.error('[Binance] WebSocket error:', err);
+            this.isConnecting = false;
+        };
+
         this.ws.onmessage = async (event) => {
             if (this.currentSyncKey !== `${symbol}_${interval}`) return; // Abort if switched
             this.lastMessageTime = Date.now();
@@ -348,16 +354,24 @@ export class BinanceClient {
                     }
                 }
 
-                // Always update the live candle immediately so candles never stall
+                // --- PHASE 3 FIX: True HTF Shape Locking & Live Forming ---
+                const isBaseClosed = k.x;
+                let isHTFClosed = isBaseClosed;
+                let bucketTime = k.t;
+
                 if (isNative) {
                     this.dataStore.appendOrUpdate(k.t, o, h, l, c, v);
                 } else {
-                    const bucketTime = TimeframeResampler.getBucketStart(k.t, targetIntervalMs);
+                    bucketTime = TimeframeResampler.getBucketStart(k.t, targetIntervalMs);
                     this.dataStore.appendOrUpdate(bucketTime, o, h, l, c, v);
+
+                    const baseMs = TimeframeResampler.parseMs(baseInterval);
+                    // HTF candle ONLY closes if the base candle closes AND it pushes against the HTF boundary
+                    isHTFClosed = isBaseClosed && ((k.t + baseMs) >= (bucketTime + targetIntervalMs));
                 }
 
-                // If candle closes, persist only if selective persistence allows it
-                if (k.x && shouldPersist) {
+                // IMPORTANT: We STILL save the base candle to IndexedDB so we don't lose granular history
+                if (isBaseClosed && shouldPersist) {
                     DataWorkerClient.saveCandle({
                         id: `${symbol.toUpperCase()}_${baseInterval}_${k.t}`,
                         symbol: symbol.toUpperCase(),
@@ -365,7 +379,9 @@ export class BinanceClient {
                         time: k.t, o, h, l, c, v
                     }, shouldPersist);
                 }
-                onUpdate(0, k.x);
+
+                // BUT we ONLY tell the indicator math engine that the candle closed if the HTF is completely finished
+                onUpdate(0, isHTFClosed);
             }
             else if (data.e === '24hrTicker') {
                 const changePct = parseFloat(data.P);
@@ -374,6 +390,7 @@ export class BinanceClient {
         };
 
         this.ws.onclose = () => {
+            this.isConnecting = false; // <-- PHASE 2 FIX: Clear lock so reconnects work
             if (!this.isReconnecting && this.currentSyncKey === `${symbol}_${interval}`) {
                 this.isReconnecting = true;
                 setTimeout(() => this.connect(symbol, interval, onUpdate, onTicker), 2000);
