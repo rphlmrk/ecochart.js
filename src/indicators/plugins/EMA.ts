@@ -1,4 +1,4 @@
-import { BaseIndicator, parseColor, type IndicatorLayout } from '../Indicator';
+import { BaseIndicator, parseColor, parseColorAndAlpha, type IndicatorLayout } from '../Indicator';
 import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { Graphics } from 'pixi.js';
@@ -64,10 +64,10 @@ export class EMAIndicator extends BaseIndicator {
 
     public render(r: ChartRenderer, layout: IndicatorLayout, _g: Graphics) {
         const rawColor = String(this.getParam('color', '#00BCD4')).trim().toUpperCase();
-        let color = parseColor(rawColor);
+        let { color, alpha } = parseColorAndAlpha(rawColor);
 
         // Default adjustments
-        if (!r.isDarkTheme && rawColor === '#00BCD4') {
+        if (!r.isDarkTheme && rawColor.startsWith('#00BCD4')) {
             color = 0x00838F; // Deep teal for light theme
         }
 
@@ -79,7 +79,7 @@ export class EMAIndicator extends BaseIndicator {
         }
 
         // Fire directly to the GPU!
-        r.drawGPUIndicatorLine(this.id, this.values, color, 2, false, layout);
+        r.drawGPUIndicatorLine(this.id, this.values, color, 2, false, layout, undefined, false, alpha);
     }
 
     public getValueAt(idx: number, ds: DataStore, isDark: boolean, _defaultTextClr: number) {

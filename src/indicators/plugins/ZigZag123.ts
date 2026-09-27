@@ -1,4 +1,4 @@
-import { BaseIndicator, parseColor, type IndicatorLayout } from '../Indicator';
+import { BaseIndicator, parseColor, parseColorAndAlpha, type IndicatorLayout } from '../Indicator';
 import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { StrokeEngine } from '../../renderer/StrokeEngine';
@@ -108,18 +108,18 @@ export class ZigZag123Indicator extends BaseIndicator {
 
         const showZigZag = this.getParam<boolean>('showZigZag', true);
         const rawZzColor = String(this.getParam('zzColor', '#FF9800')).trim().toUpperCase();
-        let zzColor = parseColor(rawZzColor);
+        let { color: zzColor, alpha: zzAlpha } = parseColorAndAlpha(rawZzColor);
 
         const showLevels = this.getParam<boolean>('showLevels', true);
         const rawBreakout = String(this.getParam('breakoutColor', '#EF5350')).trim().toUpperCase();
-        let breakoutColor = parseColor(rawBreakout);
+        let { color: breakoutColor, alpha: breakoutAlpha } = parseColorAndAlpha(rawBreakout);
 
         // Luminous Check: Flip bright lines to dark slate in Light Mode
         if (!r.isDarkTheme) {
             const cR1 = (zzColor >> 16) & 0xff, cG1 = (zzColor >> 8) & 0xff, cB1 = zzColor & 0xff;
             if ((0.299 * cR1 + 0.587 * cG1 + 0.114 * cB1) > 180) {
                 zzColor = 0x131722;
-            } else if (rawZzColor === '#FF9800') {
+            } else if (rawZzColor.startsWith('#FF9800')) {
                 zzColor = 0xD97706; // Deep orange adjust
             }
 
@@ -167,7 +167,7 @@ export class ZigZag123Indicator extends BaseIndicator {
                 if (x > screenW + 50) break;
             }
             if (isDrawing) {
-                g.stroke({ color: zzColor, width: zzWidth });
+                g.stroke({ color: zzColor, width: zzWidth, alpha: zzAlpha });
             }
         }
 
@@ -191,7 +191,7 @@ export class ZigZag123Indicator extends BaseIndicator {
                 StrokeEngine.drawLine(g, x1, y, x2, y, {
                     color: breakoutColor,
                     width: lineWidth,
-                    alpha: 0.85,
+                    alpha: 0.85 * breakoutAlpha,
                     style: 'dashed',
                     dashLength: 4,
                     gapLength: 3

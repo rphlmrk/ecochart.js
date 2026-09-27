@@ -19,8 +19,7 @@ export class HTFBiasIndicator extends BaseIndicator {
             { id: 'futureLineWidth', name: 'Future Line Width', type: 'number', value: 1.5, min: 1, max: 4, step: 0.5 },
             { id: 'sweepsOnly', name: 'Sweeps Only', type: 'boolean', value: false },
             { id: 'showVertLines', name: 'Session Vertical Lines', type: 'boolean', value: false },
-            { id: 'vertLineColor', name: 'Vert Line Color', type: 'color', value: '#363A45' },
-            { id: 'vertLineOpacity', name: 'Vert Line Opacity', type: 'number', value: 0.6, min: 0.1, max: 1.0, step: 0.1 }
+            { id: 'vertLineColor', name: 'Vert Line Color', type: 'color', value: '#363A4599' }
         ];
     }
 
@@ -115,8 +114,10 @@ export class HTFBiasIndicator extends BaseIndicator {
         const showFutureClose = this.getParam<boolean>('showFutureClose', true);
         const futureLineWidth = this.getParam<number>('futureLineWidth', 1.5);
         const showVertLines = this.getParam<boolean>('showVertLines', false);
-        const vertLineColor = parseColor(this.getParam('vertLineColor', '#363A45'));
-        const vertLineOpacity = this.getParam<number>('vertLineOpacity', 0.6);
+
+        // Extract both color and alpha directly from the Color Picker hex
+        const rawVertColor = String(this.getParam('vertLineColor', '#363A4599'));
+        const parsedVertColor = parseColorAndAlpha(rawVertColor, 0.6);
 
         const showRibbon = displayMode === 'Top Ribbon' || displayMode === 'Both';
         const showLines = displayMode === 'Overlay Lines' || displayMode === 'Both';
@@ -176,12 +177,12 @@ export class HTFBiasIndicator extends BaseIndicator {
                         const x1 = (mother.highIdx * sp) - r.cameraX;
                         const x2 = (curr.highIdx * sp) - r.cameraX;
                         const y = layout.mainChartHeight - (((mother.h - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice)) * layout.mainChartHeight) + r.cameraY;
-                        StrokeEngine.drawLine(g, x1, y, x2, y, { color: bearClr, width: 1.5, alpha: 0.8 });
+                        StrokeEngine.drawLine(g, x1, y, x2, y, { color: bearClr, width: 1.5, alpha: 0.8 * bearParsed.alpha });
                     } else if (isBullSweep) {
                         const x1 = (mother.lowIdx * sp) - r.cameraX;
                         const x2 = (curr.lowIdx * sp) - r.cameraX;
                         const y = layout.mainChartHeight - (((mother.l - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice)) * layout.mainChartHeight) + r.cameraY;
-                        StrokeEngine.drawLine(g, x1, y, x2, y, { color: bullClr, width: 1.5, alpha: 0.8 });
+                        StrokeEngine.drawLine(g, x1, y, x2, y, { color: bullClr, width: 1.5, alpha: 0.8 * bullParsed.alpha });
                     }
                 }
 
@@ -193,7 +194,7 @@ export class HTFBiasIndicator extends BaseIndicator {
                 const xStart = (curr.startIdx * sp) - r.cameraX;
                 if (xStart >= 0 && xStart <= layout.chartWidth) {
                     StrokeEngine.drawLine(g, xStart, 0, xStart, layout.mainChartHeight, {
-                        color: vertLineColor, width: 1, alpha: vertLineOpacity, style: 'dashed', dashLength: 4, gapLength: 3
+                        color: parsedVertColor.color, width: 1, alpha: parsedVertColor.alpha, style: 'dashed', dashLength: 4, gapLength: 3
                     });
                 }
             }
@@ -217,13 +218,15 @@ export class HTFBiasIndicator extends BaseIndicator {
 
                     // 2. Trend Bias (Bull / Bear)
                 } else if (currentBias !== 0) {
-                    const color = currentBias === 1 ? bullClr : bearClr;
-                    g.rect(x1, yTop, Math.max(1, x2 - x1), ribbonH).fill({ color, alpha: 0.2 });
+                    const isBull = currentBias === 1;
+                    const color = isBull ? bullClr : bearClr;
+                    const pAlpha = isBull ? bullParsed.alpha : bearParsed.alpha;
+                    g.rect(x1, yTop, Math.max(1, x2 - x1), ribbonH).fill({ color, alpha: 0.2 * pAlpha });
 
                     if (isBearSweep) {
-                        StrokeEngine.drawLine(g, x1, yTop, x2, yTop, { color: bearClr, width: 2.5, alpha: 0.9 });
+                        StrokeEngine.drawLine(g, x1, yTop, x2, yTop, { color: bearClr, width: 2.5, alpha: 0.9 * bearParsed.alpha });
                     } else if (isBullSweep) {
-                        StrokeEngine.drawLine(g, x1, yTop + ribbonH, x2, yTop + ribbonH, { color: bullClr, width: 2.5, alpha: 0.9 });
+                        StrokeEngine.drawLine(g, x1, yTop + ribbonH, x2, yTop + ribbonH, { color: bullClr, width: 2.5, alpha: 0.9 * bullParsed.alpha });
                     }
                 }
 
