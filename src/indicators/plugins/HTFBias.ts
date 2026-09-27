@@ -1,4 +1,4 @@
-import { BaseIndicator, parseColor, type IndicatorLayout } from '../Indicator';
+import { BaseIndicator, parseColor, parseColorAndAlpha, type IndicatorLayout } from '../Indicator';
 import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { StrokeEngine } from '../../renderer/StrokeEngine';
@@ -16,8 +16,11 @@ export class HTFBiasIndicator extends BaseIndicator {
             { id: 'showInsideBar', name: 'Show Inside Bar on Ribbon', type: 'boolean', value: true },
             { id: 'insideColor', name: 'Inside Bar Color', type: 'color', value: '#FFEB3B' },
             { id: 'showFutureClose', name: 'Show Future Close', type: 'boolean', value: true },
-            { id: 'futureLineWidth', name: 'Future Line Width', type: 'number', value: 1, min: 1, max: 4, step: 0.5 },
-            { id: 'sweepsOnly', name: 'Sweeps Only', type: 'boolean', value: false }
+            { id: 'futureLineWidth', name: 'Future Line Width', type: 'number', value: 1.5, min: 1, max: 4, step: 0.5 },
+            { id: 'sweepsOnly', name: 'Sweeps Only', type: 'boolean', value: false },
+            { id: 'showVertLines', name: 'Session Vertical Lines', type: 'boolean', value: false },
+            { id: 'vertLineColor', name: 'Vert Line Color', type: 'color', value: '#363A45' },
+            { id: 'vertLineOpacity', name: 'Vert Line Opacity', type: 'number', value: 0.6, min: 0.1, max: 1.0, step: 0.1 }
         ];
     }
 
@@ -42,6 +45,14 @@ export class HTFBiasIndicator extends BaseIndicator {
             startIdx: 0, highIdx: 0, lowIdx: 0,
             o: 0, h: -Infinity, l: Infinity, c: 0
         };
+    }
+
+    // --- FIX: Detect prepended history and invalidate cache so it doesn't draw off-screen ---
+    public update(ds: DataStore, isClosedTick: boolean) {
+        if (this.lastCalculatedIdx !== -1 && (ds.length > this.lastCalculatedIdx + 2 || ds.length <= this.lastCalculatedIdx)) {
+            this.lastCalculatedIdx = -1;
+        }
+        super.update(ds, isClosedTick);
     }
 
     protected override cloneState(state: any): any {
@@ -92,8 +103,10 @@ export class HTFBiasIndicator extends BaseIndicator {
         // Dynamically link to theme colors if default params are used
         const rawBull = String(this.getParam('bullColor', '#089981')).toUpperCase();
         const rawBear = String(this.getParam('bearColor', '#F23645')).toUpperCase();
-        const bullClr = rawBull === '#089981' ? r.bullColor : parseColor(rawBull);
-        const bearClr = rawBear === '#F23645' ? r.bearColor : parseColor(rawBear);
+        const bullParsed = parseColorAndAlpha(rawBull);
+        const bearParsed = parseColorAndAlpha(rawBear);
+        const bullClr = rawBull.startsWith('#089981') ? r.bullColor : bullParsed.color;
+        const bearClr = rawBear.startsWith('#F23645') ? r.bearColor : bearParsed.color;
 
         const sweepsOnly = this.getParam<boolean>('sweepsOnly', false);
 
@@ -101,6 +114,9 @@ export class HTFBiasIndicator extends BaseIndicator {
         const insideClr = parseColor(this.getParam('insideColor', '#FFEB3B'));
         const showFutureClose = this.getParam<boolean>('showFutureClose', true);
         const futureLineWidth = this.getParam<number>('futureLineWidth', 1.5);
+        const showVertLines = this.getParam<boolean>('showVertLines', false);
+        const vertLineColor = parseColor(this.getParam('vertLineColor', '#363A45'));
+        const vertLineOpacity = this.getParam<number>('vertLineOpacity', 0.6);
 
         const showRibbon = displayMode === 'Top Ribbon' || displayMode === 'Both';
         const showLines = displayMode === 'Overlay Lines' || displayMode === 'Both';
@@ -170,6 +186,16 @@ export class HTFBiasIndicator extends BaseIndicator {
                 }
 
                 mother = curr;
+            }
+
+            // Draw vertical timeframe boundary lines
+            if (showVertLines && inView) {
+                const xStart = (curr.startIdx * sp) - r.cameraX;
+                if (xStart >= 0 && xStart <= layout.chartWidth) {
+                    StrokeEngine.drawLine(g, xStart, 0, xStart, layout.mainChartHeight, {
+                        color: vertLineColor, width: 1, alpha: vertLineOpacity, style: 'dashed', dashLength: 4, gapLength: 3
+                    });
+                }
             }
 
             if (showRibbon && inView) {

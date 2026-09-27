@@ -3353,15 +3353,29 @@ export class WorkspaceManager {
 
                     swatch.onclick = (e) => {
                         e.stopPropagation();
+                        // Extract current alpha if it exists in the saved hex
+                        let initColor = String(param.value);
+                        let initOpacity = 1;
+                        if (initColor.length >= 9) {
+                            initOpacity = parseInt(initColor.slice(7, 9), 16) / 255;
+                            initColor = initColor.slice(0, 7);
+                        }
+
                         colorPicker.open({
                             anchorElement: swatch,
-                            initialColor: String(param.value),
-                            showOpacity: false,
+                            initialColor: initColor,
+                            initialOpacity: initOpacity,
+                            showOpacity: true, // <-- FIX: Enable the opacity slider
                             onChange: (res) => {
-                                swatch.style.backgroundColor = res.color;
-                                indicator.updateParams({ [param.id]: res.color });
-                                this.activeChart!.indicatorManager.update(this.activeChart!.dataStore); // <-- ADDED: Forces math pipeline flush
-                                this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
+                                // Convert opacity (0-1) to Hex (00-FF) and append it to the color string
+                                const aHex = Math.round(res.opacity * 255).toString(16).padStart(2, '0');
+                                const fullHex = `${res.color.slice(0, 7)}${aHex}`.toUpperCase();
+
+                                swatch.style.backgroundColor = fullHex;
+                                indicator.updateParams({ [param.id]: fullHex });
+
+                                this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
+                                this.activeChart!.renderer.forceNextRender = true;
                                 this.activeChart!.updateLegend();
                                 this.activeChart!.isDirty = true;
                                 WorkspaceManager.triggerAutoSave();

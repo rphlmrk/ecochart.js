@@ -1,4 +1,4 @@
-import { BaseIndicator, parseColor, type IndicatorLayout } from '../Indicator';
+import { BaseIndicator, parseColor, parseColorAndAlpha, type IndicatorLayout } from '../Indicator';
 import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { Graphics } from 'pixi.js';
@@ -64,22 +64,16 @@ export class SMAIndicator extends BaseIndicator {
 
     public render(r: ChartRenderer, layout: IndicatorLayout, _g: Graphics) {
         const rawColor = String(this.getParam('color', '#FFC107')).trim().toUpperCase();
-        let color = parseColor(rawColor);
+        let { color, alpha } = parseColorAndAlpha(rawColor);
 
         // Default adjustments
-        if (!r.isDarkTheme && rawColor === '#FFC107') {
-            color = 0xD97706;
-        }
+        if (!r.isDarkTheme && rawColor.startsWith('#FFC107')) color = 0xD97706;
 
-        // Exact Clash Prevention: Only flip pure white or pure black
-        if (!r.isDarkTheme && color === 0xFFFFFF) {
-            color = 0x131722; // Pure white flips to dark slate
-        } else if (r.isDarkTheme && color === 0x000000) {
-            color = 0xD1D4DC; // Pure black flips to light gray
-        }
+        if (!r.isDarkTheme && color === 0xFFFFFF) color = 0x131722;
+        else if (r.isDarkTheme && color === 0x000000) color = 0xD1D4DC;
 
-        // Fire directly to the GPU!
-        r.drawGPUIndicatorLine(this.id, this.values, color, 2, false, layout);
+        // Fire directly to the GPU with extracted alpha!
+        r.drawGPUIndicatorLine(this.id, this.values, color, 2, false, layout, undefined, false, alpha);
     }
 
     public getValueAt(idx: number, ds: DataStore, isDark: boolean, _defaultTextClr: number) {

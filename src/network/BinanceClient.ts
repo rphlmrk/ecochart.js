@@ -76,8 +76,10 @@ export class BinanceClient {
         return days === -1 ? Infinity : days * 24 * 60 * 60 * 1000;
     }
 
-    private async reloadFromDB(symbol: string, baseInterval: string, interval: string, cutoffTime: number): Promise<{ prepended: number, oldest: number }> {
+    private async reloadFromDB(symbol: string, baseInterval: string, interval: string, cutoffTime: number, expectedKey: string): Promise<{ prepended: number, oldest: number }> {
         const buffer = await DataWorkerClient.loadHistory(symbol, baseInterval, interval, cutoffTime);
+        if (this.currentSyncKey !== expectedKey) return { prepended: 0, oldest: Date.now() }; // <-- ANTI-LEAK
+
         if (buffer && buffer.length > 0) {
             const prepended = this.dataStore.setFromBuffer(buffer);
             return { prepended, oldest: buffer[0] };
@@ -89,14 +91,16 @@ export class BinanceClient {
         return await DataWorkerClient.fetchAndSaveChunk(symbol, baseInterval, startTime, endTime);
     }
 
-    private async startBackgroundSync(symbol: string, baseInterval: string, oldestLocal: number, cutoffTime: number, interval: string, onUpdate: (prependedCount?: number) => void) {
+    private async startBackgroundSync(symbol: string, baseInterval: string, oldestLocal: number, cutoffTime: number, interval: string, expectedKey: string, onUpdate: (prependedCount?: number) => void) {
         let currentEnd = oldestLocal - 1;
-        while (currentEnd > cutoffTime && this.currentSyncKey === `${symbol}_${interval}`) {
+        while (currentEnd > cutoffTime && this.currentSyncKey === expectedKey) {
             const oldestFetched = await this.fetchAndSaveChunk(symbol, baseInterval, undefined, currentEnd);
+            if (this.currentSyncKey !== expectedKey) break; // <-- ANTI-LEAK
             if (oldestFetched === 0) break;
             currentEnd = oldestFetched - 1;
 
-            const { prepended } = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
+            const { prepended } = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime, expectedKey);
+            if (this.currentSyncKey !== expectedKey) break; // <-- ANTI-LEAK
             onUpdate(prepended);
         }
     }
@@ -271,15 +275,17 @@ export class BinanceClient {
         // Check if this symbol should be written to IndexedDB
         const shouldPersist = !favoritesManager.onlySaveFavorites || favoritesManager.isFavorite(symbol);
 
+        const expectedKey = `${symbol}_${interval}`;
+
         // --- 1. ONLINE-FIRST: FETCH LATEST 1,000 BARS DIRECT FROM BINANCE ---
         try {
             if (this.dataStore.length > 0) {
                 // FIX: If we are reconnecting, just patch the gap! Wiping the array causes the BLANK CHART.
                 await this.syncMissingGap(symbol, interval, true);
-                onUpdate(0, true);
+                if (this.currentSyncKey === expectedKey) onUpdate(0, true); // <-- ANTI-LEAK
             } else {
                 const liveBuffer = await DataWorkerClient.fetchGap(symbol, baseInterval, interval, 0, Date.now(), shouldPersist);
-                if (liveBuffer && liveBuffer.length > 0 && this.currentSyncKey === `${symbol}_${interval}`) {
+                if (this.currentSyncKey === expectedKey && liveBuffer && liveBuffer.length > 0) { // <-- ANTI-LEAK
                     this.dataStore.setFromBuffer(liveBuffer);
                     onUpdate(0, true);
                 }
@@ -291,8 +297,8 @@ export class BinanceClient {
         // Offline fallback: Only query IndexedDB if this symbol is persisted
         if (this.dataStore.length === 0 && shouldPersist) {
             try {
-                const resDB = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
-                if (this.dataStore.length > 0) onUpdate(resDB.prepended, true);
+                const resDB = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime, expectedKey);
+                if (this.dataStore.length > 0 && this.currentSyncKey === expectedKey) onUpdate(resDB.prepended, true); // <-- ANTI-LEAK
             } catch { }
         }
 
@@ -307,15 +313,15 @@ export class BinanceClient {
         if (shouldPersist) {
             (async () => {
                 try {
-                    if (this.currentSyncKey !== `${symbol}_${interval}`) return;
+                    if (this.currentSyncKey !== expectedKey) return;
 
-                    const resDB = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime);
-                    if (resDB.prepended > 0 && this.currentSyncKey === `${symbol}_${interval}`) {
+                    const resDB = await this.reloadFromDB(symbol, baseInterval, interval, cutoffTime, expectedKey);
+                    if (this.currentSyncKey === expectedKey && resDB.prepended > 0) { // <-- ANTI-LEAK
                         onUpdate(resDB.prepended, true);
                     }
 
-                    if (this.currentSyncKey === `${symbol}_${interval}`) {
-                        this.startBackgroundSync(symbol, baseInterval, resDB.oldest, cutoffTime, interval, (prep) => onUpdate(prep, true));
+                    if (this.currentSyncKey === expectedKey) { // <-- ANTI-LEAK
+                        this.startBackgroundSync(symbol, baseInterval, resDB.oldest, cutoffTime, interval, expectedKey, (prep) => onUpdate(prep, true));
                     }
                 } catch (err) {
                     console.error('[Binance] Background history stitch error', err);
@@ -332,7 +338,7 @@ export class BinanceClient {
         // FIX: Prevent deadlock if internet is disconnected during connection
         this.ws.onerror = (err) => {
             console.error('[Binance] WebSocket error:', err);
-            this.isConnecting = false; 
+            this.isConnecting = false;
         };
 
         this.ws.onmessage = async (event) => {
@@ -368,7 +374,7 @@ export class BinanceClient {
                 } else {
                     bucketTime = TimeframeResampler.getBucketStart(k.t, targetIntervalMs);
                     this.dataStore.appendOrUpdate(bucketTime, o, h, l, c, v);
-                    
+
                     const baseMs = TimeframeResampler.parseMs(baseInterval);
                     isHTFClosed = isBaseClosed && ((k.t + baseMs) >= (bucketTime + targetIntervalMs));
                 }
@@ -381,7 +387,7 @@ export class BinanceClient {
                         time: k.t, o, h, l, c, v
                     }, shouldPersist);
                 }
-                
+
                 // Pass true HTF closure state to the Indicator Math Engine
                 onUpdate(0, isHTFClosed);
             }
@@ -449,6 +455,12 @@ export class BinanceClient {
 
             const buffer = await Promise.race([fetchPromise, timeoutPromise]);
 
+            // --- ANTI-LEAK: Abort if user switched symbols while we were awaiting the fetch! ---
+            const expectedKey = `${sym}_${interval}`;
+            if (this.currentSyncKey !== expectedKey) {
+                return false;
+            }
+
             if (buffer && buffer.length > 0) {
                 for (let i = 0; i < buffer.length; i += 6) {
                     this.dataStore.appendOrUpdate(buffer[i], buffer[i + 1], buffer[i + 2], buffer[i + 3], buffer[i + 4], buffer[i + 5]);
@@ -463,7 +475,11 @@ export class BinanceClient {
             console.warn('[Binance] Gap backfill skipped or timed out:', err);
             return false;
         } finally {
-            this.isSyncingGap = false;
+            // Only release the lock if we didn't switch to a new symbol's sync operation
+            const expectedKey = `${symbol.toUpperCase()}_${interval}`;
+            if (this.currentSyncKey === expectedKey) {
+                this.isSyncingGap = false;
+            }
         }
     }
 

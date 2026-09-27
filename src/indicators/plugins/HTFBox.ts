@@ -40,6 +40,14 @@ export class HTFBoxIndicator extends BaseIndicator {
         };
     }
 
+    // --- FIX: Detect prepended history and invalidate cache so it doesn't draw off-screen ---
+    public update(ds: DataStore, isClosedTick: boolean) {
+        if (this.lastCalculatedIdx !== -1 && (ds.length > this.lastCalculatedIdx + 2 || ds.length <= this.lastCalculatedIdx)) {
+            this.lastCalculatedIdx = -1;
+        }
+        super.update(ds, isClosedTick);
+    }
+
     protected override cloneState(state: any): any {
         return {
             ...state,

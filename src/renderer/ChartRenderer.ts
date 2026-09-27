@@ -1310,7 +1310,7 @@ export class ChartRenderer {
 
     public drawGPUIndicatorLine(
         id: string, values: Float64Array, color: number, width: number,
-        isOscillator: boolean, layout: any, oscScale?: OscillatorScale, isArea: boolean = false
+        isOscillator: boolean, layout: any, oscScale?: OscillatorScale, isArea: boolean = false, alpha: number = 1.0
     ) {
         let entry = this.indicatorMeshes.get(id);
 
@@ -1506,7 +1506,7 @@ export class ChartRenderer {
         u.uLineColor[0] = rC;
         u.uLineColor[1] = gC;
         u.uLineColor[2] = bC;
-        u.uLineColor[3] = 1.0;
+        u.uLineColor[3] = alpha; // <-- FIX: Inject dynamic indicator opacity into WebGL Shader
 
         u.uWidth = width;
         u.uVisStart = Math.floor(this.cameraX / (this.candleSpacing * this.zoom)) - 2;

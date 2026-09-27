@@ -9,6 +9,20 @@ export function parseColor(val: string | number): number {
     return 0xffffff;
 }
 
+export function parseColorAndAlpha(val: string | number, defaultAlpha = 1.0): { color: number, alpha: number } {
+    if (typeof val === 'number') return { color: val, alpha: defaultAlpha };
+    if (typeof val === 'string') {
+        const clean = val.replace('#', '');
+        const color = parseInt(clean.slice(0, 6), 16) || 0;
+        let alpha = defaultAlpha;
+        if (clean.length >= 8) {
+            alpha = parseInt(clean.slice(6, 8), 16) / 255;
+        }
+        return { color, alpha };
+    }
+    return { color: 0xffffff, alpha: defaultAlpha };
+}
+
 export type ParamType = 'number' | 'color' | 'boolean' | 'select';
 
 export interface OscillatorScale {
