@@ -1,0 +1,7 @@
+{
+  "name": "EcoChart Engine",
+  "description": "High-performance financial and cryptocurrency charting engine with interactive technical analysis indicators, drawing tools, and real-time feeds.",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

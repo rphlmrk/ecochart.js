@@ -1,5 +1,13 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  // Standard app build (bundles index.html into dist for web & mobile)
+  server: {
+    host: '0.0.0.0',
+    port: 3000,
+    allowedHosts: true,
+  },
+  preview: {
+    host: '0.0.0.0',
+    port: 3000,
+  },
 });
