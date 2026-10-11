@@ -14,7 +14,8 @@ import {
     HTFBoxIndicator,
     HTFBiasIndicator,
     HTFProjectionsIndicator,
-    ZigZag123Indicator
+    ZigZag123Indicator,
+    CBCFlipIndicator
 } from './indicators/plugins';
 
 import { DrawingManager } from './tools/DrawingManager';
@@ -3291,7 +3292,8 @@ export class WorkspaceManager {
             { type: 'HTF_BOX', name: 'HTF Box', factory: () => new HTFBoxIndicator(60) },
             { type: 'HTF_BIAS', name: 'HTF Bias', factory: () => new HTFBiasIndicator(60) },
             { type: 'HTF_PROJ', name: 'HTF Projections', factory: () => new HTFProjectionsIndicator('Custom', 21) },
-            { type: 'ZZ123', name: 'ZigZag 1-2-3 Breakout', factory: () => new ZigZag123Indicator(4) }
+            { type: 'ZZ123', name: 'ZigZag 1-2-3 Breakout', factory: () => new ZigZag123Indicator(4) },
+            { type: 'CBC_FLIP', name: 'CBC Flip', factory: () => new CBCFlipIndicator() }
         ];
 
         const showListView = () => {
