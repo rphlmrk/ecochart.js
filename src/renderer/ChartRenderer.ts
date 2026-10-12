@@ -744,6 +744,12 @@ export class ChartRenderer {
         return (this.timeToLogicalIndex(time) * actualSpacing) - this.cameraX;
     }
 
+    public getCandleCenterX(barIndex: number): number {
+        const actualSpacing = this.candleSpacing * this.zoom;
+        const candleWidth = Math.max(1.0, actualSpacing * 0.8);
+        return (barIndex * actualSpacing) - this.cameraX + (candleWidth * 0.5);
+    }
+
     public yToPrice(y: number): number {
         const screenHeight = (this.app && this.app.renderer) ? this.app.screen.height : 600;
         const mainChartHeight = Math.max(1, screenHeight - this.timeAxisHeight - this.oscHeight);

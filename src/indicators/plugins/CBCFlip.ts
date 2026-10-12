@@ -137,20 +137,20 @@ export class CBCFlipIndicator extends BaseIndicator {
         const halfSp = sp * 0.5;
         const ds = r.dataStore;
 
-        // 1. Background tint on flip bars
+        // 1. Background tint on flip bars (centered directly on the candlestick)
         if (showBgColor) {
             for (let i = visStart; i < visEnd; i++) {
                 const flip = this.flips[i];
                 if (flip === 0) continue;
 
-                const x = (i * sp) - r.cameraX;
+                const centerX = r.getCandleCenterX(i);
                 if (flip === 1) {
-                    g.rect(x - halfSp, 0, sp, layout.mainChartHeight).fill({
+                    g.rect(centerX - halfSp, 0, sp, layout.mainChartHeight).fill({
                         color: bullBg.color,
                         alpha: bullBg.alpha
                     });
                 } else if (flip === -1) {
-                    g.rect(x - halfSp, 0, sp, layout.mainChartHeight).fill({
+                    g.rect(centerX - halfSp, 0, sp, layout.mainChartHeight).fill({
                         color: bearBg.color,
                         alpha: bearBg.alpha
                     });
@@ -158,7 +158,7 @@ export class CBCFlipIndicator extends BaseIndicator {
             }
         }
 
-        // 2. Shapes: triangleup (belowbar) & triangledown (abovebar)
+        // 2. Shapes: triangleup (belowbar) & triangledown (abovebar) centered on the candle
         if (showShapes) {
             const offset = 6;
             const triH = shapeSize * 1.35;
@@ -168,7 +168,7 @@ export class CBCFlipIndicator extends BaseIndicator {
                 const flip = this.flips[i];
                 if (flip === 0) continue;
 
-                const x = (i * sp) - r.cameraX;
+                const centerX = r.getCandleCenterX(i);
                 const base = i * 6;
 
                 if (flip === 1) {
@@ -178,9 +178,9 @@ export class CBCFlipIndicator extends BaseIndicator {
                     const tipY = yLow + offset;
                     const baseY = tipY + triH;
 
-                    g.moveTo(x, tipY)
-                     .lineTo(x - triHalfW, baseY)
-                     .lineTo(x + triHalfW, baseY)
+                    g.moveTo(centerX, tipY)
+                     .lineTo(centerX - triHalfW, baseY)
+                     .lineTo(centerX + triHalfW, baseY)
                      .closePath()
                      .fill({ color: bullColor, alpha: 1.0 });
 
@@ -191,9 +191,9 @@ export class CBCFlipIndicator extends BaseIndicator {
                     const tipY = yHigh - offset;
                     const baseY = tipY - triH;
 
-                    g.moveTo(x, tipY)
-                     .lineTo(x - triHalfW, baseY)
-                     .lineTo(x + triHalfW, baseY)
+                    g.moveTo(centerX, tipY)
+                     .lineTo(centerX - triHalfW, baseY)
+                     .lineTo(centerX + triHalfW, baseY)
                      .closePath()
                      .fill({ color: bearColor, alpha: 1.0 });
                 }
