@@ -18,8 +18,8 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
 
         this.params = [
             { id: 'showDOW', name: 'Show Days of Week Labels', type: 'boolean', value: true },
+            { id: 'dowPosition', name: 'DOW Label Position', type: 'select', value: 'Bottom', options: ['Bottom', 'Top', 'Both'] },
             { id: 'dowVerticalOffset', name: 'DOW Vertical Offset (px)', type: 'number', value: 28, min: 0, max: 400, step: 2 },
-            { id: 'dowTime', name: 'DOW Placement Hour (UTC)', type: 'number', value: 5, min: 0, max: 23, step: 1 },
             { id: 'dowColor', name: 'DOW Label Color', type: 'color', value: '#D1D4DC' },
             { id: 'showDay', name: 'Show Day Separators', type: 'boolean', value: true },
             { id: 'lineColor', name: 'Day Separator Color', type: 'color', value: '#D2D2D380' },
@@ -60,8 +60,8 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
 
         // Settings
         const showDOW = this.getParam<boolean>('showDOW', true);
+        const dowPosition = (this.getParam<string>('dowPosition', 'Bottom')) as 'Bottom' | 'Top' | 'Both';
         const dowVerticalOffset = Math.max(0, this.getParam<number>('dowVerticalOffset', 28));
-        const dowTime = Math.max(0, Math.min(23, this.getParam<number>('dowTime', 5)));
         const rawDowColor = String(this.getParam('dowColor', '#D1D4DC')).trim();
         let dowColor = parseColor(rawDowColor);
         if (!r.isDarkTheme && (dowColor === 0xffffff || dowColor === 0xd1d4dc)) {
@@ -92,9 +92,61 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
         const cutoff5Days = now - (5 * 24 * 60 * 60 * 1000);
 
         let activeTextCount = 0;
-        let lastDaySeen = -1;
 
-        // Iterate visible historical bars
+        const topY = Math.max(12, Math.min(layout.mainChartHeight - 12, dowVerticalOffset));
+        const bottomY = Math.max(12, Math.min(layout.mainChartHeight - 12, layout.mainChartHeight - dowVerticalOffset));
+
+        const placeLabel = (text: string, xPos: number, yPos: number) => {
+            let textItem: BitmapText;
+            if (activeTextCount < this.labelTextPool.length) {
+                textItem = this.labelTextPool[activeTextCount];
+            } else {
+                textItem = new BitmapText({
+                    text: '',
+                    style: { fontFamily: 'ChartFont', fontSize: 11, fontWeight: 'bold' }
+                });
+                textItem.anchor.set(0.5);
+                this.labelTextPool.push(textItem);
+                this.labelContainer.addChild(textItem);
+            }
+
+            textItem.text = text;
+            textItem.tint = dowColor;
+            textItem.x = xPos;
+            textItem.y = yPos;
+            textItem.visible = true;
+            activeTextCount++;
+        };
+
+        const renderDOWLabelAt = (text: string, xPos: number) => {
+            if (dowPosition === 'Top') {
+                placeLabel(text, xPos, topY);
+            } else if (dowPosition === 'Bottom') {
+                placeLabel(text, xPos, bottomY);
+            } else if (dowPosition === 'Both') {
+                placeLabel(text, xPos, topY);
+                placeLabel(text, xPos, bottomY);
+            }
+        };
+
+        // Helper: binary search for first bar at or after targetTime in DataStore
+        const findFirstBarIndex = (targetTime: number): number => {
+            let low = 0;
+            let high = ds.length - 1;
+            let res = -1;
+            while (low <= high) {
+                const mid = (low + high) >> 1;
+                if (ds.data[mid * 6] >= targetTime) {
+                    res = mid;
+                    high = mid - 1;
+                } else {
+                    low = mid + 1;
+                }
+            }
+            return res;
+        };
+
+        // 1. Iterate visible historical bars to draw separator lines
         for (let i = visStart; i < visEnd; i++) {
             const t = ds.data[i * 6];
             const prevT = i > 0 ? ds.data[(i - 1) * 6] : (t - tfMs);
@@ -109,7 +161,7 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
             const x = r.getCandleCenterX(i);
             if (x < -20 || x > screenW + 20) continue;
 
-            // 1. Day Separator
+            // Day Separator
             if (showDay && isNewDay && isRecentDay) {
                 StrokeEngine.drawLine(g, x, 0, x, layout.mainChartHeight, {
                     color: dayLineParsed.color,
@@ -119,7 +171,7 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
                 });
             }
 
-            // 2. 4H Separator (only if not already a new day line)
+            // 4H Separator (only if not already a new day line)
             if (show4H && isRecentHTF) {
                 const curr4H = Math.floor(t / (4 * 3600000));
                 const prev4H = Math.floor(prevT / (4 * 3600000));
@@ -134,7 +186,7 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
                 }
             }
 
-            // 3. 1H Separator (only if not already 4H or Day line)
+            // 1H Separator (only if not already 4H or Day line)
             if (show1H && isRecentHTF) {
                 const curr1H = Math.floor(t / 3600000);
                 const prev1H = Math.floor(prevT / 3600000);
@@ -149,38 +201,44 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
                     });
                 }
             }
+        }
 
-            // 4. Day of Week (DOW) Label:
-            // Trigger on the bar that matches or first crosses dowTime on each day
-            if (showDOW && isRecentDay) {
-                const date = new Date(t);
-                const hour = date.getUTCHours();
-                if (currDay !== lastDaySeen && hour >= dowTime) {
-                    lastDaySeen = currDay;
-                    const dowStr = DOW_LABELS[date.getUTCDay()];
+        // 2. Render Day of Week (DOW) Labels centered to full day length
+        if (showDOW && ds.length > 0) {
+            const minBar = Math.max(0, visStart - 1);
+            const maxBar = Math.min(ds.length - 1, visEnd + 1);
+            const minDayKey = Math.floor(ds.data[minBar * 6] / 86400000) - 1;
+            const maxDayKey = Math.floor(ds.data[maxBar * 6] / 86400000);
 
-                    let textItem: BitmapText;
-                    if (activeTextCount < this.labelTextPool.length) {
-                        textItem = this.labelTextPool[activeTextCount];
-                    } else {
-                        textItem = new BitmapText({
-                            text: '',
-                            style: { fontFamily: 'ChartFont', fontSize: 11, fontWeight: 'bold' }
-                        });
-                        textItem.anchor.set(0.5);
-                        this.labelTextPool.push(textItem);
-                        this.labelContainer.addChild(textItem);
-                    }
+            for (let dKey = minDayKey; dKey <= maxDayKey; dKey++) {
+                const dayStartTime = dKey * 86400000;
+                if (dayStartTime <= cutoff28Days) continue;
 
-                    // Vertical offset application: user-configurable distance from bottom
-                    const labelY = Math.max(12, Math.min(layout.mainChartHeight - 8, layout.mainChartHeight - dowVerticalOffset));
+                const firstBar = findFirstBarIndex(dayStartTime);
+                if (firstBar === -1) continue;
+                if (Math.floor(ds.data[firstBar * 6] / 86400000) !== dKey) continue;
 
-                    textItem.text = dowStr;
-                    textItem.tint = dowColor;
-                    textItem.x = x;
-                    textItem.y = labelY;
-                    textItem.visible = true;
-                    activeTextCount++;
+                const xStart = r.getCandleCenterX(firstBar);
+
+                const nextDayStartTime = (dKey + 1) * 86400000;
+                const nextBar = findFirstBarIndex(nextDayStartTime);
+                let xEnd: number;
+
+                if (nextBar !== -1 && Math.floor(ds.data[nextBar * 6] / 86400000) === dKey + 1) {
+                    xEnd = r.getCandleCenterX(nextBar);
+                } else {
+                    // Current / forming day or latest available day: project day end using 24h day length
+                    const barsInDay = 86400000 / tfMs;
+                    xEnd = r.getCandleCenterX(firstBar + barsInDay);
+                }
+
+                // Center of the day length horizontally
+                const centerX = (xStart + xEnd) * 0.5;
+
+                if (centerX >= -60 && centerX <= screenW + 60) {
+                    const dObj = new Date(dayStartTime);
+                    const dowStr = DOW_LABELS[dObj.getUTCDay()];
+                    renderDOWLabelAt(dowStr, centerX);
                 }
             }
         }
@@ -191,56 +249,45 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
         if (showFuture && ds.length > 0) {
             const lastIdx = ds.length - 1;
             const lastTime = ds.data[lastIdx * 6];
+            const nextDailyTime = (Math.floor(lastTime / 86400000) + 1) * 86400000;
 
             // 1. Future Daily Separators (Pine Script: 2 days ahead)
             if (showDay) {
-                const nextDailyTime = (Math.floor(lastTime / 86400000) + 1) * 86400000;
                 for (let step = 0; step < 2; step++) {
                     const futureTime = nextDailyTime + (step * 86400000);
                     const barsAhead = (futureTime - lastTime) / tfMs;
                     if (barsAhead > 500) break;
 
                     const fx = r.getCandleCenterX(lastIdx + barsAhead);
-                    if (fx >= 0 && fx <= screenW + 20) {
+                    if (fx >= -20 && fx <= screenW + 20) {
                         StrokeEngine.drawLine(g, fx, 0, fx, layout.mainChartHeight, {
                             color: dayLineParsed.color,
                             width: 1,
                             alpha: dayLineParsed.alpha,
                             style: dayLineStyle
                         });
+                    }
+                }
+            }
 
-                        // Place future DOW label
-                        if (showDOW) {
-                            const futureDOWTime = futureTime + (dowTime * 3600000);
-                            const dowBarsAhead = (futureDOWTime - lastTime) / tfMs;
-                            const dowFx = r.getCandleCenterX(lastIdx + dowBarsAhead);
+            // 2. Future DOW Labels (centered to future day length)
+            if (showDOW) {
+                for (let step = 0; step < 2; step++) {
+                    const futureDayStart = nextDailyTime + (step * 86400000);
+                    const futureDayEnd = futureDayStart + 86400000;
 
-                            if (dowFx >= 0 && dowFx <= screenW + 20) {
-                                const fDate = new Date(futureTime);
-                                const dowStr = DOW_LABELS[fDate.getUTCDay()];
+                    const startBarsAhead = (futureDayStart - lastTime) / tfMs;
+                    const endBarsAhead = (futureDayEnd - lastTime) / tfMs;
+                    if (startBarsAhead > 500) break;
 
-                                let textItem: BitmapText;
-                                if (activeTextCount < this.labelTextPool.length) {
-                                    textItem = this.labelTextPool[activeTextCount];
-                                } else {
-                                    textItem = new BitmapText({
-                                        text: '',
-                                        style: { fontFamily: 'ChartFont', fontSize: 11, fontWeight: 'bold' }
-                                    });
-                                    textItem.anchor.set(0.5);
-                                    this.labelTextPool.push(textItem);
-                                    this.labelContainer.addChild(textItem);
-                                }
+                    const fxStart = r.getCandleCenterX(lastIdx + startBarsAhead);
+                    const fxEnd = r.getCandleCenterX(lastIdx + endBarsAhead);
+                    const fxCenter = (fxStart + fxEnd) * 0.5;
 
-                                const labelY = Math.max(12, Math.min(layout.mainChartHeight - 8, layout.mainChartHeight - dowVerticalOffset));
-                                textItem.text = dowStr;
-                                textItem.tint = dowColor;
-                                textItem.x = dowFx;
-                                textItem.y = labelY;
-                                textItem.visible = true;
-                                activeTextCount++;
-                            }
-                        }
+                    if (fxCenter >= -60 && fxCenter <= screenW + 60) {
+                        const fDate = new Date(futureDayStart);
+                        const dowStr = DOW_LABELS[fDate.getUTCDay()];
+                        renderDOWLabelAt(dowStr, fxCenter);
                     }
                 }
             }

@@ -468,6 +468,8 @@ export class EcoChart {
         this.legendContainer.innerHTML = '';
 
         this.indicatorManager.activeIndicators.forEach((ind) => {
+            if (ind instanceof PeriodSeparatorIndicator) return;
+
             const item = document.createElement('div');
             item.className = `legend-item ${ind.visible ? '' : 'dimmed'}`;
 
@@ -1727,8 +1729,8 @@ export class WorkspaceManager {
     public static separatorConfig = {
         enabled: true,
         showDOW: true,
+        dowPosition: 'Bottom',
         dowVerticalOffset: 28,
-        dowTime: 5,
         dowColor: '#D1D4DC',
         showDay: true,
         lineColor: '#D2D2D380',
@@ -1749,8 +1751,8 @@ export class WorkspaceManager {
                 ind.visible = this.separatorConfig.enabled;
                 ind.updateParams({
                     showDOW: this.separatorConfig.showDOW,
+                    dowPosition: this.separatorConfig.dowPosition,
                     dowVerticalOffset: this.separatorConfig.dowVerticalOffset,
-                    dowTime: this.separatorConfig.dowTime,
                     dowColor: this.separatorConfig.dowColor,
                     showDay: this.separatorConfig.showDay,
                     lineColor: this.separatorConfig.lineColor,
@@ -1771,7 +1773,6 @@ export class WorkspaceManager {
                 c.indicatorManager.addIndicator(newInd);
                 newInd.update(c.dataStore, true);
                 c.renderer.forceNextRender = true;
-                c.updateLegend();
                 c.isDirty = true;
             }
         });
@@ -2089,6 +2090,7 @@ export class WorkspaceManager {
 
         this.syncSessions();
         this.syncClock();
+        this.syncSeparators();
         this.triggerAutoSave();
     }
 
@@ -2644,8 +2646,8 @@ export class WorkspaceManager {
             if (activeSep) {
                 WorkspaceManager.separatorConfig.enabled = activeSep.visible;
                 WorkspaceManager.separatorConfig.showDOW = activeSep.getParam('showDOW', WorkspaceManager.separatorConfig.showDOW);
+                WorkspaceManager.separatorConfig.dowPosition = activeSep.getParam('dowPosition', WorkspaceManager.separatorConfig.dowPosition);
                 WorkspaceManager.separatorConfig.dowVerticalOffset = activeSep.getParam('dowVerticalOffset', WorkspaceManager.separatorConfig.dowVerticalOffset);
-                WorkspaceManager.separatorConfig.dowTime = activeSep.getParam('dowTime', WorkspaceManager.separatorConfig.dowTime);
                 WorkspaceManager.separatorConfig.dowColor = activeSep.getParam('dowColor', WorkspaceManager.separatorConfig.dowColor);
                 WorkspaceManager.separatorConfig.showDay = activeSep.getParam('showDay', WorkspaceManager.separatorConfig.showDay);
                 WorkspaceManager.separatorConfig.lineColor = activeSep.getParam('lineColor', WorkspaceManager.separatorConfig.lineColor);
@@ -2663,10 +2665,10 @@ export class WorkspaceManager {
             if (chkSepEnabled) chkSepEnabled.checked = WorkspaceManager.separatorConfig.enabled;
             const chkSepDow = document.getElementById('check-separator-dow') as HTMLInputElement;
             if (chkSepDow) chkSepDow.checked = WorkspaceManager.separatorConfig.showDOW;
+            const selSepDowPos = document.getElementById('select-separator-dow-position') as HTMLSelectElement;
+            if (selSepDowPos) selSepDowPos.value = WorkspaceManager.separatorConfig.dowPosition || 'Bottom';
             const inpSepDowOffset = document.getElementById('input-separator-dow-offset') as HTMLInputElement;
             if (inpSepDowOffset) inpSepDowOffset.value = String(WorkspaceManager.separatorConfig.dowVerticalOffset);
-            const inpSepDowHour = document.getElementById('input-separator-dow-hour') as HTMLInputElement;
-            if (inpSepDowHour) inpSepDowHour.value = String(WorkspaceManager.separatorConfig.dowTime);
             setSwatch('input-separator-dow-color', WorkspaceManager.separatorConfig.dowColor);
 
             const chkSepDay = document.getElementById('check-separator-day') as HTMLInputElement;
@@ -2803,7 +2805,6 @@ export class WorkspaceManager {
             });
         };
         bindSepNumber('input-separator-dow-offset', 'dowVerticalOffset', 0);
-        bindSepNumber('input-separator-dow-hour', 'dowTime', 0);
 
         const bindSepSelect = (id: string, key: keyof typeof WorkspaceManager.separatorConfig) => {
             document.getElementById(id)?.addEventListener('change', (e) => {
@@ -2812,6 +2813,7 @@ export class WorkspaceManager {
                 WorkspaceManager.triggerAutoSave();
             });
         };
+        bindSepSelect('select-separator-dow-position', 'dowPosition');
         bindSepSelect('select-separator-day-style', 'lineStyle');
         bindSepSelect('select-separator-4h-style', 'lineStyle4H');
         bindSepSelect('select-separator-1h-style', 'lineStyle1H');
@@ -3466,8 +3468,7 @@ export class WorkspaceManager {
             { type: 'HTF_BIAS', name: 'HTF Bias', factory: () => new HTFBiasIndicator(60) },
             { type: 'HTF_PROJ', name: 'HTF Projections', factory: () => new HTFProjectionsIndicator('Custom', 21) },
             { type: 'ZZ123', name: 'ZigZag 1-2-3 Breakout', factory: () => new ZigZag123Indicator(4) },
-            { type: 'CBC_FLIP', name: 'CBC Flip', factory: () => new CBCFlipIndicator() },
-            { type: 'PERIOD_SEP', name: 'Period & Day of Week Separator', factory: () => new PeriodSeparatorIndicator() }
+            { type: 'CBC_FLIP', name: 'CBC Flip', factory: () => new CBCFlipIndicator() }
         ];
 
         const showListView = () => {
