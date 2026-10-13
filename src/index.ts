@@ -15,7 +15,8 @@ import {
     HTFBiasIndicator,
     HTFProjectionsIndicator,
     ZigZag123Indicator,
-    CBCFlipIndicator
+    CBCFlipIndicator,
+    PeriodSeparatorIndicator
 } from './indicators/plugins';
 
 import { DrawingManager } from './tools/DrawingManager';
@@ -47,6 +48,7 @@ export interface SavedWorkspaceState {
     dataLimits?: Record<string, number>;
     sessionConfig?: any;
     clockConfig?: any;
+    separatorConfig?: any;
     favoriteSymbols?: string[];
     onlySaveFavorites?: boolean;
     panes: SavedPaneState[];
@@ -1722,6 +1724,59 @@ export class WorkspaceManager {
         });
     }
 
+    public static separatorConfig = {
+        enabled: true,
+        showDOW: true,
+        dowVerticalOffset: 28,
+        dowTime: 5,
+        dowColor: '#D1D4DC',
+        showDay: true,
+        lineColor: '#D2D2D380',
+        lineStyle: 'Solid',
+        show4H: true,
+        lineColor4H: '#80808066',
+        lineStyle4H: 'Dotted',
+        show1H: false,
+        lineColor1H: '#80808066',
+        lineStyle1H: 'Dotted',
+        showFuture: true
+    };
+
+    public static syncSeparators() {
+        this.charts.forEach(c => {
+            const ind = c.indicatorManager.activeIndicators.find(i => i instanceof PeriodSeparatorIndicator) as PeriodSeparatorIndicator | undefined;
+            if (ind) {
+                ind.visible = this.separatorConfig.enabled;
+                ind.updateParams({
+                    showDOW: this.separatorConfig.showDOW,
+                    dowVerticalOffset: this.separatorConfig.dowVerticalOffset,
+                    dowTime: this.separatorConfig.dowTime,
+                    dowColor: this.separatorConfig.dowColor,
+                    showDay: this.separatorConfig.showDay,
+                    lineColor: this.separatorConfig.lineColor,
+                    lineStyle: this.separatorConfig.lineStyle,
+                    show4H: this.separatorConfig.show4H,
+                    lineColor4H: this.separatorConfig.lineColor4H,
+                    lineStyle4H: this.separatorConfig.lineStyle4H,
+                    show1H: this.separatorConfig.show1H,
+                    lineColor1H: this.separatorConfig.lineColor1H,
+                    lineStyle1H: this.separatorConfig.lineStyle1H,
+                    showFuture: this.separatorConfig.showFuture
+                });
+                c.renderer.forceNextRender = true;
+                c.isDirty = true;
+            } else if (this.separatorConfig.enabled) {
+                const newInd = new PeriodSeparatorIndicator();
+                newInd.updateParams({ ...this.separatorConfig });
+                c.indicatorManager.addIndicator(newInd);
+                newInd.update(c.dataStore, true);
+                c.renderer.forceNextRender = true;
+                c.updateLegend();
+                c.isDirty = true;
+            }
+        });
+    }
+
     // CUSTOM DIALOG PROMISE
     public static async confirmAction(title: string, message: string): Promise<boolean> {
         return new Promise((resolve) => {
@@ -1819,6 +1874,7 @@ export class WorkspaceManager {
             dataLimits: this.dataLimits,
             sessionConfig: this.sessionConfig,
             clockConfig: this.clockConfig,
+            separatorConfig: this.separatorConfig,
             favoriteSymbols: favoritesManager.getFavorites(),
             onlySaveFavorites: favoritesManager.onlySaveFavorites,
             panes: this.charts.map(c => c.serialize())
@@ -1874,6 +1930,7 @@ export class WorkspaceManager {
 
                     if (state.sessionConfig) this.sessionConfig = { ...this.sessionConfig, ...state.sessionConfig };
                     if (state.clockConfig) this.clockConfig = { ...this.clockConfig, ...state.clockConfig };
+                    if (state.separatorConfig) this.separatorConfig = { ...this.separatorConfig, ...state.separatorConfig };
 
                     // Restore favorites from saved workspace
                     if (Array.isArray(state.favoriteSymbols)) {
@@ -2581,6 +2638,57 @@ export class WorkspaceManager {
             if (selClock1) selClock1.value = WorkspaceManager.clockConfig.primaryTz;
             const selClock2 = document.getElementById('select-clock-secondary') as HTMLSelectElement;
             if (selClock2) selClock2.value = WorkspaceManager.clockConfig.secondaryTz;
+
+            // Sync Period & Day of Week Separator Controls
+            const activeSep = this.activeChart?.indicatorManager.activeIndicators.find(i => i instanceof PeriodSeparatorIndicator) as PeriodSeparatorIndicator | undefined;
+            if (activeSep) {
+                WorkspaceManager.separatorConfig.enabled = activeSep.visible;
+                WorkspaceManager.separatorConfig.showDOW = activeSep.getParam('showDOW', WorkspaceManager.separatorConfig.showDOW);
+                WorkspaceManager.separatorConfig.dowVerticalOffset = activeSep.getParam('dowVerticalOffset', WorkspaceManager.separatorConfig.dowVerticalOffset);
+                WorkspaceManager.separatorConfig.dowTime = activeSep.getParam('dowTime', WorkspaceManager.separatorConfig.dowTime);
+                WorkspaceManager.separatorConfig.dowColor = activeSep.getParam('dowColor', WorkspaceManager.separatorConfig.dowColor);
+                WorkspaceManager.separatorConfig.showDay = activeSep.getParam('showDay', WorkspaceManager.separatorConfig.showDay);
+                WorkspaceManager.separatorConfig.lineColor = activeSep.getParam('lineColor', WorkspaceManager.separatorConfig.lineColor);
+                WorkspaceManager.separatorConfig.lineStyle = activeSep.getParam('lineStyle', WorkspaceManager.separatorConfig.lineStyle);
+                WorkspaceManager.separatorConfig.show4H = activeSep.getParam('show4H', WorkspaceManager.separatorConfig.show4H);
+                WorkspaceManager.separatorConfig.lineColor4H = activeSep.getParam('lineColor4H', WorkspaceManager.separatorConfig.lineColor4H);
+                WorkspaceManager.separatorConfig.lineStyle4H = activeSep.getParam('lineStyle4H', WorkspaceManager.separatorConfig.lineStyle4H);
+                WorkspaceManager.separatorConfig.show1H = activeSep.getParam('show1H', WorkspaceManager.separatorConfig.show1H);
+                WorkspaceManager.separatorConfig.lineColor1H = activeSep.getParam('lineColor1H', WorkspaceManager.separatorConfig.lineColor1H);
+                WorkspaceManager.separatorConfig.lineStyle1H = activeSep.getParam('lineStyle1H', WorkspaceManager.separatorConfig.lineStyle1H);
+                WorkspaceManager.separatorConfig.showFuture = activeSep.getParam('showFuture', WorkspaceManager.separatorConfig.showFuture);
+            }
+
+            const chkSepEnabled = document.getElementById('check-separator-enabled') as HTMLInputElement;
+            if (chkSepEnabled) chkSepEnabled.checked = WorkspaceManager.separatorConfig.enabled;
+            const chkSepDow = document.getElementById('check-separator-dow') as HTMLInputElement;
+            if (chkSepDow) chkSepDow.checked = WorkspaceManager.separatorConfig.showDOW;
+            const inpSepDowOffset = document.getElementById('input-separator-dow-offset') as HTMLInputElement;
+            if (inpSepDowOffset) inpSepDowOffset.value = String(WorkspaceManager.separatorConfig.dowVerticalOffset);
+            const inpSepDowHour = document.getElementById('input-separator-dow-hour') as HTMLInputElement;
+            if (inpSepDowHour) inpSepDowHour.value = String(WorkspaceManager.separatorConfig.dowTime);
+            setSwatch('input-separator-dow-color', WorkspaceManager.separatorConfig.dowColor);
+
+            const chkSepDay = document.getElementById('check-separator-day') as HTMLInputElement;
+            if (chkSepDay) chkSepDay.checked = WorkspaceManager.separatorConfig.showDay;
+            const selSepDayStyle = document.getElementById('select-separator-day-style') as HTMLSelectElement;
+            if (selSepDayStyle) selSepDayStyle.value = WorkspaceManager.separatorConfig.lineStyle;
+            setSwatch('input-separator-day-color', WorkspaceManager.separatorConfig.lineColor);
+
+            const chkSep4H = document.getElementById('check-separator-4h') as HTMLInputElement;
+            if (chkSep4H) chkSep4H.checked = WorkspaceManager.separatorConfig.show4H;
+            const selSep4HStyle = document.getElementById('select-separator-4h-style') as HTMLSelectElement;
+            if (selSep4HStyle) selSep4HStyle.value = WorkspaceManager.separatorConfig.lineStyle4H;
+            setSwatch('input-separator-4h-color', WorkspaceManager.separatorConfig.lineColor4H);
+
+            const chkSep1H = document.getElementById('check-separator-1h') as HTMLInputElement;
+            if (chkSep1H) chkSep1H.checked = WorkspaceManager.separatorConfig.show1H;
+            const selSep1HStyle = document.getElementById('select-separator-1h-style') as HTMLSelectElement;
+            if (selSep1HStyle) selSep1HStyle.value = WorkspaceManager.separatorConfig.lineStyle1H;
+            setSwatch('input-separator-1h-color', WorkspaceManager.separatorConfig.lineColor1H);
+
+            const chkSepFuture = document.getElementById('check-separator-future') as HTMLInputElement;
+            if (chkSepFuture) chkSepFuture.checked = WorkspaceManager.separatorConfig.showFuture;
         };
 
 
@@ -2668,6 +2776,71 @@ export class WorkspaceManager {
             WorkspaceManager.syncClock();
             WorkspaceManager.triggerAutoSave();
         });
+
+        // Bind Period & Day of Week Separator Controls
+        const bindSepCheck = (id: string, key: keyof typeof WorkspaceManager.separatorConfig) => {
+            document.getElementById(id)?.addEventListener('change', (e) => {
+                (WorkspaceManager.separatorConfig as any)[key] = (e.target as HTMLInputElement).checked;
+                WorkspaceManager.syncSeparators();
+                WorkspaceManager.triggerAutoSave();
+            });
+        };
+        bindSepCheck('check-separator-enabled', 'enabled');
+        bindSepCheck('check-separator-dow', 'showDOW');
+        bindSepCheck('check-separator-day', 'showDay');
+        bindSepCheck('check-separator-4h', 'show4H');
+        bindSepCheck('check-separator-1h', 'show1H');
+        bindSepCheck('check-separator-future', 'showFuture');
+
+        const bindSepNumber = (id: string, key: keyof typeof WorkspaceManager.separatorConfig, minVal = 0) => {
+            document.getElementById(id)?.addEventListener('input', (e) => {
+                const val = parseFloat((e.target as HTMLInputElement).value);
+                if (!isNaN(val)) {
+                    (WorkspaceManager.separatorConfig as any)[key] = Math.max(minVal, val);
+                    WorkspaceManager.syncSeparators();
+                    WorkspaceManager.triggerAutoSave();
+                }
+            });
+        };
+        bindSepNumber('input-separator-dow-offset', 'dowVerticalOffset', 0);
+        bindSepNumber('input-separator-dow-hour', 'dowTime', 0);
+
+        const bindSepSelect = (id: string, key: keyof typeof WorkspaceManager.separatorConfig) => {
+            document.getElementById(id)?.addEventListener('change', (e) => {
+                (WorkspaceManager.separatorConfig as any)[key] = (e.target as HTMLSelectElement).value;
+                WorkspaceManager.syncSeparators();
+                WorkspaceManager.triggerAutoSave();
+            });
+        };
+        bindSepSelect('select-separator-day-style', 'lineStyle');
+        bindSepSelect('select-separator-4h-style', 'lineStyle4H');
+        bindSepSelect('select-separator-1h-style', 'lineStyle1H');
+
+        const bindSepSwatch = (btnId: string, configKey: keyof typeof WorkspaceManager.separatorConfig) => {
+            const btn = document.getElementById(btnId);
+            if (!btn) return;
+            btn.addEventListener('click', () => {
+                const currentHex = (WorkspaceManager.separatorConfig as any)[configKey] || '#FFFFFF';
+                colorPicker.open({
+                    anchorElement: btn,
+                    initialColor: currentHex,
+                    showOpacity: true,
+                    onChange: (res) => {
+                        const aHex = Math.round(res.opacity * 255).toString(16).padStart(2, '0');
+                        const fullHex = `${res.color.slice(0, 7)}${aHex}`.toUpperCase();
+                        btn.dataset.color = fullHex;
+                        btn.style.backgroundColor = fullHex;
+                        (WorkspaceManager.separatorConfig as any)[configKey] = fullHex;
+                        WorkspaceManager.syncSeparators();
+                        WorkspaceManager.triggerAutoSave();
+                    }
+                });
+            });
+        };
+        bindSepSwatch('input-separator-dow-color', 'dowColor');
+        bindSepSwatch('input-separator-day-color', 'lineColor');
+        bindSepSwatch('input-separator-4h-color', 'lineColor4H');
+        bindSepSwatch('input-separator-1h-color', 'lineColor1H');
 
         // Bind Data Limit Dropdowns
         document.querySelectorAll('.data-limit-select').forEach(select => {
@@ -3293,7 +3466,8 @@ export class WorkspaceManager {
             { type: 'HTF_BIAS', name: 'HTF Bias', factory: () => new HTFBiasIndicator(60) },
             { type: 'HTF_PROJ', name: 'HTF Projections', factory: () => new HTFProjectionsIndicator('Custom', 21) },
             { type: 'ZZ123', name: 'ZigZag 1-2-3 Breakout', factory: () => new ZigZag123Indicator(4) },
-            { type: 'CBC_FLIP', name: 'CBC Flip', factory: () => new CBCFlipIndicator() }
+            { type: 'CBC_FLIP', name: 'CBC Flip', factory: () => new CBCFlipIndicator() },
+            { type: 'PERIOD_SEP', name: 'Period & Day of Week Separator', factory: () => new PeriodSeparatorIndicator() }
         ];
 
         const showListView = () => {

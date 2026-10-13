@@ -7,3 +7,4 @@ export * from './HTFBias';
 export * from './HTFProjections';
 export * from './ZigZag123';
 export * from './CBCFlip';
+export * from './PeriodSeparator';

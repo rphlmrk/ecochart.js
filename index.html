@@ -1370,6 +1370,111 @@
             </div>
           </div>
         </div>
+
+        <!-- Period & Day of Week Separator Section -->
+        <div style="margin-top: 20px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 16px;">
+          <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Day of Week & HTF Period Separators</span>
+          <div style="font-size: 11px; color: #D1D4DC; margin-top: 4px; margin-bottom: 12px; opacity: 0.85;">
+            Intraday vertical period separator lines and Days of Week (DOW) labels.
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-separator-enabled" checked
+                style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
+              Enable Period Separators
+            </label>
+
+            <!-- DOW Section -->
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-separator-dow" checked
+                style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
+              Show Day of Week Labels (M O N, T U E...)
+            </label>
+
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+              <span>DOW Vertical Offset (px):</span>
+              <input type="number" id="input-separator-dow-offset" value="28" min="0" max="400" step="2"
+                style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 8px; width: 65px; font-size: 12px; outline: none; text-align: right;">
+            </div>
+
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+              <span>DOW Placement Hour (UTC):</span>
+              <input type="number" id="input-separator-dow-hour" value="5" min="0" max="23" step="1"
+                style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 8px; width: 65px; font-size: 12px; outline: none; text-align: right;">
+            </div>
+
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+              <span>DOW Label Color:</span>
+              <button type="button" class="tv-swatch-trigger" id="input-separator-dow-color" data-color="#D1D4DC"
+                style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#D1D4DC;cursor:pointer;"></button>
+            </div>
+
+            <!-- Day Separator Line -->
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                <input type="checkbox" id="check-separator-day" checked
+                  style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
+                Day Separator
+              </label>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <select id="select-separator-day-style"
+                  style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+                  <option value="Solid" selected>Solid</option>
+                  <option value="Dashed">Dashed</option>
+                  <option value="Dotted">Dotted</option>
+                </select>
+                <button type="button" class="tv-swatch-trigger" id="input-separator-day-color" data-color="#D2D2D380"
+                  style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#D2D2D3;cursor:pointer;"></button>
+              </div>
+            </div>
+
+            <!-- 4H Separator Line -->
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                <input type="checkbox" id="check-separator-4h" checked
+                  style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
+                4H Separator
+              </label>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <select id="select-separator-4h-style"
+                  style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+                  <option value="Solid">Solid</option>
+                  <option value="Dashed">Dashed</option>
+                  <option value="Dotted" selected>Dotted</option>
+                </select>
+                <button type="button" class="tv-swatch-trigger" id="input-separator-4h-color" data-color="#80808066"
+                  style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#808080;cursor:pointer;"></button>
+              </div>
+            </div>
+
+            <!-- 1H Separator Line -->
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                <input type="checkbox" id="check-separator-1h"
+                  style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
+                1H Separator
+              </label>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <select id="select-separator-1h-style"
+                  style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; cursor: pointer;">
+                  <option value="Solid">Solid</option>
+                  <option value="Dashed">Dashed</option>
+                  <option value="Dotted" selected>Dotted</option>
+                </select>
+                <button type="button" class="tv-swatch-trigger" id="input-separator-1h-color" data-color="#80808066"
+                  style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#808080;cursor:pointer;"></button>
+              </div>
+            </div>
+
+            <!-- Future Projections Checkbox -->
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-separator-future" checked
+                style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
+              Project Future Period Separators
+            </label>
+          </div>
+        </div>
       </div>
 
     </div>
