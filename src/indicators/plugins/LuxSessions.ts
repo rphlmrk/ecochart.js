@@ -26,7 +26,7 @@ export class LuxSessionsIndicator extends BaseIndicator {
     private isContainerMounted = false;
 
     constructor() {
-        super('LUX_SESSIONS', 'Sessions [LuxAlgo]');
+        super('LUX_SESSIONS', 'Market Sessions');
         this.isOscillator = false;
         this.params = [
             // Master toggle
@@ -115,7 +115,7 @@ export class LuxSessionsIndicator extends BaseIndicator {
             return;
         }
 
-        // LuxAlgo Sessions indicator operates on timeframes of 1 hour or below
+        // Market Sessions indicator operates on intraday timeframes (up to 1 hour)
         const htf = ['2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'];
         if (htf.includes(r.currentInterval)) {
             this.labelContainer.visible = false;

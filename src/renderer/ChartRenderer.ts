@@ -1669,7 +1669,7 @@ export class ChartRenderer {
             return;
         }
 
-        const htf = ['1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'];
+        const htf = ['2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'];
         if (htf.includes(this.currentInterval)) {
             this.sessionGeometry.instanceCount = 0;
             return;
