@@ -12,10 +12,12 @@ export class ChartRenderer {
     public isDarkTheme = true;
 
     // Session Config (Color + Alpha)
-    public sessionConfig = {
+    public sessionConfig: any = {
         enabled: true,
         showOnAxis: true,
         showOnChart: false,
+        timezoneOffset: 0,
+        sessions: [] as any[],
         asiaColor: 0xFBC02D,
         asiaAlpha: 0.5,
         londonColor: 0x2962FF,
@@ -1679,35 +1681,85 @@ export class ChartRenderer {
             ((hex >> 16) & 0xff) / 255, ((hex >> 8) & 0xff) / 255, (hex & 0xff) / 255, alpha
         ];
 
-        const asiaColor = toRGBA(this.sessionConfig.asiaColor, this.sessionConfig.asiaAlpha);
-        const lonColor = toRGBA(this.sessionConfig.londonColor, this.sessionConfig.londonAlpha);
-        const nyColor = toRGBA(this.sessionConfig.nyColor, this.sessionConfig.nyAlpha);
+        const tzOffsetMs = (this.sessionConfig.timezoneOffset || 0) * 3600000;
 
-        const blocks: number[] = [];
-        let currentAsiaStart = -1, currentLonStart = -1, currentNyStart = -1;
+        // Parse up to 4 sessions
+        const sessList: Array<{ enabled: boolean; startMin: number; endMin: number; rgba: number[] }> = [];
 
-        for (let i = 0; i < len; i++) {
-            const ts = this.dataStore.data[i * 6];
-            // Ultra-fast zero-GC math to get UTC hour (bypasses 'new Date()')
-            const floatHour = (ts % 86400000) / 3600000;
+        const parseHours = (hStr: string) => {
+            if (!hStr) return { start: 0, end: 0 };
+            const clean = hStr.replace(/\s+/g, '');
+            const parts = clean.split('-');
+            if (parts.length !== 2) return { start: 0, end: 0 };
+            const parsePart = (p: string) => {
+                if (p.includes(':')) {
+                    const [h, m] = p.split(':');
+                    return (parseInt(h, 10) || 0) * 60 + (parseInt(m, 10) || 0);
+                }
+                if (p.length === 4) {
+                    return (parseInt(p.slice(0, 2), 10) || 0) * 60 + (parseInt(p.slice(2, 4), 10) || 0);
+                }
+                return (parseInt(p, 10) || 0) * 60;
+            };
+            return { start: parsePart(parts[0]), end: parsePart(parts[1]) };
+        };
 
-            const inNy = floatHour >= 13.5 && floatHour < 20.0;
-            const inLon = floatHour >= 8.0 && floatHour < 16.5;
-            const inAsia = floatHour >= 0.0 && floatHour < 9.0;
-
-            if (inNy && currentNyStart === -1) currentNyStart = i;
-            else if (!inNy && currentNyStart !== -1) { blocks.push(currentNyStart, i - 1, ...nyColor); currentNyStart = -1; }
-
-            if (inLon && currentLonStart === -1) currentLonStart = i;
-            else if (!inLon && currentLonStart !== -1) { blocks.push(currentLonStart, i - 1, ...lonColor); currentLonStart = -1; }
-
-            if (inAsia && currentAsiaStart === -1) currentAsiaStart = i;
-            else if (!inAsia && currentAsiaStart !== -1) { blocks.push(currentAsiaStart, i - 1, ...asiaColor); currentAsiaStart = -1; }
+        if (this.sessionConfig.sessions && Array.isArray(this.sessionConfig.sessions)) {
+            for (const s of this.sessionConfig.sessions) {
+                if (s.enabled) {
+                    const times = parseHours(s.hours);
+                    if (times.start !== times.end) {
+                        sessList.push({
+                            enabled: true,
+                            startMin: times.start,
+                            endMin: times.end,
+                            rgba: toRGBA(s.color, s.alpha ?? 0.5)
+                        });
+                    }
+                }
+            }
+        } else {
+            // Default 3 sessions (New York, London, Asia)
+            const nyColor = toRGBA(this.sessionConfig.nyColor, this.sessionConfig.nyAlpha ?? 0.5);
+            const lonColor = toRGBA(this.sessionConfig.londonColor, this.sessionConfig.londonAlpha ?? 0.5);
+            const asiaColor = toRGBA(this.sessionConfig.asiaColor, this.sessionConfig.asiaAlpha ?? 0.5);
+            sessList.push(
+                { enabled: true, startMin: 13 * 60 + 30, endMin: 20 * 60, rgba: nyColor },
+                { enabled: true, startMin: 8 * 60, endMin: 16 * 60 + 30, rgba: lonColor },
+                { enabled: true, startMin: 0, endMin: 9 * 60, rgba: asiaColor }
+            );
         }
 
-        if (currentNyStart !== -1) blocks.push(currentNyStart, len - 1, ...nyColor);
-        if (currentLonStart !== -1) blocks.push(currentLonStart, len - 1, ...lonColor);
-        if (currentAsiaStart !== -1) blocks.push(currentAsiaStart, len - 1, ...asiaColor);
+        const isMinInSess = (m: number, s: number, e: number) => {
+            if (s === e) return false;
+            return s < e ? (m >= s && m < e) : (m >= s || m < e);
+        };
+
+        const blocks: number[] = [];
+        const starts = new Array(sessList.length).fill(-1);
+
+        for (let i = 0; i < len; i++) {
+            const ts = this.dataStore.data[i * 6] + tzOffsetMs;
+            const minuteOfDay = Math.floor((((ts % 86400000) + 86400000) % 86400000) / 60000);
+
+            for (let sIdx = 0; sIdx < sessList.length; sIdx++) {
+                const sess = sessList[sIdx];
+                const inSession = isMinInSess(minuteOfDay, sess.startMin, sess.endMin);
+
+                if (inSession && starts[sIdx] === -1) {
+                    starts[sIdx] = i;
+                } else if (!inSession && starts[sIdx] !== -1) {
+                    blocks.push(starts[sIdx], i - 1, ...sess.rgba);
+                    starts[sIdx] = -1;
+                }
+            }
+        }
+
+        for (let sIdx = 0; sIdx < sessList.length; sIdx++) {
+            if (starts[sIdx] !== -1) {
+                blocks.push(starts[sIdx], len - 1, ...sessList[sIdx].rgba);
+            }
+        }
 
         const instanceCount = blocks.length / 6;
         if (this.sessionArray.length < blocks.length) {

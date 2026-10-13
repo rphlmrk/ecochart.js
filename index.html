@@ -1274,53 +1274,224 @@
 
       <!-- TAB 7: SESSIONS -->
       <div id="tab-content-sessions" class="modal-tab-content" style="display: none;">
-        <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Market Sessions
-          (UTC)</span>
-        <div style="font-size: 11px; color: #D1D4DC; margin-top: 6px; margin-bottom: 12px; opacity: 0.85;">
-          Automatically highlight major market hours. Overlapping sessions prioritize NY > London > Asia. Note:
-          Auto-hides on 1h+ charts.
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Sessions [LuxAlgo]</span>
+          <span style="font-size: 10px; color: #787B86; opacity: 0.8;">© LuxAlgo (CC BY-NC-SA 4.0)</span>
+        </div>
+        <div style="font-size: 11px; color: #D1D4DC; margin-top: 4px; margin-bottom: 12px; opacity: 0.85;">
+          High-to-low range boxes, mean lines, labels, background shading, and time axis highlights for customizable market sessions. Auto-hides on 2h+ charts.
         </div>
 
-        <div style="margin-top: 16px; display: flex; flex-direction: column; gap: 10px;">
-          <label
-            style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+        <!-- Master Toggles -->
+        <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
             <input type="checkbox" id="check-sessions-enabled" checked
               style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
-            Enable Session Highlights
+            Enable Sessions
           </label>
-          <label
-            style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+            <input type="checkbox" id="check-sessions-ranges" checked
+              style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
+            Show Session Range Boxes (LuxAlgo)
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
             <input type="checkbox" id="check-sessions-axis" checked
               style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
-            Highlight Bottom Time Axis (Default)
+            Highlight Bottom Time Axis
           </label>
-          <label
-            style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
             <input type="checkbox" id="check-sessions-chart"
               style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
             Shade Chart Background
           </label>
         </div>
 
-        <div
-          style="display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 20px; border-top: 1px solid #2A2E39; padding-top: 16px;">
-          <div
-            style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
-            <span>Asia <span style="opacity: 0.6; margin-left: 4px;">00:00 - 09:00</span></span>
-            <button type="button" class="tv-swatch-trigger" id="input-sess-asia" data-color="#FBC02D"
-              style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#FBC02D;cursor:pointer;"></button>
+        <!-- SESSIONS A, B, C, D CONFIG -->
+        <div style="margin-top: 16px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 14px;">
+          <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Session Windows</span>
+
+          <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 10px;">
+            <!-- Session A -->
+            <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid #2A2E39; border-radius: 6px; padding: 10px 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: #D1D4DC; cursor: pointer;">
+                  <input type="checkbox" id="check-sess-a-enabled" checked style="cursor: pointer; accent-color: #2962FF;">
+                  Session A
+                </label>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #848E9C; cursor: pointer;">
+                    <input type="checkbox" id="check-sess-a-range" checked style="cursor: pointer;"> Range
+                  </label>
+                  <button type="button" class="tv-swatch-trigger" id="input-sess-a-color" data-color="#EF5350"
+                    style="width:20px;height:20px;border-radius:4px;border:1px solid #434651;background:#EF5350;cursor:pointer;"></button>
+                </div>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                <div>
+                  <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Name</span>
+                  <input type="text" id="input-sess-a-name" value="New York"
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                </div>
+                <div>
+                  <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Hours (e.g. 1300-2200)</span>
+                  <input type="text" id="input-sess-a-hours" value="1300-2200"
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                </div>
+              </div>
+            </div>
+
+            <!-- Session B -->
+            <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid #2A2E39; border-radius: 6px; padding: 10px 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: #D1D4DC; cursor: pointer;">
+                  <input type="checkbox" id="check-sess-b-enabled" checked style="cursor: pointer; accent-color: #2962FF;">
+                  Session B
+                </label>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #848E9C; cursor: pointer;">
+                    <input type="checkbox" id="check-sess-b-range" checked style="cursor: pointer;"> Range
+                  </label>
+                  <button type="button" class="tv-swatch-trigger" id="input-sess-b-color" data-color="#2962FF"
+                    style="width:20px;height:20px;border-radius:4px;border:1px solid #434651;background:#2962FF;cursor:pointer;"></button>
+                </div>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                <div>
+                  <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Name</span>
+                  <input type="text" id="input-sess-b-name" value="London"
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                </div>
+                <div>
+                  <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Hours (e.g. 0700-1600)</span>
+                  <input type="text" id="input-sess-b-hours" value="0700-1600"
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                </div>
+              </div>
+            </div>
+
+            <!-- Session C -->
+            <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid #2A2E39; border-radius: 6px; padding: 10px 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: #D1D4DC; cursor: pointer;">
+                  <input type="checkbox" id="check-sess-c-enabled" checked style="cursor: pointer; accent-color: #2962FF;">
+                  Session C
+                </label>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #848E9C; cursor: pointer;">
+                    <input type="checkbox" id="check-sess-c-range" checked style="cursor: pointer;"> Range
+                  </label>
+                  <button type="button" class="tv-swatch-trigger" id="input-sess-c-color" data-color="#FBC02D"
+                    style="width:20px;height:20px;border-radius:4px;border:1px solid #434651;background:#FBC02D;cursor:pointer;"></button>
+                </div>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                <div>
+                  <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Name</span>
+                  <input type="text" id="input-sess-c-name" value="Tokyo"
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                </div>
+                <div>
+                  <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Hours (e.g. 0000-0900)</span>
+                  <input type="text" id="input-sess-c-hours" value="0000-0900"
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                </div>
+              </div>
+            </div>
+
+            <!-- Session D -->
+            <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid #2A2E39; border-radius: 6px; padding: 10px 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: #D1D4DC; cursor: pointer;">
+                  <input type="checkbox" id="check-sess-d-enabled" style="cursor: pointer; accent-color: #2962FF;">
+                  Session D
+                </label>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #848E9C; cursor: pointer;">
+                    <input type="checkbox" id="check-sess-d-range" checked style="cursor: pointer;"> Range
+                  </label>
+                  <button type="button" class="tv-swatch-trigger" id="input-sess-d-color" data-color="#AB47BC"
+                    style="width:20px;height:20px;border-radius:4px;border:1px solid #434651;background:#AB47BC;cursor:pointer;"></button>
+                </div>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                <div>
+                  <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Name</span>
+                  <input type="text" id="input-sess-d-name" value="Sydney"
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                </div>
+                <div>
+                  <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Hours (e.g. 2100-0600)</span>
+                  <input type="text" id="input-sess-d-hours" value="2100-0600"
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                </div>
+              </div>
+            </div>
           </div>
-          <div
-            style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
-            <span>London <span style="opacity: 0.6; margin-left: 4px;">08:00 - 16:30</span></span>
-            <button type="button" class="tv-swatch-trigger" id="input-sess-london" data-color="#2962FF"
-              style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#2962FF;cursor:pointer;"></button>
+        </div>
+
+        <!-- TIMEZONE GROUP -->
+        <div style="margin-top: 16px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 14px;">
+          <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Timezone Settings</span>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-sess-exchange-tz" checked style="cursor: pointer; accent-color: #2962FF;">
+              Use Symbol Exchange Timezone (UTC)
+            </label>
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+              <span>Timezone UTC Offset:</span>
+              <select id="select-sess-tz-offset"
+                style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none; cursor: pointer;">
+                <option value="-12">UTC -12:00</option>
+                <option value="-11">UTC -11:00</option>
+                <option value="-10">UTC -10:00 (HST)</option>
+                <option value="-9">UTC -09:00 (AKST)</option>
+                <option value="-8">UTC -08:00 (PST)</option>
+                <option value="-7">UTC -07:00 (MST)</option>
+                <option value="-6">UTC -06:00 (CST)</option>
+                <option value="-5">UTC -05:00 (EST / New York)</option>
+                <option value="-4">UTC -04:00 (EDT)</option>
+                <option value="-3">UTC -03:00</option>
+                <option value="-2">UTC -02:00</option>
+                <option value="-1">UTC -01:00</option>
+                <option value="0" selected>UTC +00:00 (London GMT)</option>
+                <option value="1">UTC +01:00 (CET / BST)</option>
+                <option value="2">UTC +02:00 (EET)</option>
+                <option value="3">UTC +03:00 (MSK)</option>
+                <option value="4">UTC +04:00 (GST)</option>
+                <option value="5">UTC +05:00</option>
+                <option value="6">UTC +06:00</option>
+                <option value="7">UTC +07:00 (ICT)</option>
+                <option value="8">UTC +08:00 (HKT / SGT)</option>
+                <option value="9">UTC +09:00 (JST / Tokyo)</option>
+                <option value="10">UTC +10:00 (AEST / Sydney)</option>
+                <option value="11">UTC +11:00</option>
+                <option value="12">UTC +12:00 (NZST)</option>
+              </select>
+            </div>
           </div>
-          <div
-            style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
-            <span>New York <span style="opacity: 0.6; margin-left: 4px;">13:30 - 20:00</span></span>
-            <button type="button" class="tv-swatch-trigger" id="input-sess-ny" data-color="#EF5350"
-              style="width:24px;height:24px;border-radius:4px;border:1px solid #434651;background:#EF5350;cursor:pointer;"></button>
+        </div>
+
+        <!-- RANGES SETTINGS (LuxAlgo) -->
+        <div style="margin-top: 16px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 14px;">
+          <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Ranges Settings</span>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+              <span>Range Box Transparency (0–100):</span>
+              <input type="number" id="input-sess-range-transparency" value="80" min="0" max="100" step="5"
+                style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 8px; width: 65px; font-size: 12px; outline: none; text-align: right;">
+            </div>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-sess-range-outline" checked style="cursor: pointer; accent-color: #2962FF;">
+              Show Dotted Outline Around Range Boxes
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-sess-range-label" checked style="cursor: pointer; accent-color: #2962FF;">
+              Show Session Name Above Range Boxes
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-sess-range-mean" style="cursor: pointer; accent-color: #2962FF;">
+              Show Mean / Midpoint Line
+            </label>
           </div>
         </div>
         <!-- Time Axis World Clock Section -->

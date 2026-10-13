@@ -16,7 +16,8 @@ import {
     HTFProjectionsIndicator,
     ZigZag123Indicator,
     CBCFlipIndicator,
-    PeriodSeparatorIndicator
+    PeriodSeparatorIndicator,
+    LuxSessionsIndicator
 } from './indicators/plugins';
 
 import { DrawingManager } from './tools/DrawingManager';
@@ -468,7 +469,7 @@ export class EcoChart {
         this.legendContainer.innerHTML = '';
 
         this.indicatorManager.activeIndicators.forEach((ind) => {
-            if (ind instanceof PeriodSeparatorIndicator) return;
+            if (ind instanceof PeriodSeparatorIndicator || ind instanceof LuxSessionsIndicator) return;
 
             const item = document.createElement('div');
             item.className = `legend-item ${ind.visible ? '' : 'dimmed'}`;
@@ -1660,6 +1661,47 @@ export class WorkspaceManager {
         enabled: true,
         showOnAxis: true,
         showOnChart: false,
+        showRanges: true,
+        // Timezone
+        timezoneOffset: 0,
+        exchangeTimezone: true,
+        // Ranges Settings
+        rangeTransparency: 80,
+        rangeOutline: true,
+        rangeLabel: true,
+        showMean: false,
+        // Session A
+        sessionA: {
+            enabled: true,
+            name: 'New York',
+            hours: '1300-2200',
+            range: true,
+            color: '#EF5350'
+        },
+        // Session B
+        sessionB: {
+            enabled: true,
+            name: 'London',
+            hours: '0700-1600',
+            range: true,
+            color: '#2962FF'
+        },
+        // Session C
+        sessionC: {
+            enabled: true,
+            name: 'Tokyo',
+            hours: '0000-0900',
+            range: true,
+            color: '#FBC02D'
+        },
+        // Session D
+        sessionD: {
+            enabled: false,
+            name: 'Sydney',
+            hours: '2100-0600',
+            range: true,
+            color: '#AB47BC'
+        },
         asiaColor: '#FBC02D80',
         londonColor: '#2962FF80',
         nyColor: '#EF535080'
@@ -1699,29 +1741,78 @@ export class WorkspaceManager {
 
     public static syncSessions() {
         const parseSess = (hex: string) => {
-            const clean = hex.replace('#', '');
+            const clean = (hex || '#FFFFFF').replace('#', '');
             const color = parseInt(clean.slice(0, 6), 16) || 0;
             const alpha = clean.length >= 8 ? parseInt(clean.slice(6, 8), 16) / 255 : 0.5;
             return { color, alpha };
         };
 
-        const asia = parseSess(this.sessionConfig.asiaColor);
-        const london = parseSess(this.sessionConfig.londonColor);
-        const ny = parseSess(this.sessionConfig.nyColor);
+        const sessA = this.sessionConfig.sessionA || { enabled: true, name: 'New York', hours: '1300-2200', range: true, color: this.sessionConfig.nyColor || '#EF5350' };
+        const sessB = this.sessionConfig.sessionB || { enabled: true, name: 'London', hours: '0700-1600', range: true, color: this.sessionConfig.londonColor || '#2962FF' };
+        const sessC = this.sessionConfig.sessionC || { enabled: true, name: 'Tokyo', hours: '0000-0900', range: true, color: this.sessionConfig.asiaColor || '#FBC02D' };
+        const sessD = this.sessionConfig.sessionD || { enabled: false, name: 'Sydney', hours: '2100-0600', range: true, color: '#AB47BC' };
+
+        const sessionsForRenderer = [
+            { enabled: sessA.enabled, hours: sessA.hours, ...parseSess(sessA.color) },
+            { enabled: sessB.enabled, hours: sessB.hours, ...parseSess(sessB.color) },
+            { enabled: sessC.enabled, hours: sessC.hours, ...parseSess(sessC.color) },
+            { enabled: sessD.enabled, hours: sessD.hours, ...parseSess(sessD.color) }
+        ];
 
         this.charts.forEach(c => {
+            // 1. Sync GPU Session Mesh
             c.renderer.sessionConfig = {
                 enabled: this.sessionConfig.enabled,
                 showOnAxis: this.sessionConfig.showOnAxis,
                 showOnChart: this.sessionConfig.showOnChart,
-                asiaColor: asia.color,
-                asiaAlpha: asia.alpha,
-                londonColor: london.color,
-                londonAlpha: london.alpha,
-                nyColor: ny.color,
-                nyAlpha: ny.alpha
+                timezoneOffset: this.sessionConfig.exchangeTimezone ? 0 : (this.sessionConfig.timezoneOffset || 0),
+                sessions: sessionsForRenderer
             };
-            c.renderer.isSessionDirty = true; // <-- Flag GPU Mesh to rebuild
+            c.renderer.isSessionDirty = true;
+
+            // 2. Sync LuxAlgo Sessions Indicator (Range boxes, dotted outlines, labels, means)
+            const indMgr = c.indicatorManager;
+            let activeLux = indMgr.activeIndicators.find(i => i instanceof LuxSessionsIndicator) as LuxSessionsIndicator | undefined;
+            if (!this.sessionConfig.enabled) {
+                if (activeLux) indMgr.removeIndicator(activeLux.id);
+            } else {
+                if (!activeLux) {
+                    activeLux = new LuxSessionsIndicator();
+                    indMgr.addIndicator(activeLux);
+                }
+                activeLux.setParam('showRanges', this.sessionConfig.showRanges ?? true);
+                activeLux.setParam('exchangeTimezone', this.sessionConfig.exchangeTimezone ?? true);
+                activeLux.setParam('timezoneOffset', this.sessionConfig.timezoneOffset ?? 0);
+                activeLux.setParam('rangeTransparency', this.sessionConfig.rangeTransparency ?? 80);
+                activeLux.setParam('rangeOutline', this.sessionConfig.rangeOutline ?? true);
+                activeLux.setParam('rangeLabel', this.sessionConfig.rangeLabel ?? true);
+                activeLux.setParam('showMean', this.sessionConfig.showMean ?? false);
+
+                activeLux.setParam('showSessionA', sessA.enabled);
+                activeLux.setParam('sessionAName', sessA.name);
+                activeLux.setParam('sessionATime', sessA.hours);
+                activeLux.setParam('sessionARange', sessA.range);
+                activeLux.setParam('sessionAColor', sessA.color);
+
+                activeLux.setParam('showSessionB', sessB.enabled);
+                activeLux.setParam('sessionBName', sessB.name);
+                activeLux.setParam('sessionBTime', sessB.hours);
+                activeLux.setParam('sessionBRange', sessB.range);
+                activeLux.setParam('sessionBColor', sessB.color);
+
+                activeLux.setParam('showSessionC', sessC.enabled);
+                activeLux.setParam('sessionCName', sessC.name);
+                activeLux.setParam('sessionCTime', sessC.hours);
+                activeLux.setParam('sessionCRange', sessC.range);
+                activeLux.setParam('sessionCColor', sessC.color);
+
+                activeLux.setParam('showSessionD', sessD.enabled);
+                activeLux.setParam('sessionDName', sessD.name);
+                activeLux.setParam('sessionDTime', sessD.hours);
+                activeLux.setParam('sessionDRange', sessD.range);
+                activeLux.setParam('sessionDColor', sessD.color);
+            }
+
             c.isDirty = true;
         });
     }
@@ -2597,17 +2688,61 @@ export class WorkspaceManager {
                 }
             };
 
-            // Sync Session Toggles & Swatches
-            const chkSessEnabled = document.getElementById('check-sessions-enabled') as HTMLInputElement;
-            if (chkSessEnabled) chkSessEnabled.checked = WorkspaceManager.sessionConfig.enabled;
-            const chkSessAxis = document.getElementById('check-sessions-axis') as HTMLInputElement;
-            if (chkSessAxis) chkSessAxis.checked = WorkspaceManager.sessionConfig.showOnAxis;
-            const chkSessChart = document.getElementById('check-sessions-chart') as HTMLInputElement;
-            if (chkSessChart) chkSessChart.checked = WorkspaceManager.sessionConfig.showOnChart;
+            // Sync Session Toggles & Swatches (LuxAlgo Sessions)
+            const sc = WorkspaceManager.sessionConfig;
+            const syncCheck = (id: string, val: boolean) => {
+                const el = document.getElementById(id) as HTMLInputElement;
+                if (el) el.checked = !!val;
+            };
+            const syncVal = (id: string, val: any) => {
+                const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement;
+                if (el) el.value = String(val ?? '');
+            };
 
-            setSwatch('input-sess-asia', WorkspaceManager.sessionConfig.asiaColor);
-            setSwatch('input-sess-london', WorkspaceManager.sessionConfig.londonColor);
-            setSwatch('input-sess-ny', WorkspaceManager.sessionConfig.nyColor);
+            syncCheck('check-sessions-enabled', sc.enabled);
+            syncCheck('check-sessions-ranges', sc.showRanges ?? true);
+            syncCheck('check-sessions-axis', sc.showOnAxis);
+            syncCheck('check-sessions-chart', sc.showOnChart);
+
+            // Sessions A, B, C, D
+            const sessA = sc.sessionA || { enabled: true, name: 'New York', hours: '1300-2200', range: true, color: sc.nyColor || '#EF5350' };
+            const sessB = sc.sessionB || { enabled: true, name: 'London', hours: '0700-1600', range: true, color: sc.londonColor || '#2962FF' };
+            const sessC = sc.sessionC || { enabled: true, name: 'Tokyo', hours: '0000-0900', range: true, color: sc.asiaColor || '#FBC02D' };
+            const sessD = sc.sessionD || { enabled: false, name: 'Sydney', hours: '2100-0600', range: true, color: '#AB47BC' };
+
+            syncCheck('check-sess-a-enabled', sessA.enabled);
+            syncCheck('check-sess-a-range', sessA.range);
+            syncVal('input-sess-a-name', sessA.name);
+            syncVal('input-sess-a-hours', sessA.hours);
+            setSwatch('input-sess-a-color', sessA.color);
+
+            syncCheck('check-sess-b-enabled', sessB.enabled);
+            syncCheck('check-sess-b-range', sessB.range);
+            syncVal('input-sess-b-name', sessB.name);
+            syncVal('input-sess-b-hours', sessB.hours);
+            setSwatch('input-sess-b-color', sessB.color);
+
+            syncCheck('check-sess-c-enabled', sessC.enabled);
+            syncCheck('check-sess-c-range', sessC.range);
+            syncVal('input-sess-c-name', sessC.name);
+            syncVal('input-sess-c-hours', sessC.hours);
+            setSwatch('input-sess-c-color', sessC.color);
+
+            syncCheck('check-sess-d-enabled', sessD.enabled);
+            syncCheck('check-sess-d-range', sessD.range);
+            syncVal('input-sess-d-name', sessD.name);
+            syncVal('input-sess-d-hours', sessD.hours);
+            setSwatch('input-sess-d-color', sessD.color);
+
+            // Timezone
+            syncCheck('check-sess-exchange-tz', sc.exchangeTimezone ?? true);
+            syncVal('select-sess-tz-offset', sc.timezoneOffset ?? 0);
+
+            // Ranges Settings
+            syncVal('input-sess-range-transparency', sc.rangeTransparency ?? 80);
+            syncCheck('check-sess-range-outline', sc.rangeOutline ?? true);
+            syncCheck('check-sess-range-label', sc.rangeLabel ?? true);
+            syncCheck('check-sess-range-mean', sc.showMean ?? false);
 
             setSwatch('input-bull-body', current.bullBody);
             setSwatch('input-bear-body', current.bearBody);
@@ -2722,43 +2857,100 @@ export class WorkspaceManager {
         bindSwatch('input-bear-wick', 'bearWick', true);
         bindSwatch('input-custom-accent', 'accentColor', false);
 
-        // Bind Session Checkboxes
-        const bindSessCheck = (id: string, key: keyof typeof WorkspaceManager.sessionConfig) => {
+        // Bind Session Controls (LuxAlgo Sessions)
+        const bindSessBool = (id: string, setter: (val: boolean) => void) => {
             document.getElementById(id)?.addEventListener('change', (e) => {
-                (WorkspaceManager.sessionConfig as any)[key] = (e.target as HTMLInputElement).checked;
+                setter((e.target as HTMLInputElement).checked);
                 WorkspaceManager.syncSessions();
                 WorkspaceManager.triggerAutoSave();
             });
         };
-        bindSessCheck('check-sessions-enabled', 'enabled');
-        bindSessCheck('check-sessions-axis', 'showOnAxis');
-        bindSessCheck('check-sessions-chart', 'showOnChart');
 
-        // Bind Session Swatches (with Opacity Enabled)
-        const bindSessionSwatch = (btnId: string, configKey: keyof typeof WorkspaceManager.sessionConfig) => {
+        const bindSessText = (id: string, setter: (val: string) => void) => {
+            document.getElementById(id)?.addEventListener('input', (e) => {
+                setter((e.target as HTMLInputElement).value);
+                WorkspaceManager.syncSessions();
+                WorkspaceManager.triggerAutoSave();
+            });
+        };
+
+        const bindSessNum = (id: string, setter: (val: number) => void) => {
+            document.getElementById(id)?.addEventListener('change', (e) => {
+                setter(parseFloat((e.target as HTMLInputElement).value) || 0);
+                WorkspaceManager.syncSessions();
+                WorkspaceManager.triggerAutoSave();
+            });
+        };
+
+        const bindSessSwatch = (btnId: string, getter: () => string, setter: (hex: string) => void) => {
             const btn = document.getElementById(btnId);
             if (!btn) return;
             btn.addEventListener('click', () => {
-                const currentHex = (WorkspaceManager.sessionConfig as any)[configKey] || '#FFFFFF';
+                const currentHex = getter() || '#FFFFFF';
                 colorPicker.open({
                     anchorElement: btn,
                     initialColor: currentHex,
-                    showOpacity: true, // <--- OPACITY SLIDER ENABLED
+                    showOpacity: true,
                     onChange: (res) => {
                         const aHex = Math.round(res.opacity * 255).toString(16).padStart(2, '0');
                         const fullHex = `${res.color.slice(0, 7)}${aHex}`.toUpperCase();
                         btn.dataset.color = fullHex;
                         btn.style.backgroundColor = fullHex;
-                        (WorkspaceManager.sessionConfig as any)[configKey] = fullHex;
+                        setter(fullHex);
                         WorkspaceManager.syncSessions();
                         WorkspaceManager.triggerAutoSave();
                     }
                 });
             });
         };
-        bindSessionSwatch('input-sess-asia', 'asiaColor');
-        bindSessionSwatch('input-sess-london', 'londonColor');
-        bindSessionSwatch('input-sess-ny', 'nyColor');
+
+        const scfg = WorkspaceManager.sessionConfig;
+        bindSessBool('check-sessions-enabled', (v) => scfg.enabled = v);
+        bindSessBool('check-sessions-ranges', (v) => scfg.showRanges = v);
+        bindSessBool('check-sessions-axis', (v) => scfg.showOnAxis = v);
+        bindSessBool('check-sessions-chart', (v) => scfg.showOnChart = v);
+
+        // Session A
+        bindSessBool('check-sess-a-enabled', (v) => scfg.sessionA.enabled = v);
+        bindSessBool('check-sess-a-range', (v) => scfg.sessionA.range = v);
+        bindSessText('input-sess-a-name', (v) => scfg.sessionA.name = v);
+        bindSessText('input-sess-a-hours', (v) => scfg.sessionA.hours = v);
+        bindSessSwatch('input-sess-a-color', () => scfg.sessionA.color, (c) => { scfg.sessionA.color = c; scfg.nyColor = c; });
+
+        // Session B
+        bindSessBool('check-sess-b-enabled', (v) => scfg.sessionB.enabled = v);
+        bindSessBool('check-sess-b-range', (v) => scfg.sessionB.range = v);
+        bindSessText('input-sess-b-name', (v) => scfg.sessionB.name = v);
+        bindSessText('input-sess-b-hours', (v) => scfg.sessionB.hours = v);
+        bindSessSwatch('input-sess-b-color', () => scfg.sessionB.color, (c) => { scfg.sessionB.color = c; scfg.londonColor = c; });
+
+        // Session C
+        bindSessBool('check-sess-c-enabled', (v) => scfg.sessionC.enabled = v);
+        bindSessBool('check-sess-c-range', (v) => scfg.sessionC.range = v);
+        bindSessText('input-sess-c-name', (v) => scfg.sessionC.name = v);
+        bindSessText('input-sess-c-hours', (v) => scfg.sessionC.hours = v);
+        bindSessSwatch('input-sess-c-color', () => scfg.sessionC.color, (c) => { scfg.sessionC.color = c; scfg.asiaColor = c; });
+
+        // Session D
+        bindSessBool('check-sess-d-enabled', (v) => scfg.sessionD.enabled = v);
+        bindSessBool('check-sess-d-range', (v) => scfg.sessionD.range = v);
+        bindSessText('input-sess-d-name', (v) => scfg.sessionD.name = v);
+        bindSessText('input-sess-d-hours', (v) => scfg.sessionD.hours = v);
+        bindSessSwatch('input-sess-d-color', () => scfg.sessionD.color, (c) => { scfg.sessionD.color = c; });
+
+        // Timezone
+        bindSessBool('check-sess-exchange-tz', (v) => scfg.exchangeTimezone = v);
+        document.getElementById('select-sess-tz-offset')?.addEventListener('change', (e) => {
+            scfg.timezoneOffset = parseInt((e.target as HTMLSelectElement).value, 10) || 0;
+            WorkspaceManager.syncSessions();
+            WorkspaceManager.triggerAutoSave();
+        });
+
+        // Ranges Settings
+        bindSessNum('input-sess-range-transparency', (v) => scfg.rangeTransparency = v);
+        bindSessBool('check-sess-range-outline', (v) => scfg.rangeOutline = v);
+        bindSessBool('check-sess-range-label', (v) => scfg.rangeLabel = v);
+        bindSessBool('check-sess-range-mean', (v) => scfg.showMean = v);
 
         // Bind Clock Controls
         document.getElementById('check-clock-enabled')?.addEventListener('change', (e) => {

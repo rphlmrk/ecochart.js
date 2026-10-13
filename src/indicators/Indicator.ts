@@ -81,6 +81,15 @@ export abstract class BaseIndicator {
         return param !== undefined ? param.value : (fallback as T);
     }
 
+    public setParam(id: string, val: any): void {
+        const p = this.params.find(param => param.id === id);
+        if (p) {
+            p.value = val;
+            this.lastCalculatedIdx = -1;
+            this.revision++;
+        }
+    }
+
     /**
      * Applies new parameter values from the UI, triggers onParamsUpdated,
      * and resets calculation indices so the math engine recalculates fresh.
