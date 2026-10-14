@@ -3,7 +3,7 @@ import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { StrokeEngine } from '../../renderer/StrokeEngine';
 import { Container, BitmapText, Graphics } from 'pixi.js';
 
-export interface LuxSessionDef {
+export interface MarketSessionDef {
     enabled: boolean;
     name: string;
     hours: string;
@@ -20,13 +20,13 @@ export interface SessionBox {
     color: string;
 }
 
-export class LuxSessionsIndicator extends BaseIndicator {
+export class MarketSessionsIndicator extends BaseIndicator {
     private labelContainer = new Container();
     private labelTextPool: BitmapText[] = [];
     private isContainerMounted = false;
 
     constructor() {
-        super('LUX_SESSIONS', 'Market Sessions');
+        super('MARKET_SESSIONS', 'Market Sessions');
         this.isOscillator = false;
         this.params = [
             // Master toggle
@@ -44,44 +44,45 @@ export class LuxSessionsIndicator extends BaseIndicator {
 
             // Session A
             { id: 'showSessionA', name: 'Enable Session A', type: 'boolean', value: true },
-            { id: 'sessionAName', name: 'Session A Name', type: 'select', value: 'New York', options: ['New York', 'London', 'Tokyo', 'Sydney', 'Custom'] },
-            { id: 'sessionATime', name: 'Session A Hours', type: 'select', value: '1300-2200', options: ['1300-2200', '1330-2000', '0700-1600', '0800-1630', '0000-0900', '2100-0600'] },
+            { id: 'sessionAName', name: 'Session A Name', type: 'string', value: 'New York' },
+            { id: 'sessionATime', name: 'Session A Hours', type: 'string', value: '1300-2200' },
             { id: 'sessionARange', name: 'Session A Range', type: 'boolean', value: true },
             { id: 'sessionAColor', name: 'Session A Color', type: 'color', value: '#EF5350' },
 
             // Session B
             { id: 'showSessionB', name: 'Enable Session B', type: 'boolean', value: true },
-            { id: 'sessionBName', name: 'Session B Name', type: 'select', value: 'London', options: ['New York', 'London', 'Tokyo', 'Sydney', 'Custom'] },
-            { id: 'sessionBTime', name: 'Session B Hours', type: 'select', value: '0700-1600', options: ['0700-1600', '0800-1630', '1300-2200', '0000-0900', '2100-0600'] },
+            { id: 'sessionBName', name: 'Session B Name', type: 'string', value: 'London' },
+            { id: 'sessionBTime', name: 'Session B Hours', type: 'string', value: '0700-1600' },
             { id: 'sessionBRange', name: 'Session B Range', type: 'boolean', value: true },
             { id: 'sessionBColor', name: 'Session B Color', type: 'color', value: '#2962FF' },
 
             // Session C
             { id: 'showSessionC', name: 'Enable Session C', type: 'boolean', value: true },
-            { id: 'sessionCName', name: 'Session C Name', type: 'select', value: 'Tokyo', options: ['New York', 'London', 'Tokyo', 'Sydney', 'Custom'] },
-            { id: 'sessionCTime', name: 'Session C Hours', type: 'select', value: '0000-0900', options: ['0000-0900', '0700-1600', '1300-2200', '2100-0600'] },
+            { id: 'sessionCName', name: 'Session C Name', type: 'string', value: 'Tokyo' },
+            { id: 'sessionCTime', name: 'Session C Hours', type: 'string', value: '0000-0900' },
             { id: 'sessionCRange', name: 'Session C Range', type: 'boolean', value: true },
             { id: 'sessionCColor', name: 'Session C Color', type: 'color', value: '#FBC02D' },
 
             // Session D
             { id: 'showSessionD', name: 'Enable Session D', type: 'boolean', value: false },
-            { id: 'sessionDName', name: 'Session D Name', type: 'select', value: 'Sydney', options: ['New York', 'London', 'Tokyo', 'Sydney', 'Custom'] },
-            { id: 'sessionDTime', name: 'Session D Hours', type: 'select', value: '2100-0600', options: ['2100-0600', '0000-0900', '0700-1600', '1300-2200'] },
+            { id: 'sessionDName', name: 'Session D Name', type: 'string', value: 'Sydney' },
+            { id: 'sessionDTime', name: 'Session D Hours', type: 'string', value: '2100-0600' },
             { id: 'sessionDRange', name: 'Session D Range', type: 'boolean', value: true },
             { id: 'sessionDColor', name: 'Session D Color', type: 'color', value: '#AB47BC' }
         ];
     }
 
-    /**
-     * Parses standard hours formats like "1300-2200", "13:00-22:00", "0700 - 1600"
-     */
-    public static parseSessionHours(hoursStr: string): { startMin: number, endMin: number } {
-        if (!hoursStr || typeof hoursStr !== 'string') return { startMin: 0, endMin: 0 };
-        const clean = hoursStr.replace(/\s+/g, '');
+    public calculate(): void {
+        // Range boxes are dynamic viewport bounds rendered in render()
+    }
+
+    public static parseSessionHours(hStr: string): { startMin: number; endMin: number } {
+        if (!hStr) return { startMin: 0, endMin: 0 };
+        const clean = hStr.replace(/\s+/g, '');
         const parts = clean.split('-');
         if (parts.length !== 2) return { startMin: 0, endMin: 0 };
 
-        const parsePart = (p: string): number => {
+        const parsePart = (p: string) => {
             if (p.includes(':')) {
                 const [h, m] = p.split(':');
                 return (parseInt(h, 10) || 0) * 60 + (parseInt(m, 10) || 0);
@@ -206,7 +207,7 @@ export class LuxSessionsIndicator extends BaseIndicator {
         for (const sess of sessions) {
             if (!sess.enabled || !sess.range) continue;
 
-            const { startMin, endMin } = LuxSessionsIndicator.parseSessionHours(sess.hours);
+            const { startMin, endMin } = MarketSessionsIndicator.parseSessionHours(sess.hours);
             if (startMin === endMin) continue;
 
             const parsedColor = parseColorAndAlpha(sess.color);
@@ -238,7 +239,7 @@ export class LuxSessionsIndicator extends BaseIndicator {
                 const minuteOfDay = Math.floor((((tAdj % 86400000) + 86400000) % 86400000) / 60000);
                 const dayNumber = Math.floor(tAdj / 86400000);
 
-                const active = LuxSessionsIndicator.isMinuteInSession(minuteOfDay, startMin, endMin);
+                const active = MarketSessionsIndicator.isMinuteInSession(minuteOfDay, startMin, endMin);
 
                 // Detect day boundary if session doesn't span midnight
                 const isNewDay = prevDayNumber !== -1 && dayNumber !== prevDayNumber;
@@ -352,9 +353,16 @@ export class LuxSessionsIndicator extends BaseIndicator {
 
     public destroy(): void {
         this.labelContainer.visible = false;
+        for (let i = 0; i < this.labelTextPool.length; i++) {
+            this.labelTextPool[i].visible = false;
+        }
         if (this.labelContainer.parent) {
             this.labelContainer.parent.removeChild(this.labelContainer);
         }
         this.isContainerMounted = false;
     }
 }
+
+// Backwards compatibility alias
+export { MarketSessionsIndicator as LuxSessionsIndicator };
+export type { MarketSessionDef as LuxSessionDef };

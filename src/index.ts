@@ -17,7 +17,7 @@ import {
     ZigZag123Indicator,
     CBCFlipIndicator,
     PeriodSeparatorIndicator,
-    LuxSessionsIndicator
+    MarketSessionsIndicator
 } from './indicators/plugins';
 
 import { DrawingManager } from './tools/DrawingManager';
@@ -439,8 +439,18 @@ export class EcoChart {
             this.themeUnsubscribe = null;
         }
 
-        this.network.disconnect();
-        this.renderer.destroy();
+        try {
+            this.network.disconnect();
+        } catch (err) {
+            console.warn('Network disconnect warning:', err);
+        }
+
+        try {
+            this.renderer.destroy();
+        } catch (err) {
+            console.warn('Renderer destroy warning:', err);
+        }
+
         this.autoBtn?.remove();
         this.navBar?.remove();
         this.legendContainer?.remove();
@@ -469,7 +479,7 @@ export class EcoChart {
         this.legendContainer.innerHTML = '';
 
         this.indicatorManager.activeIndicators.forEach((ind) => {
-            if (ind instanceof PeriodSeparatorIndicator || ind instanceof LuxSessionsIndicator) return;
+            if (ind instanceof PeriodSeparatorIndicator || ind instanceof MarketSessionsIndicator) return;
 
             const item = document.createElement('div');
             item.className = `legend-item ${ind.visible ? '' : 'dimmed'}`;
@@ -1390,6 +1400,9 @@ export class EcoChart {
         await this.startLiveBinance(this.currentSymbol, this.currentInterval);
         this.updateLegend();
         this.updateControlsLayout();
+        WorkspaceManager.syncSessions();
+        WorkspaceManager.syncSeparators();
+        WorkspaceManager.syncClock();
     }
 
     public async switchTimeframe(newInterval: string) {
@@ -1642,6 +1655,7 @@ export class WorkspaceManager {
     private static saveTimeout: any = null;
     public static toolbarDockMode: 'free' | 'top' = 'free';
     public static topBarDisplayMode: 'change' | 'none' = 'change';
+    public static syncModalInputs: () => void = () => {};
 
     // Global Timeframe Download Limits (Stored in days, -1 = Infinity)
     public static dataLimits: Record<string, number> = {
@@ -1856,51 +1870,54 @@ export class WorkspaceManager {
 
             // 2. Sync Market Sessions Indicator (Range boxes, dotted outlines, labels, means)
             const indMgr = c.indicatorManager;
-            let activeLux = indMgr.activeIndicators.find(i => i instanceof LuxSessionsIndicator) as LuxSessionsIndicator | undefined;
+            let activeSessions = indMgr.activeIndicators.find(i => i instanceof MarketSessionsIndicator) as MarketSessionsIndicator | undefined;
             if (!sc.enabled || !sc.showRanges) {
-                if (activeLux) indMgr.removeIndicator(activeLux.id);
+                if (activeSessions) indMgr.removeIndicator(activeSessions.id);
+                c.renderer.indicatorMainGraphics.clear();
             } else {
-                if (!activeLux) {
-                    activeLux = new LuxSessionsIndicator();
-                    indMgr.addIndicator(activeLux);
+                if (!activeSessions) {
+                    activeSessions = new MarketSessionsIndicator();
+                    indMgr.addIndicator(activeSessions);
                 }
-                activeLux.setParam('showRanges', sc.showRanges ?? true);
-                activeLux.setParam('exchangeTimezone', sc.exchangeTimezone ?? true);
-                activeLux.setParam('timezoneOffset', sc.timezoneOffset ?? 0);
-                activeLux.setParam('rangeTransparency', sc.rangeTransparency ?? 80);
-                activeLux.setParam('rangeOutline', sc.rangeOutline ?? true);
-                activeLux.setParam('rangeLabel', sc.rangeLabel ?? true);
-                activeLux.setParam('showMean', sc.showMean ?? false);
+                activeSessions.setParam('showRanges', sc.showRanges ?? true);
+                activeSessions.setParam('exchangeTimezone', sc.exchangeTimezone ?? true);
+                activeSessions.setParam('timezoneOffset', sc.timezoneOffset ?? 0);
+                activeSessions.setParam('rangeTransparency', sc.rangeTransparency ?? 80);
+                activeSessions.setParam('rangeOutline', sc.rangeOutline ?? true);
+                activeSessions.setParam('rangeLabel', sc.rangeLabel ?? true);
+                activeSessions.setParam('showMean', sc.showMean ?? false);
 
-                activeLux.setParam('showSessionA', sessA.enabled);
-                activeLux.setParam('sessionAName', sessA.name);
-                activeLux.setParam('sessionATime', sessA.hours);
-                activeLux.setParam('sessionARange', sessA.range);
-                activeLux.setParam('sessionAColor', sessA.color);
+                activeSessions.setParam('showSessionA', sessA.enabled);
+                activeSessions.setParam('sessionAName', sessA.name);
+                activeSessions.setParam('sessionATime', sessA.hours);
+                activeSessions.setParam('sessionARange', sessA.range);
+                activeSessions.setParam('sessionAColor', sessA.color);
 
-                activeLux.setParam('showSessionB', sessB.enabled);
-                activeLux.setParam('sessionBName', sessB.name);
-                activeLux.setParam('sessionBTime', sessB.hours);
-                activeLux.setParam('sessionBRange', sessB.range);
-                activeLux.setParam('sessionBColor', sessB.color);
+                activeSessions.setParam('showSessionB', sessB.enabled);
+                activeSessions.setParam('sessionBName', sessB.name);
+                activeSessions.setParam('sessionBTime', sessB.hours);
+                activeSessions.setParam('sessionBRange', sessB.range);
+                activeSessions.setParam('sessionBColor', sessB.color);
 
-                activeLux.setParam('showSessionC', sessC.enabled);
-                activeLux.setParam('sessionCName', sessC.name);
-                activeLux.setParam('sessionCTime', sessC.hours);
-                activeLux.setParam('sessionCRange', sessC.range);
-                activeLux.setParam('sessionCColor', sessC.color);
+                activeSessions.setParam('showSessionC', sessC.enabled);
+                activeSessions.setParam('sessionCName', sessC.name);
+                activeSessions.setParam('sessionCTime', sessC.hours);
+                activeSessions.setParam('sessionCRange', sessC.range);
+                activeSessions.setParam('sessionCColor', sessC.color);
 
-                activeLux.setParam('showSessionD', sessD.enabled);
-                activeLux.setParam('sessionDName', sessD.name);
-                activeLux.setParam('sessionDTime', sessD.hours);
-                activeLux.setParam('sessionDRange', sessD.range);
-                activeLux.setParam('sessionDColor', sessD.color);
+                activeSessions.setParam('showSessionD', sessD.enabled);
+                activeSessions.setParam('sessionDName', sessD.name);
+                activeSessions.setParam('sessionDTime', sessD.hours);
+                activeSessions.setParam('sessionDRange', sessD.range);
+                activeSessions.setParam('sessionDColor', sessD.color);
 
-                activeLux.update(c.dataStore, true);
+                activeSessions.update(c.dataStore, true);
             }
 
             c.renderer.forceNextRender = true;
+            c.renderer.isHistoricalDirty = true;
             c.isDirty = true;
+            c.timeAxisRenderer.render();
         });
     }
 
@@ -1944,6 +1961,7 @@ export class WorkspaceManager {
                     showFuture: this.separatorConfig.showFuture
                 });
                 c.renderer.forceNextRender = true;
+                c.renderer.isHistoricalDirty = true;
                 c.isDirty = true;
             } else if (this.separatorConfig.enabled) {
                 const newInd = new PeriodSeparatorIndicator();
@@ -1951,6 +1969,7 @@ export class WorkspaceManager {
                 c.indicatorManager.addIndicator(newInd);
                 newInd.update(c.dataStore, true);
                 c.renderer.forceNextRender = true;
+                c.renderer.isHistoricalDirty = true;
                 c.isDirty = true;
             }
         });
@@ -2133,6 +2152,7 @@ export class WorkspaceManager {
                     if (state.activePaneIndex >= 0 && state.activePaneIndex < this.charts.length) {
                         this.setActiveChart(this.charts[state.activePaneIndex]);
                     }
+                    this.syncModalInputs();
                     return;
                 }
             }
@@ -2648,11 +2668,13 @@ export class WorkspaceManager {
             tab.addEventListener('click', () => {
                 const target = (tab as HTMLElement).dataset.tab;
                 modalTabs.forEach((t) => {
+                    t.classList.remove('active-tab');
                     (t as HTMLElement).style.background = 'transparent';
-                    (t as HTMLElement).style.color = '#787B86';
+                    (t as HTMLElement).style.color = 'var(--chart-text, #787B86)';
                 });
-                (tab as HTMLElement).style.background = '#2A2E39';
-                (tab as HTMLElement).style.color = '#2962FF';
+                tab.classList.add('active-tab');
+                (tab as HTMLElement).style.background = 'var(--chart-grid, #2A2E39)';
+                (tab as HTMLElement).style.color = 'var(--chart-accent, #2962FF)';
 
                 document.querySelectorAll('.modal-tab-content').forEach((c) => {
                     (c as HTMLElement).style.display = 'none';
@@ -2868,25 +2890,6 @@ export class WorkspaceManager {
             if (selClock2) selClock2.value = WorkspaceManager.clockConfig.secondaryTz;
 
             // Sync Period & Day of Week Separator Controls
-            const activeSep = this.activeChart?.indicatorManager.activeIndicators.find(i => i instanceof PeriodSeparatorIndicator) as PeriodSeparatorIndicator | undefined;
-            if (activeSep) {
-                WorkspaceManager.separatorConfig.enabled = activeSep.visible;
-                WorkspaceManager.separatorConfig.showDOW = activeSep.getParam('showDOW', WorkspaceManager.separatorConfig.showDOW);
-                WorkspaceManager.separatorConfig.dowPosition = activeSep.getParam('dowPosition', WorkspaceManager.separatorConfig.dowPosition);
-                WorkspaceManager.separatorConfig.dowVerticalOffset = activeSep.getParam('dowVerticalOffset', WorkspaceManager.separatorConfig.dowVerticalOffset);
-                WorkspaceManager.separatorConfig.dowColor = activeSep.getParam('dowColor', WorkspaceManager.separatorConfig.dowColor);
-                WorkspaceManager.separatorConfig.showDay = activeSep.getParam('showDay', WorkspaceManager.separatorConfig.showDay);
-                WorkspaceManager.separatorConfig.lineColor = activeSep.getParam('lineColor', WorkspaceManager.separatorConfig.lineColor);
-                WorkspaceManager.separatorConfig.lineStyle = activeSep.getParam('lineStyle', WorkspaceManager.separatorConfig.lineStyle);
-                WorkspaceManager.separatorConfig.show4H = activeSep.getParam('show4H', WorkspaceManager.separatorConfig.show4H);
-                WorkspaceManager.separatorConfig.lineColor4H = activeSep.getParam('lineColor4H', WorkspaceManager.separatorConfig.lineColor4H);
-                WorkspaceManager.separatorConfig.lineStyle4H = activeSep.getParam('lineStyle4H', WorkspaceManager.separatorConfig.lineStyle4H);
-                WorkspaceManager.separatorConfig.show1H = activeSep.getParam('show1H', WorkspaceManager.separatorConfig.show1H);
-                WorkspaceManager.separatorConfig.lineColor1H = activeSep.getParam('lineColor1H', WorkspaceManager.separatorConfig.lineColor1H);
-                WorkspaceManager.separatorConfig.lineStyle1H = activeSep.getParam('lineStyle1H', WorkspaceManager.separatorConfig.lineStyle1H);
-                WorkspaceManager.separatorConfig.showFuture = activeSep.getParam('showFuture', WorkspaceManager.separatorConfig.showFuture);
-            }
-
             const chkSepEnabled = document.getElementById('check-separator-enabled') as HTMLInputElement;
             if (chkSepEnabled) chkSepEnabled.checked = WorkspaceManager.separatorConfig.enabled;
             const chkSepDow = document.getElementById('check-separator-dow') as HTMLInputElement;
@@ -2956,7 +2959,7 @@ export class WorkspaceManager {
                 WorkspaceManager.ensureSessionConfig();
                 setter(el.checked);
                 WorkspaceManager.syncSessions();
-                WorkspaceManager.triggerAutoSave();
+                WorkspaceManager.saveWorkspace();
             });
         };
 
@@ -2967,7 +2970,7 @@ export class WorkspaceManager {
                 WorkspaceManager.ensureSessionConfig();
                 setter(el.value);
                 WorkspaceManager.syncSessions();
-                WorkspaceManager.triggerAutoSave();
+                WorkspaceManager.saveWorkspace();
             });
         };
 
@@ -2978,7 +2981,7 @@ export class WorkspaceManager {
                 WorkspaceManager.ensureSessionConfig();
                 setter(parseFloat(el.value) || 0);
                 WorkspaceManager.syncSessions();
-                WorkspaceManager.triggerAutoSave();
+                WorkspaceManager.saveWorkspace();
             };
             el.addEventListener('input', handler);
             el.addEventListener('change', handler);
@@ -3003,7 +3006,7 @@ export class WorkspaceManager {
                         WorkspaceManager.ensureSessionConfig();
                         setter(fullHex);
                         WorkspaceManager.syncSessions();
-                        WorkspaceManager.triggerAutoSave();
+                        WorkspaceManager.saveWorkspace();
                     }
                 });
             });
@@ -3054,12 +3057,24 @@ export class WorkspaceManager {
         });
 
         // Timezone
-        bindSessBool('check-sess-exchange-tz', (v) => WorkspaceManager.sessionConfig.exchangeTimezone = v);
+        bindSessBool('check-sess-exchange-tz', (v) => {
+            WorkspaceManager.sessionConfig.exchangeTimezone = v;
+            const selOffset = document.getElementById('select-sess-tz-offset') as HTMLSelectElement | null;
+            if (selOffset) selOffset.style.opacity = v ? '0.6' : '1.0';
+        });
         document.getElementById('select-sess-tz-offset')?.addEventListener('change', (e) => {
             WorkspaceManager.ensureSessionConfig();
             WorkspaceManager.sessionConfig.timezoneOffset = parseInt((e.target as HTMLSelectElement).value, 10) || 0;
+            // Explicit offset selection turns off exchange timezone
+            const chkExchange = document.getElementById('check-sess-exchange-tz') as HTMLInputElement | null;
+            if (chkExchange && chkExchange.checked) {
+                chkExchange.checked = false;
+                WorkspaceManager.sessionConfig.exchangeTimezone = false;
+            }
+            const selOffset = document.getElementById('select-sess-tz-offset') as HTMLSelectElement | null;
+            if (selOffset) selOffset.style.opacity = '1.0';
             WorkspaceManager.syncSessions();
-            WorkspaceManager.triggerAutoSave();
+            WorkspaceManager.saveWorkspace();
         });
 
         // Ranges Settings
@@ -3072,19 +3087,19 @@ export class WorkspaceManager {
         document.getElementById('check-clock-enabled')?.addEventListener('change', (e) => {
             WorkspaceManager.clockConfig.enabled = (e.target as HTMLInputElement).checked;
             WorkspaceManager.syncClock();
-            WorkspaceManager.triggerAutoSave();
+            WorkspaceManager.saveWorkspace();
         });
 
         document.getElementById('select-clock-primary')?.addEventListener('change', (e) => {
             WorkspaceManager.clockConfig.primaryTz = (e.target as HTMLSelectElement).value;
             WorkspaceManager.syncClock();
-            WorkspaceManager.triggerAutoSave();
+            WorkspaceManager.saveWorkspace();
         });
 
         document.getElementById('select-clock-secondary')?.addEventListener('change', (e) => {
             WorkspaceManager.clockConfig.secondaryTz = (e.target as HTMLSelectElement).value;
             WorkspaceManager.syncClock();
-            WorkspaceManager.triggerAutoSave();
+            WorkspaceManager.saveWorkspace();
         });
 
         // Bind Period & Day of Week Separator Controls
@@ -3092,7 +3107,7 @@ export class WorkspaceManager {
             document.getElementById(id)?.addEventListener('change', (e) => {
                 (WorkspaceManager.separatorConfig as any)[key] = (e.target as HTMLInputElement).checked;
                 WorkspaceManager.syncSeparators();
-                WorkspaceManager.triggerAutoSave();
+                WorkspaceManager.saveWorkspace();
             });
         };
         bindSepCheck('check-separator-enabled', 'enabled');
@@ -3108,7 +3123,7 @@ export class WorkspaceManager {
                 if (!isNaN(val)) {
                     (WorkspaceManager.separatorConfig as any)[key] = Math.max(minVal, val);
                     WorkspaceManager.syncSeparators();
-                    WorkspaceManager.triggerAutoSave();
+                    WorkspaceManager.saveWorkspace();
                 }
             });
         };
@@ -3118,7 +3133,7 @@ export class WorkspaceManager {
             document.getElementById(id)?.addEventListener('change', (e) => {
                 (WorkspaceManager.separatorConfig as any)[key] = (e.target as HTMLSelectElement).value;
                 WorkspaceManager.syncSeparators();
-                WorkspaceManager.triggerAutoSave();
+                WorkspaceManager.saveWorkspace();
             });
         };
         bindSepSelect('select-separator-dow-position', 'dowPosition');
@@ -3142,7 +3157,7 @@ export class WorkspaceManager {
                         btn.style.backgroundColor = fullHex;
                         (WorkspaceManager.separatorConfig as any)[configKey] = fullHex;
                         WorkspaceManager.syncSeparators();
-                        WorkspaceManager.triggerAutoSave();
+                        WorkspaceManager.saveWorkspace();
                     }
                 });
             });
@@ -3372,13 +3387,15 @@ export class WorkspaceManager {
 
             // Programmatically switch to the Workspace tab
             document.querySelectorAll('.modal-tab-btn').forEach(t => {
+                t.classList.remove('active-tab');
                 (t as HTMLElement).style.background = 'transparent';
-                (t as HTMLElement).style.color = '#787B86';
+                (t as HTMLElement).style.color = 'var(--chart-text, #787B86)';
             });
             const wsTab = document.querySelector('.modal-tab-btn[data-tab="workspace"]') as HTMLElement;
             if (wsTab) {
-                wsTab.style.background = '#2A2E39';
-                wsTab.style.color = '#2962FF';
+                wsTab.classList.add('active-tab');
+                wsTab.style.background = 'var(--chart-grid, #2A2E39)';
+                wsTab.style.color = 'var(--chart-accent, #2962FF)';
             }
 
             document.querySelectorAll('.modal-tab-content').forEach(c => {
@@ -3421,10 +3438,14 @@ export class WorkspaceManager {
 
             colorPicker.close();
             modalSettings?.close();
-            WorkspaceManager.triggerAutoSave(); // <-- Save all modal changes
+            WorkspaceManager.saveWorkspace(); // <-- Immediately save all modal changes
         };
         btnCloseSettings?.addEventListener('click', closeSettings);
         btnModalCloseX?.addEventListener('click', closeSettings);
+
+        window.addEventListener('beforeunload', () => {
+            WorkspaceManager.saveWorkspace();
+        });
 
         // ==========================================================
         // 🔍 MODERNIZED SYMBOL SEARCH CONTROLLER (Virtual Slice & Tabs)

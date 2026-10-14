@@ -105,6 +105,10 @@ export class ThemeManager {
         root.style.setProperty('--chart-bull', theme.bullBody);
         root.style.setProperty('--chart-bear', theme.bearBody);
         root.style.setProperty('--chart-accent', accent);
+        root.setAttribute('data-theme-mode', theme.isDark ? 'dark' : 'light');
+        if (typeof document !== 'undefined' && document.body) {
+            document.body.setAttribute('data-theme-mode', theme.isDark ? 'dark' : 'light');
+        }
     }
 
     private saveTheme(theme: ChartTheme) {

@@ -23,7 +23,7 @@ export function parseColorAndAlpha(val: string | number, defaultAlpha = 1.0): { 
     return { color: 0xffffff, alpha: defaultAlpha };
 }
 
-export type ParamType = 'number' | 'color' | 'boolean' | 'select';
+export type ParamType = 'number' | 'color' | 'boolean' | 'select' | 'string';
 
 export interface OscillatorScale {
     min: number;              // Lower bound (e.g. -150)

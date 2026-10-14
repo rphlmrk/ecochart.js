@@ -3,7 +3,7 @@ import {
     SMAIndicator, EMAIndicator, VolumeIndicator, 
     ExhaustionIndicator, HTFBoxIndicator, HTFBiasIndicator, 
     HTFProjectionsIndicator, ZigZag123Indicator, CBCFlipIndicator,
-    PeriodSeparatorIndicator
+    PeriodSeparatorIndicator, MarketSessionsIndicator
 } from './plugins';
 
 export interface SavedIndicatorState {
@@ -25,6 +25,7 @@ export class IndicatorRegistry {
         else if (ind instanceof ZigZag123Indicator) type = 'ZZ123';
         else if (ind instanceof CBCFlipIndicator) type = 'CBC_FLIP';
         else if (ind instanceof PeriodSeparatorIndicator) type = 'PERIOD_SEP';
+        else if (ind instanceof MarketSessionsIndicator) type = 'MARKET_SESSIONS';
 
         const params: Record<string, any> = {};
         ind.params.forEach(p => { params[p.id] = p.value; });
@@ -45,6 +46,8 @@ export class IndicatorRegistry {
             case 'ZZ123': ind = new ZigZag123Indicator(); break;
             case 'CBC_FLIP': ind = new CBCFlipIndicator(); break;
             case 'PERIOD_SEP': ind = new PeriodSeparatorIndicator(); break;
+            case 'MARKET_SESSIONS':
+            case 'LUX_SESSIONS': ind = new MarketSessionsIndicator(); break;
         }
 
         if (ind) {

@@ -558,6 +558,78 @@
       opacity: 1;
       color: var(--chart-accent, #2962FF);
     }
+
+    /* ======================================================== */
+    /* 🎨 SETTINGS MODAL THEME CONTRAST & ADAPTIVE STYLING      */
+    /* ======================================================== */
+    #settings-modal {
+      background: var(--chart-panel-bg, #131722) !important;
+      color: var(--chart-text, #D1D4DC) !important;
+      border: 1px solid var(--chart-grid, #434651) !important;
+    }
+    #settings-modal .modal-header,
+    #settings-modal > div:first-child {
+      border-bottom: 1px solid var(--chart-grid, #2A2E39) !important;
+      color: var(--chart-text, #D1D4DC) !important;
+    }
+    #settings-tabs {
+      background: var(--chart-bg, #161a25) !important;
+      border-bottom: 1px solid var(--chart-grid, #2A2E39) !important;
+    }
+    .modal-tab-btn {
+      color: var(--chart-text, #787B86) !important;
+      opacity: 0.75;
+      font-family: inherit;
+    }
+    .modal-tab-btn:hover {
+      opacity: 1;
+      color: var(--chart-accent, #2962FF) !important;
+    }
+    .modal-tab-btn.active-tab,
+    .modal-tab-btn[style*="background: rgb(42, 46, 57)"],
+    .modal-tab-btn[style*="background: #2A2E39"] {
+      background: var(--chart-grid, #2A2E39) !important;
+      color: var(--chart-accent, #2962FF) !important;
+      opacity: 1 !important;
+    }
+    #settings-modal .modal-tab-content span,
+    #settings-modal .modal-tab-content label,
+    #settings-modal .modal-tab-content div {
+      color: var(--chart-text, #D1D4DC);
+    }
+    #settings-modal .modal-tab-content span[style*="color: #787B86"],
+    #settings-modal .modal-tab-content span[style*="color:#787B86"],
+    #settings-modal .modal-tab-content div[style*="color: #787B86"] {
+      color: var(--chart-text, #787B86) !important;
+      opacity: 0.75;
+    }
+    #settings-modal input[type="text"],
+    #settings-modal input[type="number"],
+    #settings-modal select {
+      background: var(--chart-bg, #1e222d) !important;
+      color: var(--chart-text, #D1D4DC) !important;
+      border: 1px solid var(--chart-grid, #434651) !important;
+    }
+    #settings-modal select option {
+      background: var(--chart-panel-bg, #1e222d) !important;
+      color: var(--chart-text, #D1D4DC) !important;
+    }
+    #settings-modal div[style*="background: rgba(255, 255, 255, 0.03)"],
+    #settings-modal div[style*="background: rgba(0,0,0,0.25)"] {
+      background: var(--chart-bg, rgba(255, 255, 255, 0.03)) !important;
+      border: 1px solid var(--chart-grid, #2A2E39) !important;
+    }
+    #settings-modal div[style*="border-top"],
+    #settings-modal div[style*="border-bottom"] {
+      border-color: var(--chart-grid, #2A2E39) !important;
+    }
+    #settings-modal > div:last-child {
+      background: var(--chart-panel-bg, #161a25) !important;
+      border-top: 1px solid var(--chart-grid, #2A2E39) !important;
+    }
+    #btn-modal-close-x {
+      color: var(--chart-text, #787B86) !important;
+    }
   </style>
 </head>
 
@@ -674,7 +746,7 @@
 
         <!-- Indicators Button (MOVED HERE) -->
         <button id="btn-indicators" title="Indicators"
-          style="background: transparent; color: #D1D4DC; border: none; padding: 4px 6px; font-size: 14px; cursor: pointer; border-radius: 4px; font-weight: bold;">
+          style="background: transparent; color: var(--chart-text, #D1D4DC); border: none; padding: 4px 6px; font-size: 14px; cursor: pointer; border-radius: 4px; font-weight: bold;">
           ƒx
         </button>
 
@@ -683,14 +755,14 @@
 
           <!-- Workspace Quick Access Button -->
           <button id="btn-workspace-modal" title="Manage Workspace"
-            style="background: transparent; color: #D1D4DC; border: none; padding: 4px 6px; font-size: 14px; cursor: pointer; border-radius: 4px;">
+            style="background: transparent; color: var(--chart-text, #D1D4DC); border: none; padding: 4px 6px; font-size: 14px; cursor: pointer; border-radius: 4px;">
             💾
           </button>
 
           <!-- Layout Selector Button & Dropdown -->
           <div style="position: relative;">
             <button id="btn-layout" title="Select Layout"
-              style="background: transparent; color: #D1D4DC; border: none; padding: 4px 6px; font-size: 14px; cursor: pointer; border-radius: 4px;">
+              style="background: transparent; color: var(--chart-text, #D1D4DC); border: none; padding: 4px 6px; font-size: 14px; cursor: pointer; border-radius: 4px;">
               ⊞
             </button>
             <div id="layout-menu"
@@ -734,7 +806,7 @@
 
           <!-- Settings Button -->
           <button id="btn-settings"
-            style="background: transparent; color: #D1D4DC; border: none; padding: 4px 8px; font-size: 14px; cursor: pointer; border-radius: 4px;">
+            style="background: transparent; color: var(--chart-text, #D1D4DC); border: none; padding: 4px 8px; font-size: 14px; cursor: pointer; border-radius: 4px;">
             ⚙️
           </button>
         </div>
@@ -1312,117 +1384,117 @@
 
           <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 10px;">
             <!-- Session A -->
-            <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid #2A2E39; border-radius: 6px; padding: 10px 12px;">
+            <div style="background: var(--chart-bg, rgba(255, 255, 255, 0.03)); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 6px; padding: 10px 12px;">
               <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
-                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: #D1D4DC; cursor: pointer;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--chart-text, #D1D4DC); cursor: pointer;">
                   <input type="checkbox" id="check-sess-a-enabled" checked style="cursor: pointer; accent-color: #2962FF;">
                   Session A
                 </label>
                 <div style="display: flex; align-items: center; gap: 8px;">
-                  <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #848E9C; cursor: pointer;">
+                  <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--chart-text, #848E9C); opacity: 0.8; cursor: pointer;">
                     <input type="checkbox" id="check-sess-a-range" checked style="cursor: pointer;"> Range
                   </label>
                   <button type="button" class="tv-swatch-trigger" id="input-sess-a-color" data-color="#EF5350"
-                    style="width:20px;height:20px;border-radius:4px;border:1px solid #434651;background:#EF5350;cursor:pointer;"></button>
+                    style="width:20px;height:20px;border-radius:4px;border:1px solid var(--chart-grid, #434651);background:#EF5350;cursor:pointer;"></button>
                 </div>
               </div>
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                 <div>
                   <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Name</span>
                   <input type="text" id="input-sess-a-name" value="New York"
-                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
                 </div>
                 <div>
                   <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Hours (e.g. 1300-2200)</span>
                   <input type="text" id="input-sess-a-hours" value="1300-2200"
-                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
                 </div>
               </div>
             </div>
 
             <!-- Session B -->
-            <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid #2A2E39; border-radius: 6px; padding: 10px 12px;">
+            <div style="background: var(--chart-bg, rgba(255, 255, 255, 0.03)); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 6px; padding: 10px 12px;">
               <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
-                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: #D1D4DC; cursor: pointer;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--chart-text, #D1D4DC); cursor: pointer;">
                   <input type="checkbox" id="check-sess-b-enabled" checked style="cursor: pointer; accent-color: #2962FF;">
                   Session B
                 </label>
                 <div style="display: flex; align-items: center; gap: 8px;">
-                  <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #848E9C; cursor: pointer;">
+                  <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--chart-text, #848E9C); opacity: 0.8; cursor: pointer;">
                     <input type="checkbox" id="check-sess-b-range" checked style="cursor: pointer;"> Range
                   </label>
                   <button type="button" class="tv-swatch-trigger" id="input-sess-b-color" data-color="#2962FF"
-                    style="width:20px;height:20px;border-radius:4px;border:1px solid #434651;background:#2962FF;cursor:pointer;"></button>
+                    style="width:20px;height:20px;border-radius:4px;border:1px solid var(--chart-grid, #434651);background:#2962FF;cursor:pointer;"></button>
                 </div>
               </div>
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                 <div>
                   <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Name</span>
                   <input type="text" id="input-sess-b-name" value="London"
-                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
                 </div>
                 <div>
                   <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Hours (e.g. 0700-1600)</span>
                   <input type="text" id="input-sess-b-hours" value="0700-1600"
-                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
                 </div>
               </div>
             </div>
 
             <!-- Session C -->
-            <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid #2A2E39; border-radius: 6px; padding: 10px 12px;">
+            <div style="background: var(--chart-bg, rgba(255, 255, 255, 0.03)); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 6px; padding: 10px 12px;">
               <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
-                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: #D1D4DC; cursor: pointer;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--chart-text, #D1D4DC); cursor: pointer;">
                   <input type="checkbox" id="check-sess-c-enabled" checked style="cursor: pointer; accent-color: #2962FF;">
                   Session C
                 </label>
                 <div style="display: flex; align-items: center; gap: 8px;">
-                  <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #848E9C; cursor: pointer;">
+                  <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--chart-text, #848E9C); opacity: 0.8; cursor: pointer;">
                     <input type="checkbox" id="check-sess-c-range" checked style="cursor: pointer;"> Range
                   </label>
                   <button type="button" class="tv-swatch-trigger" id="input-sess-c-color" data-color="#FBC02D"
-                    style="width:20px;height:20px;border-radius:4px;border:1px solid #434651;background:#FBC02D;cursor:pointer;"></button>
+                    style="width:20px;height:20px;border-radius:4px;border:1px solid var(--chart-grid, #434651);background:#FBC02D;cursor:pointer;"></button>
                 </div>
               </div>
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                 <div>
                   <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Name</span>
                   <input type="text" id="input-sess-c-name" value="Tokyo"
-                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
                 </div>
                 <div>
                   <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Hours (e.g. 0000-0900)</span>
                   <input type="text" id="input-sess-c-hours" value="0000-0900"
-                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
                 </div>
               </div>
             </div>
 
             <!-- Session D -->
-            <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid #2A2E39; border-radius: 6px; padding: 10px 12px;">
+            <div style="background: var(--chart-bg, rgba(255, 255, 255, 0.03)); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 6px; padding: 10px 12px;">
               <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
-                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: #D1D4DC; cursor: pointer;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--chart-text, #D1D4DC); cursor: pointer;">
                   <input type="checkbox" id="check-sess-d-enabled" style="cursor: pointer; accent-color: #2962FF;">
                   Session D
                 </label>
                 <div style="display: flex; align-items: center; gap: 8px;">
-                  <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #848E9C; cursor: pointer;">
+                  <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--chart-text, #848E9C); opacity: 0.8; cursor: pointer;">
                     <input type="checkbox" id="check-sess-d-range" checked style="cursor: pointer;"> Range
                   </label>
                   <button type="button" class="tv-swatch-trigger" id="input-sess-d-color" data-color="#AB47BC"
-                    style="width:20px;height:20px;border-radius:4px;border:1px solid #434651;background:#AB47BC;cursor:pointer;"></button>
+                    style="width:20px;height:20px;border-radius:4px;border:1px solid var(--chart-grid, #434651);background:#AB47BC;cursor:pointer;"></button>
                 </div>
               </div>
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                 <div>
                   <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Name</span>
                   <input type="text" id="input-sess-d-name" value="Sydney"
-                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
                 </div>
                 <div>
                   <span style="font-size: 10px; color: #787B86; display: block; margin-bottom: 2px;">Hours (e.g. 2100-0600)</span>
                   <input type="text" id="input-sess-d-hours" value="2100-0600"
-                    style="width: 100%; box-sizing: border-box; background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
+                    style="width: 100%; box-sizing: border-box; background: var(--chart-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none;">
                 </div>
               </div>
             </div>

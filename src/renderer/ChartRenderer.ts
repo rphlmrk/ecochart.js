@@ -236,24 +236,39 @@ export class ChartRenderer {
     // Dedicated canvases now handle axes outside the main viewport
     public priceAxisWidth = 0;
     public timeAxisHeight = 0;
+    public isDestroyed = false;
+    public isInitialized = false;
+
     constructor(dataStore: DataStore) {
         this.dataStore = dataStore;
         this.app = new Application();
     }
 
     public async init(canvas: HTMLCanvasElement) {
+        if (this.isDestroyed) return;
         const rect = canvas.getBoundingClientRect();
-        await this.app.init({
-            canvas: canvas,
-            width: rect.width || canvas.clientWidth || 800,
-            height: rect.height || canvas.clientHeight || 600,
-            backgroundColor: this.bgColor,
-            antialias: false,
-            autoStart: false, // 🛑 Kill Pixi's continuous 60 FPS auto-loop
-            resolution: Math.min(window.devicePixelRatio || 1, 2),
-            autoDensity: false // Prevent Pixi from writing fixed px styles
-        });
-        this.app.ticker.stop();
+        try {
+            await this.app.init({
+                canvas: canvas,
+                width: rect.width || canvas.clientWidth || 800,
+                height: rect.height || canvas.clientHeight || 600,
+                backgroundColor: this.bgColor,
+                antialias: false,
+                autoStart: false, // 🛑 Kill Pixi's continuous 60 FPS auto-loop
+                resolution: Math.min(window.devicePixelRatio || 1, 2),
+                autoDensity: false // Prevent Pixi from writing fixed px styles
+            });
+        } catch (err) {
+            console.warn('Pixi app.init warning:', err);
+        }
+        if (this.isDestroyed) {
+            this.destroy();
+            return;
+        }
+        this.isInitialized = true;
+        if (this.app?.ticker) {
+            this.app.ticker.stop();
+        }
 
         // GPU BITMAP FONT
         BitmapFont.install({
@@ -827,20 +842,22 @@ export class ChartRenderer {
     }
 
     public destroy() {
-        // 1. Destroy all custom GPU Buffers and Geometries to free VRAM instantly
+        if (this.isDestroyed) return;
+        this.isDestroyed = true;
 
-        if (this.gridGeometry) this.gridGeometry.destroy();
-        if (this.candleGeometry) this.candleGeometry.destroy();
-        if (this.candleIndexBuffer) this.candleIndexBuffer.destroy();
-        if (this.candleOHLCBuffer) this.candleOHLCBuffer.destroy();
-        if (this.sessionGeometry) this.sessionGeometry.destroy();
-        if (this.sessionBuffer) this.sessionBuffer.destroy();
+        // 1. Destroy all custom GPU Buffers and Geometries to free VRAM instantly
+        try { if (this.gridGeometry) this.gridGeometry.destroy(); } catch {}
+        try { if (this.candleGeometry) this.candleGeometry.destroy(); } catch {}
+        try { if (this.candleIndexBuffer) this.candleIndexBuffer.destroy(); } catch {}
+        try { if (this.candleOHLCBuffer) this.candleOHLCBuffer.destroy(); } catch {}
+        try { if (this.sessionGeometry) this.sessionGeometry.destroy(); } catch {}
+        try { if (this.sessionBuffer) this.sessionBuffer.destroy(); } catch {}
 
         // 2. Destroy dynamically generated Indicator Meshes
         for (const entry of this.indicatorMeshes.values()) {
-            if (entry.mesh && entry.mesh.geometry) entry.mesh.geometry.destroy();
-            if (entry.buffer) entry.buffer.destroy();
-            if (entry.mesh) entry.mesh.destroy();
+            try { if (entry.mesh && entry.mesh.geometry) entry.mesh.geometry.destroy(); } catch {}
+            try { if (entry.buffer) entry.buffer.destroy(); } catch {}
+            try { if (entry.mesh) entry.mesh.destroy(); } catch {}
         }
         this.indicatorMeshes.clear();
 
@@ -850,9 +867,20 @@ export class ChartRenderer {
         this.mainClosePrices = new Float64Array(0);
         this.sessionArray = new Float32Array(0);
 
-        // 4. Destroy Pixi Application and Canvas references
+        // 4. Destroy Pixi Application and Canvas references safely
         if (this.app) {
-            this.app.destroy(true, { children: true, texture: true });
+            try {
+                // In PixiJS v8 ResizePlugin, destroying an app requires this._cancelResize to be a function
+                if (typeof (this.app as any)._cancelResize !== 'function') {
+                    (this.app as any)._cancelResize = () => {};
+                }
+                if (this.app.renderer) {
+                    this.app.destroy(true, { children: true, texture: true });
+                }
+            } catch (err) {
+                console.warn('Pixi app cleanup warning:', err);
+            }
+            this.app = null as any;
         }
     }
 
