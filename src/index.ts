@@ -1414,11 +1414,18 @@ export class EcoChart {
         this.isDirty = true;
 
         await this.network.connect(this.currentSymbol, this.currentInterval, (prependedCount = 0, isClosed = true) => {
-            if (prependedCount > 0 && !this.isLockedToEdge) {
-                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
-                this.renderer.cameraX += prependedCount * actualSpacing;
+            if (prependedCount > 0) {
+                if (!this.isLockedToEdge) {
+                    const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+                    this.renderer.cameraX += prependedCount * actualSpacing;
+                }
+                this.indicatorManager.resetAll();
+                this.renderer.isHistoricalDirty = true;
+                this.renderer.isSessionDirty = true;
             }
             this.indicatorManager.update(this.dataStore, isClosed); // Run Math Engine
+            this.renderer.forceNextRender = true;
+            this.renderer.isSessionDirty = true;
             this.isDirty = true;
             if (this.isLockedToEdge) {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
@@ -1484,9 +1491,14 @@ export class EcoChart {
         this.timeAxisRenderer.render();
 
         await this.network.connect(symbol, interval, (prependedCount = 0, isClosed = true) => {
-            if (prependedCount > 0 && !this.isLockedToEdge) {
-                const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
-                this.renderer.cameraX += prependedCount * actualSpacing;
+            if (prependedCount > 0) {
+                if (!this.isLockedToEdge) {
+                    const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+                    this.renderer.cameraX += prependedCount * actualSpacing;
+                }
+                this.indicatorManager.resetAll();
+                this.renderer.isHistoricalDirty = true;
+                this.renderer.isSessionDirty = true;
             }
             // Propagate live unclosed tick state to indicator pipeline
             this.indicatorManager.update(this.dataStore, isClosed);

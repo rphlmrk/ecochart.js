@@ -169,28 +169,35 @@ export abstract class BaseIndicator {
             return;
         }
 
-        // 1. Initial historical load
-        if (this.lastCalculatedIdx === -1) {
+        // 1. Initial historical load or if dataset was shrunk/reset
+        if (this.lastCalculatedIdx === -1 || this.lastCalculatedIdx >= ds.length) {
             this.setup();
             for (let i = 0; i < ds.length; i++) {
-                this.next(i, true, ds);
+                const isClosed = (i < ds.length - 1) || isClosedTick;
+                this.next(i, isClosed, ds);
+                if (isClosed) {
+                    this.confirmedState = this.cloneState(this.state);
+                    this.lastCalculatedIdx = i;
+                }
             }
-            this.lastCalculatedIdx = ds.length - 1;
-            this.confirmedState = this.cloneState(this.state);
             this.revision++;
             return;
         }
 
-        // 2. Live Tick Updates: restore isolated confirmed state
-        const liveIdx = ds.length - 1;
+        // 2. Incremental updates: loop from last confirmed index + 1 to live forming bar
+        let startIdx = this.lastCalculatedIdx + 1;
+        if (startIdx < 0) startIdx = 0;
+
+        // Restore state from last officially closed candle
         this.state = this.cloneState(this.confirmedState);
 
-        this.next(liveIdx, isClosedTick, ds);
-
-        // 3. Lock in state only if candle officially closed
-        if (isClosedTick) {
-            this.confirmedState = this.cloneState(this.state);
-            this.lastCalculatedIdx = liveIdx;
+        for (let i = startIdx; i < ds.length; i++) {
+            const isClosed = (i < ds.length - 1) || isClosedTick;
+            this.next(i, isClosed, ds);
+            if (isClosed) {
+                this.confirmedState = this.cloneState(this.state);
+                this.lastCalculatedIdx = i;
+            }
         }
     }
 

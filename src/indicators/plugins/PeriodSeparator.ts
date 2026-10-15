@@ -146,7 +146,12 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
             return res;
         };
 
-        // 1. Iterate visible historical bars to draw separator lines
+        // Collect X positions for batch rendering (reduces draw calls from hundreds to 3)
+        const dayXs: number[] = [];
+        const fourHXs: number[] = [];
+        const oneHXs: number[] = [];
+
+        // 1. Iterate visible historical bars to collect separator line coordinates
         for (let i = visStart; i < visEnd; i++) {
             const t = ds.data[i * 6];
             const prevT = i > 0 ? ds.data[(i - 1) * 6] : (t - tfMs);
@@ -163,12 +168,7 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
 
             // Day Separator
             if (showDay && isNewDay && isRecentDay) {
-                StrokeEngine.drawLine(g, x, 0, x, layout.mainChartHeight, {
-                    color: dayLineParsed.color,
-                    width: 1,
-                    alpha: dayLineParsed.alpha,
-                    style: dayLineStyle
-                });
+                dayXs.push(x);
             }
 
             // 4H Separator (only if not already a new day line)
@@ -177,12 +177,7 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
                 const prev4H = Math.floor(prevT / (4 * 3600000));
                 const isNew4H = curr4H !== prev4H;
                 if (isNew4H && (!showDay || !isNewDay)) {
-                    StrokeEngine.drawLine(g, x, 0, x, layout.mainChartHeight, {
-                        color: line4HParsed.color,
-                        width: 1,
-                        alpha: line4HParsed.alpha,
-                        style: line4HStyle
-                    });
+                    fourHXs.push(x);
                 }
             }
 
@@ -193,12 +188,7 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
                 const isNew1H = curr1H !== prev1H;
                 const is4HBoundary = (Math.floor(t / (4 * 3600000)) !== Math.floor(prevT / (4 * 3600000)));
                 if (isNew1H && (!showDay || !isNewDay) && (!show4H || !is4HBoundary)) {
-                    StrokeEngine.drawLine(g, x, 0, x, layout.mainChartHeight, {
-                        color: line1HParsed.color,
-                        width: 1,
-                        alpha: line1HParsed.alpha,
-                        style: line1HStyle
-                    });
+                    oneHXs.push(x);
                 }
             }
         }
@@ -260,12 +250,7 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
 
                     const fx = r.getCandleCenterX(lastIdx + barsAhead);
                     if (fx >= -20 && fx <= screenW + 20) {
-                        StrokeEngine.drawLine(g, fx, 0, fx, layout.mainChartHeight, {
-                            color: dayLineParsed.color,
-                            width: 1,
-                            alpha: dayLineParsed.alpha,
-                            style: dayLineStyle
-                        });
+                        dayXs.push(fx);
                     }
                 }
             }
@@ -305,12 +290,7 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
 
                     const fx = r.getCandleCenterX(lastIdx + barsAhead);
                     if (fx >= 0 && fx <= screenW + 20) {
-                        StrokeEngine.drawLine(g, fx, 0, fx, layout.mainChartHeight, {
-                            color: line4HParsed.color,
-                            width: 1,
-                            alpha: line4HParsed.alpha,
-                            style: line4HStyle
-                        });
+                        fourHXs.push(fx);
                     }
                 }
             }
@@ -328,15 +308,39 @@ export class PeriodSeparatorIndicator extends BaseIndicator {
 
                     const fx = r.getCandleCenterX(lastIdx + barsAhead);
                     if (fx >= 0 && fx <= screenW + 20) {
-                        StrokeEngine.drawLine(g, fx, 0, fx, layout.mainChartHeight, {
-                            color: line1HParsed.color,
-                            width: 1,
-                            alpha: line1HParsed.alpha,
-                            style: line1HStyle
-                        });
+                        oneHXs.push(fx);
                     }
                 }
             }
+        }
+
+        // 3. Execute batched line drawing calls
+        const chartH = layout.mainChartHeight;
+        if (dayXs.length > 0) {
+            StrokeEngine.drawVerticalLines(g, dayXs, 0, chartH, {
+                color: dayLineParsed.color,
+                width: 1,
+                alpha: dayLineParsed.alpha,
+                style: dayLineStyle
+            });
+        }
+
+        if (fourHXs.length > 0) {
+            StrokeEngine.drawVerticalLines(g, fourHXs, 0, chartH, {
+                color: line4HParsed.color,
+                width: 1,
+                alpha: line4HParsed.alpha,
+                style: line4HStyle
+            });
+        }
+
+        if (oneHXs.length > 0) {
+            StrokeEngine.drawVerticalLines(g, oneHXs, 0, chartH, {
+                color: line1HParsed.color,
+                width: 1,
+                alpha: line1HParsed.alpha,
+                style: line1HStyle
+            });
         }
 
         // Hide unused pooled labels

@@ -1,4 +1,5 @@
 import { BaseIndicator, type IndicatorLayout, parseColorAndAlpha } from '../Indicator';
+import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { StrokeEngine } from '../../renderer/StrokeEngine';
 import { Container, BitmapText, Graphics } from 'pixi.js';
@@ -72,8 +73,187 @@ export class MarketSessionsIndicator extends BaseIndicator {
         ];
     }
 
-    public calculate(): void {
-        // Range boxes are dynamic viewport bounds rendered in render()
+    // Pre-calculated session boxes per session name to eliminate render-loop CPU overhead
+    private cachedBoxesBySession = new Map<string, SessionBox[]>();
+    private lastCalculatedLength = -1;
+    private lastCalcParamHash = '';
+
+    protected override onParamsUpdated(): void {
+        this.lastCalculatedLength = -1;
+    }
+
+    public override reset(): void {
+        this.cachedBoxesBySession.clear();
+        this.lastCalculatedLength = -1;
+        super.reset();
+    }
+
+    public calculate(ds: DataStore): void {
+        this.buildCachedBoxes(ds);
+    }
+
+    public override update(ds: DataStore, isClosedTick: boolean): void {
+        this.buildCachedBoxes(ds);
+        super.update(ds, isClosedTick);
+    }
+
+    private buildCachedBoxes(ds: DataStore): void {
+        const len = ds.length;
+        if (len === 0) {
+            this.cachedBoxesBySession.clear();
+            this.lastCalculatedLength = 0;
+            return;
+        }
+
+        const showRanges = this.getParam<boolean>('showRanges', true);
+        if (!showRanges) {
+            this.cachedBoxesBySession.clear();
+            return;
+        }
+
+        const exchangeTz = this.getParam<boolean>('exchangeTimezone', true);
+        const tzOffsetHours = exchangeTz ? 0 : this.getParam<number>('timezoneOffset', 0);
+        const tzOffsetMs = tzOffsetHours * 3600000;
+
+        const sessions = [
+            {
+                enabled: this.getParam<boolean>('showSessionA', true),
+                name: this.getParam<string>('sessionAName', 'New York'),
+                hours: this.getParam<string>('sessionATime', '1300-2200'),
+                range: this.getParam<boolean>('sessionARange', true),
+                color: this.getParam<string>('sessionAColor', '#EF5350')
+            },
+            {
+                enabled: this.getParam<boolean>('showSessionB', true),
+                name: this.getParam<string>('sessionBName', 'London'),
+                hours: this.getParam<string>('sessionBTime', '0700-1600'),
+                range: this.getParam<boolean>('sessionBRange', true),
+                color: this.getParam<string>('sessionBColor', '#2962FF')
+            },
+            {
+                enabled: this.getParam<boolean>('showSessionC', true),
+                name: this.getParam<string>('sessionCName', 'Tokyo'),
+                hours: this.getParam<string>('sessionCTime', '0000-0900'),
+                range: this.getParam<boolean>('sessionCRange', true),
+                color: this.getParam<string>('sessionCColor', '#FBC02D')
+            },
+            {
+                enabled: this.getParam<boolean>('showSessionD', false),
+                name: this.getParam<string>('sessionDName', 'Sydney'),
+                hours: this.getParam<string>('sessionDTime', '2100-0600'),
+                range: this.getParam<boolean>('sessionDRange', true),
+                color: this.getParam<string>('sessionDColor', '#AB47BC')
+            }
+        ];
+
+        const paramHash = sessions.map(s => `${s.enabled}:${s.hours}:${s.range}`).join('|') + `:${tzOffsetMs}`;
+
+        // Fast update: If length is unchanged and params match, only update the latest bar of the active box
+        if (len === this.lastCalculatedLength && this.lastCalcParamHash === paramHash) {
+            const lastIdx = len - 1;
+            const base = lastIdx * 6;
+            const h = ds.data[base + 2];
+            const l = ds.data[base + 3];
+
+            for (const sess of sessions) {
+                if (!sess.enabled || !sess.range) continue;
+                const list = this.cachedBoxesBySession.get(sess.name);
+                if (list && list.length > 0) {
+                    const latest = list[list.length - 1];
+                    if (latest.endIdx === lastIdx) {
+                        if (h > latest.high) latest.high = h;
+                        if (l < latest.low) latest.low = l;
+                    }
+                }
+            }
+            return;
+        }
+
+        this.cachedBoxesBySession.clear();
+
+        for (const sess of sessions) {
+            if (!sess.enabled || !sess.range) continue;
+
+            const { startMin, endMin } = MarketSessionsIndicator.parseSessionHours(sess.hours);
+            if (startMin === endMin) continue;
+
+            let inSess = false;
+            let sessStartIdx = -1;
+            let sessEndIdx = -1;
+            let sessHigh = -Infinity;
+            let sessLow = Infinity;
+            let prevDayNumber = -1;
+
+            const boxes: SessionBox[] = [];
+
+            for (let i = 0; i < len; i++) {
+                const base = i * 6;
+                const t = ds.data[base];
+                const h = ds.data[base + 2];
+                const l = ds.data[base + 3];
+
+                const tAdj = t + tzOffsetMs;
+                const minuteOfDay = Math.floor((((tAdj % 86400000) + 86400000) % 86400000) / 60000);
+                const dayNumber = Math.floor(tAdj / 86400000);
+
+                const active = MarketSessionsIndicator.isMinuteInSession(minuteOfDay, startMin, endMin);
+                const isNewDay = prevDayNumber !== -1 && dayNumber !== prevDayNumber;
+                prevDayNumber = dayNumber;
+
+                if (active) {
+                    if (!inSess || (startMin < endMin && isNewDay)) {
+                        if (inSess && sessStartIdx !== -1) {
+                            boxes.push({
+                                startIdx: sessStartIdx,
+                                endIdx: sessEndIdx,
+                                high: sessHigh,
+                                low: sessLow,
+                                sessionName: sess.name,
+                                color: sess.color
+                            });
+                        }
+                        inSess = true;
+                        sessStartIdx = i;
+                        sessEndIdx = i;
+                        sessHigh = h;
+                        sessLow = l;
+                    } else {
+                        sessEndIdx = i;
+                        if (h > sessHigh) sessHigh = h;
+                        if (l < sessLow) sessLow = l;
+                    }
+                } else {
+                    if (inSess) {
+                        boxes.push({
+                            startIdx: sessStartIdx,
+                            endIdx: sessEndIdx,
+                            high: sessHigh,
+                            low: sessLow,
+                            sessionName: sess.name,
+                            color: sess.color
+                        });
+                        inSess = false;
+                        sessStartIdx = -1;
+                    }
+                }
+            }
+
+            if (inSess && sessStartIdx !== -1) {
+                boxes.push({
+                    startIdx: sessStartIdx,
+                    endIdx: sessEndIdx,
+                    high: sessHigh,
+                    low: sessLow,
+                    sessionName: sess.name,
+                    color: sess.color
+                });
+            }
+
+            this.cachedBoxesBySession.set(sess.name, boxes);
+        }
+
+        this.lastCalculatedLength = len;
+        this.lastCalcParamHash = paramHash;
     }
 
     public static parseSessionHours(hStr: string): { startMin: number; endMin: number } {
@@ -123,21 +303,25 @@ export class MarketSessionsIndicator extends BaseIndicator {
             return;
         }
 
+        const showRanges = this.getParam<boolean>('showRanges', true);
+        if (!showRanges) {
+            this.labelContainer.visible = false;
+            return;
+        }
+
+        // Lazy compute session boxes if not pre-calculated
+        if (this.cachedBoxesBySession.size === 0 || this.lastCalculatedLength !== r.dataStore.length) {
+            this.buildCachedBoxes(r.dataStore);
+        }
+
         if (!this.isContainerMounted) {
             r.app.stage.addChild(this.labelContainer);
             this.isContainerMounted = true;
         }
         this.labelContainer.visible = true;
 
-        const ds = r.dataStore;
-        const len = ds.length;
         const screenW = layout.chartWidth;
         const spacing = r.candleSpacing * r.zoom;
-
-        const showRanges = this.getParam<boolean>('showRanges', true);
-        const exchangeTz = this.getParam<boolean>('exchangeTimezone', true);
-        const tzOffsetHours = exchangeTz ? 0 : this.getParam<number>('timezoneOffset', 0);
-        const tzOffsetMs = tzOffsetHours * 3600000;
 
         const rangeTransparency = Math.max(0, Math.min(100, this.getParam<number>('rangeTransparency', 80)));
         const rangeOutline = this.getParam<boolean>('rangeOutline', true);
@@ -170,134 +354,58 @@ export class MarketSessionsIndicator extends BaseIndicator {
             activeTextCount++;
         };
 
-        const sessions: { enabled: boolean; name: string; hours: string; range: boolean; color: string }[] = [
+        const sessions = [
             {
                 enabled: this.getParam<boolean>('showSessionA', true),
                 name: this.getParam<string>('sessionAName', 'New York'),
-                hours: this.getParam<string>('sessionATime', '1300-2200'),
                 range: this.getParam<boolean>('sessionARange', true),
                 color: this.getParam<string>('sessionAColor', '#EF5350')
             },
             {
                 enabled: this.getParam<boolean>('showSessionB', true),
                 name: this.getParam<string>('sessionBName', 'London'),
-                hours: this.getParam<string>('sessionBTime', '0700-1600'),
                 range: this.getParam<boolean>('sessionBRange', true),
                 color: this.getParam<string>('sessionBColor', '#2962FF')
             },
             {
                 enabled: this.getParam<boolean>('showSessionC', true),
                 name: this.getParam<string>('sessionCName', 'Tokyo'),
-                hours: this.getParam<string>('sessionCTime', '0000-0900'),
                 range: this.getParam<boolean>('sessionCRange', true),
                 color: this.getParam<string>('sessionCColor', '#FBC02D')
             },
             {
                 enabled: this.getParam<boolean>('showSessionD', false),
                 name: this.getParam<string>('sessionDName', 'Sydney'),
-                hours: this.getParam<string>('sessionDTime', '2100-0600'),
                 range: this.getParam<boolean>('sessionDRange', true),
                 color: this.getParam<string>('sessionDColor', '#AB47BC')
             }
         ];
 
-        if (!showRanges) return;
-
-        // Process up to 500 session boxes across all active sessions
+        // Render each session's boxes in single batched GPU calls
         for (const sess of sessions) {
             if (!sess.enabled || !sess.range) continue;
-
-            const { startMin, endMin } = MarketSessionsIndicator.parseSessionHours(sess.hours);
-            if (startMin === endMin) continue;
+            const boxes = this.cachedBoxesBySession.get(sess.name);
+            if (!boxes || boxes.length === 0) continue;
 
             const parsedColor = parseColorAndAlpha(sess.color);
             const boxFillAlpha = Math.max(0.02, Math.min(1.0, (100 - rangeTransparency) / 100));
+            const outlineAlpha = Math.min(1.0, boxFillAlpha * 2.5 + 0.35);
 
-            // Track session runs
-            let inSess = false;
-            let sessStartIdx = -1;
-            let sessEndIdx = -1;
-            let sessHigh = -Infinity;
-            let sessLow = Infinity;
-            let prevDayNumber = -1;
-
-            const boxes: SessionBox[] = [];
-
-            // Scan range with lookback so boxes spanning across the viewport border are complete
-            const visStart = Math.max(0, Math.floor(r.cameraX / spacing) - 5);
-            const visEnd = Math.min(len, Math.floor((r.cameraX + screenW) / spacing) + 5);
-            const scanStart = Math.max(0, visStart - 200);
-            const scanEnd = Math.min(len, visEnd + 50);
-
-            for (let i = scanStart; i < scanEnd; i++) {
-                const base = i * 6;
-                const t = ds.data[base];
-                const h = ds.data[base + 2];
-                const l = ds.data[base + 3];
-
-                const tAdj = t + tzOffsetMs;
-                const minuteOfDay = Math.floor((((tAdj % 86400000) + 86400000) % 86400000) / 60000);
-                const dayNumber = Math.floor(tAdj / 86400000);
-
-                const active = MarketSessionsIndicator.isMinuteInSession(minuteOfDay, startMin, endMin);
-
-                // Detect day boundary if session doesn't span midnight
-                const isNewDay = prevDayNumber !== -1 && dayNumber !== prevDayNumber;
-                prevDayNumber = dayNumber;
-
-                if (active) {
-                    if (!inSess || (startMin < endMin && isNewDay)) {
-                        // Close previous if needed
-                        if (inSess && sessStartIdx !== -1) {
-                            boxes.push({
-                                startIdx: sessStartIdx,
-                                endIdx: sessEndIdx,
-                                high: sessHigh,
-                                low: sessLow,
-                                sessionName: sess.name,
-                                color: sess.color
-                            });
-                        }
-                        inSess = true;
-                        sessStartIdx = i;
-                        sessEndIdx = i;
-                        sessHigh = h;
-                        sessLow = l;
-                    } else {
-                        sessEndIdx = i;
-                        if (h > sessHigh) sessHigh = h;
-                        if (l < sessLow) sessLow = l;
-                    }
-                } else {
-                    if (inSess) {
-                        boxes.push({
-                            startIdx: sessStartIdx,
-                            endIdx: sessEndIdx,
-                            high: sessHigh,
-                            low: sessLow,
-                            sessionName: sess.name,
-                            color: sess.color
-                        });
-                        inSess = false;
-                        sessStartIdx = -1;
-                    }
-                }
+            interface VisibleBoxGeometry {
+                x1: number;
+                x2: number;
+                boxW: number;
+                yHigh: number;
+                yLow: number;
+                boxH: number;
+                yMean: number;
+                box: SessionBox;
             }
 
-            // If still open at the right edge
-            if (inSess && sessStartIdx !== -1) {
-                boxes.push({
-                    startIdx: sessStartIdx,
-                    endIdx: sessEndIdx,
-                    high: sessHigh,
-                    low: sessLow,
-                    sessionName: sess.name,
-                    color: sess.color
-                });
-            }
+            const visibleBoxes: VisibleBoxGeometry[] = [];
 
-            // Render all collected session boxes
-            for (const box of boxes) {
+            for (let bIdx = 0; bIdx < boxes.length; bIdx++) {
+                const box = boxes[bIdx];
                 const x1 = r.getCandleCenterX(box.startIdx) - (spacing * 0.45);
                 const x2 = r.getCandleCenterX(box.endIdx) + (spacing * 0.45);
 
@@ -306,46 +414,61 @@ export class MarketSessionsIndicator extends BaseIndicator {
 
                 const yHigh = r.priceToY(box.high);
                 const yLow = r.priceToY(box.low);
-
                 const boxW = Math.max(2, x2 - x1);
                 const boxH = Math.max(2, yLow - yHigh);
+                const yMean = r.priceToY((box.high + box.low) * 0.5);
 
-                // 1. Fill Range Box
-                g.rect(x1, yHigh, boxW, boxH).fill({
+                visibleBoxes.push({ x1, x2, boxW, yHigh, yLow, boxH, yMean, box });
+            }
+
+            if (visibleBoxes.length === 0) continue;
+
+            // 1. Batch Fill Range Boxes in 1 draw call
+            for (let i = 0; i < visibleBoxes.length; i++) {
+                const vb = visibleBoxes[i];
+                g.rect(vb.x1, vb.yHigh, vb.boxW, vb.boxH);
+            }
+            g.fill({ color: parsedColor.color, alpha: boxFillAlpha });
+
+            // 2. Batch Range Outlines in 1 stroke call
+            if (rangeOutline) {
+                for (let i = 0; i < visibleBoxes.length; i++) {
+                    const vb = visibleBoxes[i];
+                    StrokeEngine.addDashedLinePath(g, vb.x1, vb.yHigh, vb.x2, vb.yHigh, 'dotted', 2, 3);
+                    StrokeEngine.addDashedLinePath(g, vb.x2, vb.yHigh, vb.x2, vb.yLow, 'dotted', 2, 3);
+                    StrokeEngine.addDashedLinePath(g, vb.x2, vb.yLow, vb.x1, vb.yLow, 'dotted', 2, 3);
+                    StrokeEngine.addDashedLinePath(g, vb.x1, vb.yLow, vb.x1, vb.yHigh, 'dotted', 2, 3);
+                }
+                g.stroke({
                     color: parsedColor.color,
-                    alpha: boxFillAlpha
+                    width: 1,
+                    alpha: outlineAlpha,
+                    cap: 'butt'
                 });
+            }
 
-                // 2. Range Outline (dotted)
-                if (rangeOutline) {
-                    const outlineAlpha = Math.min(1.0, boxFillAlpha * 2.5 + 0.35);
-                    const strokeOpts = {
-                        color: parsedColor.color,
-                        width: 1,
-                        alpha: outlineAlpha,
-                        style: 'dotted' as const
-                    };
-                    StrokeEngine.drawLine(g, x1, yHigh, x2, yHigh, strokeOpts);
-                    StrokeEngine.drawLine(g, x2, yHigh, x2, yLow, strokeOpts);
-                    StrokeEngine.drawLine(g, x2, yLow, x1, yLow, strokeOpts);
-                    StrokeEngine.drawLine(g, x1, yLow, x1, yHigh, strokeOpts);
+            // 3. Batch Mean / Midpoint lines in 1 stroke call
+            if (showMean) {
+                for (let i = 0; i < visibleBoxes.length; i++) {
+                    const vb = visibleBoxes[i];
+                    StrokeEngine.addDashedLinePath(g, vb.x1, vb.yMean, vb.x2, vb.yMean, 'dashed', 6, 4);
                 }
+                g.stroke({
+                    color: parsedColor.color,
+                    width: 1,
+                    alpha: Math.min(1.0, boxFillAlpha * 2.5 + 0.4),
+                    cap: 'butt'
+                });
+            }
 
-                // 3. Show Mean / Midpoint line
-                if (showMean) {
-                    const yMean = r.priceToY((box.high + box.low) * 0.5);
-                    StrokeEngine.drawLine(g, x1, yMean, x2, yMean, {
-                        color: parsedColor.color,
-                        width: 1,
-                        alpha: Math.min(1.0, boxFillAlpha * 2.5 + 0.4),
-                        style: 'dashed'
-                    });
-                }
-
-                // 4. Show Range Label (Session Name)
-                if (rangeLabel && x1 <= screenW - 20) {
-                    const labelY = Math.max(12, yHigh - 12);
-                    placeLabel(box.sessionName, Math.max(4, x1 + 2), labelY, parsedColor.color);
+            // 4. Show Range Labels (Session Name)
+            if (rangeLabel) {
+                for (let i = 0; i < visibleBoxes.length; i++) {
+                    const vb = visibleBoxes[i];
+                    if (vb.x1 <= screenW - 20) {
+                        const labelY = Math.max(12, vb.yHigh - 12);
+                        placeLabel(vb.box.sessionName, Math.max(4, vb.x1 + 2), labelY, parsedColor.color);
+                    }
                 }
             }
         }

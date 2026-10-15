@@ -11,6 +11,7 @@ export class CBCFlipIndicator extends BaseIndicator {
         super('CBC_FLIP', 'CBC Flip', false);
 
         this.params = [
+            { id: 'triggerOnClose', name: 'Trigger on Candle Close Only', type: 'boolean', value: true },
             { id: 'showShapes', name: 'Show Flip Shapes', type: 'boolean', value: true },
             { id: 'bullColor', name: 'Bulls Signal Color', type: 'color', value: '#78CEB0' },
             { id: 'bearColor', name: 'Bears Signal Color', type: 'color', value: '#E46666' },
@@ -38,12 +39,8 @@ export class CBCFlipIndicator extends BaseIndicator {
     }
 
     public override update(ds: DataStore, isClosedTick: boolean): void {
-        // Detect prepended history and invalidate cache so entire history recalculates
-        if (this.lastCalculatedIdx !== -1 && (ds.length > this.lastCalculatedIdx + 2 || ds.length <= this.lastCalculatedIdx)) {
-            this.lastCalculatedIdx = -1;
-        }
         if (ds.length > this.flips.length) {
-            const newFlips = new Int8Array(ds.length * 2);
+            const newFlips = new Int8Array(Math.max(ds.length * 2, 20000));
             newFlips.set(this.flips);
             this.flips = newFlips;
         }
@@ -73,7 +70,7 @@ export class CBCFlipIndicator extends BaseIndicator {
         const currBase = index * 6;
         const currClose = ds.data[currBase + 4];
 
-        // Pine Script logic:
+        // Pine Script CBC logic:
         // cbc = false
         // cbc := cbc[1]
         // if cbc and close < low[1]
@@ -98,21 +95,27 @@ export class CBCFlipIndicator extends BaseIndicator {
         // Bull flip: cbc and not cbc[1]
         // Bear flip: not cbc and cbc[1]
         let flip = 0;
-        if (cbc && !prevCbc) {
-            flip = 1;
-            if (isClosed) {
-                window.dispatchEvent(new CustomEvent('ecochart-alert', {
-                    detail: { id: this.id, title: 'Bulls', message: 'Bulls in Control' }
-                }));
-            }
-        } else if (!cbc && prevCbc) {
-            flip = -1;
-            if (isClosed) {
-                window.dispatchEvent(new CustomEvent('ecochart-alert', {
-                    detail: { id: this.id, title: 'Bears', message: 'Bears in Control' }
-                }));
+        const triggerOnClose = this.getParam<boolean>('triggerOnClose', true);
+
+        // If triggerOnClose is enabled, do not commit signal on unclosed/forming candle
+        if (!triggerOnClose || isClosed) {
+            if (cbc && !prevCbc) {
+                flip = 1;
+                if (isClosed) {
+                    window.dispatchEvent(new CustomEvent('ecochart-alert', {
+                        detail: { id: this.id, title: 'Bulls', message: 'Bulls in Control' }
+                    }));
+                }
+            } else if (!cbc && prevCbc) {
+                flip = -1;
+                if (isClosed) {
+                    window.dispatchEvent(new CustomEvent('ecochart-alert', {
+                        detail: { id: this.id, title: 'Bears', message: 'Bears in Control' }
+                    }));
+                }
             }
         }
+
         this.flips[index] = flip;
     }
 
@@ -137,42 +140,51 @@ export class CBCFlipIndicator extends BaseIndicator {
         const halfSp = sp * 0.5;
         const ds = r.dataStore;
 
-        // 1. Background tint on flip bars (centered directly on the candlestick)
+        // 1. Batched Background Highlights
+        // Batching all bull rects and bear rects into single draw passes eliminates per-bar GPU draw calls
         if (showBgColor) {
-            for (let i = visStart; i < visEnd; i++) {
-                const flip = this.flips[i];
-                if (flip === 0) continue;
+            let hasBullBg = false;
+            let hasBearBg = false;
 
-                const centerX = r.getCandleCenterX(i);
-                if (flip === 1) {
-                    g.rect(centerX - halfSp, 0, sp, layout.mainChartHeight).fill({
-                        color: bullBg.color,
-                        alpha: bullBg.alpha
-                    });
-                } else if (flip === -1) {
-                    g.rect(centerX - halfSp, 0, sp, layout.mainChartHeight).fill({
-                        color: bearBg.color,
-                        alpha: bearBg.alpha
-                    });
+            // Draw Bull Backgrounds
+            for (let i = visStart; i < visEnd; i++) {
+                if (this.flips[i] === 1) {
+                    const centerX = r.getCandleCenterX(i);
+                    g.rect(centerX - halfSp, 0, sp, layout.mainChartHeight);
+                    hasBullBg = true;
                 }
+            }
+            if (hasBullBg) {
+                g.fill({ color: bullBg.color, alpha: bullBg.alpha });
+            }
+
+            // Draw Bear Backgrounds
+            for (let i = visStart; i < visEnd; i++) {
+                if (this.flips[i] === -1) {
+                    const centerX = r.getCandleCenterX(i);
+                    g.rect(centerX - halfSp, 0, sp, layout.mainChartHeight);
+                    hasBearBg = true;
+                }
+            }
+            if (hasBearBg) {
+                g.fill({ color: bearBg.color, alpha: bearBg.alpha });
             }
         }
 
-        // 2. Shapes: triangleup (belowbar) & triangledown (abovebar) centered on the candle
+        // 2. Batched Shapes: triangleup (belowbar) & triangledown (abovebar) centered on the candle
         if (showShapes) {
             const offset = 6;
             const triH = shapeSize * 1.35;
             const triHalfW = shapeSize;
 
+            let hasBullShapes = false;
+            let hasBearShapes = false;
+
+            // Batch all Bull triangles into a single path and fill once
             for (let i = visStart; i < visEnd; i++) {
-                const flip = this.flips[i];
-                if (flip === 0) continue;
-
-                const centerX = r.getCandleCenterX(i);
-                const base = i * 6;
-
-                if (flip === 1) {
-                    // Bulls: shape.triangleup, location.belowbar
+                if (this.flips[i] === 1) {
+                    const centerX = r.getCandleCenterX(i);
+                    const base = i * 6;
                     const low = ds.data[base + 3];
                     const yLow = r.priceToY(low);
                     const tipY = yLow + offset;
@@ -181,11 +193,19 @@ export class CBCFlipIndicator extends BaseIndicator {
                     g.moveTo(centerX, tipY)
                      .lineTo(centerX - triHalfW, baseY)
                      .lineTo(centerX + triHalfW, baseY)
-                     .closePath()
-                     .fill({ color: bullColor, alpha: 1.0 });
+                     .closePath();
+                    hasBullShapes = true;
+                }
+            }
+            if (hasBullShapes) {
+                g.fill({ color: bullColor, alpha: 1.0 });
+            }
 
-                } else if (flip === -1) {
-                    // Bears: shape.triangledown, location.abovebar
+            // Batch all Bear triangles into a single path and fill once
+            for (let i = visStart; i < visEnd; i++) {
+                if (this.flips[i] === -1) {
+                    const centerX = r.getCandleCenterX(i);
+                    const base = i * 6;
                     const high = ds.data[base + 2];
                     const yHigh = r.priceToY(high);
                     const tipY = yHigh - offset;
@@ -194,9 +214,12 @@ export class CBCFlipIndicator extends BaseIndicator {
                     g.moveTo(centerX, tipY)
                      .lineTo(centerX - triHalfW, baseY)
                      .lineTo(centerX + triHalfW, baseY)
-                     .closePath()
-                     .fill({ color: bearColor, alpha: 1.0 });
+                     .closePath();
+                    hasBearShapes = true;
                 }
+            }
+            if (hasBearShapes) {
+                g.fill({ color: bearColor, alpha: 1.0 });
             }
         }
     }
