@@ -625,6 +625,10 @@ export class ChartRenderer {
                 color: this.crosshairColor, width: 1, alpha: 0.6, style: this.crosshairStyle, dashLength: 4, gapLength: 3
             });
 
+            // Precision targeting reticle for touch & mouse aiming
+            this.crosshairGraphics.circle(drawX, drawY, 8).stroke({ color: this.accentColor, width: 1.5, alpha: 0.85 });
+            this.crosshairGraphics.circle(drawX, drawY, 2).fill({ color: this.accentColor, alpha: 0.95 });
+
             this.crosshairX = drawX;
             this.crosshairY = drawY;
         }

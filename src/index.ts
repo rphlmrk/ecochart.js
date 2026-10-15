@@ -20,7 +20,7 @@ import {
     MarketSessionsIndicator
 } from './indicators/plugins';
 
-import { DrawingManager } from './tools/DrawingManager';
+import { DrawingManager, type ToolType } from './tools/DrawingManager';
 import { IndicatorRegistry, type SavedIndicatorState } from './indicators/IndicatorRegistry';
 import { PriceAxisRenderer } from './renderer/PriceAxisRenderer';
 import { TimeAxisRenderer } from './renderer/TimeAxisRenderer';
@@ -110,6 +110,10 @@ export class EcoChart {
     private touchStartX = 0;
     private touchStartY = 0;
     private touchStartTime = 0;
+
+    // Mobile Touch Drawing State
+    public touchDrawingBar: HTMLDivElement | null = null;
+    private isTouchDrawingMoved = false;
 
     // Active Symbol & Timeframe State
     public currentSymbol = 'BTCUSDT';
@@ -354,9 +358,9 @@ export class EcoChart {
                 WorkspaceManager.setActiveChart(this);
                 const action = btn.dataset.action;
 
-                if (action === 'cursor') this.drawingManager.activeToolType = null;
-                else if (['trendline', 'hray', 'vline', 'rect', 'fib', 'prange'].includes(action!)) {
-                    this.drawingManager.startTool(action as any);
+                if (action === 'cursor') this.cancelDrawingTool();
+                else if (['trendline', 'hray', 'vline', 'rect', 'fib', 'prange', 'text'].includes(action!)) {
+                    this.startDrawingTool(action as any);
                 } else if (action === 'magnet') {
                     this.drawingManager.isMagnetEnabled = !this.drawingManager.isMagnetEnabled;
                     this.renderer.isMagnetEnabled = this.drawingManager.isMagnetEnabled;
@@ -455,11 +459,138 @@ export class EcoChart {
         this.navBar?.remove();
         this.legendContainer?.remove();
         this.paneDrawingToolbar?.remove();
+        this.touchDrawingBar?.remove();
         this.cornerBox?.remove();
         this.overlayLayer?.remove();
         this.chartCanvas?.remove();
         this.priceCanvas?.remove();
         this.timeCanvas?.remove();
+    }
+
+    public startDrawingTool(tool: ToolType) {
+        this.drawingManager.startTool(tool);
+        this.renderer.isCrosshairVisible = true;
+        if (this.renderer.crosshairX <= 0 || this.renderer.crosshairY <= 0) {
+            this.renderer.crosshairX = Math.round((this.chartCanvas.clientWidth - this.renderer.priceAxisWidth) * 0.5);
+            this.renderer.crosshairY = Math.round((this.chartCanvas.clientHeight - this.renderer.timeAxisHeight) * 0.5);
+        }
+        this.isCrosshairDirty = true;
+        this.showTouchDrawingBar();
+        this.renderer.forceNextRender = true;
+        this.isDirty = true;
+    }
+
+    public cancelDrawingTool() {
+        this.drawingManager.activeToolType = null;
+        this.drawingManager.currentDrawing = null;
+        this.hideTouchDrawingBar();
+        document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
+        document.getElementById('tool-cursor')?.classList.add('active');
+        if (this.paneDrawingToolbar) {
+            this.paneDrawingToolbar.querySelectorAll('.dt-btn[data-action]').forEach(b => b.classList.remove('active'));
+            this.paneDrawingToolbar.querySelector('[data-action="cursor"]')?.classList.add('active');
+        }
+        this.renderer.forceNextRender = true;
+        this.isDirty = true;
+    }
+
+    public showTouchDrawingBar() {
+        if (!this.touchDrawingBar) {
+            this.touchDrawingBar = document.createElement('div');
+            this.touchDrawingBar.className = 'touch-drawing-bar';
+            this.touchDrawingBar.style.cssText = `
+                position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+                display: flex; align-items: center; gap: 8px; z-index: 15; user-select: none;
+                background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-accent, #2962FF);
+                border-radius: 24px; padding: 6px 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+                font-family: inherit; font-size: 12px; color: var(--chart-text, #D1D4DC);
+                white-space: nowrap; pointer-events: auto;
+            `;
+            this.touchDrawingBar.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: false });
+            this.touchDrawingBar.addEventListener('pointerdown', (e) => e.stopPropagation());
+            this.overlayLayer.appendChild(this.touchDrawingBar);
+        }
+
+        const toolNames: Record<string, string> = {
+            trendline: 'Trendline', rect: 'Rectangle', fib: 'Fibonacci', prange: 'Price Range',
+            vline: 'Vertical Line', hray: 'Horizontal Ray', text: 'Text Tool'
+        };
+        const toolName = toolNames[this.drawingManager.activeToolType || ''] || 'Drawing';
+        const isPoint1Placed = this.drawingManager.currentDrawing && this.drawingManager.currentDrawing.points.length > 0;
+
+        this.touchDrawingBar.innerHTML = `
+            <span style="font-weight: 600; color: var(--chart-accent, #2962FF); display: flex; align-items: center; gap: 4px;">
+                <span>✛</span> ${toolName}
+            </span>
+            <span style="color: var(--chart-text, #787B86); font-size: 11px;">
+                ${isPoint1Placed ? 'Move crosshair & tap Point 2' : 'Move crosshair & tap Point 1'}
+            </span>
+            <button class="tdb-set-btn" style="
+                background: var(--chart-accent, #2962FF); color: #fff; border: none; border-radius: 14px;
+                padding: 4px 12px; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 4px;
+            ">
+                ${isPoint1Placed ? '✓ Confirm Point 2' : '📍 Set Point 1'}
+            </button>
+            <button class="tdb-cancel-btn" style="
+                background: transparent; color: var(--chart-text, #787B86); border: none; border-radius: 50%;
+                width: 22px; height: 22px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 13px;
+            " title="Cancel">✕</button>
+        `;
+
+        this.touchDrawingBar.querySelector('.tdb-set-btn')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.confirmTouchDrawingPoint();
+        });
+
+        this.touchDrawingBar.querySelector('.tdb-cancel-btn')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.cancelDrawingTool();
+        });
+
+        this.touchDrawingBar.style.display = 'flex';
+    }
+
+    public updateTouchDrawingBar() {
+        if (!this.drawingManager.activeToolType) return;
+        this.showTouchDrawingBar();
+    }
+
+    public hideTouchDrawingBar() {
+        if (this.touchDrawingBar) {
+            this.touchDrawingBar.style.display = 'none';
+        }
+    }
+
+    public confirmTouchDrawingPoint() {
+        if (!this.drawingManager.activeToolType) return;
+
+        // Use the current crosshair position (which is already magnet-snapped if magnet is active)
+        const finished = this.drawingManager.onPointerDown(this.renderer, this.renderer.crosshairX, this.renderer.crosshairY, false);
+        if (finished) {
+            const finishedDrawing = this.drawingManager.drawings[this.drawingManager.drawings.length - 1];
+            if (finishedDrawing) {
+                this.drawingManager.saveDrawing(finishedDrawing);
+                if (finishedDrawing.constructor.name === 'TextDrawing') {
+                    WorkspaceManager.openTextEditor(finishedDrawing as any);
+                }
+            }
+            this.hideTouchDrawingBar();
+
+            document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById('tool-cursor')?.classList.add('active');
+
+            if (this.paneDrawingToolbar) {
+                this.paneDrawingToolbar.querySelectorAll('.dt-btn[data-action]').forEach(b => b.classList.remove('active'));
+                this.paneDrawingToolbar.querySelector('[data-action="cursor"]')?.classList.add('active');
+            }
+        } else {
+            // First point placed, update hint and button for next point!
+            this.updateTouchDrawingBar();
+        }
+        this.renderer.forceNextRender = true;
+        this.isDirty = true;
+        this.priceAxisRenderer.render();
+        this.timeAxisRenderer.render();
     }
 
     public themeManager = themeManager;
@@ -597,6 +728,7 @@ export class EcoChart {
                     if (finishedDrawing && finishedDrawing.constructor.name === 'TextDrawing') {
                         WorkspaceManager.openTextEditor(finishedDrawing as any);
                     }
+                    this.hideTouchDrawingBar();
 
                     document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
                     document.getElementById('tool-cursor')?.classList.add('active');
@@ -605,6 +737,8 @@ export class EcoChart {
                         this.paneDrawingToolbar.querySelectorAll('.dt-btn[data-action]').forEach(b => b.classList.remove('active'));
                         this.paneDrawingToolbar.querySelector('[data-action="cursor"]')?.classList.add('active');
                     }
+                } else {
+                    this.updateTouchDrawingBar();
                 }
                 this.isDirty = true;
                 return;
@@ -1029,29 +1163,24 @@ export class EcoChart {
                 this.touchStartY = y;
                 this.touchStartTime = Date.now();
 
-                // ---> NEW: Mobile Drawing Support <---
+                // Mobile Touch Drawing: Position crosshairs, do NOT place point yet (user moves to aim, taps to place)
                 if (this.drawingManager.activeToolType) {
-                    const finished = this.drawingManager.onPointerDown(this.renderer, x, y, e.shiftKey);
-                    if (finished) {
-                        const finishedDrawing = this.drawingManager.drawings[this.drawingManager.drawings.length - 1];
+                    this.isTouchDrawingMoved = false;
+                    this.renderer.crosshairX = x;
+                    this.renderer.crosshairY = y;
+                    this.renderer.isCrosshairVisible = true;
+                    this.isCrosshairDirty = true;
+                    this.updateLegendValues();
+                    this.priceAxisRenderer.render();
+                    this.timeAxisRenderer.render();
 
-                        if (finishedDrawing) this.drawingManager.saveDrawing(finishedDrawing);
-
-                        // If we just placed a Text tool, open the editor modal immediately!
-                        if (finishedDrawing && finishedDrawing.constructor.name === 'TextDrawing') {
-                            WorkspaceManager.openTextEditor(finishedDrawing as any);
-                        }
-
-                        document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
-                        document.getElementById('tool-cursor')?.classList.add('active');
-
-                        if (this.paneDrawingToolbar) {
-                            this.paneDrawingToolbar.querySelectorAll('.dt-btn[data-action]').forEach(b => b.classList.remove('active'));
-                            this.paneDrawingToolbar.querySelector('[data-action="cursor"]')?.classList.add('active');
-                        }
+                    // If Point 1 has already been entered, update the preview line/box to follow crosshair
+                    if (this.drawingManager.currentDrawing && this.drawingManager.currentDrawing.points.length > 0) {
+                        this.drawingManager.onPointerMove(this.renderer, x, y);
                     }
+                    this.renderer.forceNextRender = true;
                     this.isDirty = true;
-                    return;
+                    return; // Stop here, do not pan chart or enter point yet
                 }
 
                 // Phase 3 & 4: Selection Hit Test (Mobile)
@@ -1175,11 +1304,25 @@ export class EcoChart {
                 const x = t.clientX - rect.left;
                 const y = t.clientY - rect.top;
 
-                // ---> NEW: Mobile Drawing Creation Support <---
+                // Mobile Touch Drawing: Moving scrolls/positions the crosshair across the screen with live shape stretch
                 if (this.drawingManager.activeToolType) {
-                    this.drawingManager.onPointerMove(this.renderer, x, y);
+                    if (Math.hypot(x - this.touchStartX, y - this.touchStartY) > 8) {
+                        this.isTouchDrawingMoved = true;
+                    }
+                    this.renderer.crosshairX = x;
+                    this.renderer.crosshairY = y;
+                    this.renderer.isCrosshairVisible = true;
+                    this.isCrosshairDirty = true;
+                    this.updateLegendValues();
+                    this.priceAxisRenderer.render();
+                    this.timeAxisRenderer.render();
+
+                    // If Point 1 has already been entered, update the preview line/box to follow crosshair
+                    if (this.drawingManager.currentDrawing && this.drawingManager.currentDrawing.points.length > 0) {
+                        this.drawingManager.onPointerMove(this.renderer, x, y);
+                    }
+                    this.renderer.forceNextRender = true;
                     this.isDirty = true;
-                    this.renderer.forceNextRender = true; // <-- FIX: Smooth mobile drawing
                     return; // Stop here, do not pan chart
                 }
 
@@ -1252,9 +1395,34 @@ export class EcoChart {
 
         let lastMobileTapTime = 0;
         const endTouch = (e: TouchEvent) => {
-            // Mobile Double-Tap to Reset AutoScale
             const now = Date.now();
             const duration = now - this.touchStartTime;
+
+            // Mobile Touch Drawing: Tap confirms point at current crosshair position
+            if (this.drawingManager.activeToolType && this.activeTouches.size === 1) {
+                const t = e.changedTouches[0];
+                const rect = this.canvas.getBoundingClientRect();
+                const x = t.clientX - rect.left;
+                const y = t.clientY - rect.top;
+                const dist = Math.hypot(x - this.touchStartX, y - this.touchStartY);
+
+                if (!this.isTouchDrawingMoved && dist < 15 && duration < 500) {
+                    this.confirmTouchDrawingPoint();
+                } else {
+                    // Finger moved and lifted: crosshair stays locked at this position for next action
+                    this.renderer.isCrosshairVisible = true;
+                    this.isCrosshairDirty = true;
+                    this.renderer.forceNextRender = true;
+                    this.isDirty = true;
+                }
+
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    this.activeTouches.delete(e.changedTouches[i].identifier);
+                }
+                return;
+            }
+
+            // Mobile Double-Tap to Reset AutoScale
             if (this.activeTouches.size === 1 && duration < 250) {
                 if (now - lastMobileTapTime < 300) {
                     this.toggleAutoScale(true);
@@ -2443,7 +2611,7 @@ export class WorkspaceManager {
                     const tool = (btn as HTMLElement).dataset.tool;
                     const icon = (btn as HTMLElement).dataset.icon;
                     if (this.activeChart && tool) {
-                        this.activeChart.drawingManager.startTool(tool as any);
+                        this.activeChart.startDrawingTool(tool as any);
 
                         // Update Main Icon & Active State
                         if (btnLinesMain && icon) btnLinesMain.innerHTML = icon;
@@ -2463,8 +2631,8 @@ export class WorkspaceManager {
                     closeAllDTMenus();
                     const tool = el.dataset.tool;
                     if (this.activeChart) {
-                        if (tool === 'cursor') this.activeChart.drawingManager.activeToolType = null;
-                        else this.activeChart.drawingManager.startTool(tool as any);
+                        if (tool === 'cursor') this.activeChart.cancelDrawingTool();
+                        else this.activeChart.startDrawingTool(tool as any);
                     }
                     document.querySelectorAll('.dt-btn').forEach(b => b.classList.remove('active'));
                     el.classList.add('active');
@@ -3923,10 +4091,22 @@ export class WorkspaceManager {
                     const select = document.createElement('select');
                     select.style.cssText = 'background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; outline: none; cursor: pointer;';
 
-                    (param.options || []).forEach((opt: string) => {
+                    let options: string[] = param.options || [];
+                    if (param.id === 'timeframe' && typeof (indicator as any).getTimeframeOptions === 'function') {
+                        const currentInterval = this.activeChart?.currentInterval || '1m';
+                        options = (indicator as any).getTimeframeOptions(currentInterval);
+                    }
+
+                    // Fallback to 'Current' if previous value is no longer valid for the current chart timeframe
+                    if (param.id === 'timeframe' && !options.includes(String(param.value))) {
+                        param.value = 'Current';
+                        indicator.updateParams({ [param.id]: 'Current' });
+                    }
+
+                    options.forEach((opt: string) => {
                         const optEl = document.createElement('option');
                         optEl.value = opt;
-                        optEl.textContent = opt;
+                        optEl.textContent = opt === 'Current' ? 'Current (Chart Timeframe)' : opt;
                         optEl.selected = String(param.value) === opt;
                         select.appendChild(optEl);
                     });

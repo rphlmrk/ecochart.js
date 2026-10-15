@@ -37,14 +37,30 @@ export class CBCFlipIndicator extends BaseIndicator {
         ];
     }
 
+    public static getTimeframeOptions(currentInterval: string): string[] {
+        const ALL = ['1m', '3m', '5m', '15m', '30m', '45m', '1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w'];
+        const currentMs = TimeframeResampler.parseMs(currentInterval);
+        const filtered = ALL.filter(tf => TimeframeResampler.parseMs(tf) > currentMs);
+        return ['Current', ...filtered, 'Custom HTF'];
+    }
+
+    public getTimeframeOptions(currentInterval: string): string[] {
+        return CBCFlipIndicator.getTimeframeOptions(currentInterval);
+    }
+
     public getEffectiveTfMs(chartTfMs: number): number {
         const mode = this.getParam<string>('timeframe', 'Current');
         if (mode === 'Current') return chartTfMs;
-        if (mode === 'Custom') {
+        if (mode === 'Custom' || mode === 'Custom HTF') {
             const mins = Math.max(1, this.getParam<number>('customTfMins', 60));
-            return mins * 60 * 1000;
+            const customMs = mins * 60 * 1000;
+            return Math.max(customMs, chartTfMs);
         }
-        return TimeframeResampler.parseMs(mode.toLowerCase());
+        const parsedMs = TimeframeResampler.parseMs(mode.toLowerCase());
+        if (parsedMs <= chartTfMs) {
+            return chartTfMs;
+        }
+        return parsedMs;
     }
 
     public isHTF(chartTfMs: number): boolean {
@@ -79,6 +95,7 @@ export class CBCFlipIndicator extends BaseIndicator {
             blockHigh: -Infinity,
             blockLow: Infinity,
             blockClose: 0,
+            currBlockEvaluated: false,
             htfTrackedHigh: NaN,
             htfTrackedLow: NaN,
             htfCbc: false,
@@ -130,6 +147,7 @@ export class CBCFlipIndicator extends BaseIndicator {
             blockHigh: state.blockHigh ?? -Infinity,
             blockLow: state.blockLow ?? Infinity,
             blockClose: state.blockClose ?? 0,
+            currBlockEvaluated: !!state.currBlockEvaluated,
             htfTrackedHigh: state.htfTrackedHigh,
             htfTrackedLow: state.htfTrackedLow,
             htfCbc: !!state.htfCbc,
@@ -192,7 +210,7 @@ export class CBCFlipIndicator extends BaseIndicator {
                 trackedLow = currLow;
             } else {
                 // 3. CANDLE DID NOT CLOSE OUTSIDE (Closed inside the range)
-                // If it wicked beyond the range, take the new wick and expand bounds:
+                // If it wicked beyond the range, expand boundaries:
                 if (currHigh > trackedHigh) {
                     trackedHigh = currHigh;
                 }
@@ -235,6 +253,7 @@ export class CBCFlipIndicator extends BaseIndicator {
 
         // ==========================================
         // Mode 2: Higher Timeframe (HTF Wick Expansion)
+        // Strictly triggers after HTF candle close
         // ==========================================
         const bTime = TimeframeResampler.getBucketStart(t, tfMs);
 
@@ -244,6 +263,7 @@ export class CBCFlipIndicator extends BaseIndicator {
             this.state.blockHigh = currHigh;
             this.state.blockLow = currLow;
             this.state.blockClose = currClose;
+            this.state.currBlockEvaluated = false;
             this.state.htfTrackedHigh = currHigh;
             this.state.htfTrackedLow = currLow;
             this.state.htfCbc = false;
@@ -255,17 +275,89 @@ export class CBCFlipIndicator extends BaseIndicator {
             return;
         }
 
-        // Check if an HTF block has completed
+        // Check if a new HTF block has started
         if (this.state.currBlockTime !== 0 && bTime !== this.state.currBlockTime) {
-            // Previous HTF candle (ending at index - 1) just closed!
+            // Previous HTF candle ended at index - 1
+            if (!this.state.currBlockEvaluated && index > 0) {
+                const closedHigh = this.state.blockHigh;
+                const closedLow = this.state.blockLow;
+                const closedClose = this.state.blockClose;
+
+                let htfCbc = !!this.state.htfCbc;
+                const prevHtfCbc = htfCbc;
+                let htfTrackedHigh = isNaN(this.state.htfTrackedHigh) ? closedHigh : this.state.htfTrackedHigh;
+                let htfTrackedLow = isNaN(this.state.htfTrackedLow) ? closedLow : this.state.htfTrackedLow;
+                let bullSignal = false;
+                let bearSignal = false;
+
+                if (closedClose < htfTrackedLow) {
+                    if (htfCbc) {
+                        htfCbc = false;
+                        bearSignal = true;
+                    }
+                    htfTrackedHigh = closedHigh;
+                    htfTrackedLow = closedLow;
+                } else if (closedClose > htfTrackedHigh) {
+                    if (!htfCbc) {
+                        htfCbc = true;
+                        bullSignal = true;
+                    }
+                    htfTrackedHigh = closedHigh;
+                    htfTrackedLow = closedLow;
+                } else {
+                    if (closedHigh > htfTrackedHigh) htfTrackedHigh = closedHigh;
+                    if (closedLow < htfTrackedLow) htfTrackedLow = closedLow;
+                }
+
+                this.state.htfCbc = htfCbc;
+                this.state.prevHtfCbc = prevHtfCbc;
+                this.state.htfTrackedHigh = htfTrackedHigh;
+                this.state.htfTrackedLow = htfTrackedLow;
+
+                if (bullSignal) {
+                    this.flips[index - 1] = 1;
+                    window.dispatchEvent(new CustomEvent('ecochart-alert', {
+                        detail: { id: this.id, title: 'Bulls', message: `${this.name}: Bulls in Control` }
+                    }));
+                } else if (bearSignal) {
+                    this.flips[index - 1] = -1;
+                    window.dispatchEvent(new CustomEvent('ecochart-alert', {
+                        detail: { id: this.id, title: 'Bears', message: `${this.name}: Bears in Control` }
+                    }));
+                }
+            }
+
+            // Start new HTF bucket
+            this.state.currBlockTime = bTime;
+            this.state.blockStartIdx = index;
+            this.state.blockHigh = currHigh;
+            this.state.blockLow = currLow;
+            this.state.blockClose = currClose;
+            this.state.currBlockEvaluated = false;
+        } else {
+            // Update extremes for current HTF bucket
+            if (currHigh > this.state.blockHigh) this.state.blockHigh = currHigh;
+            if (currLow < this.state.blockLow) this.state.blockLow = currLow;
+            this.state.blockClose = currClose;
+        }
+
+        // Assign current HTF trend state to this lower timeframe bar
+        this.values[index] = this.state.htfCbc ? 1 : 0;
+        this.trackedHighs[index] = this.state.htfTrackedHigh;
+        this.trackedLows[index] = this.state.htfTrackedLow;
+        this.flips[index] = 0;
+
+        // Check if the current bar closes the HTF block (exact block boundary and candle closed)
+        const isHTFBlockClosed = isClosed && ((t + chartTfMs) >= (bTime + tfMs));
+        if (isHTFBlockClosed && !this.state.currBlockEvaluated && !isNaN(this.state.htfTrackedHigh)) {
             const closedHigh = this.state.blockHigh;
             const closedLow = this.state.blockLow;
             const closedClose = this.state.blockClose;
 
             let htfCbc = !!this.state.htfCbc;
             const prevHtfCbc = htfCbc;
-            let htfTrackedHigh = isNaN(this.state.htfTrackedHigh) ? closedHigh : this.state.htfTrackedHigh;
-            let htfTrackedLow = isNaN(this.state.htfTrackedLow) ? closedLow : this.state.htfTrackedLow;
+            let htfTrackedHigh = this.state.htfTrackedHigh;
+            let htfTrackedLow = this.state.htfTrackedLow;
             let bullSignal = false;
             let bearSignal = false;
 
@@ -292,73 +384,24 @@ export class CBCFlipIndicator extends BaseIndicator {
             this.state.prevHtfCbc = prevHtfCbc;
             this.state.htfTrackedHigh = htfTrackedHigh;
             this.state.htfTrackedLow = htfTrackedLow;
+            this.state.currBlockEvaluated = true;
 
-            let flip = 0;
-            if (bullSignal) {
-                flip = 1;
-                if (isClosed) {
-                    window.dispatchEvent(new CustomEvent('ecochart-alert', {
-                        detail: { id: this.id, title: 'Bulls', message: `${this.name}: Bulls in Control` }
-                    }));
-                }
-            } else if (bearSignal) {
-                flip = -1;
-                if (isClosed) {
-                    window.dispatchEvent(new CustomEvent('ecochart-alert', {
-                        detail: { id: this.id, title: 'Bears', message: `${this.name}: Bears in Control` }
-                    }));
-                }
-            }
-
-            if (flip !== 0) {
-                this.flips[index - 1] = flip;
-            }
-
-            // Start new HTF bucket
-            this.state.currBlockTime = bTime;
-            this.state.blockStartIdx = index;
-            this.state.blockHigh = currHigh;
-            this.state.blockLow = currLow;
-            this.state.blockClose = currClose;
-        } else {
-            // Update extremes for current HTF bucket
-            if (currHigh > this.state.blockHigh) this.state.blockHigh = currHigh;
-            if (currLow < this.state.blockLow) this.state.blockLow = currLow;
-            this.state.blockClose = currClose;
-        }
-
-        // Assign current state to this lower timeframe bar
-        this.values[index] = this.state.htfCbc ? 1 : 0;
-        this.trackedHighs[index] = this.state.htfTrackedHigh;
-        this.trackedLows[index] = this.state.htfTrackedLow;
-
-        // On HTF, signals strictly trigger on candle close
-        let flip = 0;
-        const isHTFBlockBoundary = (t + chartTfMs) >= (bTime + tfMs);
-        if (isClosed && isHTFBlockBoundary && !isNaN(this.state.htfTrackedHigh)) {
-            let htfCbc = !!this.state.htfCbc;
-            let bullSignal = false;
-            let bearSignal = false;
-            if (this.state.blockClose < this.state.htfTrackedLow) {
-                if (htfCbc) bearSignal = true;
-            } else if (this.state.blockClose > this.state.htfTrackedHigh) {
-                if (!htfCbc) bullSignal = true;
-            }
+            this.values[index] = htfCbc ? 1 : 0;
+            this.trackedHighs[index] = htfTrackedHigh;
+            this.trackedLows[index] = htfTrackedLow;
 
             if (bullSignal) {
-                flip = 1;
+                this.flips[index] = 1;
                 window.dispatchEvent(new CustomEvent('ecochart-alert', {
                     detail: { id: this.id, title: 'Bulls', message: `${this.name}: Bulls in Control` }
                 }));
             } else if (bearSignal) {
-                flip = -1;
+                this.flips[index] = -1;
                 window.dispatchEvent(new CustomEvent('ecochart-alert', {
                     detail: { id: this.id, title: 'Bears', message: `${this.name}: Bears in Control` }
                 }));
             }
         }
-
-        this.flips[index] = flip;
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics): void {
