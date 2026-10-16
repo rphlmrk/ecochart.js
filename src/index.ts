@@ -41,6 +41,7 @@ export interface SavedWorkspaceState {
     activePaneIndex: number;
     targetFPS?: number;
     toolbarDockMode?: 'free' | 'top';
+    toolbarVisibility?: 'autohide' | 'always';
     topBarDisplayMode?: 'change' | 'none';
     isAutoHideNav?: boolean;
     isCrosshairSyncEnabled?: boolean;
@@ -329,7 +330,7 @@ export class EcoChart {
             display: ${WorkspaceManager.toolbarDockMode === 'top' ? 'flex' : 'none'}; flex-direction: row; gap: 4px; z-index: 5; user-select: none;
             background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45);
             border-radius: 6px; padding: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-            opacity: 0.15; transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            opacity: ${WorkspaceManager.toolbarVisibility === 'always' ? '1' : '0.15'}; transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
         `;
 
         // Simplified robust flat UI for per-pane docks
@@ -415,15 +416,22 @@ export class EcoChart {
             }
 
             if (this.paneDrawingToolbar && WorkspaceManager.toolbarDockMode === 'top') {
-                if (distFromTop >= 0 && distFromTop <= 60 && distFromCenterX <= 220) this.paneDrawingToolbar.style.opacity = '1';
-                else this.paneDrawingToolbar.style.opacity = '0.15';
+                if (WorkspaceManager.toolbarVisibility === 'always') {
+                    this.paneDrawingToolbar.style.opacity = '1';
+                } else if (distFromTop >= 0 && distFromTop <= 60 && distFromCenterX <= 220) {
+                    this.paneDrawingToolbar.style.opacity = '1';
+                } else {
+                    this.paneDrawingToolbar.style.opacity = '0.15';
+                }
             }
         });
 
         this.container.addEventListener('pointerleave', () => {
             if (WorkspaceManager.isAutoHideNav) this.hideNavBar();
             if (this.legendContainer) this.legendContainer.style.opacity = '0.15';
-            if (this.paneDrawingToolbar) this.paneDrawingToolbar.style.opacity = '0.15';
+            if (this.paneDrawingToolbar) {
+                this.paneDrawingToolbar.style.opacity = WorkspaceManager.toolbarVisibility === 'always' ? '1' : '0.15';
+            }
         });
     }
 
@@ -1853,6 +1861,7 @@ export class WorkspaceManager {
     public static currentLayout = '1';
     private static saveTimeout: any = null;
     public static toolbarDockMode: 'free' | 'top' = 'free';
+    public static toolbarVisibility: 'autohide' | 'always' = 'autohide';
     public static topBarDisplayMode: 'change' | 'none' = 'change';
     public static syncModalInputs: () => void = () => {};
 
@@ -2255,6 +2264,19 @@ export class WorkspaceManager {
         }
     }
 
+    public static updateToolbarVisibility() {
+        const globalDt = document.getElementById('drawing-toolbar');
+        const targetOpacity = this.toolbarVisibility === 'always' ? '1' : '0.15';
+        if (globalDt) {
+            globalDt.style.opacity = targetOpacity;
+        }
+        this.charts.forEach(c => {
+            if (c.paneDrawingToolbar) {
+                c.paneDrawingToolbar.style.opacity = targetOpacity;
+            }
+        });
+    }
+
     public static saveWorkspace() {
         if (this.charts.length === 0) return;
         const state: SavedWorkspaceState = {
@@ -2263,6 +2285,7 @@ export class WorkspaceManager {
             activePaneIndex: this.activeChart ? this.charts.indexOf(this.activeChart) : 0,
             targetFPS: this.targetFPS,
             toolbarDockMode: this.toolbarDockMode,
+            toolbarVisibility: this.toolbarVisibility,
             topBarDisplayMode: this.topBarDisplayMode,
             isAutoHideNav: this.isAutoHideNav,
             isCrosshairSyncEnabled: this.isCrosshairSyncEnabled,
@@ -2318,6 +2341,7 @@ export class WorkspaceManager {
                     // Restore global workspace preferences
                     if (state.targetFPS) this.targetFPS = state.targetFPS;
                     if (state.toolbarDockMode) this.toolbarDockMode = state.toolbarDockMode;
+                    if (state.toolbarVisibility) this.toolbarVisibility = state.toolbarVisibility;
                     if (state.topBarDisplayMode) this.topBarDisplayMode = state.topBarDisplayMode;
                     if (state.isAutoHideNav !== undefined) this.isAutoHideNav = state.isAutoHideNav;
                     if (state.isCrosshairSyncEnabled !== undefined) this.isCrosshairSyncEnabled = state.isCrosshairSyncEnabled;
@@ -2346,6 +2370,7 @@ export class WorkspaceManager {
                     }
 
                     this.updateToolbarDock();
+                    this.updateToolbarVisibility();
 
                     this.setLayout(state.layout, state.panes);
                     if (state.activePaneIndex >= 0 && state.activePaneIndex < this.charts.length) {
@@ -2582,6 +2607,10 @@ export class WorkspaceManager {
 
             // 2. Proximity Fading (Global)
             document.addEventListener('pointermove', (e) => {
+                if (WorkspaceManager.toolbarVisibility === 'always') {
+                    dt.style.opacity = '1';
+                    return;
+                }
                 const rect = dt.getBoundingClientRect();
                 // Calculate distance from mouse to the bounding box of the toolbar
                 const dist = Math.max(
@@ -2596,6 +2625,12 @@ export class WorkspaceManager {
                 if (dist < 60) {
                     dt.style.opacity = '1';
                 } else {
+                    dt.style.opacity = '0.15';
+                }
+            });
+
+            document.addEventListener('mouseleave', () => {
+                if (WorkspaceManager.toolbarVisibility !== 'always') {
                     dt.style.opacity = '0.15';
                 }
             });
@@ -2978,6 +3013,12 @@ export class WorkspaceManager {
 
             const selDock = document.getElementById('select-toolbar-dock') as HTMLSelectElement;
             if (selDock) selDock.value = WorkspaceManager.toolbarDockMode;
+
+            const selVisibility = document.getElementById('select-toolbar-visibility') as HTMLSelectElement;
+            if (selVisibility) selVisibility.value = WorkspaceManager.toolbarVisibility;
+
+            const checkAutoToolbar = document.getElementById('check-autohide-toolbar') as HTMLInputElement;
+            if (checkAutoToolbar) checkAutoToolbar.checked = (WorkspaceManager.toolbarVisibility === 'autohide');
 
             const selTopBar = document.getElementById('select-topbar-display') as HTMLSelectElement;
             if (selTopBar) selTopBar.value = WorkspaceManager.topBarDisplayMode;
@@ -3501,6 +3542,26 @@ export class WorkspaceManager {
             WorkspaceManager.triggerAutoSave();
         });
 
+        // Toolbar Visibility (Auto Hide vs Always Visible)
+        const selectVis = document.getElementById('select-toolbar-visibility') as HTMLSelectElement;
+        const checkAutoToolbar = document.getElementById('check-autohide-toolbar') as HTMLInputElement;
+
+        const setToolbarVisibilityMode = (mode: 'autohide' | 'always') => {
+            WorkspaceManager.toolbarVisibility = mode;
+            if (selectVis) selectVis.value = mode;
+            if (checkAutoToolbar) checkAutoToolbar.checked = (mode === 'autohide');
+            WorkspaceManager.updateToolbarVisibility();
+            WorkspaceManager.triggerAutoSave();
+        };
+
+        selectVis?.addEventListener('change', (e) => {
+            setToolbarVisibilityMode((e.target as HTMLSelectElement).value as 'autohide' | 'always');
+        });
+
+        checkAutoToolbar?.addEventListener('change', (e) => {
+            setToolbarVisibilityMode((e.target as HTMLInputElement).checked ? 'autohide' : 'always');
+        });
+
         const selectTopBar = document.getElementById('select-topbar-display') as HTMLSelectElement;
         selectTopBar?.addEventListener('change', (e) => {
             WorkspaceManager.topBarDisplayMode = (e.target as HTMLSelectElement).value as 'change' | 'none';
@@ -3633,6 +3694,12 @@ export class WorkspaceManager {
                 if (!WorkspaceManager.isCrosshairSyncEnabled) {
                     WorkspaceManager.broadcastCrosshair(null, null as any);
                 }
+            }
+
+            const selVis = document.getElementById('select-toolbar-visibility') as HTMLSelectElement;
+            if (selVis) {
+                WorkspaceManager.toolbarVisibility = selVis.value as 'autohide' | 'always';
+                WorkspaceManager.updateToolbarVisibility();
             }
 
             colorPicker.close();

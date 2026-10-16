@@ -1057,6 +1057,10 @@
             Auto-hide Navigation Bar (show when mouse is near)
           </label>
           <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+            <input type="checkbox" id="check-autohide-toolbar" checked style="cursor: pointer;">
+            Auto-hide Drawing Toolbar (show when mouse is near)
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
             <input type="checkbox" id="check-sync-crosshair" checked style="cursor: pointer;">
             Synchronize Crosshair Across All Panes
           </label>
@@ -1091,6 +1095,15 @@
             style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none;">
             <option value="free" selected>Free Floating</option>
             <option value="top">Docked Top Center</option>
+          </select>
+        </div>
+        <div
+          style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; margin-top: 14px;">
+          <span>Drawing Toolbar Visibility:</span>
+          <select id="select-toolbar-visibility"
+            style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none;">
+            <option value="autohide" selected>Auto Hide</option>
+            <option value="always">Always Visible</option>
           </select>
         </div>
         <div
