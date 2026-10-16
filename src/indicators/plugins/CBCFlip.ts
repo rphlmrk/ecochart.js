@@ -10,9 +10,13 @@ export class CBCFlipIndicator extends BaseIndicator {
     // Tracked Wick Expansion Levels
     public trackedHighs: Float64Array = new Float64Array(20000);
     public trackedLows: Float64Array = new Float64Array(20000);
+    // Exact Wick Alignment tracking: 1 if line created or level changed on this bar
+    public levelChanges: Int8Array = new Int8Array(20000);
+    // Active line price (trackedLow if bullish, trackedHigh if bearish)
+    public activeLevels: Float64Array = new Float64Array(20000);
 
     constructor() {
-        super('CBC_FLIP', 'CBC Flip (Wick Expansion)', false);
+        super('CBC_FLIP', 'CBC Flip (Exact Wick Alignment)', false);
 
         this.params = [
             {
@@ -23,13 +27,20 @@ export class CBCFlipIndicator extends BaseIndicator {
                 options: ['Current', '1m', '3m', '5m', '15m', '30m', '45m', '1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', 'Custom']
             },
             { id: 'customTfMins', name: 'Custom HTF Minutes', type: 'number', value: 60, min: 1, max: 43200, step: 1 },
+            {
+                id: 'lineStyle',
+                name: 'Line Style',
+                type: 'select',
+                value: 'Exact Wick Alignment',
+                options: ['Exact Wick Alignment', 'Stepline']
+            },
             { id: 'triggerOnClose', name: 'Trigger on Candle Close Only', type: 'boolean', value: true },
             { id: 'showLines', name: 'Show Dynamic Wick Lines', type: 'boolean', value: true },
             { id: 'showBothWicks', name: 'Show Both Wicks of Tracked Candle', type: 'boolean', value: false },
-            { id: 'lineWidth', name: 'Wick Line Width', type: 'number', value: 2, min: 1, max: 5, step: 1 },
+            { id: 'lineWidth', name: 'Line Width', type: 'number', value: 2, min: 1, max: 4, step: 1 },
             { id: 'showShapes', name: 'Show Flip Shapes', type: 'boolean', value: true },
-            { id: 'bullColor', name: 'Bulls Color (Support / ▲)', type: 'color', value: '#78CEB0' },
-            { id: 'bearColor', name: 'Bears Color (Resistance / ▼)', type: 'color', value: '#E46666' },
+            { id: 'bullColor', name: 'Bullish Support Color', type: 'color', value: '#78CEB0' },
+            { id: 'bearColor', name: 'Bearish Resistance Color', type: 'color', value: '#E46666' },
             { id: 'shapeSize', name: 'Shape Size', type: 'number', value: 7, min: 3, max: 20, step: 1 },
             { id: 'showBgColor', name: 'Show Background Highlight', type: 'boolean', value: true },
             { id: 'bullBgColor', name: 'Bulls Highlight Color', type: 'color', value: '#FFEB3B47' },
@@ -70,18 +81,18 @@ export class CBCFlipIndicator extends BaseIndicator {
 
     public getDisplayTitle(chartTfMs: number): string {
         const tf = this.getParam<string>('timeframe', 'Current');
-        if (tf === 'Current') return 'CBC Flip (Wick Expansion)';
+        if (tf === 'Current') return 'CBC Flip (Exact Wick Alignment)';
         const tfMs = this.getEffectiveTfMs(chartTfMs);
         if (tfMs <= chartTfMs) {
-            return `CBC Flip (Wick Expansion) [Current]`;
+            return `CBC Flip (Exact Wick Alignment) [Current]`;
         }
-        return `CBC Flip (Wick Expansion) [${tf}]`;
+        return `CBC Flip (Exact Wick Alignment) [${tf}]`;
     }
 
     protected override onParamsUpdated(): void {
         this.reset();
         const tf = this.getParam<string>('timeframe', 'Current');
-        this.name = tf === 'Current' ? 'CBC Flip (Wick Expansion)' : `CBC Flip (Wick Expansion) [${tf}]`;
+        this.name = tf === 'Current' ? 'CBC Flip (Exact Wick Alignment)' : `CBC Flip (Exact Wick Alignment) [${tf}]`;
     }
 
     protected override setup(): void {
@@ -102,19 +113,26 @@ export class CBCFlipIndicator extends BaseIndicator {
             prevHtfCbc: false
         };
         if (this.flips.length < this.values.length) {
-            this.flips = new Int8Array(this.values.length);
-            this.trackedHighs = new Float64Array(this.values.length);
-            this.trackedLows = new Float64Array(this.values.length);
+            const cap = this.values.length;
+            this.flips = new Int8Array(cap);
+            this.trackedHighs = new Float64Array(cap);
+            this.trackedLows = new Float64Array(cap);
+            this.levelChanges = new Int8Array(cap);
+            this.activeLevels = new Float64Array(cap);
         }
         this.flips.fill(0);
         this.trackedHighs.fill(0);
         this.trackedLows.fill(0);
+        this.levelChanges.fill(0);
+        this.activeLevels.fill(0);
     }
 
     public override reset(): void {
         this.flips.fill(0);
         this.trackedHighs.fill(0);
         this.trackedLows.fill(0);
+        this.levelChanges.fill(0);
+        this.activeLevels.fill(0);
         super.reset();
     }
 
@@ -132,6 +150,14 @@ export class CBCFlipIndicator extends BaseIndicator {
             const newLows = new Float64Array(capacity);
             newLows.set(this.trackedLows);
             this.trackedLows = newLows;
+
+            const newLevelChanges = new Int8Array(capacity);
+            newLevelChanges.set(this.levelChanges);
+            this.levelChanges = newLevelChanges;
+
+            const newActiveLevels = new Float64Array(capacity);
+            newActiveLevels.set(this.activeLevels);
+            this.activeLevels = newActiveLevels;
         }
         super.update(ds, isClosedTick);
     }
@@ -168,7 +194,7 @@ export class CBCFlipIndicator extends BaseIndicator {
 
         if (!isHTF) {
             // ==========================================
-            // Mode 1: Current Timeframe (Wick Expansion)
+            // Mode 1: Current Timeframe (Exact Wick Alignment)
             // ==========================================
             if (index === 0 || isNaN(this.state.trackedHigh)) {
                 this.state.trackedHigh = currHigh;
@@ -179,6 +205,8 @@ export class CBCFlipIndicator extends BaseIndicator {
                 this.flips[0] = 0;
                 this.trackedHighs[0] = currHigh;
                 this.trackedLows[0] = currLow;
+                this.levelChanges[0] = 1;
+                this.activeLevels[0] = currHigh; // not cbc -> activeLevel = trackedHigh
                 return;
             }
 
@@ -188,34 +216,43 @@ export class CBCFlipIndicator extends BaseIndicator {
             let trackedLow = this.state.trackedLow;
             let bullSignal = false;
             let bearSignal = false;
+            let levelChanged = false;
 
-            // --- CORE WICK EXPANSION LOGIC ---
+            // --- CORE CANDLE-BY-CANDLE LOGIC ---
             if (currClose < trackedLow) {
-                // 1. CANDLE CLOSED OUTSIDE BELOW LOW
+                // 1. CANDLE CLOSED OUTSIDE BELOW LOW -> Flip to Bearish
                 if (cbc) {
                     cbc = false;
                     bearSignal = true;
                 }
-                // Reset reference levels to this breakout candle
                 trackedHigh = currHigh;
                 trackedLow = currLow;
+                levelChanged = true;
             } else if (currClose > trackedHigh) {
-                // 2. CANDLE CLOSED OUTSIDE ABOVE HIGH
+                // 2. CANDLE CLOSED OUTSIDE ABOVE HIGH -> Flip to Bullish
                 if (!cbc) {
                     cbc = true;
                     bullSignal = true;
                 }
-                // Reset reference levels to this breakout candle
                 trackedHigh = currHigh;
                 trackedLow = currLow;
+                levelChanged = true;
             } else {
-                // 3. CANDLE DID NOT CLOSE OUTSIDE (Closed inside the range)
-                // If it wicked beyond the range, expand boundaries:
+                // 3. CANDLE CLOSED INSIDE (Did not close outside)
+                // If it wicks beyond the boundaries, expand that exact wick:
                 if (currHigh > trackedHigh) {
                     trackedHigh = currHigh;
+                    // If bearish, trackedHigh is our active resistance line
+                    if (!cbc) {
+                        levelChanged = true;
+                    }
                 }
                 if (currLow < trackedLow) {
                     trackedLow = currLow;
+                    // If bullish, trackedLow is our active support line
+                    if (cbc) {
+                        levelChanged = true;
+                    }
                 }
             }
 
@@ -227,6 +264,13 @@ export class CBCFlipIndicator extends BaseIndicator {
             this.values[index] = cbc ? 1 : 0;
             this.trackedHighs[index] = trackedHigh;
             this.trackedLows[index] = trackedLow;
+
+            const trendFlipped = bullSignal || bearSignal;
+            const lineChanged = trendFlipped || levelChanged;
+            const currentLevel = cbc ? trackedLow : trackedHigh;
+
+            this.levelChanges[index] = lineChanged ? 1 : 0;
+            this.activeLevels[index] = currentLevel;
 
             let flip = 0;
             const triggerOnClose = this.getParam<boolean>('triggerOnClose', true);
@@ -252,7 +296,7 @@ export class CBCFlipIndicator extends BaseIndicator {
         }
 
         // ==========================================
-        // Mode 2: Higher Timeframe (HTF Wick Expansion)
+        // Mode 2: Higher Timeframe (HTF Exact Wick Alignment)
         // Strictly triggers after HTF candle close
         // ==========================================
         const bTime = TimeframeResampler.getBucketStart(t, tfMs);
@@ -272,10 +316,13 @@ export class CBCFlipIndicator extends BaseIndicator {
             this.flips[0] = 0;
             this.trackedHighs[0] = currHigh;
             this.trackedLows[0] = currLow;
+            this.levelChanges[0] = 1;
+            this.activeLevels[0] = currHigh;
             return;
         }
 
         // Check if a new HTF block has started
+        let htfLevelChanged = false;
         if (this.state.currBlockTime !== 0 && bTime !== this.state.currBlockTime) {
             // Previous HTF candle ended at index - 1
             if (!this.state.currBlockEvaluated && index > 0) {
@@ -297,6 +344,7 @@ export class CBCFlipIndicator extends BaseIndicator {
                     }
                     htfTrackedHigh = closedHigh;
                     htfTrackedLow = closedLow;
+                    htfLevelChanged = true;
                 } else if (closedClose > htfTrackedHigh) {
                     if (!htfCbc) {
                         htfCbc = true;
@@ -304,9 +352,16 @@ export class CBCFlipIndicator extends BaseIndicator {
                     }
                     htfTrackedHigh = closedHigh;
                     htfTrackedLow = closedLow;
+                    htfLevelChanged = true;
                 } else {
-                    if (closedHigh > htfTrackedHigh) htfTrackedHigh = closedHigh;
-                    if (closedLow < htfTrackedLow) htfTrackedLow = closedLow;
+                    if (closedHigh > htfTrackedHigh) {
+                        htfTrackedHigh = closedHigh;
+                        if (!htfCbc) htfLevelChanged = true;
+                    }
+                    if (closedLow < htfTrackedLow) {
+                        htfTrackedLow = closedLow;
+                        if (htfCbc) htfLevelChanged = true;
+                    }
                 }
 
                 this.state.htfCbc = htfCbc;
@@ -347,6 +402,10 @@ export class CBCFlipIndicator extends BaseIndicator {
         this.trackedLows[index] = this.state.htfTrackedLow;
         this.flips[index] = 0;
 
+        const htfActiveLevel = this.state.htfCbc ? this.state.htfTrackedLow : this.state.htfTrackedHigh;
+        this.activeLevels[index] = htfActiveLevel;
+        this.levelChanges[index] = htfLevelChanged ? 1 : 0;
+
         // Check if the current bar closes the HTF block (exact block boundary and candle closed)
         const isHTFBlockClosed = isClosed && ((t + chartTfMs) >= (bTime + tfMs));
         if (isHTFBlockClosed && !this.state.currBlockEvaluated && !isNaN(this.state.htfTrackedHigh)) {
@@ -360,6 +419,7 @@ export class CBCFlipIndicator extends BaseIndicator {
             let htfTrackedLow = this.state.htfTrackedLow;
             let bullSignal = false;
             let bearSignal = false;
+            let closedLevelChanged = false;
 
             if (closedClose < htfTrackedLow) {
                 if (htfCbc) {
@@ -368,6 +428,7 @@ export class CBCFlipIndicator extends BaseIndicator {
                 }
                 htfTrackedHigh = closedHigh;
                 htfTrackedLow = closedLow;
+                closedLevelChanged = true;
             } else if (closedClose > htfTrackedHigh) {
                 if (!htfCbc) {
                     htfCbc = true;
@@ -375,9 +436,16 @@ export class CBCFlipIndicator extends BaseIndicator {
                 }
                 htfTrackedHigh = closedHigh;
                 htfTrackedLow = closedLow;
+                closedLevelChanged = true;
             } else {
-                if (closedHigh > htfTrackedHigh) htfTrackedHigh = closedHigh;
-                if (closedLow < htfTrackedLow) htfTrackedLow = closedLow;
+                if (closedHigh > htfTrackedHigh) {
+                    htfTrackedHigh = closedHigh;
+                    if (!htfCbc) closedLevelChanged = true;
+                }
+                if (closedLow < htfTrackedLow) {
+                    htfTrackedLow = closedLow;
+                    if (htfCbc) closedLevelChanged = true;
+                }
             }
 
             this.state.htfCbc = htfCbc;
@@ -389,6 +457,11 @@ export class CBCFlipIndicator extends BaseIndicator {
             this.values[index] = htfCbc ? 1 : 0;
             this.trackedHighs[index] = htfTrackedHigh;
             this.trackedLows[index] = htfTrackedLow;
+            const newHtfLevel = htfCbc ? htfTrackedLow : htfTrackedHigh;
+            this.activeLevels[index] = newHtfLevel;
+            if (closedLevelChanged) {
+                this.levelChanges[index] = 1;
+            }
 
             if (bullSignal) {
                 this.flips[index] = 1;
@@ -408,8 +481,9 @@ export class CBCFlipIndicator extends BaseIndicator {
         if (!this.visible || r.dataStore.length === 0) return;
 
         const showLines = this.getParam<boolean>('showLines', true);
+        const lineStyle = this.getParam<string>('lineStyle', 'Exact Wick Alignment');
         const showBothWicks = this.getParam<boolean>('showBothWicks', false);
-        const lineWidth = Math.max(1, this.getParam<number>('lineWidth', 2));
+        const lineWidth = Math.max(1, Math.min(4, this.getParam<number>('lineWidth', 2)));
 
         const showShapes = this.getParam<boolean>('showShapes', true);
         const showBgColor = this.getParam<boolean>('showBgColor', true);
@@ -424,8 +498,9 @@ export class CBCFlipIndicator extends BaseIndicator {
 
         const sp = r.candleSpacing * r.zoom;
         const halfSp = sp * 0.5;
+        const dsLength = r.dataStore.length;
         const visStart = Math.max(0, Math.floor(r.cameraX / sp) - 2);
-        const visEnd = Math.min(r.dataStore.length, Math.floor((r.cameraX + layout.chartWidth) / sp) + 2);
+        const visEnd = Math.min(dsLength, Math.floor((r.cameraX + layout.chartWidth) / sp) + 2);
         const ds = r.dataStore;
 
         // =========================================================================
@@ -459,89 +534,150 @@ export class CBCFlipIndicator extends BaseIndicator {
         }
 
         // =========================================================================
-        // 2. Dynamic Wick Steplines (Batched GPU Stroke Calls)
+        // 2. Pixel-Perfect Wick Lines (Native Lines vs Stepline)
         // =========================================================================
         if (showLines) {
-            // Helper function to draw continuous stepline paths for a given series and condition
-            const drawStepline = (
-                getValue: (idx: number) => number,
-                isConditionMet: (idx: number) => boolean,
-                color: number,
-                width: number,
-                alpha: number
-            ) => {
-                let hasPath = false;
-                let inSegment = false;
-                let prevY = 0;
-
-                for (let i = visStart; i < visEnd; i++) {
-                    const active = isConditionMet(i);
-                    const val = getValue(i);
-
-                    if (!active || isNaN(val)) {
-                        inSegment = false;
-                        continue;
-                    }
-
-                    const x = r.getCandleCenterX(i);
-                    const y = r.priceToY(val);
-
-                    if (!inSegment) {
-                        g.moveTo(x - halfSp, y).lineTo(x, y);
-                        inSegment = true;
-                        hasPath = true;
-                    } else {
-                        // Horizontal step from prev candle center to current candle center, then vertical jump
-                        g.lineTo(x, prevY).lineTo(x, y);
-                    }
-
-                    // Extend through the right edge of this bar
-                    g.lineTo(x + halfSp, y);
-                    prevY = y;
+            if (lineStyle === 'Exact Wick Alignment') {
+                // Find where the line covering visStart began
+                let segStart = visStart;
+                while (segStart > 0 && this.levelChanges[segStart] === 0) {
+                    segStart--;
                 }
 
-                if (hasPath) {
-                    g.stroke({ color, width, alpha });
+                interface LineSeg { x1: number; y: number; x2: number; }
+                const bullLines: LineSeg[] = [];
+                const bearLines: LineSeg[] = [];
+                const secBullLines: LineSeg[] = [];
+                const secBearLines: LineSeg[] = [];
+
+                let curr = segStart;
+                while (curr < dsLength && curr <= visEnd) {
+                    const isBull = this.values[curr] === 1;
+                    const price = this.activeLevels[curr];
+                    const lineStart = curr;
+
+                    let lineEnd = curr;
+                    while (lineEnd + 1 < dsLength && this.levelChanges[lineEnd + 1] === 0) {
+                        lineEnd++;
+                    }
+
+                    if (!isNaN(price) && isFinite(price) && price > 0) {
+                        const startX = r.getCandleCenterX(lineStart);
+                        const nextIdx = lineEnd + 1;
+                        // Lock previous line at next bar_index; on last ongoing bar, extend 1 bar forward
+                        const endX = nextIdx < dsLength
+                            ? r.getCandleCenterX(nextIdx)
+                            : (r.getCandleCenterX(lineEnd) + sp);
+                        const y = r.priceToY(price);
+
+                        if (isBull) {
+                            bullLines.push({ x1: startX, y, x2: endX });
+                        } else {
+                            bearLines.push({ x1: startX, y, x2: endX });
+                        }
+
+                        // Secondary bounds: ceiling during bull, floor during bear
+                        if (showBothWicks) {
+                            const secPrice = isBull ? this.trackedHighs[curr] : this.trackedLows[curr];
+                            if (!isNaN(secPrice) && isFinite(secPrice) && secPrice > 0) {
+                                const secY = r.priceToY(secPrice);
+                                if (isBull) {
+                                    secBullLines.push({ x1: startX, y: secY, x2: endX });
+                                } else {
+                                    secBearLines.push({ x1: startX, y: secY, x2: endX });
+                                }
+                            }
+                        }
+                    }
+
+                    curr = lineEnd + 1;
                 }
-            };
 
-            // 1. Bullish Support Line: trackedLow (linewidth 2, green)
-            drawStepline(
-                (i) => this.trackedLows[i],
-                (i) => this.values[i] === 1,
-                bullColor,
-                lineWidth,
-                1.0
-            );
+                // Stroke Bullish Support lines in its own path
+                if (bullLines.length > 0) {
+                    for (let k = 0; k < bullLines.length; k++) {
+                        const seg = bullLines[k];
+                        g.moveTo(seg.x1, seg.y).lineTo(seg.x2, seg.y);
+                    }
+                    g.stroke({ color: bullColor, width: lineWidth, alpha: 1.0 });
+                }
 
-            // 2. Bearish Resistance Line: trackedHigh (linewidth 2, red)
-            drawStepline(
-                (i) => this.trackedHighs[i],
-                (i) => this.values[i] === 0,
-                bearColor,
-                lineWidth,
-                1.0
-            );
+                // Stroke Bearish Resistance lines in its own path
+                if (bearLines.length > 0) {
+                    for (let k = 0; k < bearLines.length; k++) {
+                        const seg = bearLines[k];
+                        g.moveTo(seg.x1, seg.y).lineTo(seg.x2, seg.y);
+                    }
+                    g.stroke({ color: bearColor, width: lineWidth, alpha: 1.0 });
+                }
 
-            // 3. Optional Secondary Plots (showBothWicks)
-            if (showBothWicks) {
-                // Bullish Tracked High Ceiling (transparent green, width 1)
-                drawStepline(
-                    (i) => this.trackedHighs[i],
-                    (i) => this.values[i] === 1,
-                    bullColor,
-                    1,
-                    0.40
-                );
+                // Stroke secondary bounds with subtle alpha
+                if (showBothWicks) {
+                    if (secBullLines.length > 0) {
+                        for (let k = 0; k < secBullLines.length; k++) {
+                            const seg = secBullLines[k];
+                            g.moveTo(seg.x1, seg.y).lineTo(seg.x2, seg.y);
+                        }
+                        g.stroke({ color: bullColor, width: 1, alpha: 0.40 });
+                    }
+                    if (secBearLines.length > 0) {
+                        for (let k = 0; k < secBearLines.length; k++) {
+                            const seg = secBearLines[k];
+                            g.moveTo(seg.x1, seg.y).lineTo(seg.x2, seg.y);
+                        }
+                        g.stroke({ color: bearColor, width: 1, alpha: 0.40 });
+                    }
+                }
 
-                // Bearish Tracked Low Floor (transparent red, width 1)
-                drawStepline(
-                    (i) => this.trackedLows[i],
-                    (i) => this.values[i] === 0,
-                    bearColor,
-                    1,
-                    0.40
-                );
+            } else {
+                // Classic Stepline Mode
+                const drawStepline = (
+                    getValue: (idx: number) => number,
+                    isConditionMet: (idx: number) => boolean,
+                    color: number,
+                    width: number,
+                    alpha: number
+                ) => {
+                    let hasPath = false;
+                    let inSegment = false;
+                    let prevY = 0;
+
+                    for (let i = visStart; i < visEnd; i++) {
+                        const active = isConditionMet(i);
+                        const val = getValue(i);
+
+                        if (!active || isNaN(val)) {
+                            inSegment = false;
+                            continue;
+                        }
+
+                        const x = r.getCandleCenterX(i);
+                        const y = r.priceToY(val);
+
+                        if (!inSegment) {
+                            g.moveTo(x - halfSp, y).lineTo(x, y);
+                            inSegment = true;
+                            hasPath = true;
+                        } else {
+                            g.lineTo(x, prevY).lineTo(x, y);
+                        }
+
+                        g.lineTo(x + halfSp, y);
+                        prevY = y;
+                    }
+
+                    if (hasPath) {
+                        g.stroke({ color, width, alpha });
+                    }
+                };
+
+                drawStepline((i) => this.trackedLows[i], (i) => this.values[i] === 1, bullColor, lineWidth, 1.0);
+                drawStepline((i) => this.trackedHighs[i], (i) => this.values[i] === 0, bearColor, lineWidth, 1.0);
+
+                if (showBothWicks) {
+                    drawStepline((i) => this.trackedHighs[i], (i) => this.values[i] === 1, bullColor, 1, 0.40);
+                    drawStepline((i) => this.trackedLows[i], (i) => this.values[i] === 0, bearColor, 1, 0.40);
+                }
             }
         }
 
