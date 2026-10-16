@@ -42,6 +42,7 @@ export interface SavedWorkspaceState {
     targetFPS?: number;
     toolbarDockMode?: 'free' | 'top';
     toolbarVisibility?: 'autohide' | 'always';
+    toolbarCustomPos?: { left: number; top: number } | null;
     topBarDisplayMode?: 'change' | 'none';
     isAutoHideNav?: boolean;
     isCrosshairSyncEnabled?: boolean;
@@ -1862,6 +1863,7 @@ export class WorkspaceManager {
     private static saveTimeout: any = null;
     public static toolbarDockMode: 'free' | 'top' = 'free';
     public static toolbarVisibility: 'autohide' | 'always' = 'autohide';
+    public static toolbarCustomPos: { left: number; top: number } | null = null;
     public static topBarDisplayMode: 'change' | 'none' = 'change';
     public static syncModalInputs: () => void = () => {};
 
@@ -2257,7 +2259,10 @@ export class WorkspaceManager {
                 if (c.paneDrawingToolbar) c.paneDrawingToolbar.style.display = 'flex'; // Show per-pane toolbars
             });
         } else {
-            if (globalDt) globalDt.style.display = 'flex'; // Show global floating toolbar
+            if (globalDt) {
+                globalDt.style.display = 'flex'; // Show global floating toolbar
+                this.autoCenterToolbar();
+            }
             this.charts.forEach(c => {
                 if (c.paneDrawingToolbar) c.paneDrawingToolbar.style.display = 'none'; // Hide per-pane toolbars
             });
@@ -2277,6 +2282,35 @@ export class WorkspaceManager {
         });
     }
 
+    public static autoCenterToolbar(force = false) {
+        const dt = document.getElementById('drawing-toolbar');
+        if (!dt) return;
+        if (this.toolbarDockMode === 'top') return;
+
+        if (!force && this.toolbarCustomPos) {
+            // Restore saved user position, bounded by current window
+            const maxLeft = Math.max(0, window.innerWidth - (dt.offsetWidth || 40));
+            const maxTop = Math.max(38, window.innerHeight - (dt.offsetHeight || 380));
+            const left = Math.max(0, Math.min(maxLeft, this.toolbarCustomPos.left));
+            const top = Math.max(38, Math.min(maxTop, this.toolbarCustomPos.top));
+            dt.style.left = `${left}px`;
+            dt.style.top = `${top}px`;
+            dt.style.transform = 'none';
+            return;
+        }
+
+        // Auto-center vertically on the vertical line (left edge)
+        const topBarHeight = 38;
+        const availableHeight = window.innerHeight - topBarHeight;
+        const toolbarHeight = dt.offsetHeight || 380;
+        const centeredTop = Math.max(topBarHeight + 8, Math.round(topBarHeight + (availableHeight - toolbarHeight) / 2));
+        const leftPos = (this.toolbarCustomPos && !force) ? this.toolbarCustomPos.left : 16;
+
+        dt.style.left = `${leftPos}px`;
+        dt.style.top = `${centeredTop}px`;
+        dt.style.transform = 'none';
+    }
+
     public static saveWorkspace() {
         if (this.charts.length === 0) return;
         const state: SavedWorkspaceState = {
@@ -2286,6 +2320,7 @@ export class WorkspaceManager {
             targetFPS: this.targetFPS,
             toolbarDockMode: this.toolbarDockMode,
             toolbarVisibility: this.toolbarVisibility,
+            toolbarCustomPos: this.toolbarCustomPos,
             topBarDisplayMode: this.topBarDisplayMode,
             isAutoHideNav: this.isAutoHideNav,
             isCrosshairSyncEnabled: this.isCrosshairSyncEnabled,
@@ -2342,6 +2377,7 @@ export class WorkspaceManager {
                     if (state.targetFPS) this.targetFPS = state.targetFPS;
                     if (state.toolbarDockMode) this.toolbarDockMode = state.toolbarDockMode;
                     if (state.toolbarVisibility) this.toolbarVisibility = state.toolbarVisibility;
+                    if (state.toolbarCustomPos !== undefined) this.toolbarCustomPos = state.toolbarCustomPos;
                     if (state.topBarDisplayMode) this.topBarDisplayMode = state.topBarDisplayMode;
                     if (state.isAutoHideNav !== undefined) this.isAutoHideNav = state.isAutoHideNav;
                     if (state.isCrosshairSyncEnabled !== undefined) this.isCrosshairSyncEnabled = state.isCrosshairSyncEnabled;
@@ -2371,6 +2407,7 @@ export class WorkspaceManager {
 
                     this.updateToolbarDock();
                     this.updateToolbarVisibility();
+                    this.autoCenterToolbar();
 
                     this.setLayout(state.layout, state.panes);
                     if (state.activePaneIndex >= 0 && state.activePaneIndex < this.charts.length) {
@@ -2393,6 +2430,7 @@ export class WorkspaceManager {
         }
 
         this.setLayout('1'); // Fallback if no save exists
+        this.autoCenterToolbar();
     }
 
     public static getActiveChart(): EcoChart | null {
@@ -2537,9 +2575,9 @@ export class WorkspaceManager {
             let isDragging = false;
             let startX = 0, startY = 0;
             let initialLeft = 0, initialTop = 0;
-            let dragTimer: any = null;
+            let lastGripTapTime = 0;
 
-            // 1. Draggable Engine (Long-Press for Mobile, Instant for Desktop)
+            // 1. Draggable Engine (Smooth Dragging on Touch and Desktop)
             dtHandle.addEventListener('pointerdown', (e) => {
                 if (WorkspaceManager.toolbarDockMode === 'top') return;
 
@@ -2547,35 +2585,17 @@ export class WorkspaceManager {
                 startY = e.clientY;
                 initialLeft = dt.offsetLeft;
                 initialTop = dt.offsetTop;
-
-                const startDragging = () => {
-                    isDragging = true;
-                    dtHandle.setPointerCapture(e.pointerId);
-                    dtHandle.style.cursor = 'grabbing';
-                    dt.style.opacity = '0.9'; // Visual feedback
-                    if (navigator.vibrate) navigator.vibrate(40); // Haptic feedback on Android
-                };
-
-                if (e.pointerType === 'touch') {
-                    // Mobile: Require 300ms hold to start dragging
-                    dragTimer = setTimeout(startDragging, 300);
-                } else {
-                    // Desktop: Instant drag
-                    startDragging();
-                }
+                isDragging = true;
+                try { dtHandle.setPointerCapture(e.pointerId); } catch { }
+                dtHandle.style.cursor = 'grabbing';
+                dt.style.opacity = '1';
+                if (navigator.vibrate) navigator.vibrate(25);
             });
 
             dtHandle.addEventListener('pointermove', (e) => {
-                if (!isDragging) {
-                    // If user moves finger before the timer pops, cancel the drag intent
-                    if (dragTimer && Math.hypot(e.clientX - startX, e.clientY - startY) > 10) {
-                        clearTimeout(dragTimer);
-                        dragTimer = null;
-                    }
-                    return;
-                }
+                if (!isDragging) return;
 
-                try { e.preventDefault(); } catch { } // Force Android to ignore native gestures
+                try { e.preventDefault(); } catch { } // Force touch devices to ignore native scroll gestures
 
                 const dx = e.clientX - startX;
                 const dy = e.clientY - startY;
@@ -2586,24 +2606,48 @@ export class WorkspaceManager {
 
                 dt.style.left = `${newLeft}px`;
                 dt.style.top = `${newTop}px`;
+                dt.style.transform = 'none';
             });
 
             const stopDrag = (e: PointerEvent) => {
-                if (dragTimer) {
-                    clearTimeout(dragTimer);
-                    dragTimer = null;
-                }
                 if (isDragging) {
                     isDragging = false;
-                    dtHandle.releasePointerCapture(e.pointerId);
+                    try { dtHandle.releasePointerCapture(e.pointerId); } catch { }
                     dtHandle.style.cursor = 'grab';
-                    dt.style.opacity = '1';
-                    WorkspaceManager.triggerAutoSave();
+                    dt.style.opacity = WorkspaceManager.toolbarVisibility === 'always' ? '1' : '1';
+
+                    const movedDist = Math.hypot(dt.offsetLeft - initialLeft, dt.offsetTop - initialTop);
+                    if (movedDist > 4) {
+                        // User moved the toolbar: record and save their custom position
+                        WorkspaceManager.toolbarCustomPos = {
+                            left: dt.offsetLeft,
+                            top: dt.offsetTop
+                        };
+                        WorkspaceManager.triggerAutoSave();
+                    } else {
+                        // Grip handle was tapped without dragging: detect double-tap to auto-center vertically
+                        const now = Date.now();
+                        if (now - lastGripTapTime < 350) {
+                            WorkspaceManager.toolbarCustomPos = null;
+                            WorkspaceManager.autoCenterToolbar(true);
+                            WorkspaceManager.triggerAutoSave();
+                            if (navigator.vibrate) navigator.vibrate(40);
+                        }
+                        lastGripTapTime = now;
+                    }
                 }
             };
 
             dtHandle.addEventListener('pointerup', stopDrag);
             dtHandle.addEventListener('pointercancel', stopDrag);
+
+            // Double click explicitly on desktop
+            dtHandle.addEventListener('dblclick', (e) => {
+                e.stopPropagation();
+                WorkspaceManager.toolbarCustomPos = null;
+                WorkspaceManager.autoCenterToolbar(true);
+                WorkspaceManager.triggerAutoSave();
+            });
 
             // 2. Proximity Fading (Global)
             document.addEventListener('pointermove', (e) => {
@@ -3542,6 +3586,17 @@ export class WorkspaceManager {
             WorkspaceManager.triggerAutoSave();
         });
 
+        // Auto Center Toolbar button
+        const btnCenterToolbar = document.getElementById('btn-center-toolbar');
+        btnCenterToolbar?.addEventListener('click', () => {
+            WorkspaceManager.toolbarCustomPos = null;
+            WorkspaceManager.autoCenterToolbar(true);
+            WorkspaceManager.triggerAutoSave();
+            const originalText = btnCenterToolbar.textContent;
+            btnCenterToolbar.textContent = '✓ Centered!';
+            setTimeout(() => { btnCenterToolbar.textContent = originalText; }, 1200);
+        });
+
         // Toolbar Visibility (Auto Hide vs Always Visible)
         const selectVis = document.getElementById('select-toolbar-visibility') as HTMLSelectElement;
         const checkAutoToolbar = document.getElementById('check-autohide-toolbar') as HTMLInputElement;
@@ -3711,6 +3766,10 @@ export class WorkspaceManager {
 
         window.addEventListener('beforeunload', () => {
             WorkspaceManager.saveWorkspace();
+        });
+
+        window.addEventListener('resize', () => {
+            WorkspaceManager.autoCenterToolbar(false);
         });
 
         // ==========================================================

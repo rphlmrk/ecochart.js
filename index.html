@@ -814,10 +814,11 @@
 
       <!-- Floating Drawing Toolbar -->
       <div id="drawing-toolbar"
-        style="position: absolute; left: 16px; top: 60px; background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; display: flex; flex-direction: column; gap: 4px; z-index: 20; box-shadow: 0 4px 12px rgba(0,0,0,0.4); opacity: 0.15; transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1); pointer-events: auto; touch-action: none;">
+        style="position: absolute; left: 16px; top: calc(50% - 190px); background: var(--chart-panel-bg, #1e222d); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 4px; display: flex; flex-direction: column; gap: 4px; z-index: 20; box-shadow: 0 4px 12px rgba(0,0,0,0.4); opacity: 0.15; transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1); pointer-events: auto; touch-action: none;">
 
         <!-- Drag Handle -->
         <div id="dt-drag-handle"
+          title="Drag to move • Double-click or double-tap to auto-center vertically"
           style="cursor: grab; text-align: center; color: #787B86; padding: 4px 0; font-size: 12px; display: flex; justify-content: center; user-select: none; touch-action: none;">
           <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor">
             <circle cx="2" cy="2" r="1.5" />
@@ -1091,11 +1092,17 @@
         <div
           style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; margin-top: 14px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 14px;">
           <span>Drawing Toolbar Position:</span>
-          <select id="select-toolbar-dock"
-            style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none;">
-            <option value="free" selected>Free Floating</option>
-            <option value="top">Docked Top Center</option>
-          </select>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <select id="select-toolbar-dock"
+              style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none;">
+              <option value="free" selected>Free Floating</option>
+              <option value="top">Docked Top Center</option>
+            </select>
+            <button type="button" id="btn-center-toolbar" title="Auto-center drawing toolbar vertically on the vertical line"
+              style="background: var(--chart-grid, #2A2E39); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap;">
+              🎯 Auto Center
+            </button>
+          </div>
         </div>
         <div
           style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; margin-top: 14px;">
