@@ -114,6 +114,8 @@ export class EcoChart {
     // Mobile Touch Drawing State
     public touchDrawingBar: HTMLDivElement | null = null;
     private isTouchDrawingMoved = false;
+    private crosshairStartX = 0;
+    private crosshairStartY = 0;
 
     // Active Symbol & Timeframe State
     public currentSymbol = 'BTCUSDT';
@@ -1163,24 +1165,32 @@ export class EcoChart {
                 this.touchStartY = y;
                 this.touchStartTime = Date.now();
 
-                // Mobile Touch Drawing: Position crosshairs, do NOT place point yet (user moves to aim, taps to place)
+                // Mobile Touch Drawing: Do NOT jump to the touch location! Use and preserve crosshair location!
                 if (this.drawingManager.activeToolType) {
                     this.isTouchDrawingMoved = false;
-                    this.renderer.crosshairX = x;
-                    this.renderer.crosshairY = y;
+                    const chartWidth = this.canvas.clientWidth - this.renderer.priceAxisWidth;
+                    const chartHeight = this.canvas.clientHeight - this.renderer.timeAxisHeight;
+                    if (this.renderer.crosshairX <= 0 || this.renderer.crosshairX >= chartWidth) {
+                        this.renderer.crosshairX = Math.round(chartWidth * 0.5);
+                    }
+                    if (this.renderer.crosshairY <= 0 || this.renderer.crosshairY >= chartHeight) {
+                        this.renderer.crosshairY = Math.round(chartHeight * 0.5);
+                    }
+                    this.crosshairStartX = this.renderer.crosshairX;
+                    this.crosshairStartY = this.renderer.crosshairY;
                     this.renderer.isCrosshairVisible = true;
                     this.isCrosshairDirty = true;
                     this.updateLegendValues();
                     this.priceAxisRenderer.render();
                     this.timeAxisRenderer.render();
 
-                    // If Point 1 has already been entered, update the preview line/box to follow crosshair
+                    // If Point 1 has already been entered, update preview from Point 1 to crosshair
                     if (this.drawingManager.currentDrawing && this.drawingManager.currentDrawing.points.length > 0) {
-                        this.drawingManager.onPointerMove(this.renderer, x, y);
+                        this.drawingManager.onPointerMove(this.renderer, this.renderer.crosshairX, this.renderer.crosshairY);
                     }
                     this.renderer.forceNextRender = true;
                     this.isDirty = true;
-                    return; // Stop here, do not pan chart or enter point yet
+                    return; // Stop here, do not pan chart or jump crosshair
                 }
 
                 // Phase 3 & 4: Selection Hit Test (Mobile)
@@ -1304,22 +1314,29 @@ export class EcoChart {
                 const x = t.clientX - rect.left;
                 const y = t.clientY - rect.top;
 
-                // Mobile Touch Drawing: Moving scrolls/positions the crosshair across the screen with live shape stretch
+                // Mobile Touch Drawing: Moving scrolls/positions the crosshair across the screen relative to crosshair location
                 if (this.drawingManager.activeToolType) {
-                    if (Math.hypot(x - this.touchStartX, y - this.touchStartY) > 8) {
+                    const deltaX = x - this.touchStartX;
+                    const deltaY = y - this.touchStartY;
+                    if (Math.hypot(deltaX, deltaY) > 8) {
                         this.isTouchDrawingMoved = true;
                     }
-                    this.renderer.crosshairX = x;
-                    this.renderer.crosshairY = y;
+                    const chartWidth = this.canvas.clientWidth - this.renderer.priceAxisWidth;
+                    const chartHeight = this.canvas.clientHeight - this.renderer.timeAxisHeight;
+                    const targetX = Math.max(0, Math.min(chartWidth, this.crosshairStartX + deltaX));
+                    const targetY = Math.max(0, Math.min(chartHeight, this.crosshairStartY + deltaY));
+
+                    this.renderer.crosshairX = targetX;
+                    this.renderer.crosshairY = targetY;
                     this.renderer.isCrosshairVisible = true;
                     this.isCrosshairDirty = true;
                     this.updateLegendValues();
                     this.priceAxisRenderer.render();
                     this.timeAxisRenderer.render();
 
-                    // If Point 1 has already been entered, update the preview line/box to follow crosshair
+                    // If Point 1 has already been entered, update preview line/box to follow crosshair
                     if (this.drawingManager.currentDrawing && this.drawingManager.currentDrawing.points.length > 0) {
-                        this.drawingManager.onPointerMove(this.renderer, x, y);
+                        this.drawingManager.onPointerMove(this.renderer, targetX, targetY);
                     }
                     this.renderer.forceNextRender = true;
                     this.isDirty = true;
@@ -1410,6 +1427,8 @@ export class EcoChart {
                     this.confirmTouchDrawingPoint();
                 } else {
                     // Finger moved and lifted: crosshair stays locked at this position for next action
+                    this.crosshairStartX = this.renderer.crosshairX;
+                    this.crosshairStartY = this.renderer.crosshairY;
                     this.renderer.isCrosshairVisible = true;
                     this.isCrosshairDirty = true;
                     this.renderer.forceNextRender = true;
