@@ -1811,15 +1811,26 @@ export class ChartRenderer {
             rawList.sort((a, b) => a.start - b.start);
 
             for (let k = 0; k < rawList.length; k++) {
-                let nextStart = -1;
+                let nextBoundary = -1;
                 for (let j = k + 1; j < rawList.length; j++) {
                     if (rawList[j].start > rawList[k].start) {
-                        nextStart = rawList[j].start;
+                        const nStart = rawList[j].start;
+                        const openTime = this.dataStore.data[nStart * 6];
+                        let preStart = nStart;
+                        for (let p = nStart - 1; p >= Math.max(0, nStart - 60); p--) {
+                            const pt = this.dataStore.data[p * 6];
+                            if (pt >= openTime - 15 * 60000 && pt < openTime) {
+                                preStart = p;
+                            } else if (pt < openTime - 15 * 60000) {
+                                break;
+                            }
+                        }
+                        nextBoundary = preStart;
                         break;
                     }
                 }
-                if (nextStart !== -1) {
-                    rawList[k].end = Math.max(rawList[k].start, nextStart - 1);
+                if (nextBoundary !== -1) {
+                    rawList[k].end = Math.max(rawList[k].start, nextBoundary - 1);
                 } else {
                     rawList[k].end = Math.max(rawList[k].end, len - 1);
                 }

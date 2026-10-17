@@ -89,7 +89,7 @@ export class MarketSessionsIndicator extends BaseIndicator {
     }
 
     // Pre-calculated session boxes per session name to eliminate render-loop CPU overhead
-    private cachedBoxesBySession = new Map<string, SessionBox[]>();
+    public cachedBoxesBySession = new Map<string, SessionBox[]>();
     private lastCalculatedLength = -1;
     private lastCalcParamHash = '';
 
@@ -334,7 +334,7 @@ export class MarketSessionsIndicator extends BaseIndicator {
             this.cachedBoxesBySession.set(sess.name, boxes);
         }
 
-        // If 'endOnNextOpen' is enabled: chain chronological sessions so the previous session ends when the next session opens!
+        // If 'endOnNextOpen' is enabled: chain chronological sessions so the previous session ends when the next pre-open is starting!
         if (endOnNextOpen) {
             const allBoxes: SessionBox[] = [];
             for (const list of this.cachedBoxesBySession.values()) {
@@ -343,15 +343,20 @@ export class MarketSessionsIndicator extends BaseIndicator {
             allBoxes.sort((a, b) => a.startIdx - b.startIdx);
 
             for (let k = 0; k < allBoxes.length; k++) {
-                let nextStart = -1;
+                let nextBoundary = -1;
                 for (let j = k + 1; j < allBoxes.length; j++) {
                     if (allBoxes[j].startIdx > allBoxes[k].startIdx) {
-                        nextStart = allBoxes[j].startIdx;
+                        const nextBox = allBoxes[j];
+                        // End when pre-open starts (10-15m prior) if available; otherwise at open
+                        const preStart = (nextBox.preOpenStartIdx !== -1 && nextBox.preOpenStartIdx < nextBox.startIdx)
+                            ? nextBox.preOpenStartIdx
+                            : nextBox.startIdx;
+                        nextBoundary = preStart;
                         break;
                     }
                 }
-                if (nextStart !== -1) {
-                    allBoxes[k].endIdx = Math.max(allBoxes[k].startIdx, nextStart - 1);
+                if (nextBoundary !== -1) {
+                    allBoxes[k].endIdx = Math.max(allBoxes[k].startIdx, nextBoundary - 1);
                 } else {
                     // For the latest box on chart, extend to current bar if live
                     allBoxes[k].endIdx = Math.max(allBoxes[k].coreEndIdx, len - 1);

@@ -1,4 +1,5 @@
 import type { ChartRenderer } from './ChartRenderer';
+import { MarketSessionsIndicator } from '../indicators/plugins/MarketSessions';
 
 export class TimeAxisRenderer {
     private canvas: HTMLCanvasElement;
@@ -19,6 +20,14 @@ export class TimeAxisRenderer {
     private hexToCSS(hex: number | string): string {
         if (typeof hex === 'string') return hex.startsWith('#') ? hex : '#' + hex;
         return '#' + (hex & 0xFFFFFF).toString(16).padStart(6, '0');
+    }
+
+    private hexToRGBA(hex: string, alpha: number): string {
+        const clean = (hex || '#2962FF').replace('#', '');
+        const r = parseInt(clean.slice(0, 2), 16) || 0;
+        const g = parseInt(clean.slice(2, 4), 16) || 0;
+        const b = parseInt(clean.slice(4, 6), 16) || 0;
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
     }
 
     private getSessionStatus(tz: string, now: Date, isFlashTick: boolean) {
@@ -96,6 +105,105 @@ export class TimeAxisRenderer {
         }
     }
 
+    private renderSessionShading(w: number, h: number, actualSpacing: number) {
+        if (!this.renderer.sessionConfig?.enabled || !this.renderer.sessionConfig?.showOnAxis) {
+            return;
+        }
+
+        const htf = ['2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'];
+        if (htf.includes(this.renderer.currentInterval)) {
+            return;
+        }
+
+        const indMgr = this.renderer.indicatorManager;
+        const sessInd = indMgr?.activeIndicators.find((i: any) => i instanceof MarketSessionsIndicator) as MarketSessionsIndicator | undefined;
+        if (!sessInd || !sessInd.visible) {
+            return;
+        }
+
+        const boxesMap = sessInd.cachedBoxesBySession;
+        if (!boxesMap || boxesMap.size === 0) {
+            return;
+        }
+
+        const highlightOpen = sessInd.getParam<boolean>('highlightOpen', true);
+        const showPreOpenZone = sessInd.getParam<boolean>('showPreOpenZone', true);
+
+        for (const boxes of boxesMap.values()) {
+            for (let bIdx = 0; bIdx < boxes.length; bIdx++) {
+                const box = boxes[bIdx];
+
+                const x1 = Math.round((box.startIdx * actualSpacing) - this.renderer.cameraX);
+                const x2 = Math.round(((box.endIdx + 1) * actualSpacing) - this.renderer.cameraX);
+                const hasPreOpen = showPreOpenZone && box.preOpenStartIdx !== -1 && box.preOpenStartIdx < box.startIdx;
+                const xPre1 = hasPreOpen ? Math.round((box.preOpenStartIdx * actualSpacing) - this.renderer.cameraX) : x1;
+
+                // Cull if off-screen
+                if (x2 < -20 || (hasPreOpen ? xPre1 : x1) > w + 20) {
+                    continue;
+                }
+
+                const hex = box.color || '#2962FF';
+                const baseColor = hex.slice(0, 7);
+
+                // 1. Pre-Open Shade on Time Axis (Amber Caution: 10-15m prior to open)
+                if (hasPreOpen && x1 > xPre1) {
+                    const wPre = Math.max(1, x1 - xPre1);
+                    // Background shade
+                    this.ctx.fillStyle = 'rgba(255, 167, 38, 0.22)';
+                    this.ctx.fillRect(xPre1, 0, wPre, h);
+                    // Top 3.5px accent bar
+                    this.ctx.fillStyle = '#FFA726';
+                    this.ctx.fillRect(xPre1, 0, wPre, 3.5);
+                    // Pre-Open boundary tick
+                    this.ctx.strokeStyle = '#FFA726';
+                    this.ctx.lineWidth = 1;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(xPre1 + 0.5, 0);
+                    this.ctx.lineTo(xPre1 + 0.5, 6);
+                    this.ctx.stroke();
+                }
+
+                // 2. Open Window Shade on Time Axis (Opening Bell Chaos Window)
+                if (highlightOpen && box.orbEndIdx >= box.startIdx) {
+                    const xOrbEnd = Math.round(((box.orbEndIdx + 1) * actualSpacing) - this.renderer.cameraX);
+                    const wOpen = Math.max(1, xOrbEnd - x1);
+
+                    // Background shade: vibrant session open
+                    this.ctx.fillStyle = this.hexToRGBA(baseColor, 0.32);
+                    this.ctx.fillRect(x1, 0, wOpen, h);
+                    // Top 3.5px accent bar
+                    this.ctx.fillStyle = baseColor;
+                    this.ctx.fillRect(x1, 0, wOpen, 3.5);
+
+                    // Opening Bell vertical tick on time axis
+                    this.ctx.strokeStyle = '#FFFFFF';
+                    this.ctx.lineWidth = 1.5;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(x1 + 0.5, 0);
+                    this.ctx.lineTo(x1 + 0.5, 7);
+                    this.ctx.stroke();
+
+                    // 3. Rest of Session Shade on Time Axis
+                    if (x2 > xOrbEnd) {
+                        const wRest = Math.max(1, x2 - xOrbEnd);
+                        this.ctx.fillStyle = this.hexToRGBA(baseColor, 0.12);
+                        this.ctx.fillRect(xOrbEnd, 0, wRest, h);
+                        this.ctx.fillStyle = baseColor;
+                        this.ctx.fillRect(xOrbEnd, 0, wRest, 2);
+                    }
+                } else {
+                    // Standard full session shade if open window not highlighted
+                    const wFull = Math.max(1, x2 - x1);
+                    this.ctx.fillStyle = this.hexToRGBA(baseColor, 0.14);
+                    this.ctx.fillRect(x1, 0, wFull, h);
+                    this.ctx.fillStyle = baseColor;
+                    this.ctx.fillRect(x1, 0, wFull, 2.5);
+                }
+            }
+        }
+    }
+
     public render() {
         if (!this.renderer.app || !this.renderer.app.renderer) return;
 
@@ -112,9 +220,15 @@ export class TimeAxisRenderer {
         }
 
         this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-        // 1. Clear Background to allow GPU Session Shading to show through
         this.ctx.clearRect(0, 0, w, h);
+
+        if (this.renderer.dataStore.length === 0) return;
+
+        const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
+        if (actualSpacing <= 0) return;
+
+        // 1b. Render Session, Pre-Open, and Open Color Shades on Time Axis
+        this.renderSessionShading(w, h, actualSpacing);
 
         // 2. Top Border Line
         this.ctx.strokeStyle = this.hexToCSS(this.renderer.gridColor);
@@ -123,11 +237,6 @@ export class TimeAxisRenderer {
         this.ctx.moveTo(0, 0.5);
         this.ctx.lineTo(w, 0.5);
         this.ctx.stroke();
-
-        if (this.renderer.dataStore.length === 0) return;
-
-        const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
-        if (actualSpacing <= 0) return;
 
         const minPixelsBetweenLabels = 100;
         let candleStep = Math.max(1, Math.ceil(minPixelsBetweenLabels / actualSpacing));
