@@ -1584,6 +1584,72 @@
               <input type="checkbox" id="check-sess-range-mean" style="cursor: pointer; accent-color: #2962FF;">
               Show Mean / Midpoint Line
             </label>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-sess-end-on-next-open" checked style="cursor: pointer; accent-color: #2962FF;">
+              End Previous Session on Next Opening (Continuous Session Chain)
+            </label>
+          </div>
+        </div>
+
+        <!-- OPENING & ORB BREAKOUT SETTINGS -->
+        <div style="margin-top: 16px; border-top: 1px solid var(--chart-grid, #2A2E39); padding-top: 14px;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span style="font-size: 11px; font-weight: 700; color: #787B86; text-transform: uppercase;">Opening Bell & ORB Breakout</span>
+            <span style="font-size: 10px; color: #26A69A; font-weight: 600; background: rgba(38, 166, 154, 0.15); padding: 2px 6px; border-radius: 4px;">Day Trading Edge</span>
+          </div>
+          <div style="font-size: 11px; color: #D1D4DC; margin-top: 4px; margin-bottom: 12px; opacity: 0.85;">
+            Highlight the opening bell, mark the initial chaos window, trace Opening Range Breakout (ORB) baseline levels, and alert pre-open flat windows.
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-sess-highlight-open" checked style="cursor: pointer; accent-color: #2962FF;">
+              Highlight Session Opening Bell & Chaos Window
+            </label>
+
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-sess-open-bell-line" checked style="cursor: pointer; accent-color: #2962FF;">
+              Show Vertical Opening Bell Marker Line & Price Pip
+            </label>
+
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC;">
+              <span>Opening Window Duration:</span>
+              <select id="select-sess-open-window"
+                style="background: var(--chart-panel-bg, #1e222d); color: #D1D4DC; border: 1px solid #434651; border-radius: 4px; padding: 4px 6px; font-size: 11px; outline: none; cursor: pointer;">
+                <option value="5">5 Minutes (Quick Open)</option>
+                <option value="15" selected>15 Minutes (Standard ORB - Recommended)</option>
+                <option value="30">30 Minutes (Institutional ORB)</option>
+              </select>
+            </div>
+
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-sess-orb-lines" checked style="cursor: pointer; accent-color: #2962FF;">
+              Show Opening Range Breakout (ORB) High & Low Baseline Boundaries
+            </label>
+
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-sess-pre-open" checked style="cursor: pointer; accent-color: #2962FF;">
+              Highlight Pre-Open Caution Zone (10–15m Prior: Flat Positions)
+            </label>
+
+            <!-- Trader Playbook Card -->
+            <div style="margin-top: 6px; background: rgba(0, 0, 0, 0.25); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; padding: 10px 12px; font-size: 11px; line-height: 1.5;">
+              <div style="font-weight: 700; color: #E0E3EB; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+                <span>Opening Bell Execution Rules</span>
+              </div>
+              <div style="color: #FFA726; margin-bottom: 4px;">
+                <strong>Phase 1: Pre-Open (10–15m before open):</strong> Flat open positions & sit on hands to avoid algorithmic spread widening.
+              </div>
+              <div style="color: #EF5350; margin-bottom: 4px;">
+                <strong>Phase 2: Opening Chaos (First 5–15m):</strong> Wait and watch initial order uncrossings. Avoid chasing erratic breakout fakeouts.
+              </div>
+              <div style="color: #26A69A; margin-bottom: 6px;">
+                <strong>Phase 3: Golden Window (15–60m post-open):</strong> Trade the clean breakout once a candle firmly closes outside the ORB High or Low boundary!
+              </div>
+              <div style="font-size: 10px; color: #787B86; border-top: 1px dashed rgba(255, 255, 255, 0.08); padding-top: 6px;">
+                Key Exchanges: Tokyo (09:00 JST) • London (08:00 GMT) • New York (09:30 EST) • Nairobi (09:30 EAT)
+              </div>
+            </div>
           </div>
         </div>
         <!-- Time Axis World Clock Section -->

@@ -1894,6 +1894,13 @@ export class WorkspaceManager {
         rangeOutline: true,
         rangeLabel: true,
         showMean: false,
+        // Opening & Session Transition
+        highlightOpen: true,
+        openWindowDuration: 15,
+        showOpeningRange: true,
+        showPreOpenZone: true,
+        endOnNextOpen: true,
+        showOpenBellLine: true,
         // Session A
         sessionA: {
             enabled: true,
@@ -1946,6 +1953,12 @@ export class WorkspaceManager {
         if (sc.rangeOutline === undefined) sc.rangeOutline = true;
         if (sc.rangeLabel === undefined) sc.rangeLabel = true;
         if (sc.showMean === undefined) sc.showMean = false;
+        if (sc.highlightOpen === undefined) sc.highlightOpen = true;
+        if (sc.openWindowDuration === undefined) sc.openWindowDuration = 15;
+        if (sc.showOpeningRange === undefined) sc.showOpeningRange = true;
+        if (sc.showPreOpenZone === undefined) sc.showPreOpenZone = true;
+        if (sc.endOnNextOpen === undefined) sc.endOnNextOpen = true;
+        if (sc.showOpenBellLine === undefined) sc.showOpenBellLine = true;
 
         if (!sc.sessionA) {
             sc.sessionA = {
@@ -2074,11 +2087,12 @@ export class WorkspaceManager {
                 showOnAxis: sc.showOnAxis,
                 showOnChart: sc.showOnChart,
                 timezoneOffset: sc.exchangeTimezone ? 0 : (sc.timezoneOffset || 0),
-                sessions: sessionsForRenderer
+                sessions: sessionsForRenderer,
+                endOnNextOpen: sc.endOnNextOpen ?? true
             };
             c.renderer.isSessionDirty = true;
 
-            // 2. Sync Market Sessions Indicator (Range boxes, dotted outlines, labels, means)
+            // 2. Sync Market Sessions Indicator (Range boxes, dotted outlines, labels, means, opening highlights)
             const indMgr = c.indicatorManager;
             let activeSessions = indMgr.activeIndicators.find(i => i instanceof MarketSessionsIndicator) as MarketSessionsIndicator | undefined;
             if (!sc.enabled || !sc.showRanges) {
@@ -2096,6 +2110,13 @@ export class WorkspaceManager {
                 activeSessions.setParam('rangeOutline', sc.rangeOutline ?? true);
                 activeSessions.setParam('rangeLabel', sc.rangeLabel ?? true);
                 activeSessions.setParam('showMean', sc.showMean ?? false);
+
+                activeSessions.setParam('highlightOpen', sc.highlightOpen ?? true);
+                activeSessions.setParam('openWindowDuration', sc.openWindowDuration ?? 15);
+                activeSessions.setParam('showOpeningRange', sc.showOpeningRange ?? true);
+                activeSessions.setParam('showPreOpenZone', sc.showPreOpenZone ?? true);
+                activeSessions.setParam('endOnNextOpen', sc.endOnNextOpen ?? true);
+                activeSessions.setParam('showOpenBellLine', sc.showOpenBellLine ?? true);
 
                 activeSessions.setParam('showSessionA', sessA.enabled);
                 activeSessions.setParam('sessionAName', sessA.name);
@@ -3141,6 +3162,14 @@ export class WorkspaceManager {
             syncCheck('check-sess-range-label', sc.rangeLabel ?? true);
             syncCheck('check-sess-range-mean', sc.showMean ?? false);
 
+            // Opening & Breakout (ORB) Settings
+            syncCheck('check-sess-highlight-open', sc.highlightOpen ?? true);
+            syncVal('select-sess-open-window', sc.openWindowDuration ?? 15);
+            syncCheck('check-sess-orb-lines', sc.showOpeningRange ?? true);
+            syncCheck('check-sess-pre-open', sc.showPreOpenZone ?? true);
+            syncCheck('check-sess-end-on-next-open', sc.endOnNextOpen ?? true);
+            syncCheck('check-sess-open-bell-line', sc.showOpenBellLine ?? true);
+
             setSwatch('input-bull-body', current.bullBody);
             setSwatch('input-bear-body', current.bearBody);
             setSwatch('input-bull-wick', current.bullWick);
@@ -3366,6 +3395,19 @@ export class WorkspaceManager {
         bindSessBool('check-sess-range-outline', (v) => WorkspaceManager.sessionConfig.rangeOutline = v);
         bindSessBool('check-sess-range-label', (v) => WorkspaceManager.sessionConfig.rangeLabel = v);
         bindSessBool('check-sess-range-mean', (v) => WorkspaceManager.sessionConfig.showMean = v);
+
+        // Opening & Breakout (ORB) Controls
+        bindSessBool('check-sess-highlight-open', (v) => WorkspaceManager.sessionConfig.highlightOpen = v);
+        document.getElementById('select-sess-open-window')?.addEventListener('change', (e) => {
+            WorkspaceManager.ensureSessionConfig();
+            WorkspaceManager.sessionConfig.openWindowDuration = parseInt((e.target as HTMLSelectElement).value, 10) || 15;
+            WorkspaceManager.syncSessions();
+            WorkspaceManager.saveWorkspace();
+        });
+        bindSessBool('check-sess-orb-lines', (v) => WorkspaceManager.sessionConfig.showOpeningRange = v);
+        bindSessBool('check-sess-pre-open', (v) => WorkspaceManager.sessionConfig.showPreOpenZone = v);
+        bindSessBool('check-sess-end-on-next-open', (v) => WorkspaceManager.sessionConfig.endOnNextOpen = v);
+        bindSessBool('check-sess-open-bell-line', (v) => WorkspaceManager.sessionConfig.showOpenBellLine = v);
 
         // Bind Clock Controls
         document.getElementById('check-clock-enabled')?.addEventListener('change', (e) => {

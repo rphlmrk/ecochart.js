@@ -15,10 +15,17 @@ export interface MarketSessionDef {
 export interface SessionBox {
     startIdx: number;
     endIdx: number;
+    coreEndIdx: number;
     high: number;
     low: number;
     sessionName: string;
     color: string;
+    openTime: number;
+    openPrice: number;
+    orbHigh: number;
+    orbLow: number;
+    orbEndIdx: number;
+    preOpenStartIdx: number;
 }
 
 export class MarketSessionsIndicator extends BaseIndicator {
@@ -42,6 +49,14 @@ export class MarketSessionsIndicator extends BaseIndicator {
             { id: 'rangeOutline', name: 'Range Outline (Dotted)', type: 'boolean', value: true },
             { id: 'rangeLabel', name: 'Range Label', type: 'boolean', value: true },
             { id: 'showMean', name: 'Show Mean Line', type: 'boolean', value: false },
+
+            // Opening & Breakout (ORB) Controls
+            { id: 'highlightOpen', name: 'Highlight Session Open', type: 'boolean', value: true },
+            { id: 'openWindowDuration', name: 'Opening Chaos Window (Min)', type: 'number', value: 15, min: 1, max: 60, step: 1 },
+            { id: 'showOpeningRange', name: 'Show Opening Range (ORB) High/Low', type: 'boolean', value: true },
+            { id: 'showPreOpenZone', name: 'Highlight Pre-Open Caution (10-15m)', type: 'boolean', value: true },
+            { id: 'endOnNextOpen', name: 'End Previous Session on Next Opening', type: 'boolean', value: true },
+            { id: 'showOpenBellLine', name: 'Show Opening Bell Vertical Marker', type: 'boolean', value: true },
 
             // Session A
             { id: 'showSessionA', name: 'Enable Session A', type: 'boolean', value: true },
@@ -115,6 +130,13 @@ export class MarketSessionsIndicator extends BaseIndicator {
         const tzOffsetHours = exchangeTz ? 0 : this.getParam<number>('timezoneOffset', 0);
         const tzOffsetMs = tzOffsetHours * 3600000;
 
+        const highlightOpen = this.getParam<boolean>('highlightOpen', true);
+        const openWindowDuration = this.getParam<number>('openWindowDuration', 15);
+        const showOpeningRange = this.getParam<boolean>('showOpeningRange', true);
+        const showPreOpenZone = this.getParam<boolean>('showPreOpenZone', true);
+        const endOnNextOpen = this.getParam<boolean>('endOnNextOpen', true);
+        const showOpenBellLine = this.getParam<boolean>('showOpenBellLine', true);
+
         const sessions = [
             {
                 enabled: this.getParam<boolean>('showSessionA', true),
@@ -146,12 +168,14 @@ export class MarketSessionsIndicator extends BaseIndicator {
             }
         ];
 
-        const paramHash = sessions.map(s => `${s.enabled}:${s.hours}:${s.range}`).join('|') + `:${tzOffsetMs}`;
+        const paramHash = sessions.map(s => `${s.enabled}:${s.hours}:${s.range}:${s.color}`).join('|') +
+            `:${tzOffsetMs}:${highlightOpen}:${openWindowDuration}:${showOpeningRange}:${showPreOpenZone}:${endOnNextOpen}:${showOpenBellLine}`;
 
         // Fast update: If length is unchanged and params match, only update the latest bar of the active box
         if (len === this.lastCalculatedLength && this.lastCalcParamHash === paramHash) {
             const lastIdx = len - 1;
             const base = lastIdx * 6;
+            const t = ds.data[base];
             const h = ds.data[base + 2];
             const l = ds.data[base + 3];
 
@@ -160,9 +184,14 @@ export class MarketSessionsIndicator extends BaseIndicator {
                 const list = this.cachedBoxesBySession.get(sess.name);
                 if (list && list.length > 0) {
                     const latest = list[list.length - 1];
-                    if (latest.endIdx === lastIdx) {
+                    if (latest.endIdx === lastIdx || latest.coreEndIdx === lastIdx) {
                         if (h > latest.high) latest.high = h;
                         if (l < latest.low) latest.low = l;
+                        if (t < latest.openTime + openWindowDuration * 60000) {
+                            latest.orbEndIdx = lastIdx;
+                            if (h > latest.orbHigh) latest.orbHigh = h;
+                            if (l < latest.orbLow) latest.orbLow = l;
+                        }
                     }
                 }
             }
@@ -170,6 +199,8 @@ export class MarketSessionsIndicator extends BaseIndicator {
         }
 
         this.cachedBoxesBySession.clear();
+        const openWindowMs = openWindowDuration * 60000;
+        const preOpenMs = 15 * 60000;
 
         for (const sess of sessions) {
             if (!sess.enabled || !sess.range) continue;
@@ -182,6 +213,12 @@ export class MarketSessionsIndicator extends BaseIndicator {
             let sessEndIdx = -1;
             let sessHigh = -Infinity;
             let sessLow = Infinity;
+            let openTime = 0;
+            let openPrice = 0;
+            let orbHigh = -Infinity;
+            let orbLow = Infinity;
+            let orbEndIdx = -1;
+            let preOpenStartIdx = -1;
             let prevDayNumber = -1;
 
             const boxes: SessionBox[] = [];
@@ -189,6 +226,7 @@ export class MarketSessionsIndicator extends BaseIndicator {
             for (let i = 0; i < len; i++) {
                 const base = i * 6;
                 const t = ds.data[base];
+                const o = ds.data[base + 1];
                 const h = ds.data[base + 2];
                 const l = ds.data[base + 3];
 
@@ -206,10 +244,17 @@ export class MarketSessionsIndicator extends BaseIndicator {
                             boxes.push({
                                 startIdx: sessStartIdx,
                                 endIdx: sessEndIdx,
+                                coreEndIdx: sessEndIdx,
                                 high: sessHigh,
                                 low: sessLow,
                                 sessionName: sess.name,
-                                color: sess.color
+                                color: sess.color,
+                                openTime,
+                                openPrice,
+                                orbHigh: orbHigh === -Infinity ? sessHigh : orbHigh,
+                                orbLow: orbLow === Infinity ? sessLow : orbLow,
+                                orbEndIdx: orbEndIdx === -1 ? sessStartIdx : orbEndIdx,
+                                preOpenStartIdx
                             });
                         }
                         inSess = true;
@@ -217,20 +262,50 @@ export class MarketSessionsIndicator extends BaseIndicator {
                         sessEndIdx = i;
                         sessHigh = h;
                         sessLow = l;
+                        openTime = t;
+                        openPrice = o;
+                        orbHigh = h;
+                        orbLow = l;
+                        orbEndIdx = i;
+
+                        // Identify pre-open caution window (bars within 10-15 mins before open)
+                        preOpenStartIdx = -1;
+                        for (let p = i - 1; p >= Math.max(0, i - 60); p--) {
+                            const pt = ds.data[p * 6];
+                            if (pt >= openTime - preOpenMs && pt < openTime) {
+                                preOpenStartIdx = p;
+                            } else if (pt < openTime - preOpenMs) {
+                                break;
+                            }
+                        }
                     } else {
                         sessEndIdx = i;
                         if (h > sessHigh) sessHigh = h;
                         if (l < sessLow) sessLow = l;
+
+                        // Track Opening Range (Chaos Window)
+                        if (t < openTime + openWindowMs) {
+                            orbEndIdx = i;
+                            if (h > orbHigh) orbHigh = h;
+                            if (l < orbLow) orbLow = l;
+                        }
                     }
                 } else {
                     if (inSess) {
                         boxes.push({
                             startIdx: sessStartIdx,
                             endIdx: sessEndIdx,
+                            coreEndIdx: sessEndIdx,
                             high: sessHigh,
                             low: sessLow,
                             sessionName: sess.name,
-                            color: sess.color
+                            color: sess.color,
+                            openTime,
+                            openPrice,
+                            orbHigh: orbHigh === -Infinity ? sessHigh : orbHigh,
+                            orbLow: orbLow === Infinity ? sessLow : orbLow,
+                            orbEndIdx: orbEndIdx === -1 ? sessStartIdx : orbEndIdx,
+                            preOpenStartIdx
                         });
                         inSess = false;
                         sessStartIdx = -1;
@@ -242,14 +317,46 @@ export class MarketSessionsIndicator extends BaseIndicator {
                 boxes.push({
                     startIdx: sessStartIdx,
                     endIdx: sessEndIdx,
+                    coreEndIdx: sessEndIdx,
                     high: sessHigh,
                     low: sessLow,
                     sessionName: sess.name,
-                    color: sess.color
+                    color: sess.color,
+                    openTime,
+                    openPrice,
+                    orbHigh: orbHigh === -Infinity ? sessHigh : orbHigh,
+                    orbLow: orbLow === Infinity ? sessLow : orbLow,
+                    orbEndIdx: orbEndIdx === -1 ? sessStartIdx : orbEndIdx,
+                    preOpenStartIdx
                 });
             }
 
             this.cachedBoxesBySession.set(sess.name, boxes);
+        }
+
+        // If 'endOnNextOpen' is enabled: chain chronological sessions so the previous session ends when the next session opens!
+        if (endOnNextOpen) {
+            const allBoxes: SessionBox[] = [];
+            for (const list of this.cachedBoxesBySession.values()) {
+                allBoxes.push(...list);
+            }
+            allBoxes.sort((a, b) => a.startIdx - b.startIdx);
+
+            for (let k = 0; k < allBoxes.length; k++) {
+                let nextStart = -1;
+                for (let j = k + 1; j < allBoxes.length; j++) {
+                    if (allBoxes[j].startIdx > allBoxes[k].startIdx) {
+                        nextStart = allBoxes[j].startIdx;
+                        break;
+                    }
+                }
+                if (nextStart !== -1) {
+                    allBoxes[k].endIdx = Math.max(allBoxes[k].startIdx, nextStart - 1);
+                } else {
+                    // For the latest box on chart, extend to current bar if live
+                    allBoxes[k].endIdx = Math.max(allBoxes[k].coreEndIdx, len - 1);
+                }
+            }
         }
 
         this.lastCalculatedLength = len;
@@ -321,12 +428,19 @@ export class MarketSessionsIndicator extends BaseIndicator {
         this.labelContainer.visible = true;
 
         const screenW = layout.chartWidth;
+        const mainH = layout.mainChartHeight;
         const spacing = r.candleSpacing * r.zoom;
 
         const rangeTransparency = Math.max(0, Math.min(100, this.getParam<number>('rangeTransparency', 80)));
         const rangeOutline = this.getParam<boolean>('rangeOutline', true);
         const rangeLabel = this.getParam<boolean>('rangeLabel', true);
         const showMean = this.getParam<boolean>('showMean', false);
+
+        const highlightOpen = this.getParam<boolean>('highlightOpen', true);
+        const showOpeningRange = this.getParam<boolean>('showOpeningRange', true);
+        const showPreOpenZone = this.getParam<boolean>('showPreOpenZone', true);
+        const endOnNextOpen = this.getParam<boolean>('endOnNextOpen', true);
+        const showOpenBellLine = this.getParam<boolean>('showOpenBellLine', true);
 
         // Hide all pooled labels initially
         for (let i = 0; i < this.labelTextPool.length; i++) {
@@ -381,7 +495,7 @@ export class MarketSessionsIndicator extends BaseIndicator {
             }
         ];
 
-        // Render each session's boxes in single batched GPU calls
+        // Render each session's boxes in batched draw calls
         for (const sess of sessions) {
             if (!sess.enabled || !sess.range) continue;
             const boxes = this.cachedBoxesBySession.get(sess.name);
@@ -394,11 +508,21 @@ export class MarketSessionsIndicator extends BaseIndicator {
             interface VisibleBoxGeometry {
                 x1: number;
                 x2: number;
+                xCoreEnd: number;
                 boxW: number;
                 yHigh: number;
                 yLow: number;
                 boxH: number;
                 yMean: number;
+                xOpen: number;
+                yOpen: number;
+                xOrb1: number;
+                xOrb2: number;
+                yOrbHigh: number;
+                yOrbLow: number;
+                hasPreOpen: boolean;
+                xPre1: number;
+                xPre2: number;
                 box: SessionBox;
             }
 
@@ -408,9 +532,15 @@ export class MarketSessionsIndicator extends BaseIndicator {
                 const box = boxes[bIdx];
                 const x1 = r.getCandleCenterX(box.startIdx) - (spacing * 0.45);
                 const x2 = r.getCandleCenterX(box.endIdx) + (spacing * 0.45);
+                const xCoreEnd = r.getCandleCenterX(box.coreEndIdx) + (spacing * 0.45);
 
-                // Cull if off-screen
-                if (x2 < -30 || x1 > screenW + 30) continue;
+                // Check pre-open bounds
+                const hasPreOpen = showPreOpenZone && box.preOpenStartIdx !== -1 && box.preOpenStartIdx < box.startIdx;
+                const xPre1 = hasPreOpen ? r.getCandleCenterX(box.preOpenStartIdx) - (spacing * 0.45) : x1;
+                const xPre2 = x1;
+
+                // Cull if completely off-screen
+                if (x2 < -30 || (hasPreOpen ? xPre1 : x1) > screenW + 30) continue;
 
                 const yHigh = r.priceToY(box.high);
                 const yLow = r.priceToY(box.low);
@@ -418,26 +548,104 @@ export class MarketSessionsIndicator extends BaseIndicator {
                 const boxH = Math.max(2, yLow - yHigh);
                 const yMean = r.priceToY((box.high + box.low) * 0.5);
 
-                visibleBoxes.push({ x1, x2, boxW, yHigh, yLow, boxH, yMean, box });
+                const xOpen = r.getCandleCenterX(box.startIdx);
+                const yOpen = r.priceToY(box.openPrice);
+
+                const xOrb1 = x1;
+                const xOrb2 = r.getCandleCenterX(box.orbEndIdx) + (spacing * 0.45);
+                const yOrbHigh = r.priceToY(box.orbHigh);
+                const yOrbLow = r.priceToY(box.orbLow);
+
+                visibleBoxes.push({
+                    x1, x2, xCoreEnd, boxW, yHigh, yLow, boxH, yMean,
+                    xOpen, yOpen, xOrb1, xOrb2, yOrbHigh, yOrbLow,
+                    hasPreOpen, xPre1, xPre2, box
+                });
             }
 
             if (visibleBoxes.length === 0) continue;
 
-            // 1. Batch Fill Range Boxes in 1 draw call
+            // 1. Batch Fill Pre-Open Caution Zones (Phase 1: 10-15m before open)
+            if (showPreOpenZone) {
+                let hasDrawnPre = false;
+                for (let i = 0; i < visibleBoxes.length; i++) {
+                    const vb = visibleBoxes[i];
+                    if (vb.hasPreOpen && vb.xPre2 > vb.xPre1) {
+                        const preW = Math.max(2, vb.xPre2 - vb.xPre1);
+                        g.rect(vb.xPre1, vb.yHigh, preW, vb.boxH);
+                        hasDrawnPre = true;
+                    }
+                }
+                if (hasDrawnPre) {
+                    g.fill({ color: 0xFFA726, alpha: 0.14 });
+                }
+
+                // Dotted vertical line separating pre-open
+                for (let i = 0; i < visibleBoxes.length; i++) {
+                    const vb = visibleBoxes[i];
+                    if (vb.hasPreOpen) {
+                        StrokeEngine.addDashedLinePath(g, vb.xPre1, vb.yHigh, vb.xPre1, vb.yLow, 'dotted', 2, 3);
+                    }
+                }
+                g.stroke({ color: 0xFFA726, width: 1, alpha: 0.65 });
+            }
+
+            // 2. Batch Fill Core Session Range Boxes
             for (let i = 0; i < visibleBoxes.length; i++) {
                 const vb = visibleBoxes[i];
-                g.rect(vb.x1, vb.yHigh, vb.boxW, vb.boxH);
+                if (endOnNextOpen && vb.box.endIdx > vb.box.coreEndIdx) {
+                    const coreW = Math.max(2, vb.xCoreEnd - vb.x1);
+                    g.rect(vb.x1, vb.yHigh, coreW, vb.boxH);
+                } else {
+                    g.rect(vb.x1, vb.yHigh, vb.boxW, vb.boxH);
+                }
             }
             g.fill({ color: parsedColor.color, alpha: boxFillAlpha });
 
-            // 2. Batch Range Outlines in 1 stroke call
+            // 3. Batch Fill Extended Region (if ending on next opening)
+            if (endOnNextOpen) {
+                let hasExt = false;
+                for (let i = 0; i < visibleBoxes.length; i++) {
+                    const vb = visibleBoxes[i];
+                    if (vb.box.endIdx > vb.box.coreEndIdx) {
+                        const extW = Math.max(2, vb.x2 - vb.xCoreEnd);
+                        g.rect(vb.xCoreEnd, vb.yHigh, extW, vb.boxH);
+                        hasExt = true;
+                    }
+                }
+                if (hasExt) {
+                    g.fill({ color: parsedColor.color, alpha: boxFillAlpha * 0.45 });
+                }
+            }
+
+            // 4. Highlight Opening Chaos Window (Phase 2: First 5-15 mins)
+            if (highlightOpen) {
+                for (let i = 0; i < visibleBoxes.length; i++) {
+                    const vb = visibleBoxes[i];
+                    const orbW = Math.max(2, vb.xOrb2 - vb.xOrb1);
+                    g.rect(vb.xOrb1, vb.yHigh, orbW, vb.boxH);
+                }
+                g.fill({ color: parsedColor.color, alpha: boxFillAlpha * 1.6 });
+            }
+
+            // 5. Batch Range Outlines
             if (rangeOutline) {
                 for (let i = 0; i < visibleBoxes.length; i++) {
                     const vb = visibleBoxes[i];
-                    StrokeEngine.addDashedLinePath(g, vb.x1, vb.yHigh, vb.x2, vb.yHigh, 'dotted', 2, 3);
-                    StrokeEngine.addDashedLinePath(g, vb.x2, vb.yHigh, vb.x2, vb.yLow, 'dotted', 2, 3);
-                    StrokeEngine.addDashedLinePath(g, vb.x2, vb.yLow, vb.x1, vb.yLow, 'dotted', 2, 3);
+                    const outlineRight = (endOnNextOpen && vb.box.endIdx > vb.box.coreEndIdx) ? vb.xCoreEnd : vb.x2;
+
+                    StrokeEngine.addDashedLinePath(g, vb.x1, vb.yHigh, outlineRight, vb.yHigh, 'dotted', 2, 3);
+                    StrokeEngine.addDashedLinePath(g, outlineRight, vb.yHigh, outlineRight, vb.yLow, 'dotted', 2, 3);
+                    StrokeEngine.addDashedLinePath(g, outlineRight, vb.yLow, vb.x1, vb.yLow, 'dotted', 2, 3);
                     StrokeEngine.addDashedLinePath(g, vb.x1, vb.yLow, vb.x1, vb.yHigh, 'dotted', 2, 3);
+
+                    // Extended segment dotted boundaries to next open
+                    if (endOnNextOpen && vb.box.endIdx > vb.box.coreEndIdx) {
+                        StrokeEngine.addDashedLinePath(g, vb.xCoreEnd, vb.yHigh, vb.x2, vb.yHigh, 'dotted', 3, 4);
+                        StrokeEngine.addDashedLinePath(g, vb.xCoreEnd, vb.yLow, vb.x2, vb.yLow, 'dotted', 3, 4);
+                        // Vertical end line right before next opening bell
+                        StrokeEngine.addDashedLinePath(g, vb.x2, vb.yHigh, vb.x2, vb.yLow, 'dashed', 4, 3);
+                    }
                 }
                 g.stroke({
                     color: parsedColor.color,
@@ -447,7 +655,7 @@ export class MarketSessionsIndicator extends BaseIndicator {
                 });
             }
 
-            // 3. Batch Mean / Midpoint lines in 1 stroke call
+            // 6. Batch Mean / Midpoint lines
             if (showMean) {
                 for (let i = 0; i < visibleBoxes.length; i++) {
                     const vb = visibleBoxes[i];
@@ -461,13 +669,101 @@ export class MarketSessionsIndicator extends BaseIndicator {
                 });
             }
 
-            // 4. Show Range Labels (Session Name)
-            if (rangeLabel) {
+            // 7. Opening Bell Vertical Line & Diamond Pip (Phase 2 Open)
+            if (highlightOpen) {
+                if (showOpenBellLine) {
+                    for (let i = 0; i < visibleBoxes.length; i++) {
+                        const vb = visibleBoxes[i];
+                        // Spans from top of main chart to bottom (only when on-screen)
+                        if (vb.xOpen >= 0 && vb.xOpen <= screenW) {
+                            g.moveTo(vb.xOpen, 0).lineTo(vb.xOpen, mainH);
+                        }
+                    }
+                    g.stroke({
+                        color: parsedColor.color,
+                        width: 1.5,
+                        alpha: 0.55
+                    });
+                }
+
+                // Diamond pip at the open price
                 for (let i = 0; i < visibleBoxes.length; i++) {
                     const vb = visibleBoxes[i];
-                    if (vb.x1 <= screenW - 20) {
+                    if (vb.xOpen >= 0 && vb.xOpen <= screenW) {
+                        const yo = vb.yOpen;
+                        const xo = vb.xOpen;
+                        g.moveTo(xo, yo - 4)
+                            .lineTo(xo + 4, yo)
+                            .lineTo(xo, yo + 4)
+                            .lineTo(xo - 4, yo)
+                            .closePath();
+                    }
+                }
+                g.fill({ color: parsedColor.color, alpha: 0.95 });
+            }
+
+            // 8. Opening Range Breakout (ORB) High & Low Baseline Boundaries (Phase 3: Golden Trading Window)
+            if (showOpeningRange) {
+                let hasOrb = false;
+                for (let i = 0; i < visibleBoxes.length; i++) {
+                    const vb = visibleBoxes[i];
+                    if (vb.box.orbHigh > -Infinity && vb.box.orbLow < Infinity && vb.x2 > vb.xOrb2) {
+                        const startX = Math.max(0, vb.xOrb2);
+                        if (vb.x2 > startX) {
+                            StrokeEngine.addDashedLinePath(g, startX, vb.yOrbHigh, vb.x2, vb.yOrbHigh, 'dashed', 5, 3);
+                            hasOrb = true;
+                        }
+                    }
+                }
+                if (hasOrb) {
+                    g.stroke({ color: 0x26A69A, width: 1.2, alpha: 0.85, cap: 'butt' });
+                }
+
+                let hasOrbLow = false;
+                for (let i = 0; i < visibleBoxes.length; i++) {
+                    const vb = visibleBoxes[i];
+                    if (vb.box.orbHigh > -Infinity && vb.box.orbLow < Infinity && vb.x2 > vb.xOrb2) {
+                        const startX = Math.max(0, vb.xOrb2);
+                        if (vb.x2 > startX) {
+                            StrokeEngine.addDashedLinePath(g, startX, vb.yOrbLow, vb.x2, vb.yOrbLow, 'dashed', 5, 3);
+                            hasOrbLow = true;
+                        }
+                    }
+                }
+                if (hasOrbLow) {
+                    g.stroke({ color: 0xEF5350, width: 1.2, alpha: 0.85, cap: 'butt' });
+                }
+            }
+
+            // 9. Text Labels: Pre-Open, Session Name (at Open or pinned left when scrolling), and ORB Numbers
+            for (let i = 0; i < visibleBoxes.length; i++) {
+                const vb = visibleBoxes[i];
+                const isScrolledPastOpen = vb.xOpen < 0;
+
+                // 1. Pre-open label: only show if pre-open is on-screen (hidden when scrolled left past open)
+                if (!isScrolledPastOpen && showPreOpenZone && vb.hasPreOpen && vb.xPre1 >= 0 && vb.xPre1 <= screenW - 30) {
+                    placeLabel('PRE-OPEN', Math.max(4, vb.xPre1 + 2), Math.max(12, vb.yHigh - 12), 0xFFA726);
+                }
+
+                // 2. Open label IS the session name (no separate OPEN tag, no duplicate name)
+                // When scrolling left, pin session name to the left edge so it remains visible
+                if (rangeLabel && vb.x2 > 30) {
+                    const labelX = Math.max(8, vb.x1 + 2);
+                    if (labelX <= Math.min(screenW - 30, vb.x2 - 15)) {
                         const labelY = Math.max(12, vb.yHigh - 12);
-                        placeLabel(vb.box.sessionName, Math.max(4, vb.x1 + 2), labelY, parsedColor.color);
+                        placeLabel(vb.box.sessionName, labelX, labelY, parsedColor.color);
+                    }
+                }
+
+                // 3. ORB High & Low Breakout boundary labels: JUST show the numbers!
+                // When scrolling left, pin numbers to left edge so they stay visible
+                if (showOpeningRange && vb.x2 > vb.xOrb2 && vb.box.orbHigh > -Infinity && vb.box.orbLow < Infinity) {
+                    const orbNumX = Math.max(8, vb.xOrb2 + 4);
+                    if (orbNumX <= Math.min(screenW - 35, vb.x2 - 10)) {
+                        const hFormatted = vb.box.orbHigh >= 100 ? vb.box.orbHigh.toFixed(2) : vb.box.orbHigh.toFixed(4);
+                        const lFormatted = vb.box.orbLow >= 100 ? vb.box.orbLow.toFixed(2) : vb.box.orbLow.toFixed(4);
+                        placeLabel(hFormatted, orbNumX, Math.max(12, vb.yOrbHigh - 10), 0x26A69A);
+                        placeLabel(lFormatted, orbNumX, Math.min(mainH - 16, vb.yOrbLow + 2), 0xEF5350);
                     }
                 }
             }

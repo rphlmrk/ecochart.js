@@ -1793,6 +1793,44 @@ export class ChartRenderer {
             }
         }
 
+        // Extend sessions to next opening if enabled
+        if (this.sessionConfig.endOnNextOpen && blocks.length > 0) {
+            interface RawBlock {
+                start: number;
+                end: number;
+                rgba: number[];
+            }
+            const rawList: RawBlock[] = [];
+            for (let b = 0; b < blocks.length; b += 6) {
+                rawList.push({
+                    start: blocks[b],
+                    end: blocks[b + 1],
+                    rgba: [blocks[b + 2], blocks[b + 3], blocks[b + 4], blocks[b + 5]]
+                });
+            }
+            rawList.sort((a, b) => a.start - b.start);
+
+            for (let k = 0; k < rawList.length; k++) {
+                let nextStart = -1;
+                for (let j = k + 1; j < rawList.length; j++) {
+                    if (rawList[j].start > rawList[k].start) {
+                        nextStart = rawList[j].start;
+                        break;
+                    }
+                }
+                if (nextStart !== -1) {
+                    rawList[k].end = Math.max(rawList[k].start, nextStart - 1);
+                } else {
+                    rawList[k].end = Math.max(rawList[k].end, len - 1);
+                }
+            }
+
+            blocks.length = 0;
+            for (let k = 0; k < rawList.length; k++) {
+                blocks.push(rawList[k].start, rawList[k].end, ...rawList[k].rgba);
+            }
+        }
+
         const instanceCount = blocks.length / 6;
         if (this.sessionArray.length < blocks.length) {
             this.sessionArray = new Float32Array(Math.max(blocks.length * 2, 1000));
