@@ -1814,7 +1814,7 @@ export class ChartRenderer {
                 let minNext = Infinity;
                 const fromLocal = fromTime + tzOffsetMs;
                 const fromDayBase = Math.floor(fromLocal / 86400000) * 86400000;
-                for (let d = 0; d <= 2; d++) {
+                for (let d = 0; d <= 4; d++) {
                     const dayBase = fromDayBase + (d * 86400000);
                     for (const s of sessList) {
                         const preOpenLocal = dayBase + (s.startMin * 60000) - (15 * 60000);
@@ -1854,7 +1854,8 @@ export class ChartRenderer {
                     const lastBarTime = this.dataStore.data[lastBarIdx * 6];
                     const intervalMs = (len >= 2) ? (this.dataStore.data[6] - this.dataStore.data[0]) : 60000;
                     const kOpenTime = this.dataStore.data[rawList[k].start * 6];
-                    const nextPreTime = getNextPreMarket(kOpenTime);
+                    const checkTime = Math.max(kOpenTime, lastBarTime);
+                    const nextPreTime = getNextPreMarket(checkTime);
 
                     if (nextPreTime > lastBarTime) {
                         const barsAhead = (nextPreTime - lastBarTime) / intervalMs;

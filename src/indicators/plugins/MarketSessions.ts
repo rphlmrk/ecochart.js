@@ -334,51 +334,52 @@ export class MarketSessionsIndicator extends BaseIndicator {
             this.cachedBoxesBySession.set(sess.name, boxes);
         }
 
-        // If 'endOnNextOpen' is enabled: chain chronological sessions so the previous session ends when the next pre-open is starting!
-        if (endOnNextOpen) {
-            const allBoxes: SessionBox[] = [];
-            for (const list of this.cachedBoxesBySession.values()) {
-                allBoxes.push(...list);
-            }
-            allBoxes.sort((a, b) => a.startIdx - b.startIdx);
+        // Chain chronological sessions so the previous session ends when the next pre-open is starting,
+        // and show or extend the current/latest session to the time it ends when the next pre-market starts!
+        const allBoxes: SessionBox[] = [];
+        for (const list of this.cachedBoxesBySession.values()) {
+            allBoxes.push(...list);
+        }
+        allBoxes.sort((a, b) => a.startIdx - b.startIdx);
 
-            const lastBarIdx = len - 1;
-            const lastBarTime = ds.data[lastBarIdx * 6];
-            const intervalMs = (len >= 2) ? (ds.data[6] - ds.data[0]) : 60000;
+        const lastBarIdx = len - 1;
+        const lastBarTime = ds.data[lastBarIdx * 6];
+        const intervalMs = (len >= 2) ? (ds.data[6] - ds.data[0]) : 60000;
 
-            for (let k = 0; k < allBoxes.length; k++) {
-                let nextBoundary = -1;
-                for (let j = k + 1; j < allBoxes.length; j++) {
-                    if (allBoxes[j].startIdx > allBoxes[k].startIdx) {
-                        const nextBox = allBoxes[j];
-                        // End when pre-open starts (10-15m prior) if available; otherwise at open
-                        const preStart = (nextBox.preOpenStartIdx !== -1 && nextBox.preOpenStartIdx < nextBox.startIdx)
-                            ? nextBox.preOpenStartIdx
-                            : nextBox.startIdx;
-                        nextBoundary = preStart;
-                        break;
-                    }
+        for (let k = 0; k < allBoxes.length; k++) {
+            let nextBoundary = -1;
+            for (let j = k + 1; j < allBoxes.length; j++) {
+                if (allBoxes[j].startIdx > allBoxes[k].startIdx) {
+                    const nextBox = allBoxes[j];
+                    // End when pre-open starts (10-15m prior) if available; otherwise at open
+                    const preStart = (nextBox.preOpenStartIdx !== -1 && nextBox.preOpenStartIdx < nextBox.startIdx)
+                        ? nextBox.preOpenStartIdx
+                        : nextBox.startIdx;
+                    nextBoundary = preStart;
+                    break;
                 }
-                if (nextBoundary !== -1) {
+            }
+            if (nextBoundary !== -1) {
+                if (endOnNextOpen) {
                     allBoxes[k].endIdx = Math.max(allBoxes[k].startIdx, nextBoundary - 1);
-                } else {
-                    // For the latest / current session on chart: extend to the time the next pre-market starts!
-                    const boxOpenTime = allBoxes[k].openTime;
-                    const nextPreMarketUtc = MarketSessionsIndicator.getNextPreMarketTimestamp(boxOpenTime, sessions, tzOffsetMs);
+                }
+            } else {
+                // For the latest / current session on chart: extend to the time the next pre-market starts!
+                const checkTime = Math.max(allBoxes[k].openTime, lastBarTime);
+                const nextPreMarketUtc = MarketSessionsIndicator.getNextPreMarketTimestamp(checkTime, sessions, tzOffsetMs);
 
-                    if (nextPreMarketUtc > lastBarTime) {
-                        const barsAhead = (nextPreMarketUtc - lastBarTime) / intervalMs;
-                        allBoxes[k].endIdx = Math.max(allBoxes[k].coreEndIdx, lastBarIdx + barsAhead);
-                    } else {
-                        let targetIdx = lastBarIdx;
-                        for (let p = allBoxes[k].startIdx; p < len; p++) {
-                            if (ds.data[p * 6] >= nextPreMarketUtc) {
-                                targetIdx = Math.max(allBoxes[k].startIdx, p - 1);
-                                break;
-                            }
+                if (nextPreMarketUtc > lastBarTime) {
+                    const barsAhead = (nextPreMarketUtc - lastBarTime) / intervalMs;
+                    allBoxes[k].endIdx = Math.max(allBoxes[k].coreEndIdx, lastBarIdx + barsAhead);
+                } else {
+                    let targetIdx = lastBarIdx;
+                    for (let p = allBoxes[k].startIdx; p < len; p++) {
+                        if (ds.data[p * 6] >= nextPreMarketUtc) {
+                            targetIdx = Math.max(allBoxes[k].startIdx, p - 1);
+                            break;
                         }
-                        allBoxes[k].endIdx = Math.max(allBoxes[k].coreEndIdx, targetIdx);
                     }
+                    allBoxes[k].endIdx = Math.max(allBoxes[k].coreEndIdx, targetIdx);
                 }
             }
         }
@@ -399,10 +400,11 @@ export class MarketSessionsIndicator extends BaseIndicator {
         const fromLocal = fromTime + tzOffsetMs;
         const fromDayBase = Math.floor(fromLocal / 86400000) * 86400000;
 
-        for (let d = 0; d <= 2; d++) {
+        for (let d = 0; d <= 4; d++) {
             const dayBase = fromDayBase + (d * 86400000);
             for (const sess of active) {
                 const { startMin } = MarketSessionsIndicator.parseSessionHours(sess.hours);
+                // Pre-open caution window starts 15 mins before open
                 const preOpenLocal = dayBase + (startMin * 60000) - (15 * 60000);
                 const preOpenUtc = preOpenLocal - tzOffsetMs;
 
@@ -645,7 +647,7 @@ export class MarketSessionsIndicator extends BaseIndicator {
             // 2. Batch Fill Core Session Range Boxes
             for (let i = 0; i < visibleBoxes.length; i++) {
                 const vb = visibleBoxes[i];
-                if (endOnNextOpen && vb.box.endIdx > vb.box.coreEndIdx) {
+                if ((endOnNextOpen || vb.box.endIdx > vb.box.coreEndIdx) && vb.box.endIdx > vb.box.coreEndIdx) {
                     const coreW = Math.max(2, vb.xCoreEnd - vb.x1);
                     g.rect(vb.x1, vb.yHigh, coreW, vb.boxH);
                 } else {
@@ -654,20 +656,18 @@ export class MarketSessionsIndicator extends BaseIndicator {
             }
             g.fill({ color: parsedColor.color, alpha: boxFillAlpha });
 
-            // 3. Batch Fill Extended Region (if ending on next opening)
-            if (endOnNextOpen) {
-                let hasExt = false;
-                for (let i = 0; i < visibleBoxes.length; i++) {
-                    const vb = visibleBoxes[i];
-                    if (vb.box.endIdx > vb.box.coreEndIdx) {
-                        const extW = Math.max(2, vb.x2 - vb.xCoreEnd);
-                        g.rect(vb.xCoreEnd, vb.yHigh, extW, vb.boxH);
-                        hasExt = true;
-                    }
+            // 3. Batch Fill Extended Region (session box extending to when next pre-market starts)
+            let hasExt = false;
+            for (let i = 0; i < visibleBoxes.length; i++) {
+                const vb = visibleBoxes[i];
+                if (vb.box.endIdx > vb.box.coreEndIdx) {
+                    const extW = Math.max(2, vb.x2 - vb.xCoreEnd);
+                    g.rect(vb.xCoreEnd, vb.yHigh, extW, vb.boxH);
+                    hasExt = true;
                 }
-                if (hasExt) {
-                    g.fill({ color: parsedColor.color, alpha: boxFillAlpha * 0.45 });
-                }
+            }
+            if (hasExt) {
+                g.fill({ color: parsedColor.color, alpha: boxFillAlpha * 0.75 });
             }
 
             // 4. Highlight Opening Chaos Window (Phase 2: First 5-15 mins)
@@ -680,23 +680,21 @@ export class MarketSessionsIndicator extends BaseIndicator {
                 g.fill({ color: parsedColor.color, alpha: boxFillAlpha * 1.6 });
             }
 
-            // 5. Batch Range Outlines
+            // 5. Batch Range Outlines (Entire session box extends to x2 when next pre-market starts)
             if (rangeOutline) {
                 for (let i = 0; i < visibleBoxes.length; i++) {
                     const vb = visibleBoxes[i];
-                    const outlineRight = (endOnNextOpen && vb.box.endIdx > vb.box.coreEndIdx) ? vb.xCoreEnd : vb.x2;
+                    const outlineRight = vb.x2;
 
+                    // Continuous box boundary from x1 to x2
                     StrokeEngine.addDashedLinePath(g, vb.x1, vb.yHigh, outlineRight, vb.yHigh, 'dotted', 2, 3);
                     StrokeEngine.addDashedLinePath(g, outlineRight, vb.yHigh, outlineRight, vb.yLow, 'dotted', 2, 3);
                     StrokeEngine.addDashedLinePath(g, outlineRight, vb.yLow, vb.x1, vb.yLow, 'dotted', 2, 3);
                     StrokeEngine.addDashedLinePath(g, vb.x1, vb.yLow, vb.x1, vb.yHigh, 'dotted', 2, 3);
 
-                    // Extended segment dotted boundaries to next open
-                    if (endOnNextOpen && vb.box.endIdx > vb.box.coreEndIdx) {
-                        StrokeEngine.addDashedLinePath(g, vb.xCoreEnd, vb.yHigh, vb.x2, vb.yHigh, 'dotted', 3, 4);
-                        StrokeEngine.addDashedLinePath(g, vb.xCoreEnd, vb.yLow, vb.x2, vb.yLow, 'dotted', 3, 4);
-                        // Vertical end line right before next opening bell
-                        StrokeEngine.addDashedLinePath(g, vb.x2, vb.yHigh, vb.x2, vb.yLow, 'dashed', 4, 3);
+                    // Subtly mark core market close if session was extended to next pre-market
+                    if (vb.box.endIdx > vb.box.coreEndIdx && vb.xCoreEnd > vb.x1 && vb.xCoreEnd < vb.x2) {
+                        StrokeEngine.addDashedLinePath(g, vb.xCoreEnd, vb.yHigh, vb.xCoreEnd, vb.yLow, 'dotted', 2, 4);
                     }
                 }
                 g.stroke({

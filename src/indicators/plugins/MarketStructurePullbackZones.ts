@@ -19,7 +19,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
     public cachedMacroBoxes: PullbackZoneBox[] = [];
 
     private lastCalculatedLength = -1;
-    private lastCalcParamHash = '';
+    private lastStateHash = '';
 
     // Zero-GC text pooling for optional zone labels
     private labelContainer = new Container();
@@ -54,6 +54,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
 
     protected override onParamsUpdated(): void {
         this.lastCalculatedLength = -1;
+        this.lastStateHash = '';
         this.cachedMicroBoxes = [];
         this.cachedMacroBoxes = [];
     }
@@ -62,6 +63,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
         this.cachedMicroBoxes = [];
         this.cachedMacroBoxes = [];
         this.lastCalculatedLength = -1;
+        this.lastStateHash = '';
         super.reset();
     }
 
@@ -75,13 +77,14 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
     }
 
     /**
-     * Highly optimized pivot detection on typed Float64Array
+     * Exact TradingView ta.pivothigh() on typed Float64Array
+     * Candle high must be strictly greater than leftbars preceding and rightbars succeeding
      */
     private static isPivotHigh(data: Float64Array, p: number, prd: number): boolean {
         if (p < prd) return false;
         const candidateH = data[p * 6 + 2];
         for (let k = 1; k <= prd; k++) {
-            if (data[(p - k) * 6 + 2] > candidateH) return false;
+            if (data[(p - k) * 6 + 2] >= candidateH) return false;
         }
         for (let k = 1; k <= prd; k++) {
             if (data[(p + k) * 6 + 2] >= candidateH) return false;
@@ -89,11 +92,15 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
         return true;
     }
 
+    /**
+     * Exact TradingView ta.pivotlow() on typed Float64Array
+     * Candle low must be strictly lower than leftbars preceding and rightbars succeeding
+     */
     private static isPivotLow(data: Float64Array, p: number, prd: number): boolean {
         if (p < prd) return false;
         const candidateL = data[p * 6 + 3];
         for (let k = 1; k <= prd; k++) {
-            if (data[(p - k) * 6 + 3] < candidateL) return false;
+            if (data[(p - k) * 6 + 3] <= candidateL) return false;
         }
         for (let k = 1; k <= prd; k++) {
             if (data[(p + k) * 6 + 3] <= candidateL) return false;
@@ -102,7 +109,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
     }
 
     /**
-     * Builds both Micro and Macro pullback zones in a single pass over historical data
+     * Builds both Micro and Macro pullback zones matching Pine Script //@version=5
      */
     private buildCachedBoxes(ds: DataStore): void {
         const len = ds.length;
@@ -110,6 +117,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
             this.cachedMicroBoxes = [];
             this.cachedMacroBoxes = [];
             this.lastCalculatedLength = 0;
+            this.lastStateHash = '';
             return;
         }
 
@@ -120,41 +128,14 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
         const useWicks = this.getParam<boolean>('useWicks', false);
         const maxBoxes = Math.max(10, Math.min(1000, this.getParam<number>('maxBoxes', 500)));
 
-        const paramHash = `${showMicro}:${microPrd}:${showMacro}:${macroPrd}:${useWicks}:${maxBoxes}`;
+        const lastIdx = len - 1;
+        const baseLast = lastIdx * 6;
+        const lastH = ds.data[baseLast + 2];
+        const lastL = ds.data[baseLast + 3];
+        const lastC = ds.data[baseLast + 4];
 
-        // Fast update for live tick: if bar count is unchanged and params match, update the active live boxes
-        if (len === this.lastCalculatedLength && this.lastCalcParamHash === paramHash) {
-            const lastIdx = len - 1;
-            const base = lastIdx * 6;
-            const h = ds.data[base + 2];
-            const l = ds.data[base + 3];
-            const c = ds.data[base + 4];
-
-            if (showMicro && this.cachedMicroBoxes.length > 0) {
-                const latest = this.cachedMicroBoxes[this.cachedMicroBoxes.length - 1];
-                if (latest.isOpen) {
-                    latest.rightBar = lastIdx;
-                    const breakUp = useWicks ? h > latest.top : c > latest.top;
-                    const breakDn = useWicks ? l < latest.bottom : c < latest.bottom;
-                    if (breakUp || breakDn) {
-                        latest.isOpen = false;
-                        latest.breakoutDir = breakUp ? 'up' : 'down';
-                    }
-                }
-            }
-
-            if (showMacro && this.cachedMacroBoxes.length > 0) {
-                const latest = this.cachedMacroBoxes[this.cachedMacroBoxes.length - 1];
-                if (latest.isOpen) {
-                    latest.rightBar = lastIdx;
-                    const breakUp = useWicks ? h > latest.top : c > latest.top;
-                    const breakDn = useWicks ? l < latest.bottom : c < latest.bottom;
-                    if (breakUp || breakDn) {
-                        latest.isOpen = false;
-                        latest.breakoutDir = breakUp ? 'up' : 'down';
-                    }
-                }
-            }
+        const stateHash = `${showMicro}:${microPrd}:${showMacro}:${macroPrd}:${useWicks}:${maxBoxes}:${len}:${lastH}:${lastL}:${lastC}`;
+        if (this.lastStateHash === stateHash && this.lastCalculatedLength === len) {
             return;
         }
 
@@ -169,6 +150,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
             let microTopBar: number | null = null;
             let microBotBar: number | null = null;
             let microBreakBar = 0;
+            let microDir = 0; // Direction Tracker: 1 = UP, -1 = DOWN, 0 = INITIAL
             let microBox: PullbackZoneBox | null = null;
 
             for (let i = 0; i < len; i++) {
@@ -177,16 +159,32 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                 const l = data[base + 3];
                 const c = data[base + 4];
 
+                // --- MICRO LOGIC (BLUE BOXES) ---
                 if (inMicro && microBox !== null && microTop !== null && microBot !== null) {
+                    // We are inside a tracked pullback, extend the box
                     microBox.rightBar = i;
+
+                    // Check if price broke out of the pullback H/L
                     const microBreakUp = useWicks ? h > microTop : c > microTop;
                     const microBreakDn = useWicks ? l < microBot : c < microBot;
 
-                    if (microBreakUp || microBreakDn) {
+                    if (microBreakUp) {
                         inMicro = false;
                         microBox.isOpen = false;
-                        microBox.breakoutDir = microBreakUp ? 'up' : 'down';
+                        microBox.breakoutDir = 'up';
                         microBreakBar = i;
+                        microDir = 1; // Set direction to UP
+                        microTop = null;
+                        microBot = null;
+                        microTopBar = null;
+                        microBotBar = null;
+                        microBox = null;
+                    } else if (microBreakDn) {
+                        inMicro = false;
+                        microBox.isOpen = false;
+                        microBox.breakoutDir = 'down';
+                        microBreakBar = i;
+                        microDir = -1; // Set direction to DOWN
                         microTop = null;
                         microBot = null;
                         microTopBar = null;
@@ -197,20 +195,59 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
 
                 if (!inMicro) {
                     const actualPhBar = i - microPrd;
-                    if (actualPhBar >= 0 && MarketStructurePullbackZonesIndicator.isPivotHigh(data, actualPhBar, microPrd)) {
-                        const ph = data[actualPhBar * 6 + 2];
-                        if (actualPhBar > microBreakBar) {
+                    const hasPh = actualPhBar >= 0 && MarketStructurePullbackZonesIndicator.isPivotHigh(data, actualPhBar, microPrd);
+                    const ph = hasPh ? data[actualPhBar * 6 + 2] : 0;
+
+                    const actualPlBar = i - microPrd;
+                    const hasPl = actualPlBar >= 0 && MarketStructurePullbackZonesIndicator.isPivotLow(data, actualPlBar, microPrd);
+                    const pl = hasPl ? data[actualPlBar * 6 + 3] : 0;
+
+                    if (microDir === 1) {
+                        // Breakout was UP: Wait for New Swing High first
+                        if (hasPh && actualPhBar > microBreakBar) {
                             if (microTop === null || ph > microTop) {
                                 microTop = ph;
                                 microTopBar = actualPhBar;
                             }
                         }
-                    }
 
-                    const actualPlBar = i - microPrd;
-                    if (actualPlBar >= 0 && MarketStructurePullbackZonesIndicator.isPivotLow(data, actualPlBar, microPrd)) {
-                        const pl = data[actualPlBar * 6 + 3];
-                        if (actualPlBar > microBreakBar) {
+                        // Once New High is established, wait for Pullback Low
+                        if (microTop !== null) {
+                            if (hasPl && actualPlBar > microTopBar!) {
+                                if (microBot === null || pl < microBot) {
+                                    microBot = pl;
+                                    microBotBar = actualPlBar;
+                                }
+                            }
+                        }
+                    } else if (microDir === -1) {
+                        // Breakout was DOWN: Wait for New Swing Low first
+                        if (hasPl && actualPlBar > microBreakBar) {
+                            if (microBot === null || pl < microBot) {
+                                microBot = pl;
+                                microBotBar = actualPlBar;
+                            }
+                        }
+
+                        // Once New Low is established, wait for Pullback High
+                        if (microBot !== null) {
+                            if (hasPh && actualPhBar > microBotBar!) {
+                                if (microTop === null || ph > microTop) {
+                                    microTop = ph;
+                                    microTopBar = actualPhBar;
+                                }
+                            }
+                        }
+                    } else {
+                        // Initial State (No breaks yet): Find first High and Low normally
+                        if (hasPh && actualPhBar > microBreakBar) {
+                            if (microTop === null || ph > microTop) {
+                                microTop = ph;
+                                microTopBar = actualPhBar;
+                            }
+                        }
+
+                        if (hasPl && actualPlBar > microBreakBar) {
                             if (microBot === null || pl < microBot) {
                                 microBot = pl;
                                 microBotBar = actualPlBar;
@@ -218,6 +255,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         }
                     }
 
+                    // Once we have BOTH a Swing High and Swing Low confirmed in valid sequence, draw box
                     if (microTop !== null && microBot !== null && microTopBar !== null && microBotBar !== null) {
                         inMicro = true;
                         const leftEdge = Math.min(microTopBar, microBotBar);
@@ -246,6 +284,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
             let macroTopBar: number | null = null;
             let macroBotBar: number | null = null;
             let macroBreakBar = 0;
+            let macroDir = 0; // Direction Tracker: 1 = UP, -1 = DOWN, 0 = INITIAL
             let macroBox: PullbackZoneBox | null = null;
 
             for (let i = 0; i < len; i++) {
@@ -254,16 +293,32 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                 const l = data[base + 3];
                 const c = data[base + 4];
 
+                // --- MACRO LOGIC (RED BOXES) ---
                 if (inMacro && macroBox !== null && macroTop !== null && macroBot !== null) {
+                    // We are inside a tracked macro pullback, extend the box
                     macroBox.rightBar = i;
+
+                    // Check if price broke out of the macro H/L
                     const macroBreakUp = useWicks ? h > macroTop : c > macroTop;
                     const macroBreakDn = useWicks ? l < macroBot : c < macroBot;
 
-                    if (macroBreakUp || macroBreakDn) {
+                    if (macroBreakUp) {
                         inMacro = false;
                         macroBox.isOpen = false;
-                        macroBox.breakoutDir = macroBreakUp ? 'up' : 'down';
+                        macroBox.breakoutDir = 'up';
                         macroBreakBar = i;
+                        macroDir = 1; // Set direction to UP
+                        macroTop = null;
+                        macroBot = null;
+                        macroTopBar = null;
+                        macroBotBar = null;
+                        macroBox = null;
+                    } else if (macroBreakDn) {
+                        inMacro = false;
+                        macroBox.isOpen = false;
+                        macroBox.breakoutDir = 'down';
+                        macroBreakBar = i;
+                        macroDir = -1; // Set direction to DOWN
                         macroTop = null;
                         macroBot = null;
                         macroTopBar = null;
@@ -274,27 +329,67 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
 
                 if (!inMacro) {
                     const actualMacroPhBar = i - macroPrd;
-                    if (actualMacroPhBar >= 0 && MarketStructurePullbackZonesIndicator.isPivotHigh(data, actualMacroPhBar, macroPrd)) {
-                        const ph = data[actualMacroPhBar * 6 + 2];
-                        if (actualMacroPhBar > macroBreakBar) {
-                            if (macroTop === null || ph > macroTop) {
-                                macroTop = ph;
+                    const hasMacroPh = actualMacroPhBar >= 0 && MarketStructurePullbackZonesIndicator.isPivotHigh(data, actualMacroPhBar, macroPrd);
+                    const macroPh = hasMacroPh ? data[actualMacroPhBar * 6 + 2] : 0;
+
+                    const actualMacroPlBar = i - macroPrd;
+                    const hasMacroPl = actualMacroPlBar >= 0 && MarketStructurePullbackZonesIndicator.isPivotLow(data, actualMacroPlBar, macroPrd);
+                    const macroPl = hasMacroPl ? data[actualMacroPlBar * 6 + 3] : 0;
+
+                    if (macroDir === 1) {
+                        // Breakout was UP: Wait for New Macro High first
+                        if (hasMacroPh && actualMacroPhBar > macroBreakBar) {
+                            if (macroTop === null || macroPh > macroTop) {
+                                macroTop = macroPh;
                                 macroTopBar = actualMacroPhBar;
                             }
                         }
-                    }
 
-                    const actualMacroPlBar = i - macroPrd;
-                    if (actualMacroPlBar >= 0 && MarketStructurePullbackZonesIndicator.isPivotLow(data, actualMacroPlBar, macroPrd)) {
-                        const pl = data[actualMacroPlBar * 6 + 3];
-                        if (actualMacroPlBar > macroBreakBar) {
-                            if (macroBot === null || pl < macroBot) {
-                                macroBot = pl;
+                        // Once New High is established, wait for Macro Pullback Low
+                        if (macroTop !== null) {
+                            if (hasMacroPl && actualMacroPlBar > macroTopBar!) {
+                                if (macroBot === null || macroPl < macroBot) {
+                                    macroBot = macroPl;
+                                    macroBotBar = actualMacroPlBar;
+                                }
+                            }
+                        }
+                    } else if (macroDir === -1) {
+                        // Breakout was DOWN: Wait for New Macro Low first
+                        if (hasMacroPl && actualMacroPlBar > macroBreakBar) {
+                            if (macroBot === null || macroPl < macroBot) {
+                                macroBot = macroPl;
+                                macroBotBar = actualMacroPlBar;
+                            }
+                        }
+
+                        // Once New Low is established, wait for Macro Pullback High
+                        if (macroBot !== null) {
+                            if (hasMacroPh && actualMacroPhBar > macroBotBar!) {
+                                if (macroTop === null || macroPh > macroTop) {
+                                    macroTop = macroPh;
+                                    macroTopBar = actualMacroPhBar;
+                                }
+                            }
+                        }
+                    } else {
+                        // Initial State
+                        if (hasMacroPh && actualMacroPhBar > macroBreakBar) {
+                            if (macroTop === null || macroPh > macroTop) {
+                                macroTop = macroPh;
+                                macroTopBar = actualMacroPhBar;
+                            }
+                        }
+
+                        if (hasMacroPl && actualMacroPlBar > macroBreakBar) {
+                            if (macroBot === null || macroPl < macroBot) {
+                                macroBot = macroPl;
                                 macroBotBar = actualMacroPlBar;
                             }
                         }
                     }
 
+                    // Once we have BOTH a macro Swing High and Swing Low confirmed, draw the tracking box
                     if (macroTop !== null && macroBot !== null && macroTopBar !== null && macroBotBar !== null) {
                         inMacro = true;
                         const leftEdge = Math.min(macroTopBar, macroBotBar);
@@ -317,7 +412,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
         this.cachedMicroBoxes = microBoxes;
         this.cachedMacroBoxes = macroBoxes;
         this.lastCalculatedLength = len;
-        this.lastCalcParamHash = paramHash;
+        this.lastStateHash = stateHash;
     }
 
     /**

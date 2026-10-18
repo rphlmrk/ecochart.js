@@ -184,36 +184,36 @@ export class TimeAxisRenderer {
                     this.ctx.lineTo(x1 + 0.5, 7);
                     this.ctx.stroke();
 
-                    // 3. Rest of Session Shade on Time Axis
+                    // 3. Rest of Session Shade on Time Axis (Extends until next pre-market starts)
                     if (x2 > xOrbEnd) {
                         const wRest = Math.max(1, x2 - xOrbEnd);
-                        this.ctx.fillStyle = this.hexToRGBA(baseColor, 0.12);
+                        this.ctx.fillStyle = this.hexToRGBA(baseColor, 0.18);
                         this.ctx.fillRect(xOrbEnd, 0, wRest, h);
                         this.ctx.fillStyle = baseColor;
-                        this.ctx.fillRect(xOrbEnd, 0, wRest, 2);
+                        this.ctx.fillRect(xOrbEnd, 0, wRest, 2.5);
 
-                        // Boundary tick at x2 where session ends when next pre-market starts
-                        this.ctx.strokeStyle = this.hexToRGBA(baseColor, 0.75);
-                        this.ctx.lineWidth = 1;
+                        // Crisp boundary tick at x2 where session ends when next pre-market starts
+                        this.ctx.strokeStyle = this.hexToRGBA(baseColor, 0.9);
+                        this.ctx.lineWidth = 1.5;
                         this.ctx.beginPath();
                         this.ctx.moveTo(x2 + 0.5, 0);
-                        this.ctx.lineTo(x2 + 0.5, 6);
+                        this.ctx.lineTo(x2 + 0.5, 8);
                         this.ctx.stroke();
                     }
                 } else {
                     // Standard full session shade if open window not highlighted
                     const wFull = Math.max(1, x2 - x1);
-                    this.ctx.fillStyle = this.hexToRGBA(baseColor, 0.14);
+                    this.ctx.fillStyle = this.hexToRGBA(baseColor, 0.18);
                     this.ctx.fillRect(x1, 0, wFull, h);
                     this.ctx.fillStyle = baseColor;
                     this.ctx.fillRect(x1, 0, wFull, 2.5);
 
                     // Boundary tick at x2 where session ends when next pre-market starts
-                    this.ctx.strokeStyle = this.hexToRGBA(baseColor, 0.75);
-                    this.ctx.lineWidth = 1;
+                    this.ctx.strokeStyle = this.hexToRGBA(baseColor, 0.9);
+                    this.ctx.lineWidth = 1.5;
                     this.ctx.beginPath();
                     this.ctx.moveTo(x2 + 0.5, 0);
-                    this.ctx.lineTo(x2 + 0.5, 6);
+                    this.ctx.lineTo(x2 + 0.5, 8);
                     this.ctx.stroke();
                 }
             }
