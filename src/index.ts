@@ -17,7 +17,8 @@ import {
     ZigZag123Indicator,
     CBCFlipIndicator,
     PeriodSeparatorIndicator,
-    MarketSessionsIndicator
+    MarketSessionsIndicator,
+    MarketStructurePullbackZonesIndicator
 } from './indicators/plugins';
 
 import { DrawingManager, type ToolType } from './tools/DrawingManager';
@@ -4164,7 +4165,9 @@ export class WorkspaceManager {
             { type: 'HTF_BIAS', name: 'HTF Bias', factory: () => new HTFBiasIndicator(60) },
             { type: 'HTF_PROJ', name: 'HTF Projections', factory: () => new HTFProjectionsIndicator('Custom', 21) },
             { type: 'ZZ123', name: 'ZigZag 1-2-3 Breakout', factory: () => new ZigZag123Indicator(4) },
-            { type: 'CBC_FLIP', name: 'CBC Flip (Exact Wick Alignment)', factory: () => new CBCFlipIndicator() }
+            { type: 'CBC_FLIP', name: 'CBC Flip (Exact Wick Alignment)', factory: () => new CBCFlipIndicator() },
+            { type: 'PULLBACK_ZONES', name: 'Market Structure Pullback Zones', factory: () => new MarketStructurePullbackZonesIndicator() },
+            { type: 'PERIOD_SEP', name: 'Period Separator', factory: () => new PeriodSeparatorIndicator() }
         ];
 
         const showListView = () => {

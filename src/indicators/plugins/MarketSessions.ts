@@ -761,10 +761,10 @@ export class MarketSessionsIndicator extends BaseIndicator {
                 }
 
                 // 3. ORB High & Low Breakout boundary labels: JUST show the numbers!
-                // When scrolling left, pin numbers to left edge so they stay visible
+                // When scrolling left, only show the session name and orb lines (hide numbers once scrolled past open window)
                 if (showOpeningRange && vb.x2 > vb.xOrb2 && vb.box.orbHigh > -Infinity && vb.box.orbLow < Infinity) {
-                    const orbNumX = Math.max(8, vb.xOrb2 + 4);
-                    if (orbNumX <= Math.min(screenW - 35, vb.x2 - 10)) {
+                    if (vb.xOrb2 >= 0 && (vb.xOrb2 + 4) <= Math.min(screenW - 35, vb.x2 - 10)) {
+                        const orbNumX = vb.xOrb2 + 4;
                         const hFormatted = vb.box.orbHigh >= 100 ? vb.box.orbHigh.toFixed(2) : vb.box.orbHigh.toFixed(4);
                         const lFormatted = vb.box.orbLow >= 100 ? vb.box.orbLow.toFixed(2) : vb.box.orbLow.toFixed(4);
                         placeLabel(hFormatted, orbNumX, Math.max(12, vb.yOrbHigh - 10), 0x26A69A);
