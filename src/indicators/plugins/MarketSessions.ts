@@ -342,6 +342,10 @@ export class MarketSessionsIndicator extends BaseIndicator {
             }
             allBoxes.sort((a, b) => a.startIdx - b.startIdx);
 
+            const lastBarIdx = len - 1;
+            const lastBarTime = ds.data[lastBarIdx * 6];
+            const intervalMs = (len >= 2) ? (ds.data[6] - ds.data[0]) : 60000;
+
             for (let k = 0; k < allBoxes.length; k++) {
                 let nextBoundary = -1;
                 for (let j = k + 1; j < allBoxes.length; j++) {
@@ -358,14 +362,57 @@ export class MarketSessionsIndicator extends BaseIndicator {
                 if (nextBoundary !== -1) {
                     allBoxes[k].endIdx = Math.max(allBoxes[k].startIdx, nextBoundary - 1);
                 } else {
-                    // For the latest box on chart, extend to current bar if live
-                    allBoxes[k].endIdx = Math.max(allBoxes[k].coreEndIdx, len - 1);
+                    // For the latest / current session on chart: extend to the time the next pre-market starts!
+                    const boxOpenTime = allBoxes[k].openTime;
+                    const nextPreMarketUtc = MarketSessionsIndicator.getNextPreMarketTimestamp(boxOpenTime, sessions, tzOffsetMs);
+
+                    if (nextPreMarketUtc > lastBarTime) {
+                        const barsAhead = (nextPreMarketUtc - lastBarTime) / intervalMs;
+                        allBoxes[k].endIdx = Math.max(allBoxes[k].coreEndIdx, lastBarIdx + barsAhead);
+                    } else {
+                        let targetIdx = lastBarIdx;
+                        for (let p = allBoxes[k].startIdx; p < len; p++) {
+                            if (ds.data[p * 6] >= nextPreMarketUtc) {
+                                targetIdx = Math.max(allBoxes[k].startIdx, p - 1);
+                                break;
+                            }
+                        }
+                        allBoxes[k].endIdx = Math.max(allBoxes[k].coreEndIdx, targetIdx);
+                    }
                 }
             }
         }
 
         this.lastCalculatedLength = len;
         this.lastCalcParamHash = paramHash;
+    }
+
+    public static getNextPreMarketTimestamp(
+        fromTime: number,
+        sessions: Array<{ enabled: boolean; hours: string }>,
+        tzOffsetMs: number
+    ): number {
+        const active = sessions.filter(s => s.enabled);
+        if (active.length === 0) return fromTime + (24 * 3600000);
+
+        let minNext = Infinity;
+        const fromLocal = fromTime + tzOffsetMs;
+        const fromDayBase = Math.floor(fromLocal / 86400000) * 86400000;
+
+        for (let d = 0; d <= 2; d++) {
+            const dayBase = fromDayBase + (d * 86400000);
+            for (const sess of active) {
+                const { startMin } = MarketSessionsIndicator.parseSessionHours(sess.hours);
+                const preOpenLocal = dayBase + (startMin * 60000) - (15 * 60000);
+                const preOpenUtc = preOpenLocal - tzOffsetMs;
+
+                if (preOpenUtc > fromTime && preOpenUtc < minNext) {
+                    minNext = preOpenUtc;
+                }
+            }
+        }
+
+        return minNext === Infinity ? fromTime + (24 * 3600000) : minNext;
     }
 
     public static parseSessionHours(hStr: string): { startMin: number; endMin: number } {

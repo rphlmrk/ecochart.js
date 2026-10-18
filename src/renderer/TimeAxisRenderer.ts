@@ -191,6 +191,14 @@ export class TimeAxisRenderer {
                         this.ctx.fillRect(xOrbEnd, 0, wRest, h);
                         this.ctx.fillStyle = baseColor;
                         this.ctx.fillRect(xOrbEnd, 0, wRest, 2);
+
+                        // Boundary tick at x2 where session ends when next pre-market starts
+                        this.ctx.strokeStyle = this.hexToRGBA(baseColor, 0.75);
+                        this.ctx.lineWidth = 1;
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(x2 + 0.5, 0);
+                        this.ctx.lineTo(x2 + 0.5, 6);
+                        this.ctx.stroke();
                     }
                 } else {
                     // Standard full session shade if open window not highlighted
@@ -199,6 +207,14 @@ export class TimeAxisRenderer {
                     this.ctx.fillRect(x1, 0, wFull, h);
                     this.ctx.fillStyle = baseColor;
                     this.ctx.fillRect(x1, 0, wFull, 2.5);
+
+                    // Boundary tick at x2 where session ends when next pre-market starts
+                    this.ctx.strokeStyle = this.hexToRGBA(baseColor, 0.75);
+                    this.ctx.lineWidth = 1;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(x2 + 0.5, 0);
+                    this.ctx.lineTo(x2 + 0.5, 6);
+                    this.ctx.stroke();
                 }
             }
         }

@@ -1810,6 +1810,23 @@ export class ChartRenderer {
             }
             rawList.sort((a, b) => a.start - b.start);
 
+            const getNextPreMarket = (fromTime: number) => {
+                let minNext = Infinity;
+                const fromLocal = fromTime + tzOffsetMs;
+                const fromDayBase = Math.floor(fromLocal / 86400000) * 86400000;
+                for (let d = 0; d <= 2; d++) {
+                    const dayBase = fromDayBase + (d * 86400000);
+                    for (const s of sessList) {
+                        const preOpenLocal = dayBase + (s.startMin * 60000) - (15 * 60000);
+                        const preOpenUtc = preOpenLocal - tzOffsetMs;
+                        if (preOpenUtc > fromTime && preOpenUtc < minNext) {
+                            minNext = preOpenUtc;
+                        }
+                    }
+                }
+                return minNext === Infinity ? fromTime + (24 * 3600000) : minNext;
+            };
+
             for (let k = 0; k < rawList.length; k++) {
                 let nextBoundary = -1;
                 for (let j = k + 1; j < rawList.length; j++) {
@@ -1832,7 +1849,26 @@ export class ChartRenderer {
                 if (nextBoundary !== -1) {
                     rawList[k].end = Math.max(rawList[k].start, nextBoundary - 1);
                 } else {
-                    rawList[k].end = Math.max(rawList[k].end, len - 1);
+                    // For current/latest session: extend to the time the next pre-market starts
+                    const lastBarIdx = len - 1;
+                    const lastBarTime = this.dataStore.data[lastBarIdx * 6];
+                    const intervalMs = (len >= 2) ? (this.dataStore.data[6] - this.dataStore.data[0]) : 60000;
+                    const kOpenTime = this.dataStore.data[rawList[k].start * 6];
+                    const nextPreTime = getNextPreMarket(kOpenTime);
+
+                    if (nextPreTime > lastBarTime) {
+                        const barsAhead = (nextPreTime - lastBarTime) / intervalMs;
+                        rawList[k].end = Math.max(rawList[k].end, lastBarIdx + barsAhead);
+                    } else {
+                        let target = lastBarIdx;
+                        for (let p = rawList[k].start; p < len; p++) {
+                            if (this.dataStore.data[p * 6] >= nextPreTime) {
+                                target = Math.max(rawList[k].start, p - 1);
+                                break;
+                            }
+                        }
+                        rawList[k].end = Math.max(rawList[k].end, target);
+                    }
                 }
             }
 
@@ -1879,6 +1915,6 @@ export class ChartRenderer {
         u.uShowOnAxis = this.sessionConfig.showOnAxis ? 1.0 : 0.0;
         u.uChartAlphaMult = this.isDarkTheme ? 0.35 : 0.45;
         u.uVisStart = visStart;
-        u.uVisEnd = visEnd;
+        u.uVisEnd = Math.max(visEnd, 100000.0);
     }
 }
