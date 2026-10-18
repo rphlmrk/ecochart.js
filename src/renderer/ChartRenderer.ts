@@ -73,16 +73,17 @@ export class ChartRenderer {
     private haPrevO = 0;
     private haPrevC = 0;
 
-    private uiGraphics!: Graphics; // Dividers & live price line
-    public indicatorMainContainer!: Container; // <-- ADDED
-    public indicatorOscContainer!: Container;  // <-- ADDED
-    public indicatorMainGraphics!: Graphics;
-    public indicatorOscGraphics!: Graphics;
-    public drawingGraphics!: Graphics;
+    public canvas?: HTMLCanvasElement;
+    private uiGraphics: Graphics = new Graphics(); // Dividers & live price line
+    public indicatorMainContainer: Container = new Container(); 
+    public indicatorOscContainer: Container = new Container();  
+    public indicatorMainGraphics: Graphics = new Graphics();
+    public indicatorOscGraphics: Graphics = new Graphics();
+    public drawingGraphics: Graphics = new Graphics();
 
     // Dedicated Crosshair Graphics & Sync State
-    private crosshairGraphics!: Graphics;
-    private syncCrosshairGraphics!: Graphics;
+    private crosshairGraphics: Graphics = new Graphics();
+    private syncCrosshairGraphics: Graphics = new Graphics();
     public syncHoverTimeMs: number | null = null;
 
     // Dedicated Sub-Panel Scale
@@ -246,6 +247,7 @@ export class ChartRenderer {
 
     public async init(canvas: HTMLCanvasElement) {
         if (this.isDestroyed) return;
+        this.canvas = canvas;
         const rect = canvas.getBoundingClientRect();
         try {
             await this.app.init({
@@ -278,25 +280,27 @@ export class ChartRenderer {
         });
 
         // Initialize Layers in order (Background -> Foreground)
-        this.gridGraphics = new Graphics();
-        this.historicalCandlesGraphics = new Graphics();
-        this.liveCandlesGraphics = new Graphics();
+        if (!this.gridGraphics) this.gridGraphics = new Graphics();
+        if (!this.historicalCandlesGraphics) this.historicalCandlesGraphics = new Graphics();
+        if (!this.liveCandlesGraphics) this.liveCandlesGraphics = new Graphics();
 
         // Setup new containers for Pixi v8 compatibility
-        this.indicatorMainContainer = new Container();
-        this.indicatorOscContainer = new Container();
-        this.indicatorMainGraphics = new Graphics();
-        this.indicatorOscGraphics = new Graphics();
+        if (!this.indicatorMainContainer) this.indicatorMainContainer = new Container();
+        if (!this.indicatorOscContainer) this.indicatorOscContainer = new Container();
+        if (!this.indicatorMainGraphics) this.indicatorMainGraphics = new Graphics();
+        if (!this.indicatorOscGraphics) this.indicatorOscGraphics = new Graphics();
 
         // Put CPU graphics inside the new containers
+        this.indicatorMainContainer.removeChildren();
+        this.indicatorOscContainer.removeChildren();
         this.indicatorMainContainer.addChild(this.indicatorMainGraphics);
         this.indicatorOscContainer.addChild(this.indicatorOscGraphics);
 
-        this.drawingGraphics = new Graphics();
-        this.uiGraphics = new Graphics();
-        this.crosshairGraphics = new Graphics();
-        this.syncCrosshairGraphics = new Graphics();
-        this.oscHeaderContainer = new Container();
+        if (!this.drawingGraphics) this.drawingGraphics = new Graphics();
+        if (!this.uiGraphics) this.uiGraphics = new Graphics();
+        if (!this.crosshairGraphics) this.crosshairGraphics = new Graphics();
+        if (!this.syncCrosshairGraphics) this.syncCrosshairGraphics = new Graphics();
+        if (!this.oscHeaderContainer) this.oscHeaderContainer = new Container();
 
         this.initSessionMesh();
         this.initGridMesh();
@@ -320,7 +324,7 @@ export class ChartRenderer {
     }
 
     public renderFrame() {
-        if (!this.historicalCandlesGraphics || this.dataStore.length === 0) return;
+        if (!this.historicalCandlesGraphics || this.dataStore.length === 0 || !this.app?.screen) return;
 
         // --- ECO-MODE: Thermal Throttling (Prevents device heating) ---
         const len = this.dataStore.length;
@@ -571,7 +575,7 @@ export class ChartRenderer {
 
 
     public renderCrosshair() {
-        if (!this.crosshairGraphics || !this.syncCrosshairGraphics) return;
+        if (!this.crosshairGraphics || !this.syncCrosshairGraphics || !this.app?.screen) return;
 
         const width = this.app.screen.width;
         const height = this.app.screen.height;
@@ -658,7 +662,8 @@ export class ChartRenderer {
         const lastIdx = this.dataStore.length - 1;
         if (lastIdx < 0) return 0;
 
-        const chartWidth = this.app.screen.width - this.priceAxisWidth;
+        const screenWidth = this.app?.screen?.width ?? (this.canvas?.clientWidth || 800);
+        const chartWidth = screenWidth - this.priceAxisWidth;
         const actualSpacing = this.candleSpacing * this.zoom;
         const logicalIndex = Math.round((this.crosshairX + this.cameraX) / actualSpacing);
 
@@ -677,7 +682,7 @@ export class ChartRenderer {
      * Draws the Title and Telemetry value for each active bottom panel.
      */
     public updateOscillatorHeaders() {
-        if (!this.oscHeaderContainer || !this.indicatorManager) return;
+        if (!this.oscHeaderContainer || !this.indicatorManager || !this.app?.screen) return;
 
         const targetIdx = this.getHoverIndex();
         const activeOscs = this.indicatorManager.activeIndicators.filter((i: any) => i.isOscillator && i.visible);

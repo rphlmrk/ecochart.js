@@ -1400,8 +1400,8 @@ export class EcoChart {
                         }
                     } else if (this.isDraggingPriceAxis) {
                         this.renderer.isAutoScale = false;
-                        if (this.autoBtn) this.autoBtn.style.color = 'var(--chart-text, #787B86)';
-                        const chartHeight = this.renderer.app.screen.height - this.renderer.timeAxisHeight;
+                        const screenH = this.renderer.app?.screen?.height || this.canvas.clientHeight || 600;
+                        const chartHeight = screenH - this.renderer.timeAxisHeight;
                         const priceRange = this.renderer.currentMaxPrice - this.renderer.currentMinPrice;
                         const stretchFactor = deltaY * (priceRange / chartHeight) * 2;
                         this.renderer.currentMaxPrice += stretchFactor;
@@ -2098,7 +2098,7 @@ export class WorkspaceManager {
             let activeSessions = indMgr.activeIndicators.find(i => i instanceof MarketSessionsIndicator) as MarketSessionsIndicator | undefined;
             if (!sc.enabled || !sc.showRanges) {
                 if (activeSessions) indMgr.removeIndicator(activeSessions.id);
-                c.renderer.indicatorMainGraphics.clear();
+                c.renderer.indicatorMainGraphics?.clear();
             } else {
                 if (!activeSessions) {
                     activeSessions = new MarketSessionsIndicator();
