@@ -149,8 +149,10 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
             let microBot: number | null = null;
             let microTopBar: number | null = null;
             let microBotBar: number | null = null;
+            let lastMicroTop: number | null = null; // Track last box top for invalidation
+            let lastMicroBot: number | null = null; // Track last box bot for invalidation
             let microBreakBar = 0;
-            let microDir = 0; // Direction Tracker: 1 = UP, -1 = DOWN, 0 = INITIAL
+            let microDir = 0; 
             let microBox: PullbackZoneBox | null = null;
 
             for (let i = 0; i < len; i++) {
@@ -172,6 +174,8 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         microBox.breakoutDir = 'up';
                         microBreakBar = i;
                         microDir = 1; 
+                        lastMicroTop = microTop; // Save structure bounds
+                        lastMicroBot = microBot;
                         microTop = null;
                         microBot = null;
                         microTopBar = null;
@@ -183,6 +187,8 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         microBox.breakoutDir = 'down';
                         microBreakBar = i;
                         microDir = -1; 
+                        lastMicroTop = microTop; // Save structure bounds
+                        lastMicroBot = microBot;
                         microTop = null;
                         microBot = null;
                         microTopBar = null;
@@ -200,6 +206,28 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                     const hasPl = actualPlBar >= 0 && MarketStructurePullbackZonesIndicator.isPivotLow(data, actualPlBar, microPrd);
                     const pl = hasPl ? data[actualPlBar * 6 + 3] : 0;
 
+                    // --- TREND INVALIDATION CHECK ---
+                    // If an impulse move crashes below the previous structure before a pullback forms, flip the trend.
+                    if (microDir === 1 && lastMicroBot !== null) {
+                        if (useWicks ? l < lastMicroBot : c < lastMicroBot) {
+                            microDir = -1; // Trend failed, flip to down trend
+                            microBreakBar = i;
+                            microTop = null;
+                            microBot = null;
+                            microTopBar = null;
+                            microBotBar = null;
+                        }
+                    } else if (microDir === -1 && lastMicroTop !== null) {
+                        if (useWicks ? h > lastMicroTop : c > lastMicroTop) {
+                            microDir = 1;  // Trend failed, flip to up trend
+                            microBreakBar = i;
+                            microTop = null;
+                            microBot = null;
+                            microTopBar = null;
+                            microBotBar = null;
+                        }
+                    }
+
                     if (microDir === 1) {
                         if (hasPh && actualPhBar > microBreakBar) {
                             if (microTop === null || ph > microTop) {
@@ -207,7 +235,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                                 microTopBar = actualPhBar;
                             }
                         }
-
                         if (microTop !== null) {
                             if (hasPl && actualPlBar > microTopBar!) {
                                 if (microBot === null || pl < microBot) {
@@ -223,7 +250,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                                 microBotBar = actualPlBar;
                             }
                         }
-
                         if (microBot !== null) {
                             if (hasPh && actualPhBar > microBotBar!) {
                                 if (microTop === null || ph > microTop) {
@@ -239,7 +265,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                                 microTopBar = actualPhBar;
                             }
                         }
-
                         if (hasPl && actualPlBar > microBreakBar) {
                             if (microBot === null || pl < microBot) {
                                 microBot = pl;
@@ -275,6 +300,8 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
             let macroBot: number | null = null;
             let macroTopBar: number | null = null;
             let macroBotBar: number | null = null;
+            let lastMacroTop: number | null = null; // Track last box top for invalidation
+            let lastMacroBot: number | null = null; // Track last box bot for invalidation
             let macroBreakBar = 0;
             let macroDir = 0; 
             let macroBox: PullbackZoneBox | null = null;
@@ -298,6 +325,8 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         macroBox.breakoutDir = 'up';
                         macroBreakBar = i;
                         macroDir = 1; 
+                        lastMacroTop = macroTop;
+                        lastMacroBot = macroBot;
                         macroTop = null;
                         macroBot = null;
                         macroTopBar = null;
@@ -309,6 +338,8 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         macroBox.breakoutDir = 'down';
                         macroBreakBar = i;
                         macroDir = -1; 
+                        lastMacroTop = macroTop;
+                        lastMacroBot = macroBot;
                         macroTop = null;
                         macroBot = null;
                         macroTopBar = null;
@@ -326,6 +357,27 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                     const hasMacroPl = actualMacroPlBar >= 0 && MarketStructurePullbackZonesIndicator.isPivotLow(data, actualMacroPlBar, macroPrd);
                     const macroPl = hasMacroPl ? data[actualMacroPlBar * 6 + 3] : 0;
 
+                    // --- TREND INVALIDATION CHECK ---
+                    if (macroDir === 1 && lastMacroBot !== null) {
+                        if (useWicks ? l < lastMacroBot : c < lastMacroBot) {
+                            macroDir = -1; // Trend failed, flip down
+                            macroBreakBar = i;
+                            macroTop = null;
+                            macroBot = null;
+                            macroTopBar = null;
+                            macroBotBar = null;
+                        }
+                    } else if (macroDir === -1 && lastMacroTop !== null) {
+                        if (useWicks ? h > lastMacroTop : c > lastMacroTop) {
+                            macroDir = 1;  // Trend failed, flip up
+                            macroBreakBar = i;
+                            macroTop = null;
+                            macroBot = null;
+                            macroTopBar = null;
+                            macroBotBar = null;
+                        }
+                    }
+
                     if (macroDir === 1) {
                         if (hasMacroPh && actualMacroPhBar > macroBreakBar) {
                             if (macroTop === null || macroPh > macroTop) {
@@ -333,7 +385,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                                 macroTopBar = actualMacroPhBar;
                             }
                         }
-
                         if (macroTop !== null) {
                             if (hasMacroPl && actualMacroPlBar > macroTopBar!) {
                                 if (macroBot === null || macroPl < macroBot) {
@@ -349,7 +400,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                                 macroBotBar = actualMacroPlBar;
                             }
                         }
-
                         if (macroBot !== null) {
                             if (hasMacroPh && actualMacroPhBar > macroBotBar!) {
                                 if (macroTop === null || macroPh > macroTop) {
@@ -365,7 +415,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                                 macroTopBar = actualMacroPhBar;
                             }
                         }
-
                         if (hasMacroPl && actualMacroPlBar > macroBreakBar) {
                             if (macroBot === null || macroPl < macroBot) {
                                 macroBot = macroPl;
