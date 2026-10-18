@@ -35,13 +35,13 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
             { id: 'showMicro', name: 'Show Micro Structure', type: 'boolean', value: true },
             { id: 'microPrd', name: 'Micro Swing Period', type: 'number', value: 2, min: 1, max: 50, step: 1 },
             { id: 'microBorder', name: 'Micro Border Color', type: 'color', value: '#2962FF' },
-            { id: 'microBg', name: 'Micro Background Color', type: 'color', value: '#2962FF26' }, // ~85% transparent (15% alpha)
+            { id: 'microBg', name: 'Micro Background Color', type: 'color', value: '#2962FF26' }, 
 
             // Macro Structure Group (Red Boxes)
             { id: 'showMacro', name: 'Show Macro Structure', type: 'boolean', value: true },
             { id: 'macroPrd', name: 'Macro Swing Period', type: 'number', value: 8, min: 3, max: 100, step: 1 },
             { id: 'macroBorder', name: 'Macro Border Color', type: 'color', value: '#EF5350' },
-            { id: 'macroBg', name: 'Macro Background Color', type: 'color', value: '#EF53501A' }, // ~90% transparent (10% alpha)
+            { id: 'macroBg', name: 'Macro Background Color', type: 'color', value: '#EF53501A' }, 
 
             // General Settings
             { id: 'useWicks', name: 'Breakout strictly on wicks?', type: 'boolean', value: false },
@@ -77,33 +77,33 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
     }
 
     /**
-     * Exact TradingView ta.pivothigh() on typed Float64Array
-     * Candle high must be strictly greater than leftbars preceding and rightbars succeeding
+     * Exact TradingView ta.pivothigh() behavior
+     * Left bars can be equal (allows flat tops), but Right bars must be strictly lower.
      */
     private static isPivotHigh(data: Float64Array, p: number, prd: number): boolean {
         if (p < prd) return false;
         const candidateH = data[p * 6 + 2];
         for (let k = 1; k <= prd; k++) {
-            if (data[(p - k) * 6 + 2] >= candidateH) return false;
+            if (data[(p - k) * 6 + 2] > candidateH) return false; // Left bars: > instead of >=
         }
         for (let k = 1; k <= prd; k++) {
-            if (data[(p + k) * 6 + 2] >= candidateH) return false;
+            if (data[(p + k) * 6 + 2] >= candidateH) return false; // Right bars: >= (Strictly lower)
         }
         return true;
     }
 
     /**
-     * Exact TradingView ta.pivotlow() on typed Float64Array
-     * Candle low must be strictly lower than leftbars preceding and rightbars succeeding
+     * Exact TradingView ta.pivotlow() behavior
+     * Left bars can be equal (allows flat bottoms), but Right bars must be strictly higher.
      */
     private static isPivotLow(data: Float64Array, p: number, prd: number): boolean {
         if (p < prd) return false;
         const candidateL = data[p * 6 + 3];
         for (let k = 1; k <= prd; k++) {
-            if (data[(p - k) * 6 + 3] <= candidateL) return false;
+            if (data[(p - k) * 6 + 3] < candidateL) return false; // Left bars: < instead of <=
         }
         for (let k = 1; k <= prd; k++) {
-            if (data[(p + k) * 6 + 3] <= candidateL) return false;
+            if (data[(p + k) * 6 + 3] <= candidateL) return false; // Right bars: <= (Strictly higher)
         }
         return true;
     }
@@ -161,10 +161,8 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
 
                 // --- MICRO LOGIC (BLUE BOXES) ---
                 if (inMicro && microBox !== null && microTop !== null && microBot !== null) {
-                    // We are inside a tracked pullback, extend the box
                     microBox.rightBar = i;
 
-                    // Check if price broke out of the pullback H/L
                     const microBreakUp = useWicks ? h > microTop : c > microTop;
                     const microBreakDn = useWicks ? l < microBot : c < microBot;
 
@@ -173,7 +171,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         microBox.isOpen = false;
                         microBox.breakoutDir = 'up';
                         microBreakBar = i;
-                        microDir = 1; // Set direction to UP
+                        microDir = 1; 
                         microTop = null;
                         microBot = null;
                         microTopBar = null;
@@ -184,7 +182,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         microBox.isOpen = false;
                         microBox.breakoutDir = 'down';
                         microBreakBar = i;
-                        microDir = -1; // Set direction to DOWN
+                        microDir = -1; 
                         microTop = null;
                         microBot = null;
                         microTopBar = null;
@@ -203,7 +201,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                     const pl = hasPl ? data[actualPlBar * 6 + 3] : 0;
 
                     if (microDir === 1) {
-                        // Breakout was UP: Wait for New Swing High first
                         if (hasPh && actualPhBar > microBreakBar) {
                             if (microTop === null || ph > microTop) {
                                 microTop = ph;
@@ -211,7 +208,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                             }
                         }
 
-                        // Once New High is established, wait for Pullback Low
                         if (microTop !== null) {
                             if (hasPl && actualPlBar > microTopBar!) {
                                 if (microBot === null || pl < microBot) {
@@ -221,7 +217,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                             }
                         }
                     } else if (microDir === -1) {
-                        // Breakout was DOWN: Wait for New Swing Low first
                         if (hasPl && actualPlBar > microBreakBar) {
                             if (microBot === null || pl < microBot) {
                                 microBot = pl;
@@ -229,7 +224,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                             }
                         }
 
-                        // Once New Low is established, wait for Pullback High
                         if (microBot !== null) {
                             if (hasPh && actualPhBar > microBotBar!) {
                                 if (microTop === null || ph > microTop) {
@@ -239,7 +233,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                             }
                         }
                     } else {
-                        // Initial State (No breaks yet): Find first High and Low normally
                         if (hasPh && actualPhBar > microBreakBar) {
                             if (microTop === null || ph > microTop) {
                                 microTop = ph;
@@ -255,7 +248,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         }
                     }
 
-                    // Once we have BOTH a Swing High and Swing Low confirmed in valid sequence, draw box
                     if (microTop !== null && microBot !== null && microTopBar !== null && microBotBar !== null) {
                         inMicro = true;
                         const leftEdge = Math.min(microTopBar, microBotBar);
@@ -284,7 +276,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
             let macroTopBar: number | null = null;
             let macroBotBar: number | null = null;
             let macroBreakBar = 0;
-            let macroDir = 0; // Direction Tracker: 1 = UP, -1 = DOWN, 0 = INITIAL
+            let macroDir = 0; 
             let macroBox: PullbackZoneBox | null = null;
 
             for (let i = 0; i < len; i++) {
@@ -295,10 +287,8 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
 
                 // --- MACRO LOGIC (RED BOXES) ---
                 if (inMacro && macroBox !== null && macroTop !== null && macroBot !== null) {
-                    // We are inside a tracked macro pullback, extend the box
                     macroBox.rightBar = i;
 
-                    // Check if price broke out of the macro H/L
                     const macroBreakUp = useWicks ? h > macroTop : c > macroTop;
                     const macroBreakDn = useWicks ? l < macroBot : c < macroBot;
 
@@ -307,7 +297,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         macroBox.isOpen = false;
                         macroBox.breakoutDir = 'up';
                         macroBreakBar = i;
-                        macroDir = 1; // Set direction to UP
+                        macroDir = 1; 
                         macroTop = null;
                         macroBot = null;
                         macroTopBar = null;
@@ -318,7 +308,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         macroBox.isOpen = false;
                         macroBox.breakoutDir = 'down';
                         macroBreakBar = i;
-                        macroDir = -1; // Set direction to DOWN
+                        macroDir = -1; 
                         macroTop = null;
                         macroBot = null;
                         macroTopBar = null;
@@ -337,7 +327,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                     const macroPl = hasMacroPl ? data[actualMacroPlBar * 6 + 3] : 0;
 
                     if (macroDir === 1) {
-                        // Breakout was UP: Wait for New Macro High first
                         if (hasMacroPh && actualMacroPhBar > macroBreakBar) {
                             if (macroTop === null || macroPh > macroTop) {
                                 macroTop = macroPh;
@@ -345,7 +334,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                             }
                         }
 
-                        // Once New High is established, wait for Macro Pullback Low
                         if (macroTop !== null) {
                             if (hasMacroPl && actualMacroPlBar > macroTopBar!) {
                                 if (macroBot === null || macroPl < macroBot) {
@@ -355,7 +343,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                             }
                         }
                     } else if (macroDir === -1) {
-                        // Breakout was DOWN: Wait for New Macro Low first
                         if (hasMacroPl && actualMacroPlBar > macroBreakBar) {
                             if (macroBot === null || macroPl < macroBot) {
                                 macroBot = macroPl;
@@ -363,7 +350,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                             }
                         }
 
-                        // Once New Low is established, wait for Macro Pullback High
                         if (macroBot !== null) {
                             if (hasMacroPh && actualMacroPhBar > macroBotBar!) {
                                 if (macroTop === null || macroPh > macroTop) {
@@ -373,7 +359,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                             }
                         }
                     } else {
-                        // Initial State
                         if (hasMacroPh && actualMacroPhBar > macroBreakBar) {
                             if (macroTop === null || macroPh > macroTop) {
                                 macroTop = macroPh;
@@ -389,7 +374,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         }
                     }
 
-                    // Once we have BOTH a macro Swing High and Swing Low confirmed, draw the tracking box
                     if (macroTop !== null && macroBot !== null && macroTopBar !== null && macroBotBar !== null) {
                         inMacro = true;
                         const leftEdge = Math.min(macroTopBar, macroBotBar);
@@ -417,7 +401,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
 
     /**
      * Hardware-accelerated GPU Rendering
-     * Batches all visible fills and strokes into single draw calls (Zero GC, 60-120 FPS)
      */
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics): void {
         if (!this.visible || r.dataStore.length === 0) {
@@ -425,7 +408,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
             return;
         }
 
-        // Lazy compute pullback zones if not yet cached
         if ((this.cachedMicroBoxes.length === 0 && this.cachedMacroBoxes.length === 0) ||
             this.lastCalculatedLength !== r.dataStore.length) {
             this.buildCachedBoxes(r.dataStore);
@@ -459,7 +441,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
             box: PullbackZoneBox;
         }
 
-        // Filter visible Micro boxes
         const visibleMicro: VisibleZoneGeometry[] = [];
         if (showMicro && this.cachedMicroBoxes.length > 0) {
             for (let i = 0; i < this.cachedMicroBoxes.length; i++) {
@@ -481,7 +462,6 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
             }
         }
 
-        // Filter visible Macro boxes
         const visibleMacro: VisibleZoneGeometry[] = [];
         if (showMacro && this.cachedMacroBoxes.length > 0) {
             for (let i = 0; i < this.cachedMacroBoxes.length; i++) {
@@ -507,37 +487,24 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
         // 🚀 GPU BATCH 1: Micro Fills & Borders (Single draw call each)
         // =========================================================================
         if (visibleMicro.length > 0) {
-            // 1a. Fill all Micro boxes in 1 GPU draw call
             for (let i = 0; i < visibleMicro.length; i++) {
                 const vb = visibleMicro[i];
                 g.rect(vb.x1, vb.yTop, vb.w, vb.h);
             }
             g.fill({ color: microBg.color, alpha: microBg.alpha });
 
-            // 1b. Stroke all Micro borders in 1 GPU stroke call
             for (let i = 0; i < visibleMicro.length; i++) {
                 const vb = visibleMicro[i];
                 g.rect(vb.x1, vb.yTop, vb.w, vb.h);
             }
-            g.stroke({
-                color: microBorder.color,
-                width: borderWidth,
-                alpha: microBorder.alpha,
-                cap: 'butt'
-            });
+            g.stroke({ color: microBorder.color, width: borderWidth, alpha: microBorder.alpha, cap: 'butt' });
 
-            // 1c. Optional 50% Midline (Equilibrium)
             if (showMidline) {
                 for (let i = 0; i < visibleMicro.length; i++) {
                     const vb = visibleMicro[i];
                     StrokeEngine.addDashedLinePath(g, vb.x1, vb.yMid, vb.x2, vb.yMid, 'dashed', 4, 3);
                 }
-                g.stroke({
-                    color: microBorder.color,
-                    width: 1,
-                    alpha: microBorder.alpha * 0.6,
-                    cap: 'butt'
-                });
+                g.stroke({ color: microBorder.color, width: 1, alpha: microBorder.alpha * 0.6, cap: 'butt' });
             }
         }
 
@@ -545,42 +512,29 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
         // 🚀 GPU BATCH 2: Macro Fills & Borders (Single draw call each)
         // =========================================================================
         if (visibleMacro.length > 0) {
-            // 2a. Fill all Macro boxes in 1 GPU draw call
             for (let i = 0; i < visibleMacro.length; i++) {
                 const vb = visibleMacro[i];
                 g.rect(vb.x1, vb.yTop, vb.w, vb.h);
             }
             g.fill({ color: macroBg.color, alpha: macroBg.alpha });
 
-            // 2b. Stroke all Macro borders in 1 GPU stroke call
             for (let i = 0; i < visibleMacro.length; i++) {
                 const vb = visibleMacro[i];
                 g.rect(vb.x1, vb.yTop, vb.w, vb.h);
             }
-            g.stroke({
-                color: macroBorder.color,
-                width: borderWidth,
-                alpha: macroBorder.alpha,
-                cap: 'butt'
-            });
+            g.stroke({ color: macroBorder.color, width: borderWidth, alpha: macroBorder.alpha, cap: 'butt' });
 
-            // 2c. Optional 50% Midline (Equilibrium)
             if (showMidline) {
                 for (let i = 0; i < visibleMacro.length; i++) {
                     const vb = visibleMacro[i];
                     StrokeEngine.addDashedLinePath(g, vb.x1, vb.yMid, vb.x2, vb.yMid, 'dashed', 4, 3);
                 }
-                g.stroke({
-                    color: macroBorder.color,
-                    width: 1,
-                    alpha: macroBorder.alpha * 0.6,
-                    cap: 'butt'
-                });
+                g.stroke({ color: macroBorder.color, width: 1, alpha: macroBorder.alpha * 0.6, cap: 'butt' });
             }
         }
 
         // =========================================================================
-        // 3. Optional Status Labels (Recycled BitmapText with zero GC allocations)
+        // 3. Optional Status Labels
         // =========================================================================
         if (showLabels && (visibleMicro.length > 0 || visibleMacro.length > 0)) {
             if (!this.isContainerMounted) {
