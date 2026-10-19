@@ -1765,6 +1765,7 @@ export class EcoChart {
             this.container.appendChild(hud);
         }
         hud.style.display = WorkspaceManager.showPaintFpsHud ? 'block' : 'none';
+        let lastSecTick = 0;
 
         const loop = (now: number) => {
             if (!this.isRunning) return;
@@ -1773,6 +1774,13 @@ export class EcoChart {
 
             if (elapsed >= frameInterval) {
                 lastFrameTime = now - (elapsed % frameInterval);
+
+                // Live 1-second tick to update session box countdown & world clocks
+                if (now - lastSecTick >= 1000) {
+                    lastSecTick = now;
+                    this.renderer.isHistoricalDirty = true;
+                    this.isDirty = true;
+                }
 
                 if (this.isDirty) {
                     // Update stacked oscillator height and dock AUTO button
@@ -1887,6 +1895,7 @@ export class WorkspaceManager {
         showOnAxis: true,
         showOnChart: false,
         showRanges: true,
+        axisOpacity: 40,
         // Timezone
         timezoneOffset: 0,
         exchangeTimezone: true,
@@ -1894,6 +1903,7 @@ export class WorkspaceManager {
         rangeTransparency: 80,
         rangeOutline: true,
         rangeLabel: true,
+        showEndTime: true,
         showMean: false,
         // Opening & Session Transition
         highlightOpen: true,
@@ -1948,11 +1958,13 @@ export class WorkspaceManager {
         if (sc.showOnAxis === undefined) sc.showOnAxis = true;
         if (sc.showOnChart === undefined) sc.showOnChart = false;
         if (sc.showRanges === undefined) sc.showRanges = true;
+        if (sc.axisOpacity === undefined) sc.axisOpacity = 40;
         if (sc.timezoneOffset === undefined) sc.timezoneOffset = 0;
         if (sc.exchangeTimezone === undefined) sc.exchangeTimezone = true;
         if (sc.rangeTransparency === undefined) sc.rangeTransparency = 80;
         if (sc.rangeOutline === undefined) sc.rangeOutline = true;
         if (sc.rangeLabel === undefined) sc.rangeLabel = true;
+        if (sc.showEndTime === undefined) sc.showEndTime = true;
         if (sc.showMean === undefined) sc.showMean = false;
         if (sc.highlightOpen === undefined) sc.highlightOpen = true;
         if (sc.openWindowDuration === undefined) sc.openWindowDuration = 15;
@@ -2074,11 +2086,17 @@ export class WorkspaceManager {
         const sessC = sc.sessionC;
         const sessD = sc.sessionD;
 
+        // Separate subtle background colors for GPU mesh shading so changing the box range color ONLY changes the box!
+        const bgA = (sessA as any).bgColor || sc.nyColor || '#EF535040';
+        const bgB = (sessB as any).bgColor || sc.londonColor || '#2962FF40';
+        const bgC = (sessC as any).bgColor || sc.asiaColor || '#FBC02D40';
+        const bgD = (sessD as any).bgColor || '#AB47BC40';
+
         const sessionsForRenderer = [
-            { enabled: sessA.enabled, hours: sessA.hours, ...parseSess(sessA.color) },
-            { enabled: sessB.enabled, hours: sessB.hours, ...parseSess(sessB.color) },
-            { enabled: sessC.enabled, hours: sessC.hours, ...parseSess(sessC.color) },
-            { enabled: sessD.enabled, hours: sessD.hours, ...parseSess(sessD.color) }
+            { enabled: sessA.enabled, hours: sessA.hours, ...parseSess(bgA) },
+            { enabled: sessB.enabled, hours: sessB.hours, ...parseSess(bgB) },
+            { enabled: sessC.enabled, hours: sessC.hours, ...parseSess(bgC) },
+            { enabled: sessD.enabled, hours: sessD.hours, ...parseSess(bgD) }
         ];
 
         this.charts.forEach(c => {
@@ -2087,6 +2105,7 @@ export class WorkspaceManager {
                 enabled: sc.enabled,
                 showOnAxis: sc.showOnAxis,
                 showOnChart: sc.showOnChart,
+                axisOpacity: sc.axisOpacity ?? 40,
                 timezoneOffset: sc.exchangeTimezone ? 0 : (sc.timezoneOffset || 0),
                 sessions: sessionsForRenderer,
                 endOnNextOpen: sc.endOnNextOpen ?? true
@@ -2110,7 +2129,9 @@ export class WorkspaceManager {
                 activeSessions.setParam('rangeTransparency', sc.rangeTransparency ?? 80);
                 activeSessions.setParam('rangeOutline', sc.rangeOutline ?? true);
                 activeSessions.setParam('rangeLabel', sc.rangeLabel ?? true);
+                activeSessions.setParam('showEndTime', sc.showEndTime ?? true);
                 activeSessions.setParam('showMean', sc.showMean ?? false);
+                activeSessions.setParam('axisOpacity', sc.axisOpacity ?? 40);
 
                 activeSessions.setParam('highlightOpen', sc.highlightOpen ?? true);
                 activeSessions.setParam('openWindowDuration', sc.openWindowDuration ?? 15);
@@ -3126,7 +3147,11 @@ export class WorkspaceManager {
             syncCheck('check-sessions-enabled', sc.enabled);
             syncCheck('check-sessions-ranges', sc.showRanges ?? true);
             syncCheck('check-sessions-axis', sc.showOnAxis);
-            syncCheck('check-sessions-chart', sc.showOnChart);
+
+            const rangeAxisOp = document.getElementById('input-sess-axis-opacity') as HTMLInputElement | null;
+            const labelAxisOp = document.getElementById('label-sess-axis-opacity');
+            if (rangeAxisOp) rangeAxisOp.value = String(sc.axisOpacity ?? 40);
+            if (labelAxisOp) labelAxisOp.textContent = `${sc.axisOpacity ?? 40}%`;
 
             // Sessions A, B, C, D
             syncCheck('check-sess-a-enabled', sc.sessionA.enabled);
@@ -3161,6 +3186,7 @@ export class WorkspaceManager {
             syncVal('input-sess-range-transparency', sc.rangeTransparency ?? 80);
             syncCheck('check-sess-range-outline', sc.rangeOutline ?? true);
             syncCheck('check-sess-range-label', sc.rangeLabel ?? true);
+            syncCheck('check-sess-end-time', sc.showEndTime ?? true);
             syncCheck('check-sess-range-mean', sc.showMean ?? false);
 
             // Opening & Breakout (ORB) Settings
@@ -3329,39 +3355,49 @@ export class WorkspaceManager {
         bindSessBool('check-sessions-enabled', (v) => WorkspaceManager.sessionConfig.enabled = v);
         bindSessBool('check-sessions-ranges', (v) => WorkspaceManager.sessionConfig.showRanges = v);
         bindSessBool('check-sessions-axis', (v) => WorkspaceManager.sessionConfig.showOnAxis = v);
-        bindSessBool('check-sessions-chart', (v) => WorkspaceManager.sessionConfig.showOnChart = v);
 
-        // Session A
+        // Axis Highlight Opacity slider
+        const rangeAxisOp = document.getElementById('input-sess-axis-opacity') as HTMLInputElement | null;
+        const labelAxisOp = document.getElementById('label-sess-axis-opacity');
+        if (rangeAxisOp) {
+            rangeAxisOp.addEventListener('input', (e) => {
+                const val = parseInt((e.target as HTMLInputElement).value, 10) || 0;
+                WorkspaceManager.ensureSessionConfig();
+                WorkspaceManager.sessionConfig.axisOpacity = val;
+                if (labelAxisOp) labelAxisOp.textContent = `${val}%`;
+                WorkspaceManager.syncSessions();
+                WorkspaceManager.saveWorkspace();
+            });
+        }
+
+        // Session A: Swatch changes ONLY the box range color!
         bindSessBool('check-sess-a-enabled', (v) => WorkspaceManager.sessionConfig.sessionA.enabled = v);
         bindSessBool('check-sess-a-range', (v) => WorkspaceManager.sessionConfig.sessionA.range = v);
         bindSessText('input-sess-a-name', (v) => WorkspaceManager.sessionConfig.sessionA.name = v);
         bindSessText('input-sess-a-hours', (v) => WorkspaceManager.sessionConfig.sessionA.hours = v);
         bindSessSwatch('input-sess-a-color', () => WorkspaceManager.sessionConfig.sessionA.color, (c) => {
             WorkspaceManager.sessionConfig.sessionA.color = c;
-            WorkspaceManager.sessionConfig.nyColor = c;
         });
 
-        // Session B
+        // Session B: Swatch changes ONLY the box range color!
         bindSessBool('check-sess-b-enabled', (v) => WorkspaceManager.sessionConfig.sessionB.enabled = v);
         bindSessBool('check-sess-b-range', (v) => WorkspaceManager.sessionConfig.sessionB.range = v);
         bindSessText('input-sess-b-name', (v) => WorkspaceManager.sessionConfig.sessionB.name = v);
         bindSessText('input-sess-b-hours', (v) => WorkspaceManager.sessionConfig.sessionB.hours = v);
         bindSessSwatch('input-sess-b-color', () => WorkspaceManager.sessionConfig.sessionB.color, (c) => {
             WorkspaceManager.sessionConfig.sessionB.color = c;
-            WorkspaceManager.sessionConfig.londonColor = c;
         });
 
-        // Session C
+        // Session C: Swatch changes ONLY the box range color!
         bindSessBool('check-sess-c-enabled', (v) => WorkspaceManager.sessionConfig.sessionC.enabled = v);
         bindSessBool('check-sess-c-range', (v) => WorkspaceManager.sessionConfig.sessionC.range = v);
         bindSessText('input-sess-c-name', (v) => WorkspaceManager.sessionConfig.sessionC.name = v);
         bindSessText('input-sess-c-hours', (v) => WorkspaceManager.sessionConfig.sessionC.hours = v);
         bindSessSwatch('input-sess-c-color', () => WorkspaceManager.sessionConfig.sessionC.color, (c) => {
             WorkspaceManager.sessionConfig.sessionC.color = c;
-            WorkspaceManager.sessionConfig.asiaColor = c;
         });
 
-        // Session D
+        // Session D: Swatch changes ONLY the box range color!
         bindSessBool('check-sess-d-enabled', (v) => WorkspaceManager.sessionConfig.sessionD.enabled = v);
         bindSessBool('check-sess-d-range', (v) => WorkspaceManager.sessionConfig.sessionD.range = v);
         bindSessText('input-sess-d-name', (v) => WorkspaceManager.sessionConfig.sessionD.name = v);
@@ -3395,6 +3431,7 @@ export class WorkspaceManager {
         bindSessNum('input-sess-range-transparency', (v) => WorkspaceManager.sessionConfig.rangeTransparency = v);
         bindSessBool('check-sess-range-outline', (v) => WorkspaceManager.sessionConfig.rangeOutline = v);
         bindSessBool('check-sess-range-label', (v) => WorkspaceManager.sessionConfig.rangeLabel = v);
+        bindSessBool('check-sess-end-time', (v) => WorkspaceManager.sessionConfig.showEndTime = v);
         bindSessBool('check-sess-range-mean', (v) => WorkspaceManager.sessionConfig.showMean = v);
 
         // Opening & Breakout (ORB) Controls

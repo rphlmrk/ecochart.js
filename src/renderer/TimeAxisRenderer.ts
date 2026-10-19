@@ -110,6 +110,12 @@ export class TimeAxisRenderer {
             return;
         }
 
+        const rawAxisOpacity = this.renderer.sessionConfig?.axisOpacity ?? 40;
+        const axisOpacity = Math.max(0, Math.min(100, rawAxisOpacity)) / 100;
+        if (axisOpacity <= 0) {
+            return;
+        }
+
         const htf = ['2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'];
         if (htf.includes(this.renderer.currentInterval)) {
             return;
@@ -149,8 +155,8 @@ export class TimeAxisRenderer {
                 // 1. Pre-Open Shade on Time Axis (Amber Caution: 10-15m prior to open)
                 if (hasPreOpen && x1 > xPre1) {
                     const wPre = Math.max(1, x1 - xPre1);
-                    // Background shade
-                    this.ctx.fillStyle = 'rgba(255, 167, 38, 0.22)';
+                    // Background shade scaled by axisOpacity
+                    this.ctx.fillStyle = `rgba(255, 167, 38, ${axisOpacity * 0.55})`;
                     this.ctx.fillRect(xPre1, 0, wPre, h);
                     // Top 3.5px accent bar
                     this.ctx.fillStyle = '#FFA726';
@@ -169,8 +175,8 @@ export class TimeAxisRenderer {
                     const xOrbEnd = Math.round(((box.orbEndIdx + 1) * actualSpacing) - this.renderer.cameraX);
                     const wOpen = Math.max(1, xOrbEnd - x1);
 
-                    // Background shade: vibrant session open
-                    this.ctx.fillStyle = this.hexToRGBA(baseColor, 0.32);
+                    // Background shade: vibrant session open scaled by axisOpacity
+                    this.ctx.fillStyle = this.hexToRGBA(baseColor, axisOpacity * 0.75);
                     this.ctx.fillRect(x1, 0, wOpen, h);
                     // Top 3.5px accent bar
                     this.ctx.fillStyle = baseColor;
@@ -187,37 +193,185 @@ export class TimeAxisRenderer {
                     // 3. Rest of Session Shade on Time Axis (Extends until next pre-market starts)
                     if (x2 > xOrbEnd) {
                         const wRest = Math.max(1, x2 - xOrbEnd);
-                        this.ctx.fillStyle = this.hexToRGBA(baseColor, 0.18);
+                        this.ctx.fillStyle = this.hexToRGBA(baseColor, axisOpacity * 0.45);
                         this.ctx.fillRect(xOrbEnd, 0, wRest, h);
                         this.ctx.fillStyle = baseColor;
                         this.ctx.fillRect(xOrbEnd, 0, wRest, 2.5);
-
-                        // Crisp boundary tick at x2 where session ends when next pre-market starts
-                        this.ctx.strokeStyle = this.hexToRGBA(baseColor, 0.9);
-                        this.ctx.lineWidth = 1.5;
-                        this.ctx.beginPath();
-                        this.ctx.moveTo(x2 + 0.5, 0);
-                        this.ctx.lineTo(x2 + 0.5, 8);
-                        this.ctx.stroke();
                     }
                 } else {
                     // Standard full session shade if open window not highlighted
                     const wFull = Math.max(1, x2 - x1);
-                    this.ctx.fillStyle = this.hexToRGBA(baseColor, 0.18);
+                    this.ctx.fillStyle = this.hexToRGBA(baseColor, axisOpacity * 0.45);
                     this.ctx.fillRect(x1, 0, wFull, h);
                     this.ctx.fillStyle = baseColor;
                     this.ctx.fillRect(x1, 0, wFull, 2.5);
+                }
 
-                    // Boundary tick at x2 where session ends when next pre-market starts
-                    this.ctx.strokeStyle = this.hexToRGBA(baseColor, 0.9);
-                    this.ctx.lineWidth = 1.5;
+                // Core session end boundary tick if session was extended
+                if (box.coreEndIdx > box.startIdx && box.coreEndIdx < box.endIdx) {
+                    const xCoreEnd = Math.round(((box.coreEndIdx + 1) * actualSpacing) - this.renderer.cameraX);
+                    if (xCoreEnd >= 0 && xCoreEnd <= w) {
+                        this.ctx.strokeStyle = this.hexToRGBA(baseColor, Math.min(1.0, axisOpacity * 2.0));
+                        this.ctx.lineWidth = 1.5;
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(xCoreEnd + 0.5, 0);
+                        this.ctx.lineTo(xCoreEnd + 0.5, 9);
+                        this.ctx.stroke();
+                    }
+                }
+
+                // Crisp boundary tick and top accent mark at x2 where session ends
+                if (x2 >= 0 && x2 <= w) {
+                    this.ctx.strokeStyle = this.hexToRGBA(baseColor, Math.min(1.0, axisOpacity * 2.2));
+                    this.ctx.lineWidth = 2;
                     this.ctx.beginPath();
                     this.ctx.moveTo(x2 + 0.5, 0);
-                    this.ctx.lineTo(x2 + 0.5, 8);
+                    this.ctx.lineTo(x2 + 0.5, 10);
                     this.ctx.stroke();
+
+                    // Highlight cap at the top edge of the time axis
+                    this.ctx.fillStyle = baseColor;
+                    this.ctx.fillRect(Math.max(0, x2 - 5), 0, 10, 3);
                 }
             }
         }
+    }
+
+    public getLiveSessionCountdown(now: Date): { text: string; sessColor: string; isEndingSoon: boolean } | null {
+        if (!this.renderer.sessionConfig?.enabled) return null;
+
+        const tzOffsetMs = (this.renderer.sessionConfig?.timezoneOffset || 0) * 3600000;
+        const nowMs = now.getTime() + tzOffsetMs;
+        const d = new Date(nowMs);
+        const currentMin = d.getUTCHours() * 60 + d.getUTCMinutes();
+        const currentSecOfMin = d.getUTCSeconds();
+        const currentSecOfDay = currentMin * 60 + currentSecOfMin;
+
+        // Try getting configured sessions from active MarketSessionsIndicator or renderer sessionConfig
+        const indMgr = this.renderer.indicatorManager;
+        const sessInd = indMgr?.activeIndicators.find((i: any) => i instanceof MarketSessionsIndicator) as MarketSessionsIndicator | undefined;
+
+        let sessionsList: Array<{ name: string; hours: string; color: string; enabled: boolean }> = [];
+        if (sessInd) {
+            sessionsList = [
+                {
+                    enabled: sessInd.getParam<boolean>('showSessionA', true),
+                    name: sessInd.getParam<string>('sessionAName', 'New York'),
+                    hours: sessInd.getParam<string>('sessionATime', '1300-2200'),
+                    color: sessInd.getParam<string>('sessionAColor', '#EF5350')
+                },
+                {
+                    enabled: sessInd.getParam<boolean>('showSessionB', true),
+                    name: sessInd.getParam<string>('sessionBName', 'London'),
+                    hours: sessInd.getParam<string>('sessionBTime', '0700-1600'),
+                    color: sessInd.getParam<string>('sessionBColor', '#2962FF')
+                },
+                {
+                    enabled: sessInd.getParam<boolean>('showSessionC', true),
+                    name: sessInd.getParam<string>('sessionCName', 'Tokyo'),
+                    hours: sessInd.getParam<string>('sessionCTime', '0000-0900'),
+                    color: sessInd.getParam<string>('sessionCColor', '#FBC02D')
+                },
+                {
+                    enabled: sessInd.getParam<boolean>('showSessionD', false),
+                    name: sessInd.getParam<string>('sessionDName', 'Sydney'),
+                    hours: sessInd.getParam<string>('sessionDTime', '2100-0600'),
+                    color: sessInd.getParam<string>('sessionDColor', '#AB47BC')
+                }
+            ];
+        } else if (this.renderer.sessionConfig?.sessions && Array.isArray(this.renderer.sessionConfig.sessions)) {
+            const raw = this.renderer.sessionConfig.sessions;
+            const defaultNames = ['New York', 'London', 'Tokyo', 'Sydney'];
+            const defaultColors = ['#EF5350', '#2962FF', '#FBC02D', '#AB47BC'];
+            sessionsList = raw.map((s: any, idx: number) => ({
+                enabled: !!s.enabled,
+                name: s.name || defaultNames[idx] || `Session ${idx + 1}`,
+                hours: s.hours || '1300-2200',
+                color: typeof s.color === 'number' ? this.hexToCSS(s.color) : (s.color || defaultColors[idx])
+            }));
+        }
+
+        const activeSessions = sessionsList.filter(s => s.enabled);
+        if (activeSessions.length === 0) return null;
+
+        const getShortName = (name: string) => {
+            if (/new york/i.test(name)) return 'NY';
+            if (/london/i.test(name)) return 'LON';
+            if (/tokyo/i.test(name)) return 'TYO';
+            if (/sydney/i.test(name)) return 'SYD';
+            return name.length > 5 ? name.slice(0, 4) : name;
+        };
+
+        const formatCountdown = (totalSecs: number) => {
+            const h = Math.floor(totalSecs / 3600);
+            const m = Math.floor((totalSecs % 3600) / 60);
+            const s = totalSecs % 60;
+            return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        };
+
+        // 1. Check if any session is currently active
+        let minRemSecs = Infinity;
+        let activeSess: { name: string; hours: string; color: string } | null = null;
+
+        for (const s of activeSessions) {
+            const { startMin, endMin } = MarketSessionsIndicator.parseSessionHours(s.hours);
+            if (startMin === endMin) continue;
+            const inSession = MarketSessionsIndicator.isMinuteInSession(currentMin, startMin, endMin);
+            if (inSession) {
+                let rem = 0;
+                if (startMin < endMin) {
+                    rem = (endMin * 60) - currentSecOfDay;
+                } else {
+                    if (currentMin >= startMin) {
+                        rem = (86400 - currentSecOfDay) + (endMin * 60);
+                    } else {
+                        rem = (endMin * 60) - currentSecOfDay;
+                    }
+                }
+                if (rem > 0 && rem < minRemSecs) {
+                    minRemSecs = rem;
+                    activeSess = s;
+                }
+            }
+        }
+
+        if (activeSess && minRemSecs < Infinity) {
+            const short = getShortName(activeSess.name);
+            const isEndingSoon = minRemSecs <= 900; // <= 15m
+            const icon = isEndingSoon ? '⚠️' : '⏳';
+            return {
+                text: `${icon} ${short} Ends ${formatCountdown(minRemSecs)}`,
+                sessColor: activeSess.color,
+                isEndingSoon
+            };
+        }
+
+        // 2. If no session is currently active, find the next session that opens!
+        let nextOpenSecs = Infinity;
+        let nextSess: { name: string; hours: string; color: string } | null = null;
+        for (const s of activeSessions) {
+            const { startMin } = MarketSessionsIndicator.parseSessionHours(s.hours);
+            let diff = (startMin * 60) - currentSecOfDay;
+            if (diff <= 0) diff += 86400;
+            if (diff < nextOpenSecs) {
+                nextOpenSecs = diff;
+                nextSess = s;
+            }
+        }
+
+        if (nextSess && nextOpenSecs < Infinity) {
+            const short = getShortName(nextSess.name);
+            const isPreOpen = nextOpenSecs <= 900;
+            const icon = isPreOpen ? '🔔' : '⏱️';
+            const action = isPreOpen ? 'Pre-Open' : 'Opens';
+            return {
+                text: `${icon} ${short} ${action} ${formatCountdown(nextOpenSecs)}`,
+                sessColor: isPreOpen ? '#FFA726' : nextSess.color,
+                isEndingSoon: isPreOpen
+            };
+        }
+
+        return null;
     }
 
     public render() {
@@ -275,7 +429,7 @@ export class TimeAxisRenderer {
         let clockCutoffX = w + 20; // Default: show timestamps all the way to right edge
         const preparedBadges: Array<{ badgeX: number; badgeY: number; badgeW: number; badgeH: number; st: any; timeStr: string }> = [];
 
-        if (clockConfig?.enabled && len > 0 && availableSpace >= 100) {
+        if ((clockConfig?.enabled || this.renderer.sessionConfig?.enabled) && len > 0 && availableSpace >= 70) {
             const now = new Date();
             const isMobile = w < 600 || availableSpace < 220;
             const isFlashTick = now.getSeconds() % 2 === 0;
@@ -297,25 +451,30 @@ export class TimeAxisRenderer {
             const badgeY = Math.floor((h - badgeH) / 2);
             let rightAnchor = w - 8;
 
-            const prepareBadge = (tz: string, label: string) => {
-                const st = this.getSessionStatus(tz, now, isFlashTick);
-                const timeStr = `${st.icon} ${label} ${formatTime(tz, st.isFlashing)}`;
-                const measureStr = `${st.icon} ${label} ${formatTime(tz, false)}`; // Measure with colon to prevent width jumping
+            // 1. World Clock Badges (NYC, LON) placed on the bottom right (countdown moved to session box)
 
-                this.ctx.font = '10px sans-serif';
-                const textW = this.ctx.measureText(measureStr).width;
-                const badgeW = Math.ceil(textW) + 14;
-                const badgeX = rightAnchor - badgeW;
+            // 2. World Clock Badges (NYC, LON) placed to the left of the countdown
+            if (clockConfig?.enabled) {
+                const prepareBadge = (tz: string, label: string) => {
+                    const st = this.getSessionStatus(tz, now, isFlashTick);
+                    const timeStr = `${st.icon} ${label} ${formatTime(tz, st.isFlashing)}`;
+                    const measureStr = `${st.icon} ${label} ${formatTime(tz, false)}`; // Measure with colon to prevent width jumping
 
-                if (badgeX > lastCandleX + 8) {
-                    preparedBadges.push({ badgeX, badgeY, badgeW, badgeH, st, timeStr });
-                    rightAnchor = badgeX - 6;
-                }
-            };
+                    this.ctx.font = '10px sans-serif';
+                    const textW = this.ctx.measureText(measureStr).width;
+                    const badgeW = Math.ceil(textW) + 14;
+                    const badgeX = rightAnchor - badgeW;
 
-            // Order: Primary (closest to right edge), then Secondary (further left)
-            if (clockConfig.primaryTz) prepareBadge(clockConfig.primaryTz, clockConfig.primaryLabel || 'NYC');
-            if (!isMobile && clockConfig.secondaryTz) prepareBadge(clockConfig.secondaryTz, clockConfig.secondaryLabel || 'LON');
+                    if (badgeX > lastCandleX + 8) {
+                        preparedBadges.push({ badgeX, badgeY, badgeW, badgeH, st, timeStr });
+                        rightAnchor = badgeX - 6;
+                    }
+                };
+
+                // Order: Primary (closest to right edge), then Secondary (further left)
+                if (clockConfig.primaryTz) prepareBadge(clockConfig.primaryTz, clockConfig.primaryLabel || 'NYC');
+                if (!isMobile && clockConfig.secondaryTz) prepareBadge(clockConfig.secondaryTz, clockConfig.secondaryLabel || 'LON');
+            }
 
             // Set the cutoff boundary right before the leftmost badge (with 12px margin)
             if (preparedBadges.length > 0) {
@@ -430,7 +589,7 @@ export class TimeAxisRenderer {
         }
 
         const clockConfig = (this.renderer as any).clockConfig;
-        if (!clockConfig?.enabled) return;
+        if (!clockConfig?.enabled && !this.renderer.sessionConfig?.enabled) return;
 
         const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
         const len = this.renderer.dataStore.length;
@@ -439,7 +598,7 @@ export class TimeAxisRenderer {
         const h = this.lastHeight;
         const availableSpace = w - lastCandleX;
 
-        if (availableSpace < 100) {
+        if (availableSpace < 70) {
             if (this.lastBadges.length > 0) {
                 for (const b of this.lastBadges) this.ctx.clearRect(b.x - 2, b.y - 1, b.w + 4, b.h + 2);
                 this.lastBadges = [];
@@ -470,24 +629,29 @@ export class TimeAxisRenderer {
 
         const newBadges: Array<{ x: number, y: number, w: number, h: number, timeStr: string, st: any }> = [];
 
-        const prepareBadge = (tz: string, label: string) => {
-            const st = this.getSessionStatus(tz, now, isFlashTick);
-            const timeStr = `${st.icon} ${label} ${formatTime(tz, st.isFlashing)}`;
-            const measureStr = `${st.icon} ${label} ${formatTime(tz, false)}`; // Measure with colon to prevent width jumping
+        // 1. World Clock Badges on the bottom right (countdown moved to session box)
 
-            this.ctx.font = '10px sans-serif';
-            const textW = this.ctx.measureText(measureStr).width;
-            const badgeW = Math.ceil(textW) + 14;
-            const badgeX = rightAnchor - badgeW;
+        // 2. World Clock Badges to the left of the countdown
+        if (clockConfig?.enabled) {
+            const prepareBadge = (tz: string, label: string) => {
+                const st = this.getSessionStatus(tz, now, isFlashTick);
+                const timeStr = `${st.icon} ${label} ${formatTime(tz, st.isFlashing)}`;
+                const measureStr = `${st.icon} ${label} ${formatTime(tz, false)}`; // Measure with colon to prevent width jumping
 
-            if (badgeX > lastCandleX + 8) {
-                newBadges.push({ x: badgeX, y: badgeY, w: badgeW, h: badgeH, timeStr, st });
-                rightAnchor = badgeX - 6;
-            }
-        };
+                this.ctx.font = '10px sans-serif';
+                const textW = this.ctx.measureText(measureStr).width;
+                const badgeW = Math.ceil(textW) + 14;
+                const badgeX = rightAnchor - badgeW;
 
-        if (clockConfig.primaryTz) prepareBadge(clockConfig.primaryTz, clockConfig.primaryLabel || 'NYC');
-        if (!isMobile && clockConfig.secondaryTz) prepareBadge(clockConfig.secondaryTz, clockConfig.secondaryLabel || 'LON');
+                if (badgeX > lastCandleX + 8) {
+                    newBadges.push({ x: badgeX, y: badgeY, w: badgeW, h: badgeH, timeStr, st });
+                    rightAnchor = badgeX - 6;
+                }
+            };
+
+            if (clockConfig.primaryTz) prepareBadge(clockConfig.primaryTz, clockConfig.primaryLabel || 'NYC');
+            if (!isMobile && clockConfig.secondaryTz) prepareBadge(clockConfig.secondaryTz, clockConfig.secondaryLabel || 'LON');
+        }
 
         // Check if anything actually changed visually
         let changed = false;

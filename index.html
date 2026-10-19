@@ -1391,11 +1391,13 @@
               style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
             Highlight Bottom Time Axis
           </label>
-          <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
-            <input type="checkbox" id="check-sessions-chart"
-              style="cursor: pointer; accent-color: var(--chart-accent, #2962FF);">
-            Shade Chart Background
-          </label>
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #D1D4DC; padding-left: 20px;">
+            <span>Axis Highlight Opacity:</span>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <input type="range" id="input-sess-axis-opacity" min="0" max="100" value="40" style="width: 100px; accent-color: var(--chart-accent, #2962FF); cursor: pointer;">
+              <span id="label-sess-axis-opacity" style="font-size: 11px; width: 32px; text-align: right; color: #787B86;">40%</span>
+            </div>
+          </div>
         </div>
 
         <!-- SESSIONS A, B, C, D CONFIG -->
@@ -1579,6 +1581,10 @@
             <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
               <input type="checkbox" id="check-sess-range-label" checked style="cursor: pointer; accent-color: #2962FF;">
               Show Session Name Above Range Boxes
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
+              <input type="checkbox" id="check-sess-end-time" checked style="cursor: pointer; accent-color: #2962FF;">
+              Show Session End Time on Right Side Top of Range Boxes
             </label>
             <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #D1D4DC;">
               <input type="checkbox" id="check-sess-range-mean" style="cursor: pointer; accent-color: #2962FF;">

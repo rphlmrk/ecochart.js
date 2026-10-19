@@ -1899,7 +1899,7 @@ export class ChartRenderer {
         this.isSessionDirty = false;
     }
 
-    private renderInstancedSessions(mainChartHeight: number, timeAxisY: number, _width: number, height: number, visStart: number, visEnd: number) {
+    private renderInstancedSessions(_mainChartHeight: number, _timeAxisY: number, _width: number, _height: number, _visStart: number, _visEnd: number) {
         this.syncSessionData();
 
         if (this.sessionGeometry.instanceCount === 0) {
@@ -1907,20 +1907,10 @@ export class ChartRenderer {
             return;
         }
 
-        this.sessionMesh.visible = true;
-
+        // Chart background shading is completely disabled and removed
+        this.sessionMesh.visible = false;
         const u = this.sessionUniforms.uniforms;
-        u.uCameraX = this.cameraX;
-        u.uZoom = this.zoom;
-        u.uCandleSpacing = this.candleSpacing;
-        u.uMainChartHeight = mainChartHeight;
-        u.uTimeAxisY = timeAxisY;
-        u.uTimeAxisHeight = this.timeAxisHeight;
-        u.uTotalHeight = height;
-        u.uShowOnChart = this.sessionConfig.showOnChart ? 1.0 : 0.0;
-        u.uShowOnAxis = this.sessionConfig.showOnAxis ? 1.0 : 0.0;
-        u.uChartAlphaMult = this.isDarkTheme ? 0.35 : 0.45;
-        u.uVisStart = visStart;
-        u.uVisEnd = Math.max(visEnd, 100000.0);
+        u.uShowOnChart = 0.0;
+        u.uShowOnAxis = 0.0;
     }
 }

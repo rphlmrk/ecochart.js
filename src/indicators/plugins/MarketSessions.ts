@@ -26,6 +26,9 @@ export interface SessionBox {
     orbLow: number;
     orbEndIdx: number;
     preOpenStartIdx: number;
+    hours: string;
+    closeTime?: number;
+    isCurrentSession?: boolean;
 }
 
 export class MarketSessionsIndicator extends BaseIndicator {
@@ -48,7 +51,9 @@ export class MarketSessionsIndicator extends BaseIndicator {
             { id: 'rangeTransparency', name: 'Range Transparency', type: 'number', value: 80, min: 0, max: 100, step: 1 },
             { id: 'rangeOutline', name: 'Range Outline (Dotted)', type: 'boolean', value: true },
             { id: 'rangeLabel', name: 'Range Label', type: 'boolean', value: true },
+            { id: 'showEndTime', name: 'Show Session End Time', type: 'boolean', value: true },
             { id: 'showMean', name: 'Show Mean Line', type: 'boolean', value: false },
+            { id: 'axisOpacity', name: 'Time Axis Highlight Opacity (%)', type: 'number', value: 40, min: 0, max: 100, step: 5 },
 
             // Opening & Breakout (ORB) Controls
             { id: 'highlightOpen', name: 'Highlight Session Open', type: 'boolean', value: true },
@@ -137,6 +142,8 @@ export class MarketSessionsIndicator extends BaseIndicator {
         const endOnNextOpen = this.getParam<boolean>('endOnNextOpen', true);
         const showOpenBellLine = this.getParam<boolean>('showOpenBellLine', true);
 
+        const showEndTime = this.getParam<boolean>('showEndTime', true);
+
         const sessions = [
             {
                 enabled: this.getParam<boolean>('showSessionA', true),
@@ -168,8 +175,10 @@ export class MarketSessionsIndicator extends BaseIndicator {
             }
         ];
 
+        const axisOpacity = this.getParam<number>('axisOpacity', 40);
+
         const paramHash = sessions.map(s => `${s.enabled}:${s.hours}:${s.range}:${s.color}`).join('|') +
-            `:${tzOffsetMs}:${highlightOpen}:${openWindowDuration}:${showOpeningRange}:${showPreOpenZone}:${endOnNextOpen}:${showOpenBellLine}`;
+            `:${tzOffsetMs}:${highlightOpen}:${openWindowDuration}:${showOpeningRange}:${showPreOpenZone}:${endOnNextOpen}:${showOpenBellLine}:${showEndTime}:${axisOpacity}`;
 
         // Fast update: If length is unchanged and params match, only update the latest bar of the active box
         if (len === this.lastCalculatedLength && this.lastCalcParamHash === paramHash) {
@@ -201,6 +210,9 @@ export class MarketSessionsIndicator extends BaseIndicator {
         this.cachedBoxesBySession.clear();
         const openWindowMs = openWindowDuration * 60000;
         const preOpenMs = 15 * 60000;
+        const lastBarIdx = len - 1;
+        const lastBarTime = ds.data[lastBarIdx * 6];
+        const intervalMs = (len >= 2) ? (ds.data[6] - ds.data[0]) : 60000;
 
         for (const sess of sessions) {
             if (!sess.enabled || !sess.range) continue;
@@ -254,7 +266,8 @@ export class MarketSessionsIndicator extends BaseIndicator {
                                 orbHigh: orbHigh === -Infinity ? sessHigh : orbHigh,
                                 orbLow: orbLow === Infinity ? sessLow : orbLow,
                                 orbEndIdx: orbEndIdx === -1 ? sessStartIdx : orbEndIdx,
-                                preOpenStartIdx
+                                preOpenStartIdx,
+                                hours: sess.hours
                             });
                         }
                         inSess = true;
@@ -305,7 +318,8 @@ export class MarketSessionsIndicator extends BaseIndicator {
                             orbHigh: orbHigh === -Infinity ? sessHigh : orbHigh,
                             orbLow: orbLow === Infinity ? sessLow : orbLow,
                             orbEndIdx: orbEndIdx === -1 ? sessStartIdx : orbEndIdx,
-                            preOpenStartIdx
+                            preOpenStartIdx,
+                            hours: sess.hours
                         });
                         inSess = false;
                         sessStartIdx = -1;
@@ -314,10 +328,14 @@ export class MarketSessionsIndicator extends BaseIndicator {
             }
 
             if (inSess && sessStartIdx !== -1) {
+                const scheduledCloseTime = MarketSessionsIndicator.getSessionScheduledEndTime(openTime, sess.hours);
+                const barsUntilScheduledClose = Math.max(0, Math.round((scheduledCloseTime - lastBarTime) / intervalMs));
+                const projectedCoreEnd = lastBarIdx + barsUntilScheduledClose;
+
                 boxes.push({
                     startIdx: sessStartIdx,
-                    endIdx: sessEndIdx,
-                    coreEndIdx: sessEndIdx,
+                    endIdx: projectedCoreEnd,
+                    coreEndIdx: projectedCoreEnd,
                     high: sessHigh,
                     low: sessLow,
                     sessionName: sess.name,
@@ -327,65 +345,115 @@ export class MarketSessionsIndicator extends BaseIndicator {
                     orbHigh: orbHigh === -Infinity ? sessHigh : orbHigh,
                     orbLow: orbLow === Infinity ? sessLow : orbLow,
                     orbEndIdx: orbEndIdx === -1 ? sessStartIdx : orbEndIdx,
-                    preOpenStartIdx
+                    preOpenStartIdx,
+                    hours: sess.hours,
+                    isCurrentSession: true
                 });
             }
 
             this.cachedBoxesBySession.set(sess.name, boxes);
         }
 
-        // Chain chronological sessions so the previous session ends when the next pre-open is starting,
-        // and show or extend the current/latest session to the time it ends when the next pre-market starts!
+        // Chain chronological sessions:
+        // Rule: "the contdown for session end should end at pre open open the session should also end on the next session pre open"
+        // Rule: "or when I drag the chart right only the current session"
         const allBoxes: SessionBox[] = [];
         for (const list of this.cachedBoxesBySession.values()) {
             allBoxes.push(...list);
         }
         allBoxes.sort((a, b) => a.startIdx - b.startIdx);
 
-        const lastBarIdx = len - 1;
-        const lastBarTime = ds.data[lastBarIdx * 6];
-        const intervalMs = (len >= 2) ? (ds.data[6] - ds.data[0]) : 60000;
-
         for (let k = 0; k < allBoxes.length; k++) {
-            let nextBoundary = -1;
+            const currentBox = allBoxes[k];
+            let nextBoxRef: SessionBox | null = null;
             for (let j = k + 1; j < allBoxes.length; j++) {
-                if (allBoxes[j].startIdx > allBoxes[k].startIdx) {
-                    const nextBox = allBoxes[j];
-                    // End when pre-open starts (10-15m prior) if available; otherwise at open
-                    const preStart = (nextBox.preOpenStartIdx !== -1 && nextBox.preOpenStartIdx < nextBox.startIdx)
-                        ? nextBox.preOpenStartIdx
-                        : nextBox.startIdx;
-                    nextBoundary = preStart;
+                if (allBoxes[j].startIdx > currentBox.startIdx) {
+                    nextBoxRef = allBoxes[j];
                     break;
                 }
             }
-            if (nextBoundary !== -1) {
-                if (endOnNextOpen) {
-                    allBoxes[k].endIdx = Math.max(allBoxes[k].startIdx, nextBoundary - 1);
+
+            if (nextBoxRef) {
+                const nextPreOpenTime = nextBoxRef.openTime - (15 * 60000);
+
+                // Rule: "the new session does not show pre open until the pre session ends"
+                const prevScheduledClose = MarketSessionsIndicator.getSessionScheduledEndTime(currentBox.openTime, currentBox.hours);
+                if (lastBarTime < prevScheduledClose && nextBoxRef.openTime > lastBarTime) {
+                    if (nextBoxRef.preOpenStartIdx !== -1) {
+                        nextBoxRef.preOpenStartIdx = -1; // Suppressed until previous session ends
+                    }
                 }
+
+                const preStart = (nextBoxRef.preOpenStartIdx !== -1 && nextBoxRef.preOpenStartIdx < nextBoxRef.startIdx)
+                    ? nextBoxRef.preOpenStartIdx
+                    : nextBoxRef.startIdx;
+
+                // Rule: "Use the pre open as close time also on the box rang"
+                const preOpenTime = (preStart < len && preStart >= 0) ? ds.data[preStart * 6] : nextPreOpenTime;
+                currentBox.closeTime = preOpenTime;
+                currentBox.isCurrentSession = false;
+
+                // Rule: "the session should also end on the next session pre open"
+                // Historical boxes end right before the next session pre-open and NEVER project past lastBarIdx!
+                currentBox.endIdx = Math.min(lastBarIdx, Math.max(currentBox.startIdx, preStart - 1));
             } else {
-                // For the latest / current session on chart: extend to the time the next pre-market starts!
-                const checkTime = Math.max(allBoxes[k].openTime, lastBarTime);
+                // Latest / current session on chart:
+                // Rule: "when I drag the chart right only the current session"
+                // Rule: "the contdown for session end should end at pre open open the session should also end on the next session pre open"
+                const checkTime = Math.max(currentBox.openTime, lastBarTime);
                 const nextPreMarketUtc = MarketSessionsIndicator.getNextPreMarketTimestamp(checkTime, sessions, tzOffsetMs);
 
+                currentBox.closeTime = nextPreMarketUtc;
+                currentBox.isCurrentSession = true;
+
                 if (nextPreMarketUtc > lastBarTime) {
-                    const barsAhead = (nextPreMarketUtc - lastBarTime) / intervalMs;
-                    allBoxes[k].endIdx = Math.max(allBoxes[k].coreEndIdx, lastBarIdx + barsAhead);
+                    const barsAhead = Math.round((nextPreMarketUtc - lastBarTime) / intervalMs);
+                    currentBox.endIdx = lastBarIdx + barsAhead;
                 } else {
-                    let targetIdx = lastBarIdx;
-                    for (let p = allBoxes[k].startIdx; p < len; p++) {
-                        if (ds.data[p * 6] >= nextPreMarketUtc) {
-                            targetIdx = Math.max(allBoxes[k].startIdx, p - 1);
-                            break;
-                        }
-                    }
-                    allBoxes[k].endIdx = Math.max(allBoxes[k].coreEndIdx, targetIdx);
+                    currentBox.endIdx = Math.max(currentBox.coreEndIdx, currentBox.startIdx);
                 }
             }
         }
 
         this.lastCalculatedLength = len;
         this.lastCalcParamHash = paramHash;
+    }
+
+    public static getSessionScheduledEndTime(openTime: number, hoursStr: string): number {
+        const { startMin, endMin } = MarketSessionsIndicator.parseSessionHours(hoursStr);
+        let durationMin = endMin - startMin;
+        if (durationMin <= 0) {
+            durationMin += 24 * 60;
+        }
+        return openTime + (durationMin * 60000);
+    }
+
+    public static getNextSessionEndTimestamp(
+        fromTime: number,
+        sessions: Array<{ enabled: boolean; hours: string }>,
+        tzOffsetMs: number
+    ): number {
+        const active = sessions.filter(s => s.enabled);
+        if (active.length === 0) return fromTime + (24 * 3600000);
+
+        let minNextEnd = Infinity;
+        const fromLocal = fromTime + tzOffsetMs;
+        const fromDayBase = Math.floor(fromLocal / 86400000) * 86400000;
+
+        for (let d = 0; d <= 4; d++) {
+            const dayBase = fromDayBase + (d * 86400000);
+            for (const sess of active) {
+                const { endMin } = MarketSessionsIndicator.parseSessionHours(sess.hours);
+                const endLocal = dayBase + (endMin * 60000);
+                const endUtc = endLocal - tzOffsetMs;
+
+                if (endUtc > fromTime && endUtc < minNextEnd) {
+                    minNextEnd = endUtc;
+                }
+            }
+        }
+
+        return minNextEnd === Infinity ? fromTime + (24 * 3600000) : minNextEnd;
     }
 
     public static getNextPreMarketTimestamp(
@@ -488,7 +556,12 @@ export class MarketSessionsIndicator extends BaseIndicator {
         const rangeTransparency = Math.max(0, Math.min(100, this.getParam<number>('rangeTransparency', 80)));
         const rangeOutline = this.getParam<boolean>('rangeOutline', true);
         const rangeLabel = this.getParam<boolean>('rangeLabel', true);
+        const showEndTime = this.getParam<boolean>('showEndTime', true);
         const showMean = this.getParam<boolean>('showMean', false);
+
+        const exchangeTz = this.getParam<boolean>('exchangeTimezone', true);
+        const tzOffsetHours = exchangeTz ? 0 : this.getParam<number>('timezoneOffset', 0);
+        const tzOffsetMs = tzOffsetHours * 3600000;
 
         const highlightOpen = this.getParam<boolean>('highlightOpen', true);
         const showOpeningRange = this.getParam<boolean>('showOpeningRange', true);
@@ -785,27 +858,70 @@ export class MarketSessionsIndicator extends BaseIndicator {
                 }
             }
 
-            // 9. Text Labels: Pre-Open, Session Name (at Open or pinned left when scrolling), and ORB Numbers
+            // 9. Text Labels: Pre-Open, Session Name (at Open or pinned left when scrolling), Session End Time, and ORB Numbers
             for (let i = 0; i < visibleBoxes.length; i++) {
                 const vb = visibleBoxes[i];
                 const isScrolledPastOpen = vb.xOpen < 0;
 
                 // 1. Pre-open label: only show if pre-open is on-screen (hidden when scrolled left past open)
+                let preOpenShown = false;
+                let preOpenRight = 0;
                 if (!isScrolledPastOpen && showPreOpenZone && vb.hasPreOpen && vb.xPre1 >= 0 && vb.xPre1 <= screenW - 30) {
-                    placeLabel('PRE-OPEN', Math.max(4, vb.xPre1 + 2), Math.max(12, vb.yHigh - 12), 0xFFA726);
+                    const preX = Math.max(4, vb.xPre1 + 2);
+                    placeLabel('PRE-OPEN', preX, Math.max(12, vb.yHigh - 12), 0xFFA726);
+                    preOpenShown = true;
+                    preOpenRight = preX + 58; // 58px approximate width of "PRE-OPEN" (font size 10)
                 }
 
                 // 2. Open label IS the session name (no separate OPEN tag, no duplicate name)
                 // When scrolling left, pin session name to the left edge so it remains visible
+                let labelX = Math.max(8, vb.x1 + 2);
+                // Ensure sufficient space between PRE-OPEN and the session name so they never overlap!
+                if (preOpenShown && labelX < preOpenRight + 12) {
+                    labelX = preOpenRight + 12;
+                }
                 if (rangeLabel && vb.x2 > 30) {
-                    const labelX = Math.max(8, vb.x1 + 2);
                     if (labelX <= Math.min(screenW - 30, vb.x2 - 15)) {
                         const labelY = Math.max(12, vb.yHigh - 12);
                         placeLabel(vb.box.sessionName, labelX, labelY, parsedColor.color);
                     }
                 }
 
-                // 3. ORB High & Low Breakout boundary labels: JUST show the numbers!
+                // 3. Session End Time label on the right side top of the session box
+                // Uses the pre open as close time also on the box range!
+                if (showEndTime && vb.x2 > 50) {
+                    let endStr = '';
+                    if (vb.box.closeTime && vb.box.closeTime > 0) {
+                        const d = new Date(vb.box.closeTime + tzOffsetMs);
+                        const endH = d.getUTCHours();
+                        const endM = d.getUTCMinutes();
+                        endStr = `${endH.toString().padStart(2, '0')}:${endM.toString().padStart(2, '0')}`;
+                    } else if (vb.box.hours) {
+                        const { endMin } = MarketSessionsIndicator.parseSessionHours(vb.box.hours);
+                        if (endMin > 0) {
+                            const endH = Math.floor(endMin / 60) % 24;
+                            const endM = endMin % 60;
+                            endStr = `${endH.toString().padStart(2, '0')}:${endM.toString().padStart(2, '0')}`;
+                        }
+                    }
+
+                    if (endStr) {
+                        const endText = `Close ${endStr}`;
+                        const endTextW = 60;
+                        let endX = vb.x2 - endTextW - 4;
+                        // ONLY pin inside view if it's the current session extending past screen right edge
+                        if (vb.box.isCurrentSession && endX > screenW - endTextW - 10) {
+                            endX = screenW - endTextW - 10;
+                        }
+                        // Only render if it has enough clearance from the left session name label
+                        if (endX > labelX + 55 && endX >= 0 && endX <= screenW - 10) {
+                            const endY = Math.max(12, vb.yHigh - 12);
+                            placeLabel(endText, endX, endY, parsedColor.color);
+                        }
+                    }
+                }
+
+                // 4. ORB High & Low Breakout boundary labels: JUST show the numbers!
                 // When scrolling left, only show the session name and orb lines (hide numbers once scrolled past open window)
                 if (showOpeningRange && vb.x2 > vb.xOrb2 && vb.box.orbHigh > -Infinity && vb.box.orbLow < Infinity) {
                     if (vb.xOrb2 >= 0 && (vb.xOrb2 + 4) <= Math.min(screenW - 35, vb.x2 - 10)) {
@@ -815,6 +931,37 @@ export class MarketSessionsIndicator extends BaseIndicator {
                         placeLabel(hFormatted, orbNumX, Math.max(12, vb.yOrbHigh - 10), 0x26A69A);
                         placeLabel(lFormatted, orbNumX, Math.min(mainH - 16, vb.yOrbLow + 2), 0xEF5350);
                     }
+                }
+
+                // 5. Live Session Countdown placed at Session Box Bottom Right
+                // Rule: "move the session countdown from the axis to session box bottom right"
+                // Rule: "the contdown for session end should end at pre open"
+                if (vb.box.isCurrentSession && vb.box.closeTime && vb.box.closeTime > 0) {
+                    const nowMs = Date.now();
+                    const remSecs = Math.max(0, Math.floor((vb.box.closeTime - nowMs) / 1000));
+                    const h = Math.floor(remSecs / 3600);
+                    const m = Math.floor((remSecs % 3600) / 60);
+                    const s = remSecs % 60;
+                    const timeStr = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+
+                    const isEndingSoon = remSecs <= 900; // <= 15m
+                    const icon = isEndingSoon ? '⚠️' : '⏳';
+                    const cdText = `${icon} Ends ${timeStr}`;
+                    const cdTextW = 76;
+
+                    // Position inside the session box at the bottom right
+                    let cdX = vb.x2 - cdTextW - 4;
+                    if (cdX > screenW - cdTextW - 10) {
+                        cdX = screenW - cdTextW - 10;
+                    }
+                    cdX = Math.max(8, cdX);
+
+                    let cdY = vb.yLow - 14;
+                    if (cdY > mainH - 16) cdY = mainH - 16;
+                    if (cdY < vb.yHigh + 14) cdY = vb.yHigh + 14;
+
+                    const cdColor = isEndingSoon ? 0xFFA726 : parsedColor.color;
+                    placeLabel(cdText, cdX, cdY, cdColor);
                 }
             }
         }
