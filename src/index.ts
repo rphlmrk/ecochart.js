@@ -4306,6 +4306,8 @@ export class WorkspaceManager {
                     check.onchange = () => {
                         indicator.updateParams({ [param.id]: check.checked });
                         this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
+                        this.activeChart!.renderer.isHistoricalDirty = true;
+                        this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
                         this.activeChart!.updateLegend();
                         this.activeChart!.isDirty = true;
                         WorkspaceManager.triggerAutoSave();

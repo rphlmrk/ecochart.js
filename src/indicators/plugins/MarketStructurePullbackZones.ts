@@ -47,7 +47,19 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
             { id: 'useWicks', name: 'Breakout strictly on wicks?', type: 'boolean', value: false },
             { id: 'maxBoxes', name: 'Max Boxes Count', type: 'number', value: 500, min: 10, max: 1000, step: 10 },
             { id: 'borderWidth', name: 'Border Width', type: 'number', value: 1, min: 1, max: 4, step: 0.5 },
+
+            // 50% Midline (Equilibrium) Settings
             { id: 'showMidline', name: 'Show 50% Midline (Equilibrium)', type: 'boolean', value: false },
+            { id: 'midlineColor', name: '50% Line Color', type: 'color', value: '#EF5350' },
+            { id: 'extendMidlineRight', name: 'Extend 50% Line to Right', type: 'boolean', value: false },
+            { id: 'extendMidlineCount', name: 'Past Boxes to Extend Line', type: 'number', value: 1, min: 1, max: 20, step: 1 },
+
+            // Box High & Low Horizontal Lines
+            { id: 'showHighLowLines', name: 'Draw Box High & Low Lines', type: 'boolean', value: false },
+            { id: 'highLowLineColor', name: 'High & Low Lines Color', type: 'color', value: '#EF5350' },
+            { id: 'extendHighLowLines', name: 'Extend High & Low Lines to Right', type: 'boolean', value: false },
+            { id: 'extendHighLowCount', name: 'Past Boxes to Extend High/Low', type: 'number', value: 1, min: 1, max: 20, step: 1 },
+
             { id: 'showLabels', name: 'Show Status Labels', type: 'boolean', value: false }
         ];
     }
@@ -465,6 +477,17 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
         const showMicro = this.getParam<boolean>('showMicro', true);
         const showMacro = this.getParam<boolean>('showMacro', true);
         const showMidline = this.getParam<boolean>('showMidline', false);
+        const midlineColorRaw = this.getParam<string>('midlineColor', '#EF5350');
+        const midlineColor = parseColorAndAlpha(midlineColorRaw);
+        const extendMidlineRight = this.getParam<boolean>('extendMidlineRight', false);
+        const extendMidlineCount = Math.max(1, this.getParam<number>('extendMidlineCount', 1));
+
+        const showHighLowLines = this.getParam<boolean>('showHighLowLines', false);
+        const highLowLineColorRaw = this.getParam<string>('highLowLineColor', '#EF5350');
+        const highLowLineColor = parseColorAndAlpha(highLowLineColorRaw);
+        const extendHighLowLines = this.getParam<boolean>('extendHighLowLines', false);
+        const extendHighLowCount = Math.max(1, this.getParam<number>('extendHighLowCount', 1));
+
         const showLabels = this.getParam<boolean>('showLabels', false);
         const borderWidth = Math.max(0.5, this.getParam<number>('borderWidth', 1));
 
@@ -482,12 +505,16 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
         interface VisibleZoneGeometry {
             x1: number;
             x2: number;
+            midlineEndX?: number;
+            hlLineEndX?: number;
             yTop: number;
             yBot: number;
             w: number;
             h: number;
             yMid: number;
             box: PullbackZoneBox;
+            isMidlineExtended?: boolean;
+            isHLExtended?: boolean;
         }
 
         const visibleMicro: VisibleZoneGeometry[] = [];
@@ -513,12 +540,26 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
 
         const visibleMacro: VisibleZoneGeometry[] = [];
         if (showMacro && this.cachedMacroBoxes.length > 0) {
-            for (let i = 0; i < this.cachedMacroBoxes.length; i++) {
-                const b = this.cachedMacroBoxes[i];
-                const x1 = r.getCandleCenterX(b.leftBar) - halfSp;
-                const x2 = r.getCandleCenterX(b.rightBar) + halfSp;
+            const boxesToRender = this.cachedMacroBoxes;
 
-                if (x2 < minX || x1 > maxX) continue;
+            for (let i = 0; i < boxesToRender.length; i++) {
+                const b = boxesToRender[i];
+                const distanceFromLatest = (boxesToRender.length - 1) - i;
+                const isMidlineExtended = extendMidlineRight && (distanceFromLatest < extendMidlineCount);
+                const isHLExtended = extendHighLowLines && (distanceFromLatest < extendHighLowCount);
+
+                const x1 = r.getCandleCenterX(b.leftBar) - halfSp;
+                const rightIdx = b.isOpen ? (r.dataStore.length - 1) : b.rightBar;
+                const x2 = r.getCandleCenterX(rightIdx) + halfSp;
+
+                const midlineEndX = isMidlineExtended ? Math.max(x2, screenW) : x2;
+                const hlLineEndX = isHLExtended ? Math.max(x2, screenW) : x2;
+
+                const anyLineExtended = (showMidline && isMidlineExtended) || (showHighLowLines && isHLExtended);
+
+                // Box or extended line is visible if within viewport bounds
+                if (x2 < minX && !anyLineExtended) continue;
+                if (x1 > maxX) continue;
 
                 const topPrice = Math.max(b.top, b.bottom);
                 const botPrice = Math.min(b.top, b.bottom);
@@ -528,64 +569,102 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                 const h = Math.max(2, yBot - yTop);
                 const yMid = r.priceToY((topPrice + botPrice) * 0.5);
 
-                visibleMacro.push({ x1, x2, yTop, yBot, w, h, yMid, box: b });
+                visibleMacro.push({
+                    x1, x2, midlineEndX, hlLineEndX, yTop, yBot, w, h, yMid,
+                    box: b, isMidlineExtended, isHLExtended
+                });
             }
         }
 
         // =========================================================================
         // 🚀 GPU BATCH 1: Micro Fills & Borders (Single draw call each)
+        // 50% midline is strictly disabled for micro structure per user requirement
         // =========================================================================
-        if (visibleMicro.length > 0) {
+        if (showMicro && visibleMicro.length > 0) {
+            g.beginPath();
             for (let i = 0; i < visibleMicro.length; i++) {
                 const vb = visibleMicro[i];
                 g.rect(vb.x1, vb.yTop, vb.w, vb.h);
             }
             g.fill({ color: microBg.color, alpha: microBg.alpha });
 
+            g.beginPath();
             for (let i = 0; i < visibleMicro.length; i++) {
                 const vb = visibleMicro[i];
                 g.rect(vb.x1, vb.yTop, vb.w, vb.h);
             }
             g.stroke({ color: microBorder.color, width: borderWidth, alpha: microBorder.alpha, cap: 'butt' });
-
-            if (showMidline) {
-                for (let i = 0; i < visibleMicro.length; i++) {
-                    const vb = visibleMicro[i];
-                    StrokeEngine.addDashedLinePath(g, vb.x1, vb.yMid, vb.x2, vb.yMid, 'dashed', 4, 3);
-                }
-                g.stroke({ color: microBorder.color, width: 1, alpha: microBorder.alpha * 0.6, cap: 'butt' });
-            }
         }
 
         // =========================================================================
-        // 🚀 GPU BATCH 2: Macro Fills & Borders (Single draw call each)
+        // 🚀 GPU BATCH 2: Macro Fills, Borders, 50% Midline & Box High/Low Lines
         // =========================================================================
         if (visibleMacro.length > 0) {
+            g.beginPath();
             for (let i = 0; i < visibleMacro.length; i++) {
                 const vb = visibleMacro[i];
-                g.rect(vb.x1, vb.yTop, vb.w, vb.h);
+                if (vb.x2 >= minX) {
+                    g.rect(vb.x1, vb.yTop, vb.w, vb.h);
+                }
             }
             g.fill({ color: macroBg.color, alpha: macroBg.alpha });
 
+            g.beginPath();
             for (let i = 0; i < visibleMacro.length; i++) {
                 const vb = visibleMacro[i];
-                g.rect(vb.x1, vb.yTop, vb.w, vb.h);
+                if (vb.x2 >= minX) {
+                    g.rect(vb.x1, vb.yTop, vb.w, vb.h);
+                }
             }
             g.stroke({ color: macroBorder.color, width: borderWidth, alpha: macroBorder.alpha, cap: 'butt' });
 
+            // 50% Equilibrium Midline
             if (showMidline) {
+                g.beginPath();
                 for (let i = 0; i < visibleMacro.length; i++) {
                     const vb = visibleMacro[i];
-                    StrokeEngine.addDashedLinePath(g, vb.x1, vb.yMid, vb.x2, vb.yMid, 'dashed', 4, 3);
+                    const startX = Math.max(0, vb.x1);
+                    const endX = Math.min(screenW, vb.midlineEndX ?? vb.x2);
+                    if (endX > startX) {
+                        StrokeEngine.addDashedLinePath(g, startX, vb.yMid, endX, vb.yMid, 'dashed', 6, 4);
+                    }
                 }
-                g.stroke({ color: macroBorder.color, width: 1, alpha: macroBorder.alpha * 0.6, cap: 'butt' });
+                g.stroke({
+                    color: midlineColor.color,
+                    width: Math.max(1.5, borderWidth),
+                    alpha: Math.min(1.0, Math.max(0.8, midlineColor.alpha)),
+                    cap: 'butt'
+                });
+            }
+
+            // Box High & Low Horizontal Lines
+            if (showHighLowLines) {
+                g.beginPath();
+                for (let i = 0; i < visibleMacro.length; i++) {
+                    const vb = visibleMacro[i];
+                    const startX = Math.max(0, vb.x1);
+                    const endX = Math.min(screenW, vb.hlLineEndX ?? vb.x2);
+                    if (endX > startX) {
+                        g.moveTo(startX, vb.yTop).lineTo(endX, vb.yTop);
+                        g.moveTo(startX, vb.yBot).lineTo(endX, vb.yBot);
+                    }
+                }
+                g.stroke({
+                    color: highLowLineColor.color,
+                    width: Math.max(1, borderWidth),
+                    alpha: Math.min(1.0, Math.max(0.85, highLowLineColor.alpha)),
+                    cap: 'butt'
+                });
             }
         }
 
         // =========================================================================
-        // 3. Optional Status Labels
+        // 3. Optional Status Labels & Level Indicators
         // =========================================================================
-        if (showLabels && (visibleMicro.length > 0 || visibleMacro.length > 0)) {
+        const needLabels = (showLabels && (visibleMicro.length > 0 || visibleMacro.length > 0)) ||
+                           (showMidline && visibleMacro.length > 0);
+
+        if (needLabels) {
             if (!this.isContainerMounted) {
                 r.app.stage.addChild(this.labelContainer);
                 this.isContainerMounted = true;
@@ -617,19 +696,32 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                 activeTextCount++;
             };
 
-            for (let i = 0; i < visibleMicro.length; i++) {
-                const vb = visibleMicro[i];
-                if (vb.x1 <= screenW - 30) {
-                    const text = vb.box.isOpen ? 'MICRO PULLBACK' : (vb.box.breakoutDir === 'up' ? 'MICRO BRK UP' : 'MICRO BRK DN');
-                    placeLabel(text, Math.max(4, vb.x1 + 3), Math.max(12, vb.yTop - 11), microBorder.color);
+            if (showMicro && showLabels) {
+                for (let i = 0; i < visibleMicro.length; i++) {
+                    const vb = visibleMicro[i];
+                    if (vb.x1 <= screenW - 30) {
+                        const text = vb.box.isOpen ? 'MICRO PULLBACK' : (vb.box.breakoutDir === 'up' ? 'MICRO BRK UP' : 'MICRO BRK DN');
+                        placeLabel(text, Math.max(4, vb.x1 + 3), Math.max(12, vb.yTop - 11), microBorder.color);
+                    }
                 }
             }
 
-            for (let i = 0; i < visibleMacro.length; i++) {
-                const vb = visibleMacro[i];
-                if (vb.x1 <= screenW - 30) {
-                    const text = vb.box.isOpen ? 'MACRO PULLBACK' : (vb.box.breakoutDir === 'up' ? 'MACRO BRK UP' : 'MACRO BRK DN');
-                    placeLabel(text, Math.max(4, vb.x1 + 3), Math.max(12, vb.yTop - 11), macroBorder.color);
+            if (showMacro) {
+                for (let i = 0; i < visibleMacro.length; i++) {
+                    const vb = visibleMacro[i];
+                    if (vb.x1 <= screenW - 30) {
+                        if (showLabels && vb.x2 >= minX) {
+                            const text = vb.box.isOpen ? 'MACRO PULLBACK' : (vb.box.breakoutDir === 'up' ? 'MACRO BRK UP' : 'MACRO BRK DN');
+                            placeLabel(text, Math.max(4, vb.x1 + 3), Math.max(12, vb.yTop - 11), macroBorder.color);
+                        }
+                        if (showMidline) {
+                            const endX = Math.min(screenW, vb.midlineEndX ?? vb.x2);
+                            const labelX = Math.min(screenW - 34, endX - 30);
+                            if (labelX >= 0) {
+                                placeLabel('50%', labelX, Math.max(12, vb.yMid - 10), midlineColor.color);
+                            }
+                        }
+                    }
                 }
             }
         } else {
