@@ -206,6 +206,16 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         microTopBar = null;
                         microBotBar = null;
                         microBox = null;
+                    } else if (!useWicks) {
+                        // EXPANSION: Expand the box to encompass new wicks that didn't close beyond
+                        if (h > microTop) {
+                            microTop = h;
+                            microBox.top = h;
+                        }
+                        if (l < microBot) {
+                            microBot = l;
+                            microBox.bottom = l;
+                        }
                     }
                 }
 
@@ -357,6 +367,16 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         macroTopBar = null;
                         macroBotBar = null;
                         macroBox = null;
+                    } else if (!useWicks) {
+                        // EXPANSION: Expand the box to encompass new wicks that didn't close beyond
+                        if (h > macroTop) {
+                            macroTop = h;
+                            macroBox.top = h;
+                        }
+                        if (l < macroBot) {
+                            macroBot = l;
+                            macroBox.bottom = l;
+                        }
                     }
                 }
 
