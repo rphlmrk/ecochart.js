@@ -1,5 +1,6 @@
 import type { ChartRenderer } from './ChartRenderer';
 import { BinanceClient } from '../network/BinanceClient';
+import { alertManager } from '../alerts/AlertManager';
 
 export class PriceAxisRenderer {
     private canvas: HTMLCanvasElement;
@@ -238,6 +239,26 @@ export class PriceAxisRenderer {
                     this.ctx.font = '11px sans-serif';
                     this.ctx.fillText(text, w / 2, pillY + 10);
                 }
+            }
+        }
+
+        // 7. Active Price Alert Axis Badges
+        const activeAlerts = alertManager.getActiveAlertsForSymbol(this.renderer.currentSymbol);
+        for (const alert of activeAlerts) {
+            const alertY = this.renderer.priceToY(alert.targetPrice);
+            if (alertY >= 0 && alertY <= mainChartHeight) {
+                const pillH = 16;
+                const pillY = Math.max(0, Math.min(mainChartHeight - pillH, alertY - 8));
+                const alertColor = alert.color || '#FF9800';
+
+                this.ctx.fillStyle = alertColor;
+                this.ctx.fillRect(0, pillY, w, pillH);
+
+                this.ctx.fillStyle = '#000000';
+                this.ctx.font = 'bold 10px sans-serif';
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillText(`🔔 ${alert.targetPrice.toFixed(2)}`, w / 2, pillY + 8);
             }
         }
     }

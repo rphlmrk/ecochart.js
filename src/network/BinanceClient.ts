@@ -2,6 +2,7 @@ import { DataStore } from '../data/DataStore';
 import { TimeframeResampler } from '../data/TimeframeResampler';
 import { DataWorkerClient } from '../workers/DataWorkerClient';
 import { favoritesManager } from '../data/FavoritesManager';
+import { alertManager } from '../alerts/AlertManager';
 
 export interface TickerData {
     lastPrice: number;
@@ -388,12 +389,19 @@ export class BinanceClient {
                     }, shouldPersist);
                 }
 
+                // Phase 1 Alert Engine: Evaluate active price alerts on live bar tick
+                alertManager.checkPrice(symbol, c, h, l);
+
                 // Pass true HTF closure state to the Indicator Math Engine
                 onUpdate(0, isHTFClosed);
             }
             else if (data.e === '24hrTicker') {
                 const changePct = parseFloat(data.P);
                 if (!isNaN(changePct)) onTicker(changePct);
+                if (data.c) {
+                    const lastPrice = parseFloat(data.c);
+                    if (!isNaN(lastPrice)) alertManager.checkPrice(symbol, lastPrice);
+                }
             }
         };
 

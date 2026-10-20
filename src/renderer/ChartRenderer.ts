@@ -4,6 +4,7 @@ import type { ChartTheme, LineStyle } from '../theme/types';
 import { ThemeManager } from '../theme/ThemeManager';
 import { StrokeEngine } from './StrokeEngine';
 import type { OscillatorScale } from '../indicators/Indicator';
+import { alertManager } from '../alerts/AlertManager';
 
 export class ChartRenderer {
     public app: Application;
@@ -216,8 +217,9 @@ export class ChartRenderer {
     public accentColor = 0x2962FF;
     public mainLineWidth = 2;
 
-    // Current Timeframe for countdown & extrapolation
+    // Current Timeframe & Symbol for countdown & alert triggers
     public currentInterval: string = '1m';
+    public currentSymbol: string = 'BTCUSDT';
 
     public parseIntervalMs(tf: string): number {
         const unit = tf.slice(-1).toLowerCase();
@@ -566,6 +568,23 @@ export class ChartRenderer {
             if (hours > 0) countdownStr = `${hours}:${countdownStr}`;
 
             // (Live Price & Countdown Pill is now drawn on the dedicated PriceAxisCanvas)
+        }
+
+        // --- 4.5 DRAW ACTIVE ON-CHART ALERT LINES ---
+        const activeAlerts = alertManager.getActiveAlertsForSymbol(this.currentSymbol);
+        for (const alert of activeAlerts) {
+            const alertY = priceToY(alert.targetPrice);
+            if (alertY >= 0 && alertY <= mainChartHeight) {
+                const alertColor = ThemeManager.hexToInt(alert.color || '#FF9800');
+                StrokeEngine.drawLine(this.uiGraphics, 0, alertY, chartWidth, alertY, {
+                    color: alertColor,
+                    width: 1.5,
+                    alpha: 0.85,
+                    style: 'dashed',
+                    dashLength: 8,
+                    gapLength: 5
+                });
+            }
         }
 
         // Render Title & Live/Historical Telemetry for Bottom Panels

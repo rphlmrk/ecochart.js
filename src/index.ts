@@ -27,6 +27,8 @@ import { PriceAxisRenderer } from './renderer/PriceAxisRenderer';
 import { TimeAxisRenderer } from './renderer/TimeAxisRenderer';
 import { favoritesManager } from './data/FavoritesManager';
 import { DataWorkerClient } from './workers/DataWorkerClient';
+export { alertManager } from './alerts/AlertManager';
+import { AlertUI } from './alerts/AlertUI';
 
 export interface SavedPaneState {
     symbol: string;
@@ -1605,10 +1607,12 @@ export class EcoChart {
     public async switchTimeframe(newInterval: string) {
         this.currentInterval = newInterval;
         this.renderer.currentInterval = newInterval;
+        this.renderer.currentSymbol = this.currentSymbol;
         this.network.disconnect();
         this.dataStore.clear();
         this.indicatorManager.resetAll();
         this.isDirty = true;
+        this.priceAxisRenderer.render();
 
         await this.network.connect(this.currentSymbol, this.currentInterval, (prependedCount = 0, isClosed = true) => {
             if (prependedCount > 0) {
@@ -1642,11 +1646,13 @@ export class EcoChart {
 
     public async switchSymbol(newSymbol: string) {
         this.currentSymbol = newSymbol;
+        this.renderer.currentSymbol = newSymbol;
         this.drawingManager.loadDrawings(newSymbol); // Load DB drawings!
         this.network.disconnect();
         this.dataStore.clear();
         this.indicatorManager.resetAll();
         this.isDirty = true;
+        this.priceAxisRenderer.render();
 
         await this.network.connect(this.currentSymbol, this.currentInterval, (prependedCount = 0, isClosed = true) => {
             if (prependedCount > 0 && !this.isLockedToEdge) {
@@ -1655,6 +1661,7 @@ export class EcoChart {
             }
             this.indicatorManager.update(this.dataStore, isClosed); // Run Math Engine
             this.isDirty = true;
+            this.priceAxisRenderer.render();
             if (this.isLockedToEdge) {
                 const actualSpacing = this.renderer.candleSpacing * this.renderer.zoom;
                 const maxScroll = (this.dataStore.length * actualSpacing) - this.canvas.clientWidth;
@@ -1673,7 +1680,9 @@ export class EcoChart {
 
     public async startLiveBinance(symbol: string, interval: string) {
         this.currentSymbol = symbol;
+        this.renderer.currentSymbol = symbol;
         this.currentInterval = interval;
+        this.renderer.currentInterval = interval;
 
         await this.drawingManager.loadDrawings(symbol);
 
@@ -2409,7 +2418,25 @@ export class WorkspaceManager {
     }
 
     public static init() {
+        (window as any).WorkspaceManager = WorkspaceManager;
         this.setupGlobalControls();
+        AlertUI.init();
+
+        window.addEventListener('ecochart-alerts-updated', () => {
+            this.charts.forEach(c => {
+                c.renderer.forceNextRender = true;
+                c.isDirty = true;
+                c.priceAxisRenderer.render();
+            });
+        });
+
+        window.addEventListener('ecochart-switch-symbol', (e: any) => {
+            const sym = e.detail;
+            if (sym && this.activeChart) {
+                this.activeChart.switchSymbol(sym);
+                this.syncTopBar();
+            }
+        });
 
         try {
             const raw = localStorage.getItem('ecochart_workspace_v1');
