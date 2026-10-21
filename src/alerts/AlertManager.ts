@@ -1,8 +1,8 @@
 import type { PriceAlert, TriggerEvent, AlertCondition, AlertFrequency } from './types';
-import { SoundEngine } from './SoundEngine';
 import { AlertToastManager } from './AlertToast';
 import { CapacitorNotificationService } from './CapacitorNotificationService';
 import { ForegroundServiceManager } from './ForegroundServiceManager';
+import { AlarmOverlay } from './AlarmOverlay';
 
 export class AlertManager {
     private static instance: AlertManager;
@@ -341,15 +341,15 @@ export class AlertManager {
 
         this.save();
 
-        // 1. Play synthesized chime sound
+        // 1. Play continuous alarm sound & display persistent alarm modal until closed
         if (alert.soundEnabled) {
-            SoundEngine.playAlertChime();
+            AlarmOverlay.triggerAlarm(triggerEvent);
+        } else {
+            // Even if muted, show toast
+            AlertToastManager.show(triggerEvent, (sym) => {
+                window.dispatchEvent(new CustomEvent('ecochart-switch-symbol', { detail: sym }));
+            });
         }
-
-        // 2. Display on-screen toast notification banner
-        AlertToastManager.show(triggerEvent, (sym) => {
-            window.dispatchEvent(new CustomEvent('ecochart-switch-symbol', { detail: sym }));
-        });
 
         // 3. Native Capacitor Android & Web Push Notification
         CapacitorNotificationService.send(
@@ -447,18 +447,17 @@ export class AlertManager {
 
         this.save();
 
-        // 1. Play audio chime
+        // 1. Play continuous alarm sound & display persistent alarm modal until closed
         const shouldPlaySound = matchingAlerts.length > 0
             ? matchingAlerts.some(a => a.soundEnabled)
             : true;
         if (shouldPlaySound) {
-            SoundEngine.playAlertChime();
+            AlarmOverlay.triggerAlarm(triggerEvent);
+        } else {
+            AlertToastManager.show(triggerEvent, (sym) => {
+                window.dispatchEvent(new CustomEvent('ecochart-switch-symbol', { detail: sym }));
+            });
         }
-
-        // 2. In-app toast banner
-        AlertToastManager.show(triggerEvent, (sym) => {
-            window.dispatchEvent(new CustomEvent('ecochart-switch-symbol', { detail: sym }));
-        });
 
         // 3. Native Capacitor Android & Web Push Notification
         CapacitorNotificationService.send(

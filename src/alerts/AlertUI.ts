@@ -2,6 +2,7 @@ import { alertManager } from './AlertManager';
 import { SoundEngine } from './SoundEngine';
 import { CapacitorNotificationService } from './CapacitorNotificationService';
 import { ForegroundServiceManager } from './ForegroundServiceManager';
+import { AlarmOverlay } from './AlarmOverlay';
 import { Capacitor } from '@capacitor/core';
 import type { AlertCondition, AlertFrequency } from './types';
 
@@ -16,6 +17,7 @@ export class AlertUI {
         this.setupEventListeners();
         this.updateBadge();
         ForegroundServiceManager.init();
+        AlarmOverlay.init();
         this.updateForegroundIndicator();
 
         // Reactive updates
@@ -85,6 +87,14 @@ export class AlertUI {
                         background: transparent; border: 1px solid var(--chart-grid, #363A45); border-radius: 4px;
                         color: #787B86; font-size: 11px; padding: 3px 6px; cursor: pointer;
                     ">Test 🎵</button>
+
+                    <!-- Test Alarm (Continuous until closed) -->
+                    <button id="btn-alert-test-alarm" title="Test Continuous Alarm (Rings and vibrates until closed)" style="
+                        background: rgba(239, 83, 80, 0.15); border: 1px solid rgba(239, 83, 80, 0.4); border-radius: 4px;
+                        color: #EF5350; font-size: 11px; font-weight: 700; padding: 3px 8px; cursor: pointer; display: flex; align-items: center; gap: 4px;
+                    ">
+                        <span>🚨 Test Alarm</span>
+                    </button>
 
                     <button id="btn-close-alert-modal" style="
                         background: none; border: none; color: #787B86; font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1;
@@ -430,6 +440,11 @@ export class AlertUI {
         // Test sound
         document.getElementById('btn-alert-test-sound')?.addEventListener('click', () => {
             SoundEngine.testSound();
+        });
+
+        // Test Continuous Alarm
+        document.getElementById('btn-alert-test-alarm')?.addEventListener('click', () => {
+            AlarmOverlay.testAlarm();
         });
 
         // Test Android Native / Push Notification Button
@@ -1141,10 +1156,18 @@ export class AlertUI {
         const dot = document.getElementById('fg-indicator-dot');
         const label = document.getElementById('fg-indicator-label');
         const badge = document.getElementById('badge-fg-status');
+        const btn = document.getElementById('btn-foreground-service-indicator');
 
         if (dot) {
             dot.style.background = isRunning ? '#00E676' : '#787B86';
-            dot.style.boxShadow = isRunning ? '0 0 6px #00E676' : 'none';
+            dot.style.boxShadow = isRunning ? '0 0 8px #00E676, 0 0 3px #00E676' : 'none';
+        }
+        if (btn) {
+            btn.title = isRunning 
+                ? 'Background Service: ON (Running 24/7 in Background) - Click to configure' 
+                : 'Background Service: OFF - Click to configure';
+            btn.style.borderColor = isRunning ? 'rgba(0, 230, 118, 0.5)' : 'var(--chart-grid, #363A45)';
+            btn.style.background = isRunning ? 'rgba(0, 230, 118, 0.12)' : 'transparent';
         }
         if (label) {
             label.textContent = isRunning ? 'BG: ON' : 'BG Service';
