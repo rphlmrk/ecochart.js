@@ -3,6 +3,7 @@ import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { StrokeEngine } from '../../renderer/StrokeEngine';
 import { Graphics, Container, BitmapText } from 'pixi.js';
+import { alertManager } from '../../alerts/AlertManager';
 
 export interface PullbackZoneBox {
     leftBar: number;
@@ -17,6 +18,8 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
     // Cached structure boxes to eliminate render-loop CPU calculations
     public cachedMicroBoxes: PullbackZoneBox[] = [];
     public cachedMacroBoxes: PullbackZoneBox[] = [];
+    public currentSymbol = 'BTCUSDT';
+    private notifiedBreakouts = new Set<string>();
 
     private lastCalculatedLength = -1;
     private lastStateHash = '';
@@ -60,8 +63,40 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
             { id: 'extendHighLowLines', name: 'Extend High & Low Lines to Right', type: 'boolean', value: false },
             { id: 'extendHighLowCount', name: 'Past Boxes to Extend High/Low', type: 'number', value: 1, min: 1, max: 20, step: 1 },
 
-            { id: 'showLabels', name: 'Show Status Labels', type: 'boolean', value: false }
+            { id: 'showLabels', name: 'Show Status Labels', type: 'boolean', value: false },
+
+            // Phase 3 Breakout Notifications
+            { id: 'alertMicroBreakout', name: '🔔 Alert on Micro Box Breakout', type: 'boolean', value: true },
+            { id: 'alertMacroBreakout', name: '🔔 Alert on Macro Box Breakout', type: 'boolean', value: true }
         ];
+    }
+
+    private dispatchBreakoutAlert(
+        boxType: 'micro' | 'macro',
+        direction: 'up' | 'down',
+        top: number,
+        bottom: number,
+        price: number,
+        barIndex: number,
+        barTime: number
+    ): void {
+        const isEnabled = boxType === 'micro'
+            ? this.getParam<boolean>('alertMicroBreakout', true)
+            : this.getParam<boolean>('alertMacroBreakout', true);
+
+        if (!isEnabled) return;
+
+        const sym = this.currentSymbol || 'BTCUSDT';
+        const key = `${sym}_${boxType}_${direction}_${barTime || barIndex}`;
+        if (this.notifiedBreakouts.has(key)) return;
+
+        this.notifiedBreakouts.add(key);
+        if (this.notifiedBreakouts.size > 200) {
+            const firstKey = this.notifiedBreakouts.values().next().value;
+            if (firstKey) this.notifiedBreakouts.delete(firstKey);
+        }
+
+        alertManager.triggerPullbackBreakout(sym, boxType, direction, price, top, bottom);
     }
 
     protected override onParamsUpdated(): void {
@@ -86,6 +121,41 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
     public override update(ds: DataStore, isClosedTick: boolean): void {
         this.buildCachedBoxes(ds);
         super.update(ds, isClosedTick);
+    }
+
+    /**
+     * Retrieves the currently open Micro Structure Box (Blue) if active.
+     */
+    public getLatestOpenMicroBox(): PullbackZoneBox | null {
+        for (let i = this.cachedMicroBoxes.length - 1; i >= 0; i--) {
+            if (this.cachedMicroBoxes[i].isOpen) return this.cachedMicroBoxes[i];
+        }
+        return null;
+    }
+
+    /**
+     * Retrieves the currently open Macro Structure Box (Red) if active.
+     */
+    public getLatestOpenMacroBox(): PullbackZoneBox | null {
+        for (let i = this.cachedMacroBoxes.length - 1; i >= 0; i--) {
+            if (this.cachedMacroBoxes[i].isOpen) return this.cachedMacroBoxes[i];
+        }
+        return null;
+    }
+
+    /**
+     * Retrieves a summary of currently active pullback structure ranges.
+     */
+    public getPullbackStatus(): {
+        microBox: { top: number; bottom: number } | null;
+        macroBox: { top: number; bottom: number } | null;
+    } {
+        const micro = this.getLatestOpenMicroBox();
+        const macro = this.getLatestOpenMacroBox();
+        return {
+            microBox: micro ? { top: micro.top, bottom: micro.bottom } : null,
+            macroBox: macro ? { top: macro.top, bottom: macro.bottom } : null
+        };
     }
 
     /**
@@ -188,6 +258,9 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         microDir = 1; 
                         lastMicroTop = microTop; // Save structure bounds
                         lastMicroBot = microBot;
+                        if (i === len - 1) {
+                            this.dispatchBreakoutAlert('micro', 'up', microTop, microBot, useWicks ? h : c, i, data[base]);
+                        }
                         microTop = null;
                         microBot = null;
                         microTopBar = null;
@@ -201,6 +274,9 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         microDir = -1; 
                         lastMicroTop = microTop; // Save structure bounds
                         lastMicroBot = microBot;
+                        if (i === len - 1) {
+                            this.dispatchBreakoutAlert('micro', 'down', microTop, microBot, useWicks ? l : c, i, data[base]);
+                        }
                         microTop = null;
                         microBot = null;
                         microTopBar = null;
@@ -349,6 +425,9 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         macroDir = 1; 
                         lastMacroTop = macroTop;
                         lastMacroBot = macroBot;
+                        if (i === len - 1) {
+                            this.dispatchBreakoutAlert('macro', 'up', macroTop, macroBot, useWicks ? h : c, i, data[base]);
+                        }
                         macroTop = null;
                         macroBot = null;
                         macroTopBar = null;
@@ -362,6 +441,9 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
                         macroDir = -1; 
                         lastMacroTop = macroTop;
                         lastMacroBot = macroBot;
+                        if (i === len - 1) {
+                            this.dispatchBreakoutAlert('macro', 'down', macroTop, macroBot, useWicks ? l : c, i, data[base]);
+                        }
                         macroTop = null;
                         macroBot = null;
                         macroTopBar = null;

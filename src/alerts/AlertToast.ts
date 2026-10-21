@@ -31,15 +31,18 @@ export class AlertToastManager {
 
         const toast = document.createElement('div');
         toast.className = 'alert-toast-card';
+        const isPullback = !!event.boxDetails || event.condition.startsWith('pullback_');
+        const borderColor = event.boxDetails?.boxType === 'macro' ? '#EF5350' : event.boxDetails?.boxType === 'micro' ? '#2962FF' : '#FF9800';
+
         toast.style.cssText = `
             pointer-events: auto;
             background: rgba(22, 26, 37, 0.95);
             backdrop-filter: blur(12px);
             -webkit-backdrop-filter: blur(12px);
-            border: 1px solid #FF9800;
-            border-left: 4px solid #FF9800;
+            border: 1px solid ${borderColor};
+            border-left: 4px solid ${borderColor};
             border-radius: 8px;
-            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 0 16px rgba(255, 152, 0, 0.25);
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 0 16px ${borderColor}40;
             padding: 10px 14px;
             color: #D1D4DC;
             display: flex;
@@ -57,20 +60,28 @@ export class AlertToastManager {
             cross_up: 'Crossed Up ↑',
             cross_down: 'Crossed Down ↓',
             greater: 'Greater Than >',
-            less: 'Less Than <'
+            less: 'Less Than <',
+            pullback_micro_break: 'Micro Box Breakout',
+            pullback_micro_break_up: 'Micro Box Breakout Up ▲',
+            pullback_micro_break_down: 'Micro Box Breakdown Down ▼',
+            pullback_macro_break: 'Macro Box Breakout',
+            pullback_macro_break_up: 'Macro Box Breakout Up ▲',
+            pullback_macro_break_down: 'Macro Box Breakdown Down ▼'
         };
 
         const condLabel = conditionLabels[event.condition] || event.condition;
         const timeStr = new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
+        const icon = isPullback ? '📦' : '🔔';
+
         toast.innerHTML = `
-            <div style="font-size: 18px; line-height: 1; margin-top: 2px;">🔔</div>
+            <div style="font-size: 18px; line-height: 1; margin-top: 2px;">${icon}</div>
             <div style="flex: 1; min-width: 0;">
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px;">
                     <span style="font-weight: 700; font-size: 13px; color: #fff;">${event.symbol}</span>
                     <span style="font-size: 10px; color: #787B86;">${timeStr}</span>
                 </div>
-                <div style="font-size: 12px; font-weight: 600; color: #FF9800; margin-top: 2px;">
+                <div style="font-size: 12px; font-weight: 600; color: ${borderColor}; margin-top: 2px;">
                     ${event.name || 'Price Alert'}
                 </div>
                 <div style="font-size: 11px; color: #A0A5B5; margin-top: 2px;">

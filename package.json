@@ -17,6 +17,7 @@
     "@capacitor/android": "^8.5.2",
     "@capacitor/cli": "^8.5.2",
     "@capacitor/core": "^8.5.2",
+    "@capacitor/local-notifications": "^8.3.1",
     "dexie": "^4.4.6",
     "pixi.js": "^8"
   }

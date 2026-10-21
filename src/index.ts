@@ -1647,6 +1647,7 @@ export class EcoChart {
     public async switchSymbol(newSymbol: string) {
         this.currentSymbol = newSymbol;
         this.renderer.currentSymbol = newSymbol;
+        this.indicatorManager.currentSymbol = newSymbol;
         this.drawingManager.loadDrawings(newSymbol); // Load DB drawings!
         this.network.disconnect();
         this.dataStore.clear();
@@ -1681,6 +1682,7 @@ export class EcoChart {
     public async startLiveBinance(symbol: string, interval: string) {
         this.currentSymbol = symbol;
         this.renderer.currentSymbol = symbol;
+        this.indicatorManager.currentSymbol = symbol;
         this.currentInterval = interval;
         this.renderer.currentInterval = interval;
 

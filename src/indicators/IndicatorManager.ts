@@ -49,8 +49,11 @@ export class IndicatorManager {
         }
     }
 
+    public currentSymbol = 'BTCUSDT';
+
     public update(dataStore: DataStore, isClosed: boolean = true) {
         for (const ind of this.activeIndicators) {
+            (ind as any).currentSymbol = this.currentSymbol;
             // ALWAYS calculate the math so it's ready if toggled visible
             ind.update(dataStore, isClosed);
         }
