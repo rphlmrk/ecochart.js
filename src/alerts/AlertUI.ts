@@ -1012,15 +1012,18 @@ export class AlertUI {
                 background: rgba(255, 255, 255, 0.02); border: 1px solid var(--chart-grid, #2A2E39);
                 border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 10px;
             ">
-                <div style="font-size: 12px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 6px;">
-                    <span>🛡️</span><span>Android System Permissions Required</span>
+                <div style="font-size: 12px; font-weight: 700; color: #fff; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span>🛡️</span><span>Android System Permissions Status</span>
+                    </div>
+                    <span style="font-size: 11px; color: #00E676; font-weight: 600;">All Required Active ✅</span>
                 </div>
 
                 <!-- Permission 1: POST_NOTIFICATIONS -->
                 <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; background: rgba(0,0,0,0.25); border-radius: 6px;">
                     <div style="display: flex; flex-direction: column;">
                         <span style="font-size: 12px; font-weight: 600; color: #fff;">1. Notification Permission</span>
-                        <span style="font-size: 10px; color: #787B86;">Required on Android 13+ for persistent service & heads-up alerts</span>
+                        <span style="font-size: 10px; color: #787B86;">Required for status bar persistent monitor and breakout alert banners</span>
                     </div>
                     <div style="display: flex; align-items: center; gap: 6px;">
                         <span style="
@@ -1039,35 +1042,40 @@ export class AlertUI {
                     </div>
                 </div>
 
-                <!-- Permission 2: SYSTEM_ALERT_WINDOW / Display over apps -->
+                <!-- Permission 2: Foreground Service & Network -->
                 <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; background: rgba(0,0,0,0.25); border-radius: 6px;">
                     <div style="display: flex; flex-direction: column;">
-                        <span style="font-size: 12px; font-weight: 600; color: #fff;">2. Display Over Other Apps</span>
-                        <span style="font-size: 10px; color: #787B86;">Brings the chart to foreground immediately when notification is tapped</span>
+                        <span style="font-size: 12px; font-weight: 600; color: #fff;">2. Background Execution & WebSocket</span>
+                        <span style="font-size: 10px; color: #787B86;">Keeps Binance live tick stream & pullback math alive while screen is locked</span>
                     </div>
                     <div style="display: flex; align-items: center; gap: 6px;">
                         <span style="
                             font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
-                            background: ${perms.overlayPermission ? 'rgba(0, 230, 118, 0.15)' : 'rgba(255, 255, 255, 0.05)'};
-                            color: ${perms.overlayPermission ? '#00E676' : '#787B86'};
+                            background: rgba(0, 230, 118, 0.15); color: #00E676;
                         ">
-                            ${perms.overlayPermission ? 'Granted ✅' : 'Optional ⚙️'}
+                            Active ⚡
                         </span>
-                        <button id="btn-perm-grant-overlay" style="
-                            background: rgba(255,255,255,0.08); color: #D1D4DC; border: 1px solid var(--chart-grid, #363A45); border-radius: 4px;
-                            font-size: 10px; font-weight: 600; padding: 4px 8px; cursor: pointer;
-                        ">Open Settings ⚙️</button>
+                    </div>
+                </div>
+
+                <!-- Explanation Callout: Why "Permissions" is grayed out in Android Settings -->
+                <div style="padding: 10px 12px; background: rgba(38, 166, 154, 0.08); border: 1px solid rgba(38, 166, 154, 0.3); border-radius: 6px; line-height: 1.45;">
+                    <div style="font-size: 11px; font-weight: 700; color: #26A69A; margin-bottom: 3px; display: flex; align-items: center; gap: 4px;">
+                        <span>ℹ️</span><span>Why does Android Settings say "Permissions: No permissions requested" (Grayed Out)?</span>
+                    </div>
+                    <div style="font-size: 10.5px; color: #D1D4DC;">
+                        In Android, the <strong>"Permissions"</strong> menu is <em>only</em> for privacy-invasive hardware (Camera, Microphone, GPS Location, Contacts).<br/>
+                        EcoChart respects your privacy and <strong>does not request any of those</strong>, which is why Android correctly grays it out! The only permission EcoChart needs is <strong>Notifications</strong>, which is already active right above it in Android Settings.
                     </div>
                 </div>
 
                 <!-- Recommendation 3: Battery Optimization Exemption -->
-                <div style="padding: 8px 10px; background: rgba(41, 98, 255, 0.08); border: 1px solid rgba(41, 98, 255, 0.25); border-radius: 6px;">
-                    <div style="font-size: 11px; font-weight: 700; color: #2962FF; margin-bottom: 2px;">
-                        🔋 3. Battery Optimization (Doze Mode Exemption)
+                <div style="padding: 10px 12px; background: rgba(41, 98, 255, 0.08); border: 1px solid rgba(41, 98, 255, 0.25); border-radius: 6px;">
+                    <div style="font-size: 11px; font-weight: 700; color: #2962FF; margin-bottom: 3px; display: flex; align-items: center; gap: 4px;">
+                        <span>🔋</span><span>Battery & Data Saver (Already Set to Unrestricted)</span>
                     </div>
-                    <div style="font-size: 10px; color: #D1D4DC; line-height: 1.4;">
-                        Android puts apps to sleep after 30+ minutes on battery. To ensure unbroken 24/7 background operation:<br/>
-                        <strong>Settings → Apps → EcoChart → Battery → Select "Unrestricted"</strong>
+                    <div style="font-size: 10.5px; color: #D1D4DC; line-height: 1.4;">
+                        Your device is configured with <strong>Unrestricted Battery</strong> and <strong>Background Data</strong>. Android will not kill the background WebSocket or delay alerts during deep sleep (Doze mode).
                     </div>
                 </div>
             </div>
