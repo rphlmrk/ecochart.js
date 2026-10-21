@@ -762,6 +762,13 @@
           <span>+</span><span>Alert</span>
         </button>
 
+        <!-- Android Foreground Background Service Quick Toggle & Indicator -->
+        <button id="btn-foreground-service-indicator" title="Android Foreground Service (Keep running when screen is locked or minimized)"
+          style="background: rgba(255, 255, 255, 0.03); color: #787B86; border: 1px solid var(--chart-grid, #363A45); padding: 2px 7px; font-size: 11px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 5px; font-family: inherit;">
+          <span id="fg-indicator-dot" style="width: 7px; height: 7px; border-radius: 50%; background: #787B86; display: inline-block; transition: background 0.2s ease, box-shadow 0.2s ease;"></span>
+          <span id="fg-indicator-label" style="font-weight: 600;">BG Service</span>
+        </button>
+
         <!-- Right-Aligned Controls Group -->
         <div style="margin-left: auto; display: flex; align-items: center; gap: 4px;">
 

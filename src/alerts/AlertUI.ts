@@ -1,6 +1,7 @@
 import { alertManager } from './AlertManager';
 import { SoundEngine } from './SoundEngine';
 import { CapacitorNotificationService } from './CapacitorNotificationService';
+import { ForegroundServiceManager } from './ForegroundServiceManager';
 import { Capacitor } from '@capacitor/core';
 import type { AlertCondition, AlertFrequency } from './types';
 
@@ -14,12 +15,15 @@ export class AlertUI {
         this.injectModals();
         this.setupEventListeners();
         this.updateBadge();
+        ForegroundServiceManager.init();
+        this.updateForegroundIndicator();
 
         // Reactive updates
         alertManager.subscribe(() => {
             this.updateBadge();
             this.renderActiveAlerts();
             this.renderHistory();
+            this.updateForegroundIndicator();
         });
     }
 
@@ -99,6 +103,13 @@ export class AlertUI {
                         background: transparent; color: #787B86; border: none;
                         padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer;
                     ">Triggered (<span id="alert-tab-history-count">0</span>)</button>
+                    <button class="alert-tab-btn" data-tab="background" style="
+                        background: transparent; color: #787B86; border: none;
+                        padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px;
+                    ">
+                        <span>⚡ Background Service</span>
+                        <span id="badge-fg-status" style="width: 7px; height: 7px; border-radius: 50%; background: #787B86; display: inline-block;"></span>
+                    </button>
                 </div>
                 <div style="display: flex; gap: 6px;">
                     <button id="btn-modal-quick-pullback" title="Quickly monitor Micro & Macro Pullback breakouts" style="
@@ -126,6 +137,11 @@ export class AlertUI {
                     ">Clear History</button>
                 </div>
                 <div id="alert-history-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
+            </div>
+
+            <!-- Tab Content 3: Android Background / Foreground Service -->
+            <div id="alert-tab-content-background" style="display: none; padding: 14px 18px; max-height: 440px; min-height: 240px; overflow-y: auto;">
+                <div id="fg-service-container" style="display: flex; flex-direction: column; gap: 12px;"></div>
             </div>
         `;
         document.body.appendChild(modal);
@@ -371,9 +387,20 @@ export class AlertUI {
 
                 const activeContent = document.getElementById('alert-tab-content-active');
                 const historyContent = document.getElementById('alert-tab-content-history');
+                const bgContent = document.getElementById('alert-tab-content-background');
                 if (activeContent) activeContent.style.display = tab === 'active' ? 'block' : 'none';
                 if (historyContent) historyContent.style.display = tab === 'history' ? 'block' : 'none';
+                if (bgContent) bgContent.style.display = tab === 'background' ? 'block' : 'none';
+
+                if (tab === 'background') {
+                    this.renderBackgroundServiceTab();
+                }
             });
+        });
+
+        // Topbar quick background service trigger
+        document.getElementById('btn-foreground-service-indicator')?.addEventListener('click', () => {
+            this.openAlertModal('background');
         });
 
         // Open Create Alert from inside the main modal
@@ -622,9 +649,10 @@ export class AlertUI {
         telemetry.innerHTML = lines.join('<br/>');
     }
 
-    public static openAlertModal(): void {
+    public static openAlertModal(tab: 'active' | 'history' | 'background' = 'active'): void {
         this.renderActiveAlerts();
         this.renderHistory();
+        this.updateForegroundIndicator();
 
         const soundIcon = document.getElementById('alert-sound-icon');
         const btnSoundToggle = document.getElementById('btn-alert-sound-toggle');
@@ -633,7 +661,13 @@ export class AlertUI {
         if (btnSoundToggle) btnSoundToggle.style.color = isMuted ? '#EF5350' : '#D1D4DC';
 
         const modal = document.getElementById('alert-modal') as HTMLDialogElement;
-        if (modal) modal.showModal();
+        if (modal) {
+            modal.showModal();
+            const targetBtn = modal.querySelector(`.alert-tab-btn[data-tab="${tab}"]`) as HTMLButtonElement;
+            if (targetBtn) {
+                targetBtn.click();
+            }
+        }
     }
 
     public static openCreateModal(symbol?: string, price?: number, defaultSource: 'price' | 'indicator_pullback' = 'indicator_pullback'): void {
@@ -909,5 +943,208 @@ export class AlertUI {
 
             container.appendChild(row);
         });
+    }
+
+    /**
+     * Renders the Android Foreground Service configuration and permission center
+     */
+    public static async renderBackgroundServiceTab(): Promise<void> {
+        const container = document.getElementById('fg-service-container');
+        if (!container) return;
+
+        const isAndroid = ForegroundServiceManager.isAndroid();
+        const isRunning = ForegroundServiceManager.isServiceActive();
+        const perms = await ForegroundServiceManager.checkPermissions();
+
+        const activeChart = (window as any).WorkspaceManager?.getActiveChart?.();
+        const currentSymbol = activeChart?.currentSymbol || 'BTCUSDT';
+        const pb = alertManager.getPullbackStatus(currentSymbol);
+        const microStr = pb?.microBox
+            ? `$${pb.microBox.bottom.toFixed(2)} - $${pb.microBox.top.toFixed(2)}`
+            : 'Forming swing pivots...';
+
+        container.innerHTML = `
+            <!-- 1. Master Foreground Service Card -->
+            <div style="
+                background: rgba(255, 255, 255, 0.03); border: 1px solid ${isRunning ? 'rgba(0, 230, 118, 0.4)' : 'var(--chart-grid, #363A45)'};
+                border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 10px;
+            ">
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 20px;">${isRunning ? '⚡' : '⏸️'}</span>
+                        <div>
+                            <div style="font-size: 13px; font-weight: 700; color: #fff;">Android Foreground Service</div>
+                            <div style="font-size: 11px; color: ${isAndroid ? '#26A69A' : '#787B86'}; font-weight: 600;">${isAndroid ? '📱 Android Native Foreground Service' : '🌐 Web Browser Mode'}</div>
+                        </div>
+                    </div>
+                    <span style="
+                        font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 12px;
+                        background: ${isRunning ? 'rgba(0, 230, 118, 0.15)' : 'rgba(255, 255, 255, 0.05)'};
+                        color: ${isRunning ? '#00E676' : '#787B86'}; border: 1px solid ${isRunning ? 'rgba(0, 230, 118, 0.3)' : 'transparent'};
+                    ">
+                        ${isRunning ? '🟢 RUNNING 24/7' : '⚪ STOPPED'}
+                    </span>
+                </div>
+
+                <div style="font-size: 12px; color: #D1D4DC; line-height: 1.4; background: rgba(0,0,0,0.2); padding: 8px 10px; border-radius: 6px;">
+                    When enabled, Android creates an ongoing system notification that keeps the app's CPU, network WebSocket, and 
+                    <strong>Market Structure Pullback Zones</strong> indicator calculations fully active while your phone is locked or minimized.
+                </div>
+
+                <div style="display: flex; gap: 8px; margin-top: 4px;">
+                    <button id="btn-toggle-fg-service" style="
+                        flex: 1; padding: 8px 12px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; border: none;
+                        background: ${isRunning ? '#EF5350' : 'var(--chart-accent, #2962FF)'}; color: #fff; display: flex; align-items: center; justify-content: center; gap: 6px;
+                    ">
+                        ${isRunning ? '⏹ Stop Background Service' : '⚡ Start Android Background Service'}
+                    </button>
+                    <button id="btn-test-fg-ping" title="Refresh or ping current notification" style="
+                        background: rgba(255,255,255,0.06); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px;
+                        color: #D1D4DC; font-size: 12px; padding: 8px 12px; cursor: pointer; font-weight: 600;
+                    ">
+                        📱 Ping Notification
+                    </button>
+                </div>
+            </div>
+
+            <!-- 2. Android Permissions & System Requirements Center -->
+            <div style="
+                background: rgba(255, 255, 255, 0.02); border: 1px solid var(--chart-grid, #2A2E39);
+                border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 10px;
+            ">
+                <div style="font-size: 12px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 6px;">
+                    <span>🛡️</span><span>Android System Permissions Required</span>
+                </div>
+
+                <!-- Permission 1: POST_NOTIFICATIONS -->
+                <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; background: rgba(0,0,0,0.25); border-radius: 6px;">
+                    <div style="display: flex; flex-direction: column;">
+                        <span style="font-size: 12px; font-weight: 600; color: #fff;">1. Notification Permission</span>
+                        <span style="font-size: 10px; color: #787B86;">Required on Android 13+ for persistent service & heads-up alerts</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="
+                            font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
+                            background: ${perms.notificationPermission === 'granted' ? 'rgba(0, 230, 118, 0.15)' : 'rgba(255, 152, 0, 0.15)'};
+                            color: ${perms.notificationPermission === 'granted' ? '#00E676' : '#FF9800'};
+                        ">
+                            ${perms.notificationPermission === 'granted' ? 'Granted ✅' : 'Required ⚠️'}
+                        </span>
+                        ${perms.notificationPermission !== 'granted' ? `
+                            <button id="btn-perm-grant-notif" style="
+                                background: #FF9800; color: #000; border: none; border-radius: 4px;
+                                font-size: 10px; font-weight: 700; padding: 4px 8px; cursor: pointer;
+                            ">Grant</button>
+                        ` : ''}
+                    </div>
+                </div>
+
+                <!-- Permission 2: SYSTEM_ALERT_WINDOW / Display over apps -->
+                <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; background: rgba(0,0,0,0.25); border-radius: 6px;">
+                    <div style="display: flex; flex-direction: column;">
+                        <span style="font-size: 12px; font-weight: 600; color: #fff;">2. Display Over Other Apps</span>
+                        <span style="font-size: 10px; color: #787B86;">Brings the chart to foreground immediately when notification is tapped</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="
+                            font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
+                            background: ${perms.overlayPermission ? 'rgba(0, 230, 118, 0.15)' : 'rgba(255, 255, 255, 0.05)'};
+                            color: ${perms.overlayPermission ? '#00E676' : '#787B86'};
+                        ">
+                            ${perms.overlayPermission ? 'Granted ✅' : 'Optional ⚙️'}
+                        </span>
+                        <button id="btn-perm-grant-overlay" style="
+                            background: rgba(255,255,255,0.08); color: #D1D4DC; border: 1px solid var(--chart-grid, #363A45); border-radius: 4px;
+                            font-size: 10px; font-weight: 600; padding: 4px 8px; cursor: pointer;
+                        ">Open Settings ⚙️</button>
+                    </div>
+                </div>
+
+                <!-- Recommendation 3: Battery Optimization Exemption -->
+                <div style="padding: 8px 10px; background: rgba(41, 98, 255, 0.08); border: 1px solid rgba(41, 98, 255, 0.25); border-radius: 6px;">
+                    <div style="font-size: 11px; font-weight: 700; color: #2962FF; margin-bottom: 2px;">
+                        🔋 3. Battery Optimization (Doze Mode Exemption)
+                    </div>
+                    <div style="font-size: 10px; color: #D1D4DC; line-height: 1.4;">
+                        Android puts apps to sleep after 30+ minutes on battery. To ensure unbroken 24/7 background operation:<br/>
+                        <strong>Settings → Apps → EcoChart → Battery → Select "Unrestricted"</strong>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 3. Ongoing Notification Preview Mock -->
+            <div style="
+                background: #1e222d; border: 1px solid var(--chart-grid, #363A45);
+                border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 6px;
+            ">
+                <div style="display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: #787B86;">
+                    <span>Android Status Bar Preview (Notification Tray)</span>
+                    <span style="color: #00E676;">Channel: EcoChart Background Monitor</span>
+                </div>
+                <div style="display: flex; align-items: flex-start; gap: 10px; padding: 8px; background: #131722; border-radius: 6px;">
+                    <div style="font-size: 20px;">📈</div>
+                    <div style="flex: 1;">
+                        <div style="font-size: 12px; font-weight: 700; color: #fff;">EcoChart: ${currentSymbol} Monitor Active</div>
+                        <div style="font-size: 11px; color: #26A69A; font-weight: 600;">Monitoring Pullback Zones • Micro: ${microStr}</div>
+                        <div style="margin-top: 6px;">
+                            <span style="display: inline-block; padding: 2px 8px; font-size: 10px; font-weight: 600; background: rgba(255,255,255,0.06); border-radius: 3px; color: #2962FF;">Open Chart 📈</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Attach listeners
+        document.getElementById('btn-toggle-fg-service')?.addEventListener('click', async () => {
+            const btn = document.getElementById('btn-toggle-fg-service') as HTMLButtonElement;
+            if (btn) btn.disabled = true;
+
+            if (ForegroundServiceManager.isServiceActive()) {
+                await ForegroundServiceManager.stopService();
+            } else {
+                await ForegroundServiceManager.startService(currentSymbol, `Micro Box: ${microStr}`);
+            }
+
+            this.updateForegroundIndicator();
+            await this.renderBackgroundServiceTab();
+        });
+
+        document.getElementById('btn-test-fg-ping')?.addEventListener('click', async () => {
+            await ForegroundServiceManager.startService(currentSymbol, `Manual Ping at ${new Date().toLocaleTimeString()} • Micro: ${microStr}`);
+            await this.renderBackgroundServiceTab();
+        });
+
+        document.getElementById('btn-perm-grant-notif')?.addEventListener('click', async () => {
+            await ForegroundServiceManager.requestNotificationPermission();
+            await this.renderBackgroundServiceTab();
+        });
+
+        document.getElementById('btn-perm-grant-overlay')?.addEventListener('click', async () => {
+            await ForegroundServiceManager.requestOverlayPermission();
+            await this.renderBackgroundServiceTab();
+        });
+    }
+
+    /**
+     * Updates top bar and modal indicators for the background service state
+     */
+    public static updateForegroundIndicator(): void {
+        const isRunning = ForegroundServiceManager.isServiceActive();
+        const dot = document.getElementById('fg-indicator-dot');
+        const label = document.getElementById('fg-indicator-label');
+        const badge = document.getElementById('badge-fg-status');
+
+        if (dot) {
+            dot.style.background = isRunning ? '#00E676' : '#787B86';
+            dot.style.boxShadow = isRunning ? '0 0 6px #00E676' : 'none';
+        }
+        if (label) {
+            label.textContent = isRunning ? 'BG: ON' : 'BG Service';
+            label.style.color = isRunning ? '#00E676' : '#787B86';
+        }
+        if (badge) {
+            badge.style.background = isRunning ? '#00E676' : '#787B86';
+            badge.style.boxShadow = isRunning ? '0 0 4px #00E676' : 'none';
+        }
     }
 }

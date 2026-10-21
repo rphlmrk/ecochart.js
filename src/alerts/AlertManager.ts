@@ -2,6 +2,7 @@ import type { PriceAlert, TriggerEvent, AlertCondition, AlertFrequency } from '.
 import { SoundEngine } from './SoundEngine';
 import { AlertToastManager } from './AlertToast';
 import { CapacitorNotificationService } from './CapacitorNotificationService';
+import { ForegroundServiceManager } from './ForegroundServiceManager';
 
 export class AlertManager {
     private static instance: AlertManager;
@@ -246,6 +247,16 @@ export class AlertManager {
         const now = Date.now();
         const activeAlerts = this.alerts.filter(a => a.symbol.toUpperCase() === normSymbol && a.status === 'active');
 
+        // Sync Foreground Service status with live price & pullback box boundaries
+        if (ForegroundServiceManager.isServiceActive()) {
+            const pb = this.getPullbackStatus(normSymbol);
+            const pbInfo = pb?.microBox ? `Micro: $${pb.microBox.bottom.toFixed(0)}-$${pb.microBox.top.toFixed(0)}` : '';
+            ForegroundServiceManager.updateServiceStatus(
+                normSymbol,
+                `$${currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${pbInfo ? '• ' + pbInfo : '• Monitoring breakouts'}`
+            );
+        }
+
         for (const alert of activeAlerts) {
             // Check cooldown for repeating alerts
             if (alert.frequency === 'every_time' && alert.lastTriggeredAt) {
@@ -345,6 +356,11 @@ export class AlertManager {
             `🔔 EcoChart Alert: ${alert.symbol}`,
             `${alert.name} triggered! Price is $${price.toLocaleString()} (Target: $${alert.targetPrice.toLocaleString()})`,
             { symbol: alert.symbol, alertId: alert.id }
+        );
+
+        ForegroundServiceManager.updateServiceStatus(
+            alert.symbol,
+            `ALERT: ${alert.name} at $${price.toLocaleString()}`
         );
 
         window.dispatchEvent(new CustomEvent('ecochart-alert-triggered', { detail: triggerEvent }));
@@ -449,6 +465,11 @@ export class AlertManager {
             `📦 ${normSymbol} Pullback ${dirLabel}`,
             `${boxLabel} ${direction.toUpperCase()} at $${price.toLocaleString()} (Box: $${bottom.toFixed(2)} - $${top.toFixed(2)})`,
             { symbol: normSymbol, boxType, direction, price }
+        );
+
+        ForegroundServiceManager.updateServiceStatus(
+            normSymbol,
+            `PULLBACK: ${boxLabel} ${direction.toUpperCase()} at $${price.toLocaleString()} (Box: $${bottom.toFixed(1)}-$${top.toFixed(1)})`
         );
 
         window.dispatchEvent(new CustomEvent('ecochart-alert-triggered', { detail: triggerEvent }));

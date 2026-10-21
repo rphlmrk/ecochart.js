@@ -18,6 +18,7 @@
     "@capacitor/cli": "^8.5.2",
     "@capacitor/core": "^8.5.2",
     "@capacitor/local-notifications": "^8.3.1",
+    "@capawesome-team/capacitor-android-foreground-service": "^8.1.0",
     "dexie": "^4.4.6",
     "pixi.js": "^8"
   }

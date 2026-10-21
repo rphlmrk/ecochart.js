@@ -123,4 +123,63 @@ export class AlertToastManager {
         // Auto dismiss after 7 seconds
         setTimeout(dismiss, 7000);
     }
+
+    public static showNotice(options: { title: string; message: string; type?: 'info' | 'bullish' | 'bearish' }): void {
+        const container = this.ensureContainer();
+        const toast = document.createElement('div');
+        toast.className = 'alert-toast-card';
+
+        const color = options.type === 'bullish' ? '#00E676' : options.type === 'bearish' ? '#EF5350' : '#2962FF';
+        const icon = options.type === 'bullish' ? '⚡' : options.type === 'bearish' ? '⚠️' : 'ℹ️';
+
+        toast.style.cssText = `
+            pointer-events: auto;
+            background: rgba(22, 26, 37, 0.95);
+            backdrop-filter: blur(12px);
+            border-left: 4px solid ${color};
+            border: 1px solid var(--chart-grid, #363A45);
+            border-left-width: 4px;
+            border-radius: 6px;
+            padding: 10px 12px;
+            color: #D1D4DC;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            transition: transform 0.25s ease, opacity 0.25s ease;
+            transform: translateX(120%);
+            opacity: 0;
+        `;
+
+        toast.innerHTML = `
+            <span style="font-size: 16px;">${icon}</span>
+            <div style="flex: 1;">
+                <div style="font-size: 12px; font-weight: 700; color: #fff;">${options.title}</div>
+                <div style="font-size: 11px; color: #787B86; margin-top: 2px; line-height: 1.3;">${options.message}</div>
+            </div>
+            <button style="background: none; border: none; color: #787B86; font-size: 14px; cursor: pointer; padding: 0 2px;">✕</button>
+        `;
+
+        const dismiss = () => {
+            toast.style.transform = 'translateX(120%)';
+            toast.style.opacity = '0';
+            setTimeout(() => toast.remove(), 300);
+        };
+
+        toast.querySelector('button')?.addEventListener('click', dismiss);
+        container.appendChild(toast);
+
+        requestAnimationFrame(() => {
+            toast.style.transform = 'translateX(0)';
+            toast.style.opacity = '1';
+        });
+
+        setTimeout(dismiss, 5000);
+    }
 }
+
+export const alertToast = {
+    show: (options: { title: string; message: string; type?: 'info' | 'bullish' | 'bearish' }) => {
+        AlertToastManager.showNotice(options);
+    }
+};
