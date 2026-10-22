@@ -4,7 +4,7 @@ import {
     ExhaustionIndicator, HTFBoxIndicator, HTFBiasIndicator, 
     HTFProjectionsIndicator, ZigZag123Indicator, CBCFlipIndicator,
     PeriodSeparatorIndicator, MarketSessionsIndicator,
-    MarketStructurePullbackZonesIndicator
+    MarketStructurePullbackZonesIndicator, PullbackDoubleTopBottomIndicator
 } from './plugins';
 
 export interface SavedIndicatorState {
@@ -28,6 +28,7 @@ export class IndicatorRegistry {
         else if (ind instanceof PeriodSeparatorIndicator) type = 'PERIOD_SEP';
         else if (ind instanceof MarketSessionsIndicator) type = 'MARKET_SESSIONS';
         else if (ind instanceof MarketStructurePullbackZonesIndicator) type = 'PULLBACK_ZONES';
+        else if (ind instanceof PullbackDoubleTopBottomIndicator) type = 'MS_PULLBACK_DTDB';
 
         const params: Record<string, any> = {};
         ind.params.forEach(p => { params[p.id] = p.value; });
@@ -52,6 +53,8 @@ export class IndicatorRegistry {
             case 'LUX_SESSIONS': ind = new MarketSessionsIndicator(); break;
             case 'PULLBACK_ZONES':
             case 'MS_PULLBACK_ZONES': ind = new MarketStructurePullbackZonesIndicator(); break;
+            case 'MS_PULLBACK_DTDB':
+            case 'PULLBACK_DTDB': ind = new PullbackDoubleTopBottomIndicator(); break;
         }
 
         if (ind) {

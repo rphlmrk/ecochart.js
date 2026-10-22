@@ -10,3 +10,4 @@ export * from './CBCFlip';
 export * from './PeriodSeparator';
 export * from './MarketSessions';
 export * from './MarketStructurePullbackZones';
+export { PullbackDoubleTopBottomIndicator, type DoublePattern, type PullbackZoneBox as PullbackDTDBZoneBox } from './PullbackDoubleTopBottomIndicator';
