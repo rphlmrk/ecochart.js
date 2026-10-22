@@ -180,28 +180,39 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
     }
 
     /**
-     * Strictly limits the search for patterns to the inside boundaries of individual boxes.
-     * Utilizes the Exact Wick Alignment CBC logic to confirm rejections at the box edges.
+     * Advanced State Machine to detect Exact Wick Alignment Rejections.
+     * Incorporates strict 50% Midline rule and suppresses Micro patterns overlapping Macro boundaries.
      */
-    private findInternalPatterns(boxes: PullbackZoneBox[], isMicro: boolean, ds: DataStore) {
+    private findInternalPatterns(boxes: PullbackZoneBox[], isMicro: boolean, ds: DataStore, macroBoxes: PullbackZoneBox[]) {
         const tolerance = this.getParam<number>('dtDbTolerance', 0.2) / 100;
         const data = ds.data;
         
         for (const box of boxes) {
             const start = box.leftBar;
             const end = box.rightBar;
+            const midline = (box.top + box.bottom) / 2;
             
-            // Limit to one DT and one DB per box to avoid overlapping line spam
-            let hasDt = false;
-            let hasDb = false;
+            const topZone = box.top - (box.top * tolerance);
+            const botZone = box.bottom + (box.bottom * tolerance);
+
+            let dtState = 0; // 0: Wait Top, 1: Wait 50% Drop, 2: Wait Re-test, 3: Wait Rejection
+            let dbState = 0; // 0: Wait Bot, 1: Wait 50% Rise, 2: Wait Re-test, 3: Wait Rejection
+
+            let dtStartBar = -1;
+            let dbStartBar = -1;
+            let dtTouchBar = -1;
+            let dbTouchBar = -1;
             
-            // 1. Initialize Exact Wick Alignment CBC state strictly for this box
-            let cbc = false; 
+            // 1. Initialize Exact Wick Alignment CBC state for this box
+            const startOpen = data[start * 6 + 1];
+            const startClose = data[start * 6 + 4];
+            let cbc = startClose >= startOpen; 
+            
             let trackedHigh = data[start * 6 + 2];
             let trackedLow = data[start * 6 + 3];
             
-            // 2. Run CBC strictly inside the box boundaries (skipping all candles outside)
-            for (let i = start + 1; i <= end; i++) {
+            // 2. Scan box internals using State Machine
+            for (let i = start; i <= end; i++) {
                 const h = data[i * 6 + 2];
                 const l = data[i * 6 + 3];
                 const c = data[i * 6 + 4];
@@ -211,64 +222,115 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
 
                 // --- CORE EXACT WICK ALIGNMENT CBC LOGIC ---
                 if (c < trackedLow) {
-                    // CANDLE CLOSED OUTSIDE BELOW LOW -> Flip to Bearish
-                    if (cbc) {
-                        cbc = false;
-                        bearSignal = true; 
-                    }
-                    trackedHigh = h;
-                    trackedLow = l;
+                    if (cbc) { cbc = false; bearSignal = true; }
+                    trackedHigh = h; trackedLow = l;
                 } else if (c > trackedHigh) {
-                    // CANDLE CLOSED OUTSIDE ABOVE HIGH -> Flip to Bullish
-                    if (!cbc) {
-                        cbc = true;
-                        bullSignal = true; 
-                    }
-                    trackedHigh = h;
-                    trackedLow = l;
+                    if (!cbc) { cbc = true; bullSignal = true; }
+                    trackedHigh = h; trackedLow = l;
                 } else {
-                    // CANDLE CLOSED INSIDE -> Expand Wicks
                     if (h > trackedHigh) trackedHigh = h;
                     if (l < trackedLow) trackedLow = l;
                 }
 
-                // --- CHECK FOR REJECTIONS (DOUBLE TOP / BOTTOM) ---
-
-                // 3. Evaluate Double Top (Rejection near Top)
-                if (!hasDt && i > box.topBar && bearSignal) {
-                    // We check if the peak of the rally (trackedHigh) right before the bearish flip 
-                    // reached the tolerance zone of the box top.
-                    const touchedTop = (Math.abs(box.top - trackedHigh) / box.top <= tolerance) || 
-                                       (Math.abs(box.top - h) / box.top <= tolerance);
+                // --- DOUBLE TOP STATE MACHINE ---
+                if (dtState === 0) {
+                    if (h >= topZone) { 
+                        dtStartBar = i; 
+                        dtState = 1; 
+                    }
+                } else if (dtState === 1) {
+                    if (h > data[dtStartBar * 6 + 2]) {
+                        dtStartBar = i; // Track absolute highest point of first peak
+                    }
+                    if (l <= midline) {
+                        dtState = 2; // Hit 50% equilibrium, ready for re-test
+                    }
+                } else if (dtState === 2) {
+                    if (h >= topZone) { 
+                        dtTouchBar = i; 
+                        dtState = 3; 
+                    }
+                } else if (dtState === 3) {
+                    if (h >= topZone && h > data[dtTouchBar * 6 + 2]) {
+                        dtTouchBar = i; // Track absolute highest point of second peak (re-test)
+                    }
                     
-                    if (touchedTop) {
-                        this.cachedPatterns.push({
-                            startBar: box.topBar,
-                            endBar: i,
-                            price: box.top,
-                            type: 'DT',
-                            isMicro
-                        });
-                        hasDt = true; // Lock out further DTs for this box
+                    const touchLow = data[dtTouchBar * 6 + 3];
+                    const priceDropped = (!cbc && c < touchLow);
+
+                    if (bearSignal || priceDropped) {
+                        let isOverlapping = false;
+                        if (isMicro) {
+                            for (const mBox of macroBoxes) {
+                                const timeOverlap = (box.rightBar >= mBox.leftBar && box.leftBar <= mBox.rightBar);
+                                const priceOverlap = (Math.abs(box.top - mBox.top) / mBox.top <= tolerance);
+                                if (timeOverlap && priceOverlap) {
+                                    isOverlapping = true; break;
+                                }
+                            }
+                        }
+                        
+                        if (!isOverlapping) {
+                            this.cachedPatterns.push({
+                                startBar: dtStartBar,
+                                endBar: dtTouchBar,
+                                price: box.top,
+                                type: 'DT',
+                                isMicro
+                            });
+                        }
+                        dtState = 4; // Lockout further DTs for this box
                     }
                 }
 
-                // 4. Evaluate Double Bottom (Rejection near Bottom)
-                if (!hasDb && i > box.bottomBar && bullSignal) {
-                    // We check if the trough of the drop (trackedLow) right before the bullish flip 
-                    // reached the tolerance zone of the box bottom.
-                    const touchedBot = (Math.abs(trackedLow - box.bottom) / box.bottom <= tolerance) || 
-                                       (Math.abs(l - box.bottom) / box.bottom <= tolerance);
+                // --- DOUBLE BOTTOM STATE MACHINE ---
+                if (dbState === 0) {
+                    if (l <= botZone) { 
+                        dbStartBar = i; 
+                        dbState = 1; 
+                    }
+                } else if (dbState === 1) {
+                    if (l < data[dbStartBar * 6 + 3]) {
+                        dbStartBar = i; // Track absolute lowest point of first trough
+                    }
+                    if (h >= midline) {
+                        dbState = 2; // Hit 50% equilibrium, ready for re-test
+                    }
+                } else if (dbState === 2) {
+                    if (l <= botZone) { 
+                        dbTouchBar = i; 
+                        dbState = 3; 
+                    }
+                } else if (dbState === 3) {
+                    if (l <= botZone && l < data[dbTouchBar * 6 + 3]) {
+                        dbTouchBar = i; // Track absolute lowest point of second trough (re-test)
+                    }
                     
-                    if (touchedBot) {
-                        this.cachedPatterns.push({
-                            startBar: box.bottomBar,
-                            endBar: i,
-                            price: box.bottom,
-                            type: 'DB',
-                            isMicro
-                        });
-                        hasDb = true; // Lock out further DBs for this box
+                    const touchHigh = data[dbTouchBar * 6 + 2];
+                    const priceRose = (cbc && c > touchHigh);
+
+                    if (bullSignal || priceRose) {
+                        let isOverlapping = false;
+                        if (isMicro) {
+                            for (const mBox of macroBoxes) {
+                                const timeOverlap = (box.rightBar >= mBox.leftBar && box.leftBar <= mBox.rightBar);
+                                const priceOverlap = (Math.abs(box.bottom - mBox.bottom) / mBox.bottom <= tolerance);
+                                if (timeOverlap && priceOverlap) {
+                                    isOverlapping = true; break;
+                                }
+                            }
+                        }
+
+                        if (!isOverlapping) {
+                            this.cachedPatterns.push({
+                                startBar: dbStartBar,
+                                endBar: dbTouchBar,
+                                price: box.bottom,
+                                type: 'DB',
+                                isMicro
+                            });
+                        }
+                        dbState = 4; // Lockout further DBs for this box
                     }
                 }
             }
@@ -304,9 +366,115 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
         if (this.lastStateHash === stateHash && this.lastCalculatedLength === len) return;
 
         const data = ds.data;
-        this.cachedPatterns = []; // Reset Patterns
+        this.cachedPatterns = []; 
 
-        // 1. Calculate Micro Structure
+        // 1. Calculate Macro Structure FIRST (So Micro can check against it)
+        const macroBoxes: PullbackZoneBox[] = [];
+        if (showMacro) {
+            let inMacro = false;
+            let macroTop: number | null = null;
+            let macroBot: number | null = null;
+            let macroTopBar: number | null = null;
+            let macroBotBar: number | null = null;
+            let lastMacroTop: number | null = null; 
+            let lastMacroBot: number | null = null; 
+            let macroBreakBar = 0;
+            let macroDir = 0; 
+            let macroBox: PullbackZoneBox | null = null;
+
+            for (let i = 0; i < len; i++) {
+                const base = i * 6;
+                const h = data[base + 2];
+                const l = data[base + 3];
+                const c = data[base + 4];
+
+                if (inMacro && macroBox !== null && macroTop !== null && macroBot !== null) {
+                    macroBox.rightBar = i;
+
+                    const macroBreakUp = useWicks ? h > macroTop : c > macroTop;
+                    const macroBreakDn = useWicks ? l < macroBot : c < macroBot;
+
+                    if (macroBreakUp) {
+                        inMacro = false; macroBox.isOpen = false; macroBox.breakoutDir = 'up';
+                        macroBreakBar = i; macroDir = 1; lastMacroTop = macroTop; lastMacroBot = macroBot;
+                        if (i === len - 1) this.dispatchBreakoutAlert('macro', 'up', macroTop, macroBot, useWicks ? h : c, i, data[base]);
+                        macroTop = null; macroBot = null; macroTopBar = null; macroBotBar = null; macroBox = null;
+                    } else if (macroBreakDn) {
+                        inMacro = false; macroBox.isOpen = false; macroBox.breakoutDir = 'down';
+                        macroBreakBar = i; macroDir = -1; lastMacroTop = macroTop; lastMacroBot = macroBot;
+                        if (i === len - 1) this.dispatchBreakoutAlert('macro', 'down', macroTop, macroBot, useWicks ? l : c, i, data[base]);
+                        macroTop = null; macroBot = null; macroTopBar = null; macroBotBar = null; macroBox = null;
+                    } else if (!useWicks) {
+                        if (h > macroTop) {
+                            macroTop = h; macroBox.top = h; macroBox.topBar = i;
+                        }
+                        if (l < macroBot) {
+                            macroBot = l; macroBox.bottom = l; macroBox.bottomBar = i;
+                        }
+                    }
+                }
+
+                if (!inMacro) {
+                    const actualMacroPhBar = i - macroPrd;
+                    const hasMacroPh = actualMacroPhBar >= 0 && PullbackDoubleTopBottomIndicator.isPivotHigh(data, actualMacroPhBar, macroPrd);
+                    const macroPh = hasMacroPh ? data[actualMacroPhBar * 6 + 2] : 0;
+
+                    const actualMacroPlBar = i - macroPrd;
+                    const hasMacroPl = actualMacroPlBar >= 0 && PullbackDoubleTopBottomIndicator.isPivotLow(data, actualMacroPlBar, macroPrd);
+                    const macroPl = hasMacroPl ? data[actualMacroPlBar * 6 + 3] : 0;
+
+                    if (macroDir === 1 && lastMacroBot !== null) {
+                        if (useWicks ? l < lastMacroBot : c < lastMacroBot) {
+                            macroDir = -1; macroBreakBar = i;
+                            macroTop = null; macroBot = null; macroTopBar = null; macroBotBar = null;
+                        }
+                    } else if (macroDir === -1 && lastMacroTop !== null) {
+                        if (useWicks ? h > lastMacroTop : c > lastMacroTop) {
+                            macroDir = 1; macroBreakBar = i;
+                            macroTop = null; macroBot = null; macroTopBar = null; macroBotBar = null;
+                        }
+                    }
+
+                    if (macroDir === 1) {
+                        if (hasMacroPh && actualMacroPhBar > macroBreakBar) {
+                            if (macroTop === null || macroPh > macroTop) { macroTop = macroPh; macroTopBar = actualMacroPhBar; }
+                        }
+                        if (macroTop !== null) {
+                            if (hasMacroPl && actualMacroPlBar > macroTopBar!) {
+                                if (macroBot === null || macroPl < macroBot) { macroBot = macroPl; macroBotBar = actualMacroPlBar; }
+                            }
+                        }
+                    } else if (macroDir === -1) {
+                        if (hasMacroPl && actualMacroPlBar > macroBreakBar) {
+                            if (macroBot === null || macroPl < macroBot) { macroBot = macroPl; macroBotBar = actualMacroPlBar; }
+                        }
+                        if (macroBot !== null) {
+                            if (hasMacroPh && actualMacroPhBar > macroBotBar!) {
+                                if (macroTop === null || macroPh > macroTop) { macroTop = macroPh; macroTopBar = actualMacroPhBar; }
+                            }
+                        }
+                    } else {
+                        if (hasMacroPh && actualMacroPhBar > macroBreakBar) {
+                            if (macroTop === null || macroPh > macroTop) { macroTop = macroPh; macroTopBar = actualMacroPhBar; }
+                        }
+                        if (hasMacroPl && actualMacroPlBar > macroBreakBar) {
+                            if (macroBot === null || macroPl < macroBot) { macroBot = macroPl; macroBotBar = actualMacroPlBar; }
+                        }
+                    }
+
+                    if (macroTop !== null && macroBot !== null && macroTopBar !== null && macroBotBar !== null) {
+                        inMacro = true;
+                        macroBox = { leftBar: Math.min(macroTopBar, macroBotBar), rightBar: i, topBar: macroTopBar, bottomBar: macroBotBar, top: macroTop, bottom: macroBot, isOpen: true };
+                        macroBoxes.push(macroBox);
+                        if (macroBoxes.length > maxBoxes) macroBoxes.shift();
+                    }
+                }
+            }
+            // Pass empty macro array because macro boxes are never suppressed by themselves
+            this.findInternalPatterns(macroBoxes, false, ds, []);
+        }
+
+        // 2. Calculate Micro Structure SECOND
         const microBoxes: PullbackZoneBox[] = [];
         if (showMicro) {
             let inMicro = false;
@@ -422,112 +590,8 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                     }
                 }
             }
-            this.findInternalPatterns(microBoxes, true, ds);
-        }
-
-        // 2. Calculate Macro Structure
-        const macroBoxes: PullbackZoneBox[] = [];
-        if (showMacro) {
-            let inMacro = false;
-            let macroTop: number | null = null;
-            let macroBot: number | null = null;
-            let macroTopBar: number | null = null;
-            let macroBotBar: number | null = null;
-            let lastMacroTop: number | null = null; 
-            let lastMacroBot: number | null = null; 
-            let macroBreakBar = 0;
-            let macroDir = 0; 
-            let macroBox: PullbackZoneBox | null = null;
-
-            for (let i = 0; i < len; i++) {
-                const base = i * 6;
-                const h = data[base + 2];
-                const l = data[base + 3];
-                const c = data[base + 4];
-
-                if (inMacro && macroBox !== null && macroTop !== null && macroBot !== null) {
-                    macroBox.rightBar = i;
-
-                    const macroBreakUp = useWicks ? h > macroTop : c > macroTop;
-                    const macroBreakDn = useWicks ? l < macroBot : c < macroBot;
-
-                    if (macroBreakUp) {
-                        inMacro = false; macroBox.isOpen = false; macroBox.breakoutDir = 'up';
-                        macroBreakBar = i; macroDir = 1; lastMacroTop = macroTop; lastMacroBot = macroBot;
-                        if (i === len - 1) this.dispatchBreakoutAlert('macro', 'up', macroTop, macroBot, useWicks ? h : c, i, data[base]);
-                        macroTop = null; macroBot = null; macroTopBar = null; macroBotBar = null; macroBox = null;
-                    } else if (macroBreakDn) {
-                        inMacro = false; macroBox.isOpen = false; macroBox.breakoutDir = 'down';
-                        macroBreakBar = i; macroDir = -1; lastMacroTop = macroTop; lastMacroBot = macroBot;
-                        if (i === len - 1) this.dispatchBreakoutAlert('macro', 'down', macroTop, macroBot, useWicks ? l : c, i, data[base]);
-                        macroTop = null; macroBot = null; macroTopBar = null; macroBotBar = null; macroBox = null;
-                    } else if (!useWicks) {
-                        if (h > macroTop) {
-                            macroTop = h; macroBox.top = h; macroBox.topBar = i;
-                        }
-                        if (l < macroBot) {
-                            macroBot = l; macroBox.bottom = l; macroBox.bottomBar = i;
-                        }
-                    }
-                }
-
-                if (!inMacro) {
-                    const actualMacroPhBar = i - macroPrd;
-                    const hasMacroPh = actualMacroPhBar >= 0 && PullbackDoubleTopBottomIndicator.isPivotHigh(data, actualMacroPhBar, macroPrd);
-                    const macroPh = hasMacroPh ? data[actualMacroPhBar * 6 + 2] : 0;
-
-                    const actualMacroPlBar = i - macroPrd;
-                    const hasMacroPl = actualMacroPlBar >= 0 && PullbackDoubleTopBottomIndicator.isPivotLow(data, actualMacroPlBar, macroPrd);
-                    const macroPl = hasMacroPl ? data[actualMacroPlBar * 6 + 3] : 0;
-
-                    if (macroDir === 1 && lastMacroBot !== null) {
-                        if (useWicks ? l < lastMacroBot : c < lastMacroBot) {
-                            macroDir = -1; macroBreakBar = i;
-                            macroTop = null; macroBot = null; macroTopBar = null; macroBotBar = null;
-                        }
-                    } else if (macroDir === -1 && lastMacroTop !== null) {
-                        if (useWicks ? h > lastMacroTop : c > lastMacroTop) {
-                            macroDir = 1; macroBreakBar = i;
-                            macroTop = null; macroBot = null; macroTopBar = null; macroBotBar = null;
-                        }
-                    }
-
-                    if (macroDir === 1) {
-                        if (hasMacroPh && actualMacroPhBar > macroBreakBar) {
-                            if (macroTop === null || macroPh > macroTop) { macroTop = macroPh; macroTopBar = actualMacroPhBar; }
-                        }
-                        if (macroTop !== null) {
-                            if (hasMacroPl && actualMacroPlBar > macroTopBar!) {
-                                if (macroBot === null || macroPl < macroBot) { macroBot = macroPl; macroBotBar = actualMacroPlBar; }
-                            }
-                        }
-                    } else if (macroDir === -1) {
-                        if (hasMacroPl && actualMacroPlBar > macroBreakBar) {
-                            if (macroBot === null || macroPl < macroBot) { macroBot = macroPl; macroBotBar = actualMacroPlBar; }
-                        }
-                        if (macroBot !== null) {
-                            if (hasMacroPh && actualMacroPhBar > macroBotBar!) {
-                                if (macroTop === null || macroPh > macroTop) { macroTop = macroPh; macroTopBar = actualMacroPhBar; }
-                            }
-                        }
-                    } else {
-                        if (hasMacroPh && actualMacroPhBar > macroBreakBar) {
-                            if (macroTop === null || macroPh > macroTop) { macroTop = macroPh; macroTopBar = actualMacroPhBar; }
-                        }
-                        if (hasMacroPl && actualMacroPlBar > macroBreakBar) {
-                            if (macroBot === null || macroPl < macroBot) { macroBot = macroPl; macroBotBar = actualMacroPlBar; }
-                        }
-                    }
-
-                    if (macroTop !== null && macroBot !== null && macroTopBar !== null && macroBotBar !== null) {
-                        inMacro = true;
-                        macroBox = { leftBar: Math.min(macroTopBar, macroBotBar), rightBar: i, topBar: macroTopBar, bottomBar: macroBotBar, top: macroTop, bottom: macroBot, isOpen: true };
-                        macroBoxes.push(macroBox);
-                        if (macroBoxes.length > maxBoxes) macroBoxes.shift();
-                    }
-                }
-            }
-            this.findInternalPatterns(macroBoxes, false, ds);
+            // Pass macroBoxes in to perfectly filter out overlapping micro patterns
+            this.findInternalPatterns(microBoxes, true, ds, macroBoxes);
         }
 
         this.cachedMicroBoxes = microBoxes;
@@ -674,7 +738,6 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                 if (x2 < minX || x1 > maxX) continue;
                 
                 g.moveTo(x1, y).lineTo(x2, y);
-                // Draw hook going DOWN (inside the box)
                 g.moveTo(x1, y).lineTo(x1, y + 8); 
                 g.moveTo(x2, y).lineTo(x2, y + 8);
             }
@@ -690,7 +753,6 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                 if (x2 < minX || x1 > maxX) continue;
 
                 g.moveTo(x1, y).lineTo(x2, y);
-                // Draw hook going UP (inside the box)
                 g.moveTo(x1, y).lineTo(x1, y - 8); 
                 g.moveTo(x2, y).lineTo(x2, y - 8);
             }
@@ -754,7 +816,6 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                     const col = pat.type === 'DT' ? dtColor.color : dbColor.color;
                     const yOffset = pat.type === 'DT' ? -18 : 6; 
                     
-                    // Center roughly based on 2-letter size
                     placeLabel(lbl, midX - 8, r.priceToY(pat.price) + yOffset, col);
                 }
             }
