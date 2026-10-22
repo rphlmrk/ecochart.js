@@ -82,6 +82,9 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
 
             { id: 'showLabels', name: 'Show Status Labels', type: 'boolean', value: true },
 
+            // Breakout Signals Settings
+            { id: 'showBreakoutSignals', name: 'Show Breakout Signals (b/s & B/S)', type: 'boolean', value: true },
+
             // Breakout Alerts
             { id: 'alertMicroBreakout', name: '🔔 Alert on Micro Box Breakout', type: 'boolean', value: false },
             { id: 'alertMacroBreakout', name: '🔔 Alert on Macro Box Breakout', type: 'boolean', value: false }
@@ -608,16 +611,56 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                     }
                 }
             }
-            // Pass macroBoxes in to perfectly filter out overlapping micro patterns
-            this.findInternalPatterns(microBoxes, true, ds, macroBoxes);
+            // --- Resolve Overlap: Micro vs Macro ---
+            // When micro overlaps macro, use macro.
+            // If micro started first and macro starts in the middle or end of micro,
+            // truncate micro so it ends right where macro starts.
+            // If micro started inside macro, discard micro.
+            let resolvedMicroBoxes: PullbackZoneBox[] = microBoxes;
+            if (showMacro && macroBoxes.length > 0) {
+                resolvedMicroBoxes = [];
+                for (const uBox of microBoxes) {
+                    let keep = true;
+                    for (const mBox of macroBoxes) {
+                        const mLeft = mBox.leftBar;
+                        const mRight = mBox.isOpen ? (len - 1) : mBox.rightBar;
+
+                        // Check if micro and macro overlap in time
+                        if (uBox.leftBar <= mRight && uBox.rightBar >= mLeft) {
+                            if (uBox.leftBar >= mLeft) {
+                                // Micro started inside/at macro -> suppress micro (use macro)
+                                keep = false;
+                                break;
+                            } else {
+                                // Micro started before macro -> truncate micro to macro's start
+                                uBox.rightBar = mLeft;
+                                uBox.isOpen = false;
+                                uBox.breakoutDir = undefined; // Cleared so it doesn't fire a false breakout
+                                break;
+                            }
+                        }
+                    }
+                    if (keep && uBox.rightBar >= uBox.leftBar) {
+                        resolvedMicroBoxes.push(uBox);
+                    }
+                }
+            }
+
+            // Detect internal patterns using the resolved micro boxes
+            this.findInternalPatterns(resolvedMicroBoxes, true, ds, macroBoxes);
+            this.cachedMicroBoxes = resolvedMicroBoxes;
+        } else {
+            this.cachedMicroBoxes = [];
         }
 
-        this.cachedMicroBoxes = microBoxes;
         this.cachedMacroBoxes = macroBoxes;
         this.lastCalculatedLength = len;
         this.lastStateHash = stateHash;
     }
 
+    /**
+     * Hardware-accelerated GPU Rendering
+     */
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics): void {
         if (!this.visible || r.dataStore.length === 0) {
             this.labelContainer.visible = false;
@@ -631,6 +674,7 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
         const showMicro = this.getParam<boolean>('showMicro', true);
         const showMacro = this.getParam<boolean>('showMacro', true);
         const showPatterns = this.getParam<boolean>('showPatterns', true);
+        const showBreakoutSignals = this.getParam<boolean>('showBreakoutSignals', true);
         const showMidline = this.getParam<boolean>('showMidline', false);
         const extendMidlineRight = this.getParam<boolean>('extendMidlineRight', false);
         const extendMidlineCount = Math.max(1, this.getParam<number>('extendMidlineCount', 1));
@@ -778,7 +822,7 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
         }
 
         // --- Setup Labels ---
-        const needLabels = showLabels || showPatterns;
+        const needLabels = showLabels || showPatterns || showBreakoutSignals;
         if (needLabels) {
             if (!this.isContainerMounted) { r.app.stage.addChild(this.labelContainer); this.isContainerMounted = true; }
             this.labelContainer.visible = true;
@@ -786,7 +830,7 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
             for (let i = 0; i < this.labelTextPool.length; i++) this.labelTextPool[i].visible = false;
             let activeTextCount = 0;
 
-            const placeLabel = (text: string, xPos: number, yPos: number, tintColor: number) => {
+            const placeLabel = (text: string, xPos: number, yPos: number, tintColor: number, scale = 1) => {
                 let item: BitmapText;
                 if (activeTextCount < this.labelTextPool.length) item = this.labelTextPool[activeTextCount];
                 else {
@@ -794,7 +838,13 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                     this.labelTextPool.push(item);
                     this.labelContainer.addChild(item);
                 }
-                item.text = text; item.tint = tintColor; item.x = xPos; item.y = yPos; item.visible = true; activeTextCount++;
+                item.text = text; 
+                item.tint = tintColor; 
+                item.scale.set(scale);
+                item.x = xPos; 
+                item.y = yPos; 
+                item.visible = true; 
+                activeTextCount++;
             };
 
             // Box Status Labels
@@ -835,6 +885,49 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                     const yOffset = pat.type === 'DT' ? -18 : 6; 
                     
                     placeLabel(lbl, midX - 8, r.priceToY(pat.price) + yOffset, col);
+                }
+            }
+
+            // --- Breakout Signals on Candle (Micro: b / s, Macro: B / S) ---
+            if (showBreakoutSignals) {
+                const dsData = r.dataStore.data;
+
+                // 1. Macro Breakouts: Large uppercase 'B' / 'S'
+                if (showMacro) {
+                    for (const b of this.cachedMacroBoxes) {
+                        if (b.isOpen || !b.breakoutDir) continue;
+                        const bar = b.rightBar;
+                        if (bar < 0 || bar >= r.dataStore.length) continue;
+                        const cx = r.getCandleCenterX(bar);
+                        if (cx < minX || cx > maxX) continue;
+
+                        if (b.breakoutDir === 'up') {
+                            const low = dsData[bar * 6 + 3];
+                            placeLabel('B', cx - 4, r.priceToY(low) + 6, dbColor.color, 1.35);
+                        } else {
+                            const high = dsData[bar * 6 + 2];
+                            placeLabel('S', cx - 4, r.priceToY(high) - 18, dtColor.color, 1.35);
+                        }
+                    }
+                }
+
+                // 2. Micro Breakouts: Small lowercase 'b' / 's'
+                if (showMicro) {
+                    for (const b of this.cachedMicroBoxes) {
+                        if (b.isOpen || !b.breakoutDir) continue;
+                        const bar = b.rightBar;
+                        if (bar < 0 || bar >= r.dataStore.length) continue;
+                        const cx = r.getCandleCenterX(bar);
+                        if (cx < minX || cx > maxX) continue;
+
+                        if (b.breakoutDir === 'up') {
+                            const low = dsData[bar * 6 + 3];
+                            placeLabel('b', cx - 3, r.priceToY(low) + 6, dbColor.color, 0.95);
+                        } else {
+                            const high = dsData[bar * 6 + 2];
+                            placeLabel('s', cx - 3, r.priceToY(high) - 16, dtColor.color, 0.95);
+                        }
+                    }
                 }
             }
         } else {
