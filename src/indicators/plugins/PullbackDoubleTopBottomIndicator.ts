@@ -181,28 +181,40 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
 
     /**
      * Advanced State Machine to detect Exact Wick Alignment Rejections.
-     * Incorporates strict 50% Midline rule and suppresses Micro patterns overlapping Macro boundaries.
+     * Incorporates strict 50% Midline rule and ensures patterns strictly anchor
+     * to the defining structural extremes.
+     * Caps the tolerance to a maximum of 15% of the box range to ensure "almost equal" highs/lows.
      */
     private findInternalPatterns(boxes: PullbackZoneBox[], isMicro: boolean, ds: DataStore, macroBoxes: PullbackZoneBox[]) {
-        const tolerance = this.getParam<number>('dtDbTolerance', 0.2) / 100;
+        const userTolerancePct = this.getParam<number>('dtDbTolerance', 0.2) / 100;
         const data = ds.data;
         
         for (const box of boxes) {
             const start = box.leftBar;
             const end = box.rightBar;
             const midline = (box.top + box.bottom) / 2;
+            const boxRange = box.top - box.bottom;
+
+            // Cap the tolerance to a maximum of 15% of the box's height to ensure only true edge tests trigger
+            const maxRangeTol = boxRange * 0.15;
+            const topTol = Math.min(box.top * userTolerancePct, maxRangeTol);
+            const botTol = Math.min(box.bottom * userTolerancePct, maxRangeTol);
             
-            const topZone = box.top - (box.top * tolerance);
-            const botZone = box.bottom + (box.bottom * tolerance);
+            const topZone = box.top - topTol;
+            const botZone = box.bottom + botTol;
 
-            let dtState = 0; // 0: Wait Top, 1: Wait 50% Drop, 2: Wait Re-test, 3: Wait Rejection
-            let dbState = 0; // 0: Wait Bot, 1: Wait 50% Rise, 2: Wait Re-test, 3: Wait Rejection
+            let dtState = 0; // 0: Wait for structural top, 1: Wait 50% Drop, 2: Wait Re-test, 3: Wait Rejection
+            let dbState = 0; // 0: Wait for structural bot, 1: Wait 50% Rise, 2: Wait Re-test, 3: Wait Rejection
 
-            let dtStartBar = -1;
-            let dbStartBar = -1;
+            let dtStartBar = box.topBar;
+            let dbStartBar = box.bottomBar;
             let dtTouchBar = -1;
             let dbTouchBar = -1;
             
+            // Keep track of the active patterns to extend them to the latest rejection
+            let activeDt: DoublePattern | null = null;
+            let activeDb: DoublePattern | null = null;
+
             // 1. Initialize Exact Wick Alignment CBC state for this box
             const startOpen = data[start * 6 + 1];
             const startClose = data[start * 6 + 4];
@@ -234,14 +246,10 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
 
                 // --- DOUBLE TOP STATE MACHINE ---
                 if (dtState === 0) {
-                    if (h >= topZone) { 
-                        dtStartBar = i; 
-                        dtState = 1; 
+                    if (i >= box.topBar) {
+                        dtState = 1;
                     }
                 } else if (dtState === 1) {
-                    if (h > data[dtStartBar * 6 + 2]) {
-                        dtStartBar = i; // Track absolute highest point of first peak
-                    }
                     if (l <= midline) {
                         dtState = 2; // Hit 50% equilibrium, ready for re-test
                     }
@@ -252,7 +260,7 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                     }
                 } else if (dtState === 3) {
                     if (h >= topZone && h > data[dtTouchBar * 6 + 2]) {
-                        dtTouchBar = i; // Track absolute highest point of second peak (re-test)
+                        dtTouchBar = i; // Sweeping the re-test higher before rejection
                     }
                     
                     const touchLow = data[dtTouchBar * 6 + 3];
@@ -263,7 +271,7 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                         if (isMicro) {
                             for (const mBox of macroBoxes) {
                                 const timeOverlap = (box.rightBar >= mBox.leftBar && box.leftBar <= mBox.rightBar);
-                                const priceOverlap = (Math.abs(box.top - mBox.top) / mBox.top <= tolerance);
+                                const priceOverlap = (Math.abs(box.top - mBox.top) <= topTol);
                                 if (timeOverlap && priceOverlap) {
                                     isOverlapping = true; break;
                                 }
@@ -271,28 +279,31 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                         }
                         
                         if (!isOverlapping) {
-                            this.cachedPatterns.push({
-                                startBar: dtStartBar,
-                                endBar: dtTouchBar,
-                                price: box.top,
-                                type: 'DT',
-                                isMicro
-                            });
+                            if (!activeDt) {
+                                activeDt = {
+                                    startBar: dtStartBar,
+                                    endBar: dtTouchBar,
+                                    price: box.top,
+                                    type: 'DT',
+                                    isMicro
+                                };
+                                this.cachedPatterns.push(activeDt);
+                            } else {
+                                // Extend the existing DT to this latest valid rejection!
+                                activeDt.endBar = dtTouchBar;
+                            }
                         }
-                        dtState = 4; // Lockout further DTs for this box
+                        // Reset to state 2 so it can catch subsequent re-tests and extend the line
+                        dtState = 2; 
                     }
                 }
 
                 // --- DOUBLE BOTTOM STATE MACHINE ---
                 if (dbState === 0) {
-                    if (l <= botZone) { 
-                        dbStartBar = i; 
+                    if (i >= box.bottomBar) {
                         dbState = 1; 
                     }
                 } else if (dbState === 1) {
-                    if (l < data[dbStartBar * 6 + 3]) {
-                        dbStartBar = i; // Track absolute lowest point of first trough
-                    }
                     if (h >= midline) {
                         dbState = 2; // Hit 50% equilibrium, ready for re-test
                     }
@@ -303,7 +314,7 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                     }
                 } else if (dbState === 3) {
                     if (l <= botZone && l < data[dbTouchBar * 6 + 3]) {
-                        dbTouchBar = i; // Track absolute lowest point of second trough (re-test)
+                        dbTouchBar = i; // Sweeping the re-test lower before rejection
                     }
                     
                     const touchHigh = data[dbTouchBar * 6 + 2];
@@ -314,7 +325,7 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                         if (isMicro) {
                             for (const mBox of macroBoxes) {
                                 const timeOverlap = (box.rightBar >= mBox.leftBar && box.leftBar <= mBox.rightBar);
-                                const priceOverlap = (Math.abs(box.bottom - mBox.bottom) / mBox.bottom <= tolerance);
+                                const priceOverlap = (Math.abs(box.bottom - mBox.bottom) <= botTol);
                                 if (timeOverlap && priceOverlap) {
                                     isOverlapping = true; break;
                                 }
@@ -322,15 +333,22 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                         }
 
                         if (!isOverlapping) {
-                            this.cachedPatterns.push({
-                                startBar: dbStartBar,
-                                endBar: dbTouchBar,
-                                price: box.bottom,
-                                type: 'DB',
-                                isMicro
-                            });
+                            if (!activeDb) {
+                                activeDb = {
+                                    startBar: dbStartBar,
+                                    endBar: dbTouchBar,
+                                    price: box.bottom,
+                                    type: 'DB',
+                                    isMicro
+                                };
+                                this.cachedPatterns.push(activeDb);
+                            } else {
+                                // Extend the existing DB to this latest valid rejection!
+                                activeDb.endBar = dbTouchBar;
+                            }
                         }
-                        dbState = 4; // Lockout further DBs for this box
+                        // Reset to state 2 so it can catch subsequent re-tests and extend the line
+                        dbState = 2; 
                     }
                 }
             }
