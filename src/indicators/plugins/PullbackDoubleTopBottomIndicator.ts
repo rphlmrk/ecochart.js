@@ -84,6 +84,10 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
 
             // Breakout Signals Settings
             { id: 'showBreakoutSignals', name: 'Show Breakout Signals (b/s & B/S)', type: 'boolean', value: true },
+            { id: 'buySignalColor', name: 'Buy Signal Color (B/b)', type: 'color', value: '#00E676' },
+            { id: 'sellSignalColor', name: 'Sell Signal Color (S/s)', type: 'color', value: '#FF1744' },
+            { id: 'macroSignalSize', name: 'Macro Signal Size (B / S)', type: 'number', value: 1.35, min: 0.5, max: 3.0, step: 0.05 },
+            { id: 'microSignalSize', name: 'Micro Signal Size (b / s)', type: 'number', value: 1.2, min: 0.5, max: 3.0, step: 0.05 },
 
             // Breakout Alerts
             { id: 'alertMicroBreakout', name: '🔔 Alert on Micro Box Breakout', type: 'boolean', value: false },
@@ -675,6 +679,8 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
         const showMacro = this.getParam<boolean>('showMacro', true);
         const showPatterns = this.getParam<boolean>('showPatterns', true);
         const showBreakoutSignals = this.getParam<boolean>('showBreakoutSignals', true);
+        const macroSignalSize = Math.max(0.5, this.getParam<number>('macroSignalSize', 1.35));
+        const microSignalSize = Math.max(0.5, this.getParam<number>('microSignalSize', 1.2));
         const showMidline = this.getParam<boolean>('showMidline', false);
         const extendMidlineRight = this.getParam<boolean>('extendMidlineRight', false);
         const extendMidlineCount = Math.max(1, this.getParam<number>('extendMidlineCount', 1));
@@ -695,6 +701,8 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
         
         const dtColor = parseColorAndAlpha(this.getParam<string>('dtColor', '#FF1744'));
         const dbColor = parseColorAndAlpha(this.getParam<string>('dbColor', '#00E676'));
+        const buySignalColor = parseColorAndAlpha(this.getParam<string>('buySignalColor', '#00E676'));
+        const sellSignalColor = parseColorAndAlpha(this.getParam<string>('sellSignalColor', '#FF1744'));
 
         const screenW = layout.chartWidth;
         const sp = r.candleSpacing * r.zoom;
@@ -894,6 +902,8 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
 
                 // 1. Macro Breakouts: Large uppercase 'B' / 'S'
                 if (showMacro) {
+                    const halfW = Math.round(3.5 * macroSignalSize);
+                    const topOffset = Math.round(5 + 10 * macroSignalSize);
                     for (const b of this.cachedMacroBoxes) {
                         if (b.isOpen || !b.breakoutDir) continue;
                         const bar = b.rightBar;
@@ -903,16 +913,18 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
 
                         if (b.breakoutDir === 'up') {
                             const low = dsData[bar * 6 + 3];
-                            placeLabel('B', cx - 4, r.priceToY(low) + 6, dbColor.color, 1.35);
+                            placeLabel('B', cx - halfW, r.priceToY(low) + 6, buySignalColor.color, macroSignalSize);
                         } else {
                             const high = dsData[bar * 6 + 2];
-                            placeLabel('S', cx - 4, r.priceToY(high) - 18, dtColor.color, 1.35);
+                            placeLabel('S', cx - halfW, r.priceToY(high) - topOffset, sellSignalColor.color, macroSignalSize);
                         }
                     }
                 }
 
                 // 2. Micro Breakouts: Small lowercase 'b' / 's'
                 if (showMicro) {
+                    const halfW = Math.round(3 * microSignalSize);
+                    const topOffset = Math.round(5 + 10 * microSignalSize);
                     for (const b of this.cachedMicroBoxes) {
                         if (b.isOpen || !b.breakoutDir) continue;
                         const bar = b.rightBar;
@@ -922,10 +934,10 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
 
                         if (b.breakoutDir === 'up') {
                             const low = dsData[bar * 6 + 3];
-                            placeLabel('b', cx - 3, r.priceToY(low) + 6, dbColor.color, 0.95);
+                            placeLabel('b', cx - halfW, r.priceToY(low) + 6, buySignalColor.color, microSignalSize);
                         } else {
                             const high = dsData[bar * 6 + 2];
-                            placeLabel('s', cx - 3, r.priceToY(high) - 16, dtColor.color, 0.95);
+                            placeLabel('s', cx - halfW, r.priceToY(high) - topOffset, sellSignalColor.color, microSignalSize);
                         }
                     }
                 }
