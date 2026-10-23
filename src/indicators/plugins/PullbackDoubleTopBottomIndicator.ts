@@ -121,6 +121,7 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
 
             // HTF Canvas Overlay & Candlestick Suppression Settings
             { id: 'checkHtfBox', name: 'Check HTF Box (Overlay HTF on Chart)', type: 'boolean', value: false },
+            { id: 'autoPeekOnClose', name: 'Automatic Peek on HTF Close', type: 'boolean', value: false },
             { id: 'htfOverlayDurationSec', name: 'Overlay Duration (20s - 2m)', type: 'number', value: 30, min: 20, max: 120, step: 5 },
             { id: 'showHtfWicks', name: 'Show HTF Candle Wicks', type: 'boolean', value: true },
             { id: 'htfCandleOpacity', name: 'HTF Candle Body Opacity', type: 'number', value: 0.85, min: 0.1, max: 1.0, step: 0.05 }
@@ -1187,7 +1188,27 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
         const showWicks = this.getParam<boolean>('showHtfWicks', true);
         const opacity = Math.max(0.1, Math.min(1.0, this.getParam<number>('htfCandleOpacity', 0.85)));
 
-        for (const bar of this.cachedHtfBars) {
+        // GPU OPTIMIZATION & STRAIGHT LOOK:
+        // 1. Cull bars outside viewport
+        // 2. Pre-calculate integer pixel-snapped coordinates (no subpixel blur, razor-sharp straight edges)
+        // 3. Batch bull & bear geometries into unified Graphics paths (drastically reduces draw calls)
+        // 4. Pure rectangular geometry with g.rect() - zero bubble / round corners
+
+        interface StraightCandleGeom {
+            left: number;
+            top: number;
+            width: number;
+            height: number;
+            midX: number;
+            highY: number;
+            lowY: number;
+        }
+
+        const bullBars: StraightCandleGeom[] = [];
+        const bearBars: StraightCandleGeom[] = [];
+
+        for (let i = 0; i < this.cachedHtfBars.length; i++) {
+            const bar = this.cachedHtfBars[i];
             const x1 = (bar.firstChartBar * sp) - r.cameraX;
             const x2 = ((bar.lastChartBar + 1) * sp) - r.cameraX;
 
@@ -1195,60 +1216,107 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
             if (x2 < -40 || x1 > layout.chartWidth + 40) continue;
 
             const blockW = Math.max(3, x2 - x1);
-            // Margin between adjacent HTF candles so bodies have clean definition
-            const margin = Math.min(4, Math.max(1, Math.round(blockW * 0.05)));
-            const bodyW = Math.max(2, blockW - (margin * 2));
-            const bodyLeft = x1 + margin;
-            const xMid = x1 + (blockW / 2);
+            // Margin between adjacent HTF candles so bodies have clean straight definition
+            const margin = Math.min(4, Math.max(1, Math.round(blockW * 0.04)));
+            const bodyW = Math.max(2, Math.round(blockW - (margin * 2)));
+            const bodyLeft = Math.round(x1 + margin);
+            const xMid = Math.round(x1 + (blockW * 0.5));
 
-            const isBull = bar.close >= bar.open;
-            const bodyColor = isBull ? r.bullColor : r.bearColor;
-            const borderColor = isBull ? r.bullBorderColor : r.bearBorderColor;
-            const wickColor = isBull ? r.bullWickColor : r.bearWickColor;
-
-            const yOpen = r.priceToY(bar.open);
-            const yClose = r.priceToY(bar.close);
-            const yHigh = r.priceToY(bar.high);
-            const yLow = r.priceToY(bar.low);
+            const yOpen = Math.round(r.priceToY(bar.open));
+            const yClose = Math.round(r.priceToY(bar.close));
+            const yHigh = Math.round(r.priceToY(bar.high));
+            const yLow = Math.round(r.priceToY(bar.low));
 
             const yTop = Math.min(yOpen, yClose);
             const yBot = Math.max(yOpen, yClose);
             const bodyH = Math.max(2, yBot - yTop);
 
-            // 1. Draw HTF Wicks
-            if (showWicks) {
-                // High wick
-                if (yHigh < yTop) {
-                    g.moveTo(xMid, yHigh).lineTo(xMid, yTop).stroke({
-                        color: wickColor,
-                        width: 1.5,
-                        alpha: 0.9
-                    });
+            const isBull = bar.close >= bar.open;
+            const geom: StraightCandleGeom = {
+                left: bodyLeft,
+                top: yTop,
+                width: bodyW,
+                height: bodyH,
+                midX: xMid,
+                highY: yHigh,
+                lowY: yLow
+            };
+
+            if (isBull) {
+                bullBars.push(geom);
+            } else {
+                bearBars.push(geom);
+            }
+        }
+
+        // --- BATCH 1: Bull Wicks (Single Draw Call) ---
+        if (showWicks && bullBars.length > 0) {
+            g.beginPath();
+            for (let i = 0; i < bullBars.length; i++) {
+                const b = bullBars[i];
+                if (b.highY < b.top) {
+                    g.moveTo(b.midX, b.highY).lineTo(b.midX, b.top);
                 }
-                // Low wick
-                if (yLow > yBot) {
-                    g.moveTo(xMid, yBot).lineTo(xMid, yLow).stroke({
-                        color: wickColor,
-                        width: 1.5,
-                        alpha: 0.9
-                    });
+                const bot = b.top + b.height;
+                if (b.lowY > bot) {
+                    g.moveTo(b.midX, bot).lineTo(b.midX, b.lowY);
                 }
             }
+            g.stroke({ color: r.bullWickColor, width: 1, alpha: 0.95 });
+        }
 
-            // 2. Draw HTF Candle Body
-            g.roundRect(bodyLeft, yTop, bodyW, bodyH, 2)
-             .fill({ color: bodyColor, alpha: opacity })
-             .stroke({ color: borderColor, width: 1.2, alpha: 1.0 });
-
-            // 3. Subtle midline or tick for large blocks
-            if (bodyW > 36) {
-                const yMidline = (yHigh + yLow) / 2;
-                g.moveTo(bodyLeft + 2, yMidline).lineTo(bodyLeft + bodyW - 2, yMidline).stroke({
-                    color: 0xffffff,
-                    width: 1,
-                    alpha: 0.2
-                });
+        // --- BATCH 2: Bear Wicks (Single Draw Call) ---
+        if (showWicks && bearBars.length > 0) {
+            g.beginPath();
+            for (let i = 0; i < bearBars.length; i++) {
+                const b = bearBars[i];
+                if (b.highY < b.top) {
+                    g.moveTo(b.midX, b.highY).lineTo(b.midX, b.top);
+                }
+                const bot = b.top + b.height;
+                if (b.lowY > bot) {
+                    g.moveTo(b.midX, bot).lineTo(b.midX, b.lowY);
+                }
             }
+            g.stroke({ color: r.bearWickColor, width: 1, alpha: 0.95 });
+        }
+
+        // --- BATCH 3: Bull Bodies (Pure Straight Rectangles, Single Fill & Stroke) ---
+        if (bullBars.length > 0) {
+            g.beginPath();
+            for (let i = 0; i < bullBars.length; i++) {
+                const b = bullBars[i];
+                g.rect(b.left, b.top, b.width, b.height);
+            }
+            g.fill({ color: r.bullColor, alpha: opacity });
+            g.stroke({ color: r.bullBorderColor, width: 1, alpha: 1.0 });
+        }
+
+        // --- BATCH 4: Bear Bodies (Pure Straight Rectangles, Single Fill & Stroke) ---
+        if (bearBars.length > 0) {
+            g.beginPath();
+            for (let i = 0; i < bearBars.length; i++) {
+                const b = bearBars[i];
+                g.rect(b.left, b.top, b.width, b.height);
+            }
+            g.fill({ color: r.bearColor, alpha: opacity });
+            g.stroke({ color: r.bearBorderColor, width: 1, alpha: 1.0 });
+        }
+
+        // --- BATCH 5: Subtle Horizontal Equilibrium Midlines for Large Blocks ---
+        g.beginPath();
+        let hasMidlines = false;
+        const allBars = bullBars.concat(bearBars);
+        for (let i = 0; i < allBars.length; i++) {
+            const b = allBars[i];
+            if (b.width > 36) {
+                const yMidline = Math.round((b.highY + b.lowY) * 0.5);
+                g.moveTo(b.left + 2, yMidline).lineTo(b.left + b.width - 2, yMidline);
+                hasMidlines = true;
+            }
+        }
+        if (hasMidlines) {
+            g.stroke({ color: 0xffffff, width: 1, alpha: 0.2 });
         }
     }
 

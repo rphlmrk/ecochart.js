@@ -152,21 +152,24 @@ export class HTFBoxIndicator extends BaseIndicator {
             return;
         }
 
-        const yTop = layout.mainChartHeight - (((Math.max(o, c) - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice)) * layout.mainChartHeight) + r.cameraY;
-        const yBot = layout.mainChartHeight - (((Math.min(o, c) - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice)) * layout.mainChartHeight) + r.cameraY;
+        const snapX1 = Math.round(x1);
+        const snapWidth = Math.max(1, Math.round(width));
+        const snapYTop = Math.round(layout.mainChartHeight - (((Math.max(o, c) - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice)) * layout.mainChartHeight) + r.cameraY);
+        const snapYBot = Math.round(layout.mainChartHeight - (((Math.min(o, c) - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice)) * layout.mainChartHeight) + r.cameraY);
+        const snapH = Math.max(1, snapYBot - snapYTop);
         const borderAlpha = r.isDarkTheme ? 0.6 : 0.85;
 
         if (showWicks) {
-            const yH = layout.mainChartHeight - (((h - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice)) * layout.mainChartHeight) + r.cameraY;
-            const yL = layout.mainChartHeight - (((l - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice)) * layout.mainChartHeight) + r.cameraY;
-            const xMid = x1 + width / 2;
+            const snapYH = Math.round(layout.mainChartHeight - (((h - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice)) * layout.mainChartHeight) + r.cameraY);
+            const snapYL = Math.round(layout.mainChartHeight - (((l - r.currentMinPrice) / (r.currentMaxPrice - r.currentMinPrice)) * layout.mainChartHeight) + r.cameraY);
+            const snapXMid = Math.round(snapX1 + snapWidth * 0.5);
 
-            g.moveTo(xMid, yH).lineTo(xMid, yTop).stroke({ color, alpha: borderAlpha, width: 1.5 });
-            g.moveTo(xMid, yBot).lineTo(xMid, yL).stroke({ color, alpha: borderAlpha, width: 1.5 });
+            if (snapYH < snapYTop) g.moveTo(snapXMid, snapYH).lineTo(snapXMid, snapYTop).stroke({ color, alpha: borderAlpha, width: 1.5 });
+            if (snapYL > snapYBot) g.moveTo(snapXMid, snapYBot).lineTo(snapXMid, snapYL).stroke({ color, alpha: borderAlpha, width: 1.5 });
         }
 
-        g.rect(x1, yTop, width, Math.max(1, yBot - yTop)).fill({ color, alpha: opacity });
-        g.rect(x1, yTop, width, Math.max(1, yBot - yTop)).stroke({ color, alpha: borderAlpha, width: 1.5 });
+        g.rect(snapX1, snapYTop, snapWidth, snapH).fill({ color, alpha: opacity });
+        g.rect(snapX1, snapYTop, snapWidth, snapH).stroke({ color, alpha: borderAlpha, width: 1.5 });
     }
 
     public getValueAt(idx: number, ds: DataStore, _isDark: boolean, _defaultTextClr: number) {

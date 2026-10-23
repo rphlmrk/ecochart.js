@@ -28,6 +28,7 @@ import { PriceAxisRenderer } from './renderer/PriceAxisRenderer';
 import { TimeAxisRenderer } from './renderer/TimeAxisRenderer';
 import { favoritesManager } from './data/FavoritesManager';
 import { DataWorkerClient } from './workers/DataWorkerClient';
+import { TimeframeResampler } from './data/TimeframeResampler';
 export { alertManager } from './alerts/AlertManager';
 import { AlertUI } from './alerts/AlertUI';
 
@@ -36,6 +37,12 @@ export interface SavedPaneState {
     timeframe: string;
     chartMode: string;
     isAutoScale: boolean;
+    candleHtfTimeframe?: string;
+    candleHtfCustomMins?: number;
+    autoPeekOnClose?: boolean;
+    htfOverlayDurationSec?: number;
+    showHtfWicks?: boolean;
+    htfCandleOpacity?: number;
     indicators: SavedIndicatorState[];
 }
 
@@ -101,6 +108,13 @@ export class EcoChart {
     private htfOverlayTimer: any = null;
     public htfOverlaySecondsRemaining = 0;
     public htfOverlayDurationSec = 30; // 20s to 120s (2m)
+    public candleHtfTimeframe: string = 'Off';
+    public candleHtfCustomMins: number = 60;
+    public autoPeekOnClose: boolean = false;
+    public showHtfWicks: boolean = true;
+    public htfCandleOpacity: number = 0.85;
+    private lastClosedHtfTime: number = 0;
+    private lastAutoPeekTriggeredTime: number = 0;
 
     // Interaction State
     private isDraggingChart = false;
@@ -762,6 +776,118 @@ export class EcoChart {
         this.updateHtfOverlayControl();
     }
 
+    public getEffectiveHtfMs(): number {
+        const chartTfMs = this.renderer.parseIntervalMs(this.currentInterval);
+        if (this.candleHtfTimeframe !== 'Off') {
+            if (this.candleHtfTimeframe === 'Custom') {
+                return Math.max(60000, this.candleHtfCustomMins * 60000);
+            }
+            return TimeframeResampler.parseMs(this.candleHtfTimeframe.toLowerCase());
+        }
+
+        const msInd = this.indicatorManager.activeIndicators.find(
+            i => i instanceof PullbackDoubleTopBottomIndicator && i.visible
+        ) as PullbackDoubleTopBottomIndicator | undefined;
+        if (msInd && msInd.isHTF(chartTfMs)) {
+            return msInd.getEffectiveTfMs(chartTfMs);
+        }
+
+        const htfBox = this.indicatorManager.activeIndicators.find(
+            i => i instanceof HTFBoxIndicator && i.visible
+        ) as HTFBoxIndicator | undefined;
+        if (htfBox) {
+            const ms = htfBox.getEffectiveTfMins() * 60000;
+            if (ms > chartTfMs) return ms;
+        }
+
+        return 0;
+    }
+
+    public ensureCandleHtfIndicator(): PullbackDoubleTopBottomIndicator {
+        let msInd = this.indicatorManager.activeIndicators.find(
+            i => i instanceof PullbackDoubleTopBottomIndicator
+        ) as PullbackDoubleTopBottomIndicator | undefined;
+
+        if (!msInd) {
+            msInd = new PullbackDoubleTopBottomIndicator();
+            this.indicatorManager.addIndicator(msInd);
+        }
+
+        msInd.visible = true;
+        const tf = this.candleHtfTimeframe === 'Custom' ? 'Custom HTF' : this.candleHtfTimeframe;
+        msInd.updateParams({
+            timeframe: tf,
+            customTfMins: this.candleHtfCustomMins,
+            autoPeekOnClose: this.autoPeekOnClose,
+            htfOverlayDurationSec: this.htfOverlayDurationSec,
+            showHtfWicks: this.showHtfWicks,
+            htfCandleOpacity: this.htfCandleOpacity
+        });
+        msInd.update(this.dataStore, true);
+        return msInd;
+    }
+
+    public setCandleHtfTimeframe(tf: string, customMins?: number) {
+        this.candleHtfTimeframe = tf;
+        if (customMins !== undefined) this.candleHtfCustomMins = customMins;
+
+        const chartTfMs = this.renderer.parseIntervalMs(this.currentInterval);
+        const msInd = this.indicatorManager.activeIndicators.find(
+            i => i instanceof PullbackDoubleTopBottomIndicator
+        ) as PullbackDoubleTopBottomIndicator | undefined;
+
+        if (tf === 'Off') {
+            if (msInd) {
+                msInd.updateParams({ timeframe: 'Current', autoPeekOnClose: false });
+                msInd.update(this.dataStore, true);
+            }
+            if (this.isHtfOverlayActive) {
+                this.stopHtfOverlay(false);
+            }
+        } else {
+            const htfMs = this.getEffectiveHtfMs();
+            if (htfMs > chartTfMs) {
+                this.ensureCandleHtfIndicator();
+            }
+        }
+
+        this.updateHtfOverlayControl();
+        this.renderer.forceNextRender = true;
+        this.renderer.isHistoricalDirty = true;
+        this.isDirty = true;
+    }
+
+    public checkAutoPeekOnClose(timeMs: number): void {
+        const msInd = this.indicatorManager.activeIndicators.find(
+            i => i instanceof PullbackDoubleTopBottomIndicator && i.visible
+        ) as PullbackDoubleTopBottomIndicator | undefined;
+
+        const isAutoPeekEnabled = this.autoPeekOnClose || (msInd ? Boolean(msInd.getParam('autoPeekOnClose', false)) : false);
+        if (!isAutoPeekEnabled) return;
+
+        const htfMs = this.getEffectiveHtfMs();
+        const chartTfMs = this.renderer.parseIntervalMs(this.currentInterval);
+        if (htfMs <= chartTfMs || this.dataStore.length === 0) return;
+
+        const htfBucket = TimeframeResampler.getBucketStart(timeMs, htfMs);
+        if (this.lastClosedHtfTime === 0) {
+            this.lastClosedHtfTime = htfBucket;
+            return;
+        }
+
+        // When time transitions across into a new HTF bucket, the previous HTF bucket has closed!
+        if (htfBucket > this.lastClosedHtfTime) {
+            const closedPeriodTime = this.lastClosedHtfTime;
+            this.lastClosedHtfTime = htfBucket;
+
+            if (this.lastAutoPeekTriggeredTime !== closedPeriodTime) {
+                this.lastAutoPeekTriggeredTime = closedPeriodTime;
+                console.log(`[EcoChart] HTF bar closed at ${new Date(closedPeriodTime).toISOString()}. Triggering auto-peek overlay.`);
+                this.startHtfOverlay(this.htfOverlayDurationSec);
+            }
+        }
+    }
+
     public updateHtfOverlayControl() {
         if (!this.htfOverlayControl) return;
 
@@ -788,6 +914,14 @@ export class EcoChart {
             if (htfBoxInd && (htfBoxInd.getEffectiveTfMins() * 60000 > chartTfMs)) {
                 htfLabel = `${htfBoxInd.getEffectiveTfMins()}m`;
                 targetInd = htfBoxInd;
+            }
+        }
+
+        if (!targetInd && this.candleHtfTimeframe !== 'Off') {
+            const effectiveMs = this.getEffectiveHtfMs();
+            if (effectiveMs > chartTfMs) {
+                htfLabel = this.candleHtfTimeframe === 'Custom' ? `${this.candleHtfCustomMins}m` : this.candleHtfTimeframe;
+                targetInd = this.ensureCandleHtfIndicator();
             }
         }
 
@@ -856,11 +990,15 @@ export class EcoChart {
                 durOptionsHtml += `<option value="${opt.sec}" ${sel}>${opt.label}</option>`;
             }
 
+            const isAutoPeek = this.autoPeekOnClose || Boolean(targetInd?.getParam && targetInd.getParam('autoPeekOnClose'));
+            const autoPeekBadge = isAutoPeek ? `<span style="font-size: 9px; font-weight: 700; color: #00E676; background: rgba(0, 230, 118, 0.15); padding: 1px 4px; border-radius: 3px;" title="Automatic peek active on candle close">Auto-Peek</span>` : '';
+
             this.htfOverlayControl.innerHTML = `
                 <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;" title="Check to overlay HTF candles on chart and hide current candlesticks">
                     <input type="checkbox" class="htf-check-toggle" style="cursor: pointer; width: 14px; height: 14px; accent-color: var(--chart-accent, #2962FF);">
                     <span style="font-weight: 600; color: var(--chart-text, #D1D4DC);">Overlay HTF</span>
                     <span style="font-size: 10px; font-weight: 700; color: var(--chart-accent, #2962FF); background: rgba(41, 98, 255, 0.15); padding: 1px 5px; border-radius: 3px;">${htfLabel}</span>
+                    ${autoPeekBadge}
                 </label>
                 <div style="display: flex; align-items: center; gap: 5px; border-left: 1px solid var(--chart-grid, #2A2E39); padding-left: 6px;">
                     <select class="htf-duration-select" style="
@@ -1825,6 +1963,12 @@ export class EcoChart {
             timeframe: this.currentInterval,
             chartMode: this.renderer.chartMode,
             isAutoScale: this.renderer.isAutoScale,
+            candleHtfTimeframe: this.candleHtfTimeframe,
+            candleHtfCustomMins: this.candleHtfCustomMins,
+            autoPeekOnClose: this.autoPeekOnClose,
+            htfOverlayDurationSec: this.htfOverlayDurationSec,
+            showHtfWicks: this.showHtfWicks,
+            htfCandleOpacity: this.htfCandleOpacity,
             indicators: this.indicatorManager.activeIndicators.map(i => IndicatorRegistry.serialize(i))
         };
     }
@@ -1832,6 +1976,13 @@ export class EcoChart {
     public async deserialize(state: SavedPaneState) {
         this.currentSymbol = state.symbol || 'BTCUSDT';
         this.currentInterval = state.timeframe || '1m';
+
+        if (state.candleHtfTimeframe !== undefined) this.candleHtfTimeframe = state.candleHtfTimeframe;
+        if (state.candleHtfCustomMins !== undefined) this.candleHtfCustomMins = state.candleHtfCustomMins;
+        if (state.autoPeekOnClose !== undefined) this.autoPeekOnClose = state.autoPeekOnClose;
+        if (state.htfOverlayDurationSec !== undefined) this.htfOverlayDurationSec = state.htfOverlayDurationSec;
+        if (state.showHtfWicks !== undefined) this.showHtfWicks = state.showHtfWicks;
+        if (state.htfCandleOpacity !== undefined) this.htfCandleOpacity = state.htfCandleOpacity;
 
         await this.drawingManager.loadDrawings(this.currentSymbol);
 
@@ -1846,9 +1997,14 @@ export class EcoChart {
             });
         }
 
+        if (this.candleHtfTimeframe !== 'Off') {
+            this.ensureCandleHtfIndicator();
+        }
+
         await this.startLiveBinance(this.currentSymbol, this.currentInterval);
         this.updateLegend();
         this.updateControlsLayout();
+        this.updateHtfOverlayControl();
         WorkspaceManager.syncSessions();
         WorkspaceManager.syncSeparators();
         WorkspaceManager.syncClock();
@@ -1875,6 +2031,10 @@ export class EcoChart {
                 this.renderer.isSessionDirty = true;
             }
             this.indicatorManager.update(this.dataStore, isClosed); // Run Math Engine
+            if (this.dataStore.length > 0) {
+                const lastBase = (this.dataStore.length - 1) * 6;
+                this.checkAutoPeekOnClose(this.dataStore.data[lastBase]);
+            }
             this.renderer.forceNextRender = true;
             this.renderer.isSessionDirty = true;
             this.isDirty = true;
