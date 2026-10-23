@@ -1,5 +1,6 @@
 import { BaseIndicator, parseColorAndAlpha, type IndicatorLayout } from '../Indicator';
 import type { DataStore } from '../../data/DataStore';
+import { TimeframeResampler } from '../../data/TimeframeResampler';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { StrokeEngine } from '../../renderer/StrokeEngine';
 import { Graphics, Container, BitmapText } from 'pixi.js';
@@ -44,6 +45,16 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
         this.isOscillator = false;
 
         this.params = [
+            // Timeframe Selection
+            { 
+                id: 'timeframe', 
+                name: 'Timeframe', 
+                type: 'select', 
+                value: 'Current', 
+                options: ['Current', '1m', '3m', '5m', '15m', '30m', '45m', '1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', 'Custom HTF'] 
+            },
+            { id: 'customTfMins', name: 'Custom Timeframe (Mins)', type: 'number', value: 60, min: 1, max: 43200, step: 1 },
+
             // Double Top & Bottom Detection Settings
             { id: 'showPatterns', name: 'Show DT / DB Patterns', type: 'boolean', value: true },
             { id: 'dtDbTolerance', name: 'DT/DB Price Tolerance %', type: 'number', value: 0.2, min: 0.01, max: 5.0, step: 0.05 },
@@ -95,6 +106,47 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
         ];
     }
 
+    public static getTimeframeOptions(currentInterval: string): string[] {
+        const ALL = ['1m', '3m', '5m', '15m', '30m', '45m', '1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w'];
+        const currentMs = TimeframeResampler.parseMs(currentInterval);
+        const filtered = ALL.filter(tf => TimeframeResampler.parseMs(tf) > currentMs);
+        return ['Current', ...filtered, 'Custom HTF'];
+    }
+
+    public getTimeframeOptions(currentInterval: string): string[] {
+        return PullbackDoubleTopBottomIndicator.getTimeframeOptions(currentInterval);
+    }
+
+    public getEffectiveTfMs(chartTfMs: number): number {
+        const mode = this.getParam<string>('timeframe', 'Current');
+        if (mode === 'Current') return chartTfMs;
+        if (mode === 'Custom' || mode === 'Custom HTF') {
+            const mins = Math.max(1, this.getParam<number>('customTfMins', 60));
+            const customMs = mins * 60 * 1000;
+            return Math.max(customMs, chartTfMs);
+        }
+        const parsedMs = TimeframeResampler.parseMs(mode.toLowerCase());
+        if (parsedMs <= chartTfMs) {
+            return chartTfMs;
+        }
+        return parsedMs;
+    }
+
+    public isHTF(chartTfMs: number): boolean {
+        const tfMs = this.getEffectiveTfMs(chartTfMs);
+        return tfMs > chartTfMs;
+    }
+
+    public override getValueAt(_idx: number, _ds: DataStore, _isDark: boolean, defaultTextClr: number): { label: string; valueStr: string; valueColor: number } {
+        const dtCount = this.cachedPatterns.filter(p => p.type === 'DT').length;
+        const dbCount = this.cachedPatterns.filter(p => p.type === 'DB').length;
+        return {
+            label: this.name,
+            valueStr: `DT: ${dtCount} DB: ${dbCount}`,
+            valueColor: defaultTextClr
+        };
+    }
+
     public getLatestOpenMicroBox(): PullbackZoneBox | null {
         for (let i = this.cachedMicroBoxes.length - 1; i >= 0; i--) {
             if (this.cachedMicroBoxes[i].isOpen) return this.cachedMicroBoxes[i];
@@ -137,6 +189,8 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
     }
 
     protected override onParamsUpdated(): void {
+        const tf = this.getParam<string>('timeframe', 'Current');
+        this.name = tf === 'Current' ? 'Market Structure Double Top & Bottom' : `Market Structure Double Top & Bottom [${tf}]`;
         this.lastCalculatedLength = -1;
         this.lastStateHash = '';
         this.cachedMicroBoxes = [];
@@ -192,9 +246,8 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
      * to the defining structural extremes.
      * Caps the tolerance to a maximum of 15% of the box range to ensure "almost equal" highs/lows.
      */
-    private findInternalPatterns(boxes: PullbackZoneBox[], isMicro: boolean, ds: DataStore, macroBoxes: PullbackZoneBox[]) {
+    private findInternalPatterns(boxes: PullbackZoneBox[], isMicro: boolean, data: Float64Array, macroBoxes: PullbackZoneBox[]) {
         const userTolerancePct = this.getParam<number>('dtDbTolerance', 0.2) / 100;
-        const data = ds.data;
         
         for (const box of boxes) {
             const start = box.leftBar;
@@ -381,17 +434,108 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
         const maxBoxes = Math.max(10, Math.min(1000, this.getParam<number>('maxBoxes', 500)));
         const tolerance = this.getParam<number>('dtDbTolerance', 0.2);
 
+        const chartTfMs = (len >= 2 && ds.data[6] > ds.data[0]) ? (ds.data[6] - ds.data[0]) : 60000;
+        const effectiveTfMs = this.getEffectiveTfMs(chartTfMs);
+        const isHtfMode = effectiveTfMs > chartTfMs;
+        const tfParam = this.getParam<string>('timeframe', 'Current');
+        const customTfMins = this.getParam<number>('customTfMins', 60);
+
         const lastIdx = len - 1;
         const baseLast = lastIdx * 6;
         const lastH = ds.data[baseLast + 2];
         const lastL = ds.data[baseLast + 3];
         const lastC = ds.data[baseLast + 4];
 
-        const stateHash = `${showMicro}:${microPrd}:${showMacro}:${macroPrd}:${useWicks}:${maxBoxes}:${tolerance}:${len}:${lastH}:${lastL}:${lastC}`;
+        const stateHash = `${tfParam}:${effectiveTfMs}:${customTfMins}:${showMicro}:${microPrd}:${showMacro}:${macroPrd}:${useWicks}:${maxBoxes}:${tolerance}:${len}:${lastH}:${lastL}:${lastC}`;
         if (this.lastStateHash === stateHash && this.lastCalculatedLength === len) return;
 
         const data = ds.data;
-        this.cachedPatterns = []; 
+        this.cachedPatterns = [];
+
+        interface HtfBarMapping {
+            time: number;
+            open: number;
+            high: number;
+            low: number;
+            close: number;
+            volume: number;
+            firstChartBar: number;
+            lastChartBar: number;
+            highChartBar: number;
+            lowChartBar: number;
+        }
+
+        let evalData: Float64Array = data;
+        let evalLen: number = len;
+        let htfBars: HtfBarMapping[] | null = null;
+
+        if (isHtfMode) {
+            htfBars = [];
+            let currBucketTime = -1;
+            let currHtfBar: HtfBarMapping | null = null;
+
+            for (let i = 0; i < len; i++) {
+                const base = i * 6;
+                const t = data[base];
+                const o = data[base + 1];
+                const h = data[base + 2];
+                const l = data[base + 3];
+                const c = data[base + 4];
+                const v = data[base + 5];
+
+                const bTime = TimeframeResampler.getBucketStart(t, effectiveTfMs);
+                if (bTime !== currBucketTime) {
+                    currBucketTime = bTime;
+                    currHtfBar = {
+                        time: bTime,
+                        open: o,
+                        high: h,
+                        low: l,
+                        close: c,
+                        volume: v,
+                        firstChartBar: i,
+                        lastChartBar: i,
+                        highChartBar: i,
+                        lowChartBar: i
+                    };
+                    htfBars.push(currHtfBar);
+                } else if (currHtfBar) {
+                    currHtfBar.lastChartBar = i;
+                    currHtfBar.close = c;
+                    currHtfBar.volume += v;
+                    if (h > currHtfBar.high) {
+                        currHtfBar.high = h;
+                        currHtfBar.highChartBar = i;
+                    }
+                    if (l < currHtfBar.low) {
+                        currHtfBar.low = l;
+                        currHtfBar.lowChartBar = i;
+                    }
+                }
+            }
+
+            evalLen = htfBars.length;
+            if (evalLen < 4) {
+                this.cachedMicroBoxes = [];
+                this.cachedMacroBoxes = [];
+                this.cachedPatterns = [];
+                this.lastCalculatedLength = len;
+                this.lastStateHash = stateHash;
+                return;
+            }
+
+            evalData = new Float64Array(evalLen * 6);
+            for (let i = 0; i < evalLen; i++) {
+                const b = htfBars[i];
+                const base = i * 6;
+                evalData[base] = b.time;
+                evalData[base + 1] = b.open;
+                evalData[base + 2] = b.high;
+                evalData[base + 3] = b.low;
+                evalData[base + 4] = b.close;
+                evalData[base + 5] = b.volume;
+            }
+        }
 
         // 1. Calculate Macro Structure FIRST (So Micro can check against it)
         const macroBoxes: PullbackZoneBox[] = [];
@@ -407,11 +551,11 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
             let macroDir = 0; 
             let macroBox: PullbackZoneBox | null = null;
 
-            for (let i = 0; i < len; i++) {
+            for (let i = 0; i < evalLen; i++) {
                 const base = i * 6;
-                const h = data[base + 2];
-                const l = data[base + 3];
-                const c = data[base + 4];
+                const h = evalData[base + 2];
+                const l = evalData[base + 3];
+                const c = evalData[base + 4];
 
                 if (inMacro && macroBox !== null && macroTop !== null && macroBot !== null) {
                     macroBox.rightBar = i;
@@ -422,12 +566,12 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                     if (macroBreakUp) {
                         inMacro = false; macroBox.isOpen = false; macroBox.breakoutDir = 'up';
                         macroBreakBar = i; macroDir = 1; lastMacroTop = macroTop; lastMacroBot = macroBot;
-                        if (i === len - 1) this.dispatchBreakoutAlert('macro', 'up', macroTop, macroBot, useWicks ? h : c, i, data[base]);
+                        if (i === evalLen - 1) this.dispatchBreakoutAlert('macro', 'up', macroTop, macroBot, useWicks ? h : c, i, evalData[base]);
                         macroTop = null; macroBot = null; macroTopBar = null; macroBotBar = null; macroBox = null;
                     } else if (macroBreakDn) {
                         inMacro = false; macroBox.isOpen = false; macroBox.breakoutDir = 'down';
                         macroBreakBar = i; macroDir = -1; lastMacroTop = macroTop; lastMacroBot = macroBot;
-                        if (i === len - 1) this.dispatchBreakoutAlert('macro', 'down', macroTop, macroBot, useWicks ? l : c, i, data[base]);
+                        if (i === evalLen - 1) this.dispatchBreakoutAlert('macro', 'down', macroTop, macroBot, useWicks ? l : c, i, evalData[base]);
                         macroTop = null; macroBot = null; macroTopBar = null; macroBotBar = null; macroBox = null;
                     } else if (!useWicks) {
                         if (h > macroTop) {
@@ -441,12 +585,12 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
 
                 if (!inMacro) {
                     const actualMacroPhBar = i - macroPrd;
-                    const hasMacroPh = actualMacroPhBar >= 0 && PullbackDoubleTopBottomIndicator.isPivotHigh(data, actualMacroPhBar, macroPrd);
-                    const macroPh = hasMacroPh ? data[actualMacroPhBar * 6 + 2] : 0;
+                    const hasMacroPh = actualMacroPhBar >= 0 && PullbackDoubleTopBottomIndicator.isPivotHigh(evalData, actualMacroPhBar, macroPrd);
+                    const macroPh = hasMacroPh ? evalData[actualMacroPhBar * 6 + 2] : 0;
 
                     const actualMacroPlBar = i - macroPrd;
-                    const hasMacroPl = actualMacroPlBar >= 0 && PullbackDoubleTopBottomIndicator.isPivotLow(data, actualMacroPlBar, macroPrd);
-                    const macroPl = hasMacroPl ? data[actualMacroPlBar * 6 + 3] : 0;
+                    const hasMacroPl = actualMacroPlBar >= 0 && PullbackDoubleTopBottomIndicator.isPivotLow(evalData, actualMacroPlBar, macroPrd);
+                    const macroPl = hasMacroPl ? evalData[actualMacroPlBar * 6 + 3] : 0;
 
                     if (macroDir === 1 && lastMacroBot !== null) {
                         if (useWicks ? l < lastMacroBot : c < lastMacroBot) {
@@ -496,7 +640,7 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                 }
             }
             // Pass empty macro array because macro boxes are never suppressed by themselves
-            this.findInternalPatterns(macroBoxes, false, ds, []);
+            this.findInternalPatterns(macroBoxes, false, evalData, []);
         }
 
         // 2. Calculate Micro Structure SECOND
@@ -513,11 +657,11 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
             let microDir = 0; 
             let microBox: PullbackZoneBox | null = null;
 
-            for (let i = 0; i < len; i++) {
+            for (let i = 0; i < evalLen; i++) {
                 const base = i * 6;
-                const h = data[base + 2];
-                const l = data[base + 3];
-                const c = data[base + 4];
+                const h = evalData[base + 2];
+                const l = evalData[base + 3];
+                const c = evalData[base + 4];
 
                 if (inMicro && microBox !== null && microTop !== null && microBot !== null) {
                     microBox.rightBar = i;
@@ -533,7 +677,7 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                         microDir = 1; 
                         lastMicroTop = microTop; 
                         lastMicroBot = microBot;
-                        if (i === len - 1) this.dispatchBreakoutAlert('micro', 'up', microTop, microBot, useWicks ? h : c, i, data[base]);
+                        if (i === evalLen - 1) this.dispatchBreakoutAlert('micro', 'up', microTop, microBot, useWicks ? h : c, i, evalData[base]);
                         microTop = null; microBot = null; microTopBar = null; microBotBar = null; microBox = null;
                     } else if (microBreakDn) {
                         inMicro = false;
@@ -543,7 +687,7 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                         microDir = -1; 
                         lastMicroTop = microTop;
                         lastMicroBot = microBot;
-                        if (i === len - 1) this.dispatchBreakoutAlert('micro', 'down', microTop, microBot, useWicks ? l : c, i, data[base]);
+                        if (i === evalLen - 1) this.dispatchBreakoutAlert('micro', 'down', microTop, microBot, useWicks ? l : c, i, evalData[base]);
                         microTop = null; microBot = null; microTopBar = null; microBotBar = null; microBox = null;
                     } else if (!useWicks) {
                         if (h > microTop) {
@@ -561,12 +705,12 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
 
                 if (!inMicro) {
                     const actualPhBar = i - microPrd;
-                    const hasPh = actualPhBar >= 0 && PullbackDoubleTopBottomIndicator.isPivotHigh(data, actualPhBar, microPrd);
-                    const ph = hasPh ? data[actualPhBar * 6 + 2] : 0;
+                    const hasPh = actualPhBar >= 0 && PullbackDoubleTopBottomIndicator.isPivotHigh(evalData, actualPhBar, microPrd);
+                    const ph = hasPh ? evalData[actualPhBar * 6 + 2] : 0;
 
                     const actualPlBar = i - microPrd;
-                    const hasPl = actualPlBar >= 0 && PullbackDoubleTopBottomIndicator.isPivotLow(data, actualPlBar, microPrd);
-                    const pl = hasPl ? data[actualPlBar * 6 + 3] : 0;
+                    const hasPl = actualPlBar >= 0 && PullbackDoubleTopBottomIndicator.isPivotLow(evalData, actualPlBar, microPrd);
+                    const pl = hasPl ? evalData[actualPlBar * 6 + 3] : 0;
 
                     if (microDir === 1 && lastMicroBot !== null) {
                         if (useWicks ? l < lastMicroBot : c < lastMicroBot) {
@@ -615,11 +759,8 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                     }
                 }
             }
+
             // --- Resolve Overlap: Micro vs Macro ---
-            // When micro overlaps macro, use macro.
-            // If micro started first and macro starts in the middle or end of micro,
-            // truncate micro so it ends right where macro starts.
-            // If micro started inside macro, discard micro.
             let resolvedMicroBoxes: PullbackZoneBox[] = microBoxes;
             if (showMacro && macroBoxes.length > 0) {
                 resolvedMicroBoxes = [];
@@ -627,7 +768,7 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                     let keep = true;
                     for (const mBox of macroBoxes) {
                         const mLeft = mBox.leftBar;
-                        const mRight = mBox.isOpen ? (len - 1) : mBox.rightBar;
+                        const mRight = mBox.isOpen ? (evalLen - 1) : mBox.rightBar;
 
                         // Check if micro and macro overlap in time
                         if (uBox.leftBar <= mRight && uBox.rightBar >= mLeft) {
@@ -651,13 +792,90 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
             }
 
             // Detect internal patterns using the resolved micro boxes
-            this.findInternalPatterns(resolvedMicroBoxes, true, ds, macroBoxes);
-            this.cachedMicroBoxes = resolvedMicroBoxes;
-        } else {
-            this.cachedMicroBoxes = [];
+            this.findInternalPatterns(resolvedMicroBoxes, true, evalData, macroBoxes);
+            microBoxes.length = 0;
+            microBoxes.push(...resolvedMicroBoxes);
         }
 
-        this.cachedMacroBoxes = macroBoxes;
+        // If in HTF mode, map all boxes and pattern coordinates back to chart bars
+        if (isHtfMode && htfBars) {
+            const mapBox = (b: PullbackZoneBox): PullbackZoneBox => {
+                const leftH = htfBars![b.leftBar];
+                const rightH = htfBars![b.rightBar];
+                const topH = htfBars![b.topBar];
+                const botH = htfBars![b.bottomBar];
+
+                const leftBar = leftH ? leftH.firstChartBar : b.leftBar;
+                let rightBar = b.isOpen ? (len - 1) : (rightH ? rightH.lastChartBar : b.rightBar);
+
+                // For closed breakout boxes, find the exact chart bar where breakout occurred
+                if (!b.isOpen && rightH) {
+                    let breakChartBar = rightH.lastChartBar;
+                    for (let cBar = rightH.firstChartBar; cBar <= rightH.lastChartBar; cBar++) {
+                        const ch = data[cBar * 6 + 2];
+                        const cl = data[cBar * 6 + 3];
+                        const cc = data[cBar * 6 + 4];
+                        if (b.breakoutDir === 'up') {
+                            if (useWicks ? ch > b.top : cc > b.top) {
+                                breakChartBar = cBar;
+                                break;
+                            }
+                        } else if (b.breakoutDir === 'down') {
+                            if (useWicks ? cl < b.bottom : cc < b.bottom) {
+                                breakChartBar = cBar;
+                                break;
+                            }
+                        }
+                    }
+                    rightBar = breakChartBar;
+                }
+
+                const topBar = topH ? topH.highChartBar : b.topBar;
+                const bottomBar = botH ? botH.lowChartBar : b.bottomBar;
+
+                return {
+                    leftBar,
+                    rightBar,
+                    topBar,
+                    bottomBar,
+                    top: b.top,
+                    bottom: b.bottom,
+                    isOpen: b.isOpen,
+                    breakoutDir: b.breakoutDir
+                };
+            };
+
+            this.cachedMacroBoxes = macroBoxes.map(mapBox);
+            this.cachedMicroBoxes = showMicro ? microBoxes.map(mapBox) : [];
+
+            // Map cachedPatterns
+            const mappedPatterns: DoublePattern[] = [];
+            for (const pat of this.cachedPatterns) {
+                const sHtf = htfBars[pat.startBar];
+                const eHtf = htfBars[pat.endBar];
+
+                const startBar = pat.type === 'DT'
+                    ? (sHtf ? sHtf.highChartBar : pat.startBar)
+                    : (sHtf ? sHtf.lowChartBar : pat.startBar);
+
+                const endBar = pat.type === 'DT'
+                    ? (eHtf ? eHtf.highChartBar : pat.endBar)
+                    : (eHtf ? eHtf.lowChartBar : pat.endBar);
+
+                mappedPatterns.push({
+                    startBar,
+                    endBar,
+                    price: pat.price,
+                    type: pat.type,
+                    isMicro: pat.isMicro
+                });
+            }
+            this.cachedPatterns = mappedPatterns;
+        } else {
+            this.cachedMacroBoxes = macroBoxes;
+            this.cachedMicroBoxes = showMicro ? microBoxes : [];
+        }
+
         this.lastCalculatedLength = len;
         this.lastStateHash = stateHash;
     }
