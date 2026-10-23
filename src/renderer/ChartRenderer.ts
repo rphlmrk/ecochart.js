@@ -216,6 +216,8 @@ export class ChartRenderer {
     public chartMode: 'candles' | 'bars' | 'line' | 'area' | 'heikinAshi' = 'candles';
     public accentColor = 0x2962FF;
     public mainLineWidth = 2;
+    // Candle suppression for HTF Canvas Overlay mode
+    public hideCandles = false;
 
     // Current Timeframe & Symbol for countdown & alert triggers
     public currentInterval: string = '1m';
@@ -505,7 +507,11 @@ export class ChartRenderer {
         this.gridUniforms.update(); // <-- FLUSH TO GPU
 
         // --- 2. MULTI-MODE CHART DRAWING (HARDWARE ACCELERATED) ---
-        if (this.chartMode === 'line' || this.chartMode === 'area') {
+        if (this.hideCandles) {
+            this.candleMesh.visible = false;
+            const lineEntry = this.indicatorMeshes.get('MAIN_CHART_LINE');
+            if (lineEntry) lineEntry.mesh.visible = false;
+        } else if (this.chartMode === 'line' || this.chartMode === 'area') {
             // Mode 1: Vector Splines (Line / Area)
             this.candleMesh.visible = false;
             this.syncInstancedData(); // Ensures mainClosePrices is up to date

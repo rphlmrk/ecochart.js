@@ -95,6 +95,13 @@ export class EcoChart {
     public paneDrawingToolbar: HTMLDivElement | null = null; // <-- PER-PANE TOOLBAR
     private legendValNodes = new Map<string, HTMLElement>(); // <-- CACHE FOR FAST CROSSHAIR
 
+    // On-Canvas HTF Overlay State & Controls
+    public htfOverlayControl: HTMLDivElement | null = null;
+    public isHtfOverlayActive = false;
+    private htfOverlayTimer: any = null;
+    public htfOverlaySecondsRemaining = 0;
+    public htfOverlayDurationSec = 30; // 20s to 120s (2m)
+
     // Interaction State
     private isDraggingChart = false;
     private isDraggingPriceAxis = false;
@@ -400,6 +407,9 @@ export class EcoChart {
 
         this.overlayLayer.appendChild(this.paneDrawingToolbar);
 
+        // 5. On-Canvas HTF Overlay Control (Top-Right of this pane)
+        this.createHtfOverlayControl();
+
         if (WorkspaceManager.isAutoHideNav) this.hideNavBar();
 
         // Proximity detection: Show Nav Bar, Legend, and Per-Pane Dock
@@ -470,6 +480,8 @@ export class EcoChart {
             console.warn('Renderer destroy warning:', err);
         }
 
+        this.stopHtfOverlay(false);
+        this.htfOverlayControl?.remove();
         this.autoBtn?.remove();
         this.navBar?.remove();
         this.legendContainer?.remove();
@@ -702,6 +714,9 @@ export class EcoChart {
 
             this.legendContainer!.appendChild(item);
         });
+
+        // Synchronize on-canvas HTF overlay control with active indicators
+        this.updateHtfOverlayControl();
     }
 
     /**
@@ -721,6 +736,240 @@ export class EcoChart {
                 }
             }
         });
+    }
+
+    public createHtfOverlayControl() {
+        if (this.htfOverlayControl) return;
+
+        this.htfOverlayControl = document.createElement('div');
+        this.htfOverlayControl.className = 'pane-htf-overlay-control';
+        this.htfOverlayControl.style.cssText = `
+            position: absolute; top: 10px; right: 10px;
+            display: none; align-items: center; gap: 8px; z-index: 10; user-select: none;
+            background: var(--chart-panel-bg, rgba(22, 26, 37, 0.92));
+            backdrop-filter: blur(8px);
+            border: 1px solid var(--chart-grid, #2A2E39);
+            border-radius: 8px; padding: 5px 9px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+            font-family: inherit; font-size: 11px; color: var(--chart-text, #D1D4DC);
+            pointer-events: auto; transition: all 0.2s ease;
+        `;
+
+        this.htfOverlayControl.addEventListener('pointerdown', (e) => e.stopPropagation());
+        this.htfOverlayControl.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: false });
+
+        this.overlayLayer.appendChild(this.htfOverlayControl);
+        this.updateHtfOverlayControl();
+    }
+
+    public updateHtfOverlayControl() {
+        if (!this.htfOverlayControl) return;
+
+        const chartTfMs = this.renderer.parseIntervalMs(this.currentInterval);
+
+        // Find if Market Structure Double Top & Bottom or HTF Box has an HTF selected
+        let htfLabel = '';
+        let targetInd: any = null;
+
+        const msInd = this.indicatorManager.activeIndicators.find(
+            i => i instanceof PullbackDoubleTopBottomIndicator && i.visible
+        ) as PullbackDoubleTopBottomIndicator | undefined;
+
+        if (msInd && msInd.isHTF(chartTfMs)) {
+            const tfParam = msInd.getParam<string>('timeframe', 'Current');
+            htfLabel = tfParam === 'Custom HTF' ? `${msInd.getParam('customTfMins', 60)}m` : tfParam;
+            targetInd = msInd;
+        }
+
+        if (!targetInd) {
+            const htfBoxInd = this.indicatorManager.activeIndicators.find(
+                i => i instanceof HTFBoxIndicator && i.visible
+            ) as HTFBoxIndicator | undefined;
+            if (htfBoxInd && (htfBoxInd.getEffectiveTfMins() * 60000 > chartTfMs)) {
+                htfLabel = `${htfBoxInd.getEffectiveTfMins()}m`;
+                targetInd = htfBoxInd;
+            }
+        }
+
+        // If no HTF is currently selected or indicator is hidden, hide the on-canvas control
+        if (!targetInd) {
+            if (this.isHtfOverlayActive) {
+                this.stopHtfOverlay(false);
+            }
+            this.htfOverlayControl.style.display = 'none';
+            return;
+        }
+
+        this.htfOverlayControl.style.display = 'flex';
+
+        // Read duration from indicator param if available and idle
+        if (targetInd && typeof targetInd.getParam === 'function' && !this.isHtfOverlayActive) {
+            const indDur = targetInd.getParam('htfOverlayDurationSec');
+            if (typeof indDur === 'number' && indDur >= 20 && indDur <= 120) {
+                this.htfOverlayDurationSec = indDur;
+            }
+        }
+
+        if (this.isHtfOverlayActive) {
+            // Active overlay state: show countdown & Exit button
+            const mins = Math.floor(this.htfOverlaySecondsRemaining / 60);
+            const secs = this.htfOverlaySecondsRemaining % 60;
+            const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
+
+            this.htfOverlayControl.style.borderColor = 'var(--chart-accent, #2962FF)';
+            this.htfOverlayControl.style.boxShadow = '0 0 14px rgba(41, 98, 255, 0.45)';
+
+            this.htfOverlayControl.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #00E676; box-shadow: 0 0 8px #00E676;"></span>
+                    <span style="font-weight: 700; color: #fff;">HTF ${htfLabel}</span>
+                    <span style="font-size: 11px; font-family: monospace; font-weight: 700; color: #00E676; background: rgba(0, 230, 118, 0.15); padding: 1px 6px; border-radius: 4px;">${timeStr}</span>
+                </div>
+                <span style="color: var(--chart-text, #787B86); font-size: 10px;">Candles Hidden</span>
+                <button class="htf-btn-exit" style="
+                    background: rgba(239, 83, 80, 0.15); color: #EF5350; border: 1px solid #EF5350;
+                    border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 600; cursor: pointer;
+                " title="Restore Current Candlesticks">Exit</button>
+            `;
+
+            this.htfOverlayControl.querySelector('.htf-btn-exit')?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.stopHtfOverlay(false);
+            });
+        } else {
+            // Idle state: Checkbox / Toggle + Duration Selector (20s to 2m)
+            this.htfOverlayControl.style.borderColor = 'var(--chart-grid, #2A2E39)';
+            this.htfOverlayControl.style.boxShadow = '0 4px 16px rgba(0,0,0,0.45)';
+
+            const durationOptions = [
+                { sec: 20, label: '20s' },
+                { sec: 30, label: '30s' },
+                { sec: 45, label: '45s' },
+                { sec: 60, label: '1m' },
+                { sec: 90, label: '90s' },
+                { sec: 120, label: '2m' }
+            ];
+
+            let durOptionsHtml = '';
+            for (const opt of durationOptions) {
+                const sel = opt.sec === this.htfOverlayDurationSec ? 'selected' : '';
+                durOptionsHtml += `<option value="${opt.sec}" ${sel}>${opt.label}</option>`;
+            }
+
+            this.htfOverlayControl.innerHTML = `
+                <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;" title="Check to overlay HTF candles on chart and hide current candlesticks">
+                    <input type="checkbox" class="htf-check-toggle" style="cursor: pointer; width: 14px; height: 14px; accent-color: var(--chart-accent, #2962FF);">
+                    <span style="font-weight: 600; color: var(--chart-text, #D1D4DC);">Overlay HTF</span>
+                    <span style="font-size: 10px; font-weight: 700; color: var(--chart-accent, #2962FF); background: rgba(41, 98, 255, 0.15); padding: 1px 5px; border-radius: 3px;">${htfLabel}</span>
+                </label>
+                <div style="display: flex; align-items: center; gap: 5px; border-left: 1px solid var(--chart-grid, #2A2E39); padding-left: 6px;">
+                    <select class="htf-duration-select" style="
+                        background: var(--chart-bg, #131722); color: var(--chart-text, #D1D4DC);
+                        border: 1px solid var(--chart-grid, #363A45); border-radius: 4px;
+                        padding: 1px 4px; font-size: 10px; cursor: pointer; outline: none;
+                    " title="Select Overlay Duration (20s to 2m)">
+                        ${durOptionsHtml}
+                    </select>
+                    <button class="htf-btn-overlay" style="
+                        background: var(--chart-accent, #2962FF); color: #fff; border: none;
+                        border-radius: 4px; padding: 2px 8px; font-size: 10px; font-weight: 600; cursor: pointer;
+                    " title="Overlay HTF and Hide Current Candlesticks for Selected Time">Peek</button>
+                </div>
+            `;
+
+            const chk = this.htfOverlayControl.querySelector('.htf-check-toggle') as HTMLInputElement | null;
+            const sel = this.htfOverlayControl.querySelector('.htf-duration-select') as HTMLSelectElement | null;
+            const btn = this.htfOverlayControl.querySelector('.htf-btn-overlay') as HTMLButtonElement | null;
+
+            sel?.addEventListener('change', (e) => {
+                e.stopPropagation();
+                const newDur = parseInt((e.target as HTMLSelectElement).value, 10) || 30;
+                this.htfOverlayDurationSec = Math.max(20, Math.min(120, newDur));
+                if (targetInd && typeof targetInd.updateParams === 'function') {
+                    targetInd.updateParams({ htfOverlayDurationSec: this.htfOverlayDurationSec });
+                }
+            });
+
+            const triggerStart = () => {
+                const dur = sel ? parseInt(sel.value, 10) : this.htfOverlayDurationSec;
+                this.startHtfOverlay(dur);
+            };
+
+            chk?.addEventListener('change', (e) => {
+                e.stopPropagation();
+                if (chk.checked) {
+                    triggerStart();
+                } else {
+                    this.stopHtfOverlay(false);
+                }
+            });
+
+            btn?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                triggerStart();
+            });
+        }
+    }
+
+    public startHtfOverlay(durationSec?: number) {
+        if (this.isHtfOverlayActive) return;
+
+        const dur = durationSec || this.htfOverlayDurationSec || 30;
+        this.htfOverlayDurationSec = Math.max(20, Math.min(120, dur));
+        this.htfOverlaySecondsRemaining = this.htfOverlayDurationSec;
+        this.isHtfOverlayActive = true;
+
+        // 1. Hide current candlesticks
+        this.renderer.hideCandles = true;
+        this.renderer.forceNextRender = true;
+        this.renderer.isHistoricalDirty = true;
+        this.isDirty = true;
+
+        // 2. Set active overlay flag on indicators
+        for (const ind of this.indicatorManager.activeIndicators) {
+            if ('isHtfOverlayActive' in ind) {
+                (ind as any).isHtfOverlayActive = true;
+            }
+        }
+
+        // 3. Clear existing timer if any
+        if (this.htfOverlayTimer) clearInterval(this.htfOverlayTimer);
+
+        // 4. Start countdown
+        this.htfOverlayTimer = setInterval(() => {
+            this.htfOverlaySecondsRemaining--;
+            if (this.htfOverlaySecondsRemaining <= 0) {
+                this.stopHtfOverlay(true);
+            } else {
+                this.updateHtfOverlayControl();
+            }
+        }, 1000);
+
+        this.updateHtfOverlayControl();
+    }
+
+    public stopHtfOverlay(_showNotice = false) {
+        if (this.htfOverlayTimer) {
+            clearInterval(this.htfOverlayTimer);
+            this.htfOverlayTimer = null;
+        }
+
+        this.isHtfOverlayActive = false;
+        this.renderer.hideCandles = false;
+        this.renderer.forceNextRender = true;
+        this.renderer.isHistoricalDirty = true;
+        this.isDirty = true;
+
+        for (const ind of this.indicatorManager.activeIndicators) {
+            if ('isHtfOverlayActive' in ind) {
+                (ind as any).isHtfOverlayActive = false;
+            }
+            if (typeof (ind as any).getParam === 'function' && (ind as any).getParam('checkHtfBox') === true) {
+                (ind as any).updateParams({ checkHtfBox: false });
+            }
+        }
+
+        this.updateHtfOverlayControl();
     }
 
     private setupInteractions() {
@@ -1642,6 +1891,7 @@ export class EcoChart {
             }
         });
         this.jumpToLive();
+        this.updateHtfOverlayControl();
         WorkspaceManager.triggerAutoSave();
     }
 
@@ -1677,6 +1927,7 @@ export class EcoChart {
             }
         });
         this.jumpToLive();
+        this.updateHtfOverlayControl();
         WorkspaceManager.triggerAutoSave();
     }
 
@@ -4278,9 +4529,14 @@ export class WorkspaceManager {
                         const num = parseFloat(input.value);
                         if (!isNaN(num)) {
                             indicator.updateParams({ [param.id]: num });
+                            if (param.id === 'htfOverlayDurationSec' && this.activeChart) {
+                                this.activeChart.htfOverlayDurationSec = Math.max(20, Math.min(120, num));
+                                this.activeChart.updateHtfOverlayControl();
+                            }
                             this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
                             this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
                             this.activeChart!.updateLegend();
+                            this.activeChart!.updateHtfOverlayControl();
                             this.activeChart!.isDirty = true;
                             if (indModalTitle) indModalTitle.textContent = `${indicator.name} Settings`;
                             WorkspaceManager.triggerAutoSave();
@@ -4336,10 +4592,19 @@ export class WorkspaceManager {
 
                     check.onchange = () => {
                         indicator.updateParams({ [param.id]: check.checked });
+                        if (param.id === 'checkHtfBox') {
+                            if (check.checked) {
+                                const dur = typeof (indicator as any).getParam === 'function' ? (indicator as any).getParam('htfOverlayDurationSec', 30) : 30;
+                                this.activeChart?.startHtfOverlay(dur);
+                            } else {
+                                this.activeChart?.stopHtfOverlay(false);
+                            }
+                        }
                         this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
                         this.activeChart!.renderer.isHistoricalDirty = true;
                         this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
                         this.activeChart!.updateLegend();
+                        this.activeChart!.updateHtfOverlayControl();
                         this.activeChart!.isDirty = true;
                         WorkspaceManager.triggerAutoSave();
                     };
@@ -4375,6 +4640,7 @@ export class WorkspaceManager {
                         this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
                         this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
                         this.activeChart!.updateLegend();
+                        this.activeChart!.updateHtfOverlayControl();
                         this.activeChart!.isDirty = true;
                         if (indModalTitle) indModalTitle.textContent = `${indicator.name} Settings`;
                         WorkspaceManager.triggerAutoSave();

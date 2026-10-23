@@ -97,7 +97,9 @@ export class HTFBoxIndicator extends BaseIndicator {
         const showWicks = this.getParam<boolean>('showWicks', true);
         const showVert = this.getParam<boolean>('showVertLines', false);
 
-        const opacity = r.isDarkTheme ? customOpacity : Math.min(0.85, customOpacity * 1.6);
+        const baseOpacity = r.isDarkTheme ? customOpacity : Math.min(0.85, customOpacity * 1.6);
+        const opacity = r.hideCandles ? 0.85 : baseOpacity;
+        const effectiveShowWicks = r.hideCandles ? true : showWicks;
         const sp = r.candleSpacing * r.zoom;
 
         const history = this.state.cachedBlocks || [];
@@ -122,7 +124,7 @@ export class HTFBoxIndicator extends BaseIndicator {
             // Frustum culling: skip blocks outside the screen
             if (x2 < 0 || x1 > layout.chartWidth) continue;
 
-            this.drawHtfElement(r, layout, g, x1, x2, b.o, b.h, b.l, b.c, opacity, showWicks, displayMode, showVert);
+            this.drawHtfElement(r, layout, g, x1, x2, b.o, b.h, b.l, b.c, opacity, effectiveShowWicks, displayMode, showVert);
         }
     }
 

@@ -416,6 +416,40 @@
       }
     }
 
+    /* On-Canvas HTF Overlay Control */
+    .pane-htf-overlay-control {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 10;
+      user-select: none;
+      background: var(--chart-panel-bg, rgba(22, 26, 37, 0.92));
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid var(--chart-grid, #2A2E39);
+      border-radius: 8px;
+      padding: 5px 9px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+      font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif;
+      font-size: 11px;
+      color: var(--chart-text, #D1D4DC);
+      pointer-events: auto;
+      transition: all 0.2s ease;
+    }
+
+    .pane-htf-overlay-control:hover {
+      border-color: var(--chart-accent, #2962FF);
+    }
+
+    @media (max-width: 768px) {
+      .pane-htf-overlay-control {
+        top: 6px;
+        right: 6px;
+        padding: 3px 6px;
+        font-size: 10px;
+      }
+    }
+
     /* Floating Drawing Toolbar Buttons */
     .dt-btn {
       background: transparent;

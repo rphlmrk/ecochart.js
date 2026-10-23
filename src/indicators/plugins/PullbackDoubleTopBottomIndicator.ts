@@ -25,10 +25,25 @@ export interface DoublePattern {
     isMicro: boolean;
 }
 
+export interface HtfBarMapping {
+    time: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+    firstChartBar: number;
+    lastChartBar: number;
+    highChartBar: number;
+    lowChartBar: number;
+}
+
 export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
     public cachedMicroBoxes: PullbackZoneBox[] = [];
     public cachedMacroBoxes: PullbackZoneBox[] = [];
     public cachedPatterns: DoublePattern[] = [];
+    public cachedHtfBars: HtfBarMapping[] = [];
+    public isHtfOverlayActive = false;
     
     public currentSymbol = 'BTCUSDT';
     private notifiedBreakouts = new Set<string>();
@@ -102,7 +117,13 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
 
             // Breakout Alerts
             { id: 'alertMicroBreakout', name: '🔔 Alert on Micro Box Breakout', type: 'boolean', value: false },
-            { id: 'alertMacroBreakout', name: '🔔 Alert on Macro Box Breakout', type: 'boolean', value: false }
+            { id: 'alertMacroBreakout', name: '🔔 Alert on Macro Box Breakout', type: 'boolean', value: false },
+
+            // HTF Canvas Overlay & Candlestick Suppression Settings
+            { id: 'checkHtfBox', name: 'Check HTF Box (Overlay HTF on Chart)', type: 'boolean', value: false },
+            { id: 'htfOverlayDurationSec', name: 'Overlay Duration (20s - 2m)', type: 'number', value: 30, min: 20, max: 120, step: 5 },
+            { id: 'showHtfWicks', name: 'Show HTF Candle Wicks', type: 'boolean', value: true },
+            { id: 'htfCandleOpacity', name: 'HTF Candle Body Opacity', type: 'number', value: 0.85, min: 0.1, max: 1.0, step: 0.05 }
         ];
     }
 
@@ -451,19 +472,6 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
 
         const data = ds.data;
         this.cachedPatterns = [];
-
-        interface HtfBarMapping {
-            time: number;
-            open: number;
-            high: number;
-            low: number;
-            close: number;
-            volume: number;
-            firstChartBar: number;
-            lastChartBar: number;
-            highChartBar: number;
-            lowChartBar: number;
-        }
 
         let evalData: Float64Array = data;
         let evalLen: number = len;
@@ -871,9 +879,11 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
                 });
             }
             this.cachedPatterns = mappedPatterns;
+            this.cachedHtfBars = htfBars || [];
         } else {
             this.cachedMacroBoxes = macroBoxes;
             this.cachedMicroBoxes = showMicro ? microBoxes : [];
+            this.cachedHtfBars = [];
         }
 
         this.lastCalculatedLength = len;
@@ -927,6 +937,12 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
         const halfSp = sp * 0.45;
         const minX = -40;
         const maxX = screenW + 40;
+
+        // --- HTF Candlestick Overlay Rendering ---
+        const shouldOverlayHtf = (r.hideCandles || this.isHtfOverlayActive || this.getParam<boolean>('checkHtfBox', false)) && this.cachedHtfBars.length > 0;
+        if (shouldOverlayHtf) {
+            this.renderHtfCandles(r, layout, g);
+        }
 
         interface VisibleZoneGeometry {
             x1: number; x2: number; midlineEndX?: number; hlLineEndX?: number;
@@ -1162,6 +1178,77 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
             }
         } else {
             this.labelContainer.visible = false;
+        }
+    }
+
+    private renderHtfCandles(r: ChartRenderer, layout: IndicatorLayout, g: Graphics): void {
+        if (!this.cachedHtfBars || this.cachedHtfBars.length === 0) return;
+        const sp = r.candleSpacing * r.zoom;
+        const showWicks = this.getParam<boolean>('showHtfWicks', true);
+        const opacity = Math.max(0.1, Math.min(1.0, this.getParam<number>('htfCandleOpacity', 0.85)));
+
+        for (const bar of this.cachedHtfBars) {
+            const x1 = (bar.firstChartBar * sp) - r.cameraX;
+            const x2 = ((bar.lastChartBar + 1) * sp) - r.cameraX;
+
+            // Frustum culling: skip bars completely outside visible screen
+            if (x2 < -40 || x1 > layout.chartWidth + 40) continue;
+
+            const blockW = Math.max(3, x2 - x1);
+            // Margin between adjacent HTF candles so bodies have clean definition
+            const margin = Math.min(4, Math.max(1, Math.round(blockW * 0.05)));
+            const bodyW = Math.max(2, blockW - (margin * 2));
+            const bodyLeft = x1 + margin;
+            const xMid = x1 + (blockW / 2);
+
+            const isBull = bar.close >= bar.open;
+            const bodyColor = isBull ? r.bullColor : r.bearColor;
+            const borderColor = isBull ? r.bullBorderColor : r.bearBorderColor;
+            const wickColor = isBull ? r.bullWickColor : r.bearWickColor;
+
+            const yOpen = r.priceToY(bar.open);
+            const yClose = r.priceToY(bar.close);
+            const yHigh = r.priceToY(bar.high);
+            const yLow = r.priceToY(bar.low);
+
+            const yTop = Math.min(yOpen, yClose);
+            const yBot = Math.max(yOpen, yClose);
+            const bodyH = Math.max(2, yBot - yTop);
+
+            // 1. Draw HTF Wicks
+            if (showWicks) {
+                // High wick
+                if (yHigh < yTop) {
+                    g.moveTo(xMid, yHigh).lineTo(xMid, yTop).stroke({
+                        color: wickColor,
+                        width: 1.5,
+                        alpha: 0.9
+                    });
+                }
+                // Low wick
+                if (yLow > yBot) {
+                    g.moveTo(xMid, yBot).lineTo(xMid, yLow).stroke({
+                        color: wickColor,
+                        width: 1.5,
+                        alpha: 0.9
+                    });
+                }
+            }
+
+            // 2. Draw HTF Candle Body
+            g.roundRect(bodyLeft, yTop, bodyW, bodyH, 2)
+             .fill({ color: bodyColor, alpha: opacity })
+             .stroke({ color: borderColor, width: 1.2, alpha: 1.0 });
+
+            // 3. Subtle midline or tick for large blocks
+            if (bodyW > 36) {
+                const yMidline = (yHigh + yLow) / 2;
+                g.moveTo(bodyLeft + 2, yMidline).lineTo(bodyLeft + bodyW - 2, yMidline).stroke({
+                    color: 0xffffff,
+                    width: 1,
+                    alpha: 0.2
+                });
+            }
         }
     }
 
