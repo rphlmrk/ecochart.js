@@ -26,7 +26,10 @@ export class TimeframeResampler {
     public static getBaseNativeInterval(targetInterval: string): string {
         if (this.isNative(targetInterval)) return targetInterval;
 
-        const totalMinutes = this.parseMs(targetInterval) / (60 * 1000);
+        const targetMs = this.parseMs(targetInterval);
+        if (targetMs < 60 * 1000) return '1s';
+
+        const totalMinutes = targetMs / (60 * 1000);
 
         if (totalMinutes < 60) {
             if (totalMinutes % 30 === 0) return '30m';

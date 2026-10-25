@@ -1146,6 +1146,9 @@
             <span style="color: var(--chart-text, #D1D4DC);">Overlay / Peek Duration:</span>
             <select id="select-candle-peek-duration"
               style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none; min-width: 140px;">
+              <option value="5">5 seconds</option>
+              <option value="10">10 seconds</option>
+              <option value="15">15 seconds</option>
               <option value="20">20 seconds</option>
               <option value="30" selected>30 seconds</option>
               <option value="45">45 seconds</option>
@@ -1160,6 +1163,13 @@
             <input type="checkbox" id="check-candle-htf-wicks" checked
               style="cursor: pointer; width: 15px; height: 15px; accent-color: var(--chart-accent, #2962FF);">
             <span style="color: var(--chart-text, #D1D4DC);">Show Straight HTF Candle Wicks</span>
+          </label>
+
+          <!-- Show/Hide On-Canvas Overlay Widget -->
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+            <input type="checkbox" id="check-candle-show-htf-hud" checked
+              style="cursor: pointer; width: 15px; height: 15px; accent-color: var(--chart-accent, #2962FF);">
+            <span style="color: var(--chart-text, #D1D4DC);">Show On-Canvas HTF Overlay Widget</span>
           </label>
 
           <!-- HTF Candle Body Opacity -->

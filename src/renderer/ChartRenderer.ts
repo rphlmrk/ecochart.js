@@ -81,6 +81,7 @@ export class ChartRenderer {
     public indicatorMainGraphics: Graphics = new Graphics();
     public indicatorOscGraphics: Graphics = new Graphics();
     public drawingGraphics: Graphics = new Graphics();
+    public htfOverlayGraphics: Graphics = new Graphics();
 
     // Dedicated Crosshair Graphics & Sync State
     private crosshairGraphics: Graphics = new Graphics();
@@ -301,6 +302,7 @@ export class ChartRenderer {
         this.indicatorOscContainer.addChild(this.indicatorOscGraphics);
 
         if (!this.drawingGraphics) this.drawingGraphics = new Graphics();
+        if (!this.htfOverlayGraphics) this.htfOverlayGraphics = new Graphics();
         if (!this.uiGraphics) this.uiGraphics = new Graphics();
         if (!this.crosshairGraphics) this.crosshairGraphics = new Graphics();
         if (!this.syncCrosshairGraphics) this.syncCrosshairGraphics = new Graphics();
@@ -316,6 +318,7 @@ export class ChartRenderer {
         this.app.stage.addChild(this.historicalCandlesGraphics); // Static layer
         this.app.stage.addChild(this.liveCandlesGraphics);       // Dynamic live layer
         this.app.stage.addChild(this.candleMesh);
+        this.app.stage.addChild(this.htfOverlayGraphics); // Dedicated Higher Timeframe Overlay layer
         this.app.stage.addChild(this.indicatorMainContainer); // <-- UPDATED
         this.app.stage.addChild(this.indicatorOscContainer);  // <-- UPDATED
         this.app.stage.addChild(this.drawingGraphics);
@@ -1937,5 +1940,183 @@ export class ChartRenderer {
         const u = this.sessionUniforms.uniforms;
         u.uShowOnChart = 0.0;
         u.uShowOnAxis = 0.0;
+    }
+
+    /**
+     * Standalone Higher Timeframe Overlay Candlestick Renderer
+     * - Flat rectangular geometry (zero bubbles / rounded corners)
+     * - Pixel-snapped coordinates for razor-sharp edges
+     * - Batched GPU draw calls (bull wicks, bear wicks, bull bodies, bear bodies)
+     * - Clean proportional candlestick spacing with proper whitespace gap
+     * - Full-width and perfectly centered current forming candle
+     */
+    public renderHtfOverlayCandles(
+        bars: {
+            open: number;
+            high: number;
+            low: number;
+            close: number;
+            firstChartBar: number;
+            lastChartBar: number;
+            expectedBars?: number;
+            isForming?: boolean;
+        }[],
+        showWicks: boolean = true,
+        opacity: number = 0.85
+    ): void {
+        this.htfOverlayGraphics.clear();
+        if (!bars || bars.length === 0) return;
+
+        const sp = this.candleSpacing * this.zoom;
+        const chartW = (this.app?.screen?.width || 800) - this.priceAxisWidth;
+        const boundedOpacity = Math.max(0.1, Math.min(1.0, opacity));
+        const totalChartBars = this.dataStore.length;
+
+        interface StraightCandleGeom {
+            left: number;
+            top: number;
+            width: number;
+            height: number;
+            midX: number;
+            highY: number;
+            lowY: number;
+            isForming: boolean;
+        }
+
+        const bullBars: StraightCandleGeom[] = [];
+        const bearBars: StraightCandleGeom[] = [];
+
+        for (let i = 0; i < bars.length; i++) {
+            const bar = bars[i];
+            const isLastBar = (i === bars.length - 1);
+            const expectedBars = bar.expectedBars || 1;
+
+            // Compute span of base chart bars this HTF slot covers:
+            // For closed bars, use the distance to the next HTF bar start.
+            // For the forming candle, use the full expected HTF span so it has full width from tick 1.
+            let spanBars: number;
+            if (!isLastBar && bars[i + 1]) {
+                spanBars = Math.max(1, bars[i + 1].firstChartBar - bar.firstChartBar);
+            } else {
+                const elapsedInBucket = Math.max(1, totalChartBars - bar.firstChartBar);
+                spanBars = Math.max(expectedBars, elapsedInBucket);
+            }
+
+            const startX = (bar.firstChartBar * sp) - this.cameraX;
+            const slotW = Math.max(3, spanBars * sp);
+            const xMid = Math.round(startX + (slotW * 0.5));
+
+            // Proportional candlestick spacing: keep 25-30% whitespace gap between bodies
+            // so candles look like clean, well-spaced candlesticks, not touching solid blocks.
+            const gap = Math.max(2, Math.min(32, Math.round(slotW * 0.28)));
+            const bodyW = Math.max(2, Math.min(Math.round(slotW - gap), 180));
+            const bodyLeft = Math.round(xMid - (bodyW * 0.5));
+
+            // Frustum culling: skip bars completely outside visible screen
+            if (bodyLeft + bodyW < -40 || bodyLeft > chartW + 40) continue;
+
+            const yOpen = Math.round(this.priceToY(bar.open));
+            const yClose = Math.round(this.priceToY(bar.close));
+            const yHigh = Math.round(this.priceToY(bar.high));
+            const yLow = Math.round(this.priceToY(bar.low));
+
+            const yTop = Math.min(yOpen, yClose);
+            const yBot = Math.max(yOpen, yClose);
+            const bodyH = Math.max(2, yBot - yTop);
+
+            const isBull = bar.close >= bar.open;
+            const geom: StraightCandleGeom = {
+                left: bodyLeft,
+                top: yTop,
+                width: bodyW,
+                height: bodyH,
+                midX: xMid,
+                highY: yHigh,
+                lowY: yLow,
+                isForming: Boolean(bar.isForming || isLastBar)
+            };
+
+            if (isBull) {
+                bullBars.push(geom);
+            } else {
+                bearBars.push(geom);
+            }
+        }
+
+        const g = this.htfOverlayGraphics;
+
+        // --- BATCH 1: Bull Wicks (Single Draw Call) ---
+        if (showWicks && bullBars.length > 0) {
+            g.beginPath();
+            for (let i = 0; i < bullBars.length; i++) {
+                const b = bullBars[i];
+                if (b.highY < b.top) {
+                    g.moveTo(b.midX, b.highY).lineTo(b.midX, b.top);
+                }
+                const bot = b.top + b.height;
+                if (b.lowY > bot) {
+                    g.moveTo(b.midX, bot).lineTo(b.midX, b.lowY);
+                }
+            }
+            g.stroke({ color: this.bullWickColor, width: 1, alpha: 0.95 });
+        }
+
+        // --- BATCH 2: Bear Wicks (Single Draw Call) ---
+        if (showWicks && bearBars.length > 0) {
+            g.beginPath();
+            for (let i = 0; i < bearBars.length; i++) {
+                const b = bearBars[i];
+                if (b.highY < b.top) {
+                    g.moveTo(b.midX, b.highY).lineTo(b.midX, b.top);
+                }
+                const bot = b.top + b.height;
+                if (b.lowY > bot) {
+                    g.moveTo(b.midX, bot).lineTo(b.midX, b.lowY);
+                }
+            }
+            g.stroke({ color: this.bearWickColor, width: 1, alpha: 0.95 });
+        }
+
+        // --- BATCH 3: Bull Bodies (Pure Straight Rectangles, Single Fill & Stroke) ---
+        if (bullBars.length > 0) {
+            g.beginPath();
+            for (let i = 0; i < bullBars.length; i++) {
+                const b = bullBars[i];
+                g.rect(b.left, b.top, b.width, b.height);
+            }
+            g.fill({ color: this.bullColor, alpha: boundedOpacity });
+            g.stroke({ color: this.bullBorderColor, width: 1, alpha: 1.0 });
+        }
+
+        // --- BATCH 4: Bear Bodies (Pure Straight Rectangles, Single Fill & Stroke) ---
+        if (bearBars.length > 0) {
+            g.beginPath();
+            for (let i = 0; i < bearBars.length; i++) {
+                const b = bearBars[i];
+                g.rect(b.left, b.top, b.width, b.height);
+            }
+            g.fill({ color: this.bearColor, alpha: boundedOpacity });
+            g.stroke({ color: this.bearBorderColor, width: 1, alpha: 1.0 });
+        }
+
+        // --- BATCH 5: Subtle Horizontal Equilibrium Midlines for Wide Blocks ---
+        g.beginPath();
+        let hasMidlines = false;
+        const allBars = bullBars.concat(bearBars);
+        for (let i = 0; i < allBars.length; i++) {
+            const b = allBars[i];
+            if (b.width > 40) {
+                const yMidline = Math.round((b.highY + b.lowY) * 0.5);
+                g.moveTo(b.left + 2, yMidline).lineTo(b.left + b.width - 2, yMidline);
+                hasMidlines = true;
+            }
+        }
+        if (hasMidlines) {
+            g.stroke({ color: 0xffffff, width: 1, alpha: 0.2 });
+        }
+    }
+
+    public clearHtfOverlay(): void {
+        this.htfOverlayGraphics.clear();
     }
 }

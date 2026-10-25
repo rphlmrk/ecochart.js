@@ -43,6 +43,7 @@ export interface SavedPaneState {
     htfOverlayDurationSec?: number;
     showHtfWicks?: boolean;
     htfCandleOpacity?: number;
+    showHtfOverlayHud?: boolean;
     indicators: SavedIndicatorState[];
 }
 
@@ -113,6 +114,7 @@ export class EcoChart {
     public autoPeekOnClose: boolean = false;
     public showHtfWicks: boolean = true;
     public htfCandleOpacity: number = 0.85;
+    public showHtfOverlayHud: boolean = true;
     private lastClosedHtfTime: number = 0;
     private lastAutoPeekTriggeredTime: number = 0;
 
@@ -777,77 +779,72 @@ export class EcoChart {
     }
 
     public getEffectiveHtfMs(): number {
-        const chartTfMs = this.renderer.parseIntervalMs(this.currentInterval);
         if (this.candleHtfTimeframe !== 'Off') {
             if (this.candleHtfTimeframe === 'Custom') {
                 return Math.max(60000, this.candleHtfCustomMins * 60000);
             }
             return TimeframeResampler.parseMs(this.candleHtfTimeframe.toLowerCase());
         }
-
-        const msInd = this.indicatorManager.activeIndicators.find(
-            i => i instanceof PullbackDoubleTopBottomIndicator && i.visible
-        ) as PullbackDoubleTopBottomIndicator | undefined;
-        if (msInd && msInd.isHTF(chartTfMs)) {
-            return msInd.getEffectiveTfMs(chartTfMs);
-        }
-
-        const htfBox = this.indicatorManager.activeIndicators.find(
-            i => i instanceof HTFBoxIndicator && i.visible
-        ) as HTFBoxIndicator | undefined;
-        if (htfBox) {
-            const ms = htfBox.getEffectiveTfMins() * 60000;
-            if (ms > chartTfMs) return ms;
-        }
-
         return 0;
     }
 
-    public ensureCandleHtfIndicator(): PullbackDoubleTopBottomIndicator {
-        let msInd = this.indicatorManager.activeIndicators.find(
-            i => i instanceof PullbackDoubleTopBottomIndicator
-        ) as PullbackDoubleTopBottomIndicator | undefined;
+    public getResampledHtfBars(): { open: number; high: number; low: number; close: number; firstChartBar: number; lastChartBar: number; expectedBars?: number; isForming?: boolean }[] {
+        const effectiveMs = this.getEffectiveHtfMs();
+        const chartTfMs = this.renderer.parseIntervalMs(this.currentInterval);
+        if (effectiveMs <= chartTfMs || this.dataStore.length === 0) return [];
 
-        if (!msInd) {
-            msInd = new PullbackDoubleTopBottomIndicator();
-            this.indicatorManager.addIndicator(msInd);
+        const expectedBarsPerBucket = Math.max(1, Math.round(effectiveMs / chartTfMs));
+        const data = this.dataStore.data;
+        const len = this.dataStore.length;
+        const bars: { open: number; high: number; low: number; close: number; firstChartBar: number; lastChartBar: number; expectedBars?: number; isForming?: boolean }[] = [];
+
+        let currBucketTime = -1;
+        let currBar: { open: number; high: number; low: number; close: number; firstChartBar: number; lastChartBar: number; expectedBars?: number; isForming?: boolean } | null = null;
+
+        for (let i = 0; i < len; i++) {
+            const base = i * 6;
+            const t = data[base];
+            const o = data[base + 1];
+            const h = data[base + 2];
+            const l = data[base + 3];
+            const c = data[base + 4];
+
+            const bTime = TimeframeResampler.getBucketStart(t, effectiveMs);
+            if (bTime !== currBucketTime) {
+                currBucketTime = bTime;
+                currBar = {
+                    open: o,
+                    high: h,
+                    low: l,
+                    close: c,
+                    firstChartBar: i,
+                    lastChartBar: i,
+                    expectedBars: expectedBarsPerBucket,
+                    isForming: false
+                };
+                bars.push(currBar);
+            } else if (currBar) {
+                currBar.lastChartBar = i;
+                currBar.close = c;
+                if (h > currBar.high) currBar.high = h;
+                if (l < currBar.low) currBar.low = l;
+            }
         }
 
-        msInd.visible = true;
-        const tf = this.candleHtfTimeframe === 'Custom' ? 'Custom HTF' : this.candleHtfTimeframe;
-        msInd.updateParams({
-            timeframe: tf,
-            customTfMins: this.candleHtfCustomMins,
-            autoPeekOnClose: this.autoPeekOnClose,
-            htfOverlayDurationSec: this.htfOverlayDurationSec,
-            showHtfWicks: this.showHtfWicks,
-            htfCandleOpacity: this.htfCandleOpacity
-        });
-        msInd.update(this.dataStore, true);
-        return msInd;
+        if (bars.length > 0) {
+            bars[bars.length - 1].isForming = true;
+        }
+
+        return bars;
     }
 
     public setCandleHtfTimeframe(tf: string, customMins?: number) {
         this.candleHtfTimeframe = tf;
         if (customMins !== undefined) this.candleHtfCustomMins = customMins;
 
-        const chartTfMs = this.renderer.parseIntervalMs(this.currentInterval);
-        const msInd = this.indicatorManager.activeIndicators.find(
-            i => i instanceof PullbackDoubleTopBottomIndicator
-        ) as PullbackDoubleTopBottomIndicator | undefined;
-
         if (tf === 'Off') {
-            if (msInd) {
-                msInd.updateParams({ timeframe: 'Current', autoPeekOnClose: false });
-                msInd.update(this.dataStore, true);
-            }
             if (this.isHtfOverlayActive) {
                 this.stopHtfOverlay(false);
-            }
-        } else {
-            const htfMs = this.getEffectiveHtfMs();
-            if (htfMs > chartTfMs) {
-                this.ensureCandleHtfIndicator();
             }
         }
 
@@ -858,12 +855,7 @@ export class EcoChart {
     }
 
     public checkAutoPeekOnClose(timeMs: number): void {
-        const msInd = this.indicatorManager.activeIndicators.find(
-            i => i instanceof PullbackDoubleTopBottomIndicator && i.visible
-        ) as PullbackDoubleTopBottomIndicator | undefined;
-
-        const isAutoPeekEnabled = this.autoPeekOnClose || (msInd ? Boolean(msInd.getParam('autoPeekOnClose', false)) : false);
-        if (!isAutoPeekEnabled) return;
+        if (!this.autoPeekOnClose) return;
 
         const htfMs = this.getEffectiveHtfMs();
         const chartTfMs = this.renderer.parseIntervalMs(this.currentInterval);
@@ -892,57 +884,33 @@ export class EcoChart {
         if (!this.htfOverlayControl) return;
 
         const chartTfMs = this.renderer.parseIntervalMs(this.currentInterval);
+        const effectiveMs = this.getEffectiveHtfMs();
 
-        // Find if Market Structure Double Top & Bottom or HTF Box has an HTF selected
-        let htfLabel = '';
-        let targetInd: any = null;
-
-        const msInd = this.indicatorManager.activeIndicators.find(
-            i => i instanceof PullbackDoubleTopBottomIndicator && i.visible
-        ) as PullbackDoubleTopBottomIndicator | undefined;
-
-        if (msInd && msInd.isHTF(chartTfMs)) {
-            const tfParam = msInd.getParam<string>('timeframe', 'Current');
-            htfLabel = tfParam === 'Custom HTF' ? `${msInd.getParam('customTfMins', 60)}m` : tfParam;
-            targetInd = msInd;
-        }
-
-        if (!targetInd) {
-            const htfBoxInd = this.indicatorManager.activeIndicators.find(
-                i => i instanceof HTFBoxIndicator && i.visible
-            ) as HTFBoxIndicator | undefined;
-            if (htfBoxInd && (htfBoxInd.getEffectiveTfMins() * 60000 > chartTfMs)) {
-                htfLabel = `${htfBoxInd.getEffectiveTfMins()}m`;
-                targetInd = htfBoxInd;
-            }
-        }
-
-        if (!targetInd && this.candleHtfTimeframe !== 'Off') {
-            const effectiveMs = this.getEffectiveHtfMs();
-            if (effectiveMs > chartTfMs) {
-                htfLabel = this.candleHtfTimeframe === 'Custom' ? `${this.candleHtfCustomMins}m` : this.candleHtfTimeframe;
-                targetInd = this.ensureCandleHtfIndicator();
-            }
-        }
-
-        // If no HTF is currently selected or indicator is hidden, hide the on-canvas control
-        if (!targetInd) {
-            if (this.isHtfOverlayActive) {
-                this.stopHtfOverlay(false);
+        // If on-canvas HUD is disabled in settings, or no HTF is selected, hide the control
+        if (!this.showHtfOverlayHud || this.candleHtfTimeframe === 'Off' || effectiveMs <= chartTfMs) {
+            if (this.candleHtfTimeframe === 'Off' || effectiveMs <= chartTfMs) {
+                if (this.isHtfOverlayActive) {
+                    this.stopHtfOverlay(false);
+                }
             }
             this.htfOverlayControl.style.display = 'none';
             return;
         }
 
-        this.htfOverlayControl.style.display = 'flex';
-
-        // Read duration from indicator param if available and idle
-        if (targetInd && typeof targetInd.getParam === 'function' && !this.isHtfOverlayActive) {
-            const indDur = targetInd.getParam('htfOverlayDurationSec');
-            if (typeof indDur === 'number' && indDur >= 20 && indDur <= 120) {
-                this.htfOverlayDurationSec = indDur;
+        // Build available timeframes for direct switching from the HUD
+        const availableTfs = ['1m', '3m', '5m', '15m', '30m', '45m', '1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w'];
+        let tfOptionsHtml = '';
+        for (const tf of availableTfs) {
+            const tfMs = TimeframeResampler.parseMs(tf);
+            if (tfMs > chartTfMs) {
+                const isSel = this.candleHtfTimeframe === tf ? 'selected' : '';
+                tfOptionsHtml += `<option value="${tf}" ${isSel}>${tf}</option>`;
             }
         }
+        const customSel = this.candleHtfTimeframe === 'Custom' ? 'selected' : '';
+        tfOptionsHtml += `<option value="Custom" ${customSel}>Custom (${this.candleHtfCustomMins}m)</option>`;
+
+        this.htfOverlayControl.style.display = 'flex';
 
         if (this.isHtfOverlayActive) {
             // Active overlay state: show countdown & Exit button
@@ -956,7 +924,14 @@ export class EcoChart {
             this.htfOverlayControl.innerHTML = `
                 <div style="display: flex; align-items: center; gap: 6px;">
                     <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #00E676; box-shadow: 0 0 8px #00E676;"></span>
-                    <span style="font-weight: 700; color: #fff;">HTF ${htfLabel}</span>
+                    <span style="font-weight: 700; color: #fff;">HTF</span>
+                    <select class="htf-hud-tf-select" style="
+                        background: var(--chart-bg, #131722); color: #00E676;
+                        border: 1px solid rgba(0, 230, 118, 0.4); border-radius: 4px;
+                        padding: 1px 4px; font-size: 10px; font-weight: 700; cursor: pointer; outline: none;
+                    " title="Switch Higher Timeframe">
+                        ${tfOptionsHtml}
+                    </select>
                     <span style="font-size: 11px; font-family: monospace; font-weight: 700; color: #00E676; background: rgba(0, 230, 118, 0.15); padding: 1px 6px; border-radius: 4px;">${timeStr}</span>
                 </div>
                 <span style="color: var(--chart-text, #787B86); font-size: 10px;">Candles Hidden</span>
@@ -970,12 +945,24 @@ export class EcoChart {
                 e.stopPropagation();
                 this.stopHtfOverlay(false);
             });
+
+            this.htfOverlayControl.querySelector('.htf-hud-tf-select')?.addEventListener('change', (e) => {
+                e.stopPropagation();
+                const newTf = (e.target as HTMLSelectElement).value;
+                this.setCandleHtfTimeframe(newTf, this.candleHtfCustomMins);
+                const settingsTfSel = document.getElementById('select-candle-htf-timeframe') as HTMLSelectElement | null;
+                if (settingsTfSel) settingsTfSel.value = newTf;
+                WorkspaceManager.triggerAutoSave();
+            });
         } else {
-            // Idle state: Checkbox / Toggle + Duration Selector (20s to 2m)
+            // Idle state: Checkbox / Toggle + Timeframe Selector + Duration Selector (5s to 2m)
             this.htfOverlayControl.style.borderColor = 'var(--chart-grid, #2A2E39)';
             this.htfOverlayControl.style.boxShadow = '0 4px 16px rgba(0,0,0,0.45)';
 
             const durationOptions = [
+                { sec: 5, label: '5s' },
+                { sec: 10, label: '10s' },
+                { sec: 15, label: '15s' },
                 { sec: 20, label: '20s' },
                 { sec: 30, label: '30s' },
                 { sec: 45, label: '45s' },
@@ -990,22 +977,27 @@ export class EcoChart {
                 durOptionsHtml += `<option value="${opt.sec}" ${sel}>${opt.label}</option>`;
             }
 
-            const isAutoPeek = this.autoPeekOnClose || Boolean(targetInd?.getParam && targetInd.getParam('autoPeekOnClose'));
-            const autoPeekBadge = isAutoPeek ? `<span style="font-size: 9px; font-weight: 700; color: #00E676; background: rgba(0, 230, 118, 0.15); padding: 1px 4px; border-radius: 3px;" title="Automatic peek active on candle close">Auto-Peek</span>` : '';
+            const autoPeekBadge = this.autoPeekOnClose ? `<span style="font-size: 9px; font-weight: 700; color: #00E676; background: rgba(0, 230, 118, 0.15); padding: 1px 4px; border-radius: 3px;" title="Automatic peek active on candle close">Auto-Peek</span>` : '';
 
             this.htfOverlayControl.innerHTML = `
                 <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;" title="Check to overlay HTF candles on chart and hide current candlesticks">
                     <input type="checkbox" class="htf-check-toggle" style="cursor: pointer; width: 14px; height: 14px; accent-color: var(--chart-accent, #2962FF);">
-                    <span style="font-weight: 600; color: var(--chart-text, #D1D4DC);">Overlay HTF</span>
-                    <span style="font-size: 10px; font-weight: 700; color: var(--chart-accent, #2962FF); background: rgba(41, 98, 255, 0.15); padding: 1px 5px; border-radius: 3px;">${htfLabel}</span>
-                    ${autoPeekBadge}
+                    <span style="font-weight: 600; color: var(--chart-text, #D1D4DC);">HTF</span>
                 </label>
+                <select class="htf-hud-tf-select" style="
+                    background: var(--chart-bg, #131722); color: var(--chart-accent, #2962FF);
+                    border: 1px solid var(--chart-grid, #363A45); border-radius: 4px;
+                    padding: 1px 4px; font-size: 10px; font-weight: 700; cursor: pointer; outline: none;
+                " title="Switch Higher Timeframe">
+                    ${tfOptionsHtml}
+                </select>
+                ${autoPeekBadge}
                 <div style="display: flex; align-items: center; gap: 5px; border-left: 1px solid var(--chart-grid, #2A2E39); padding-left: 6px;">
                     <select class="htf-duration-select" style="
                         background: var(--chart-bg, #131722); color: var(--chart-text, #D1D4DC);
                         border: 1px solid var(--chart-grid, #363A45); border-radius: 4px;
                         padding: 1px 4px; font-size: 10px; cursor: pointer; outline: none;
-                    " title="Select Overlay Duration (20s to 2m)">
+                    " title="Select Overlay Duration (5s to 2m)">
                         ${durOptionsHtml}
                     </select>
                     <button class="htf-btn-overlay" style="
@@ -1016,16 +1008,23 @@ export class EcoChart {
             `;
 
             const chk = this.htfOverlayControl.querySelector('.htf-check-toggle') as HTMLInputElement | null;
+            const tfSel = this.htfOverlayControl.querySelector('.htf-hud-tf-select') as HTMLSelectElement | null;
             const sel = this.htfOverlayControl.querySelector('.htf-duration-select') as HTMLSelectElement | null;
             const btn = this.htfOverlayControl.querySelector('.htf-btn-overlay') as HTMLButtonElement | null;
+
+            tfSel?.addEventListener('change', (e) => {
+                e.stopPropagation();
+                const newTf = (e.target as HTMLSelectElement).value;
+                this.setCandleHtfTimeframe(newTf, this.candleHtfCustomMins);
+                const settingsTfSel = document.getElementById('select-candle-htf-timeframe') as HTMLSelectElement | null;
+                if (settingsTfSel) settingsTfSel.value = newTf;
+                WorkspaceManager.triggerAutoSave();
+            });
 
             sel?.addEventListener('change', (e) => {
                 e.stopPropagation();
                 const newDur = parseInt((e.target as HTMLSelectElement).value, 10) || 30;
-                this.htfOverlayDurationSec = Math.max(20, Math.min(120, newDur));
-                if (targetInd && typeof targetInd.updateParams === 'function') {
-                    targetInd.updateParams({ htfOverlayDurationSec: this.htfOverlayDurationSec });
-                }
+                this.htfOverlayDurationSec = Math.max(5, Math.min(120, newDur));
             });
 
             const triggerStart = () => {
@@ -1053,7 +1052,7 @@ export class EcoChart {
         if (this.isHtfOverlayActive) return;
 
         const dur = durationSec || this.htfOverlayDurationSec || 30;
-        this.htfOverlayDurationSec = Math.max(20, Math.min(120, dur));
+        this.htfOverlayDurationSec = Math.max(5, Math.min(120, dur));
         this.htfOverlaySecondsRemaining = this.htfOverlayDurationSec;
         this.isHtfOverlayActive = true;
 
@@ -1063,17 +1062,10 @@ export class EcoChart {
         this.renderer.isHistoricalDirty = true;
         this.isDirty = true;
 
-        // 2. Set active overlay flag on indicators
-        for (const ind of this.indicatorManager.activeIndicators) {
-            if ('isHtfOverlayActive' in ind) {
-                (ind as any).isHtfOverlayActive = true;
-            }
-        }
-
-        // 3. Clear existing timer if any
+        // 2. Clear existing timer if any
         if (this.htfOverlayTimer) clearInterval(this.htfOverlayTimer);
 
-        // 4. Start countdown
+        // 3. Start countdown
         this.htfOverlayTimer = setInterval(() => {
             this.htfOverlaySecondsRemaining--;
             if (this.htfOverlaySecondsRemaining <= 0) {
@@ -1094,18 +1086,10 @@ export class EcoChart {
 
         this.isHtfOverlayActive = false;
         this.renderer.hideCandles = false;
+        this.renderer.clearHtfOverlay();
         this.renderer.forceNextRender = true;
         this.renderer.isHistoricalDirty = true;
         this.isDirty = true;
-
-        for (const ind of this.indicatorManager.activeIndicators) {
-            if ('isHtfOverlayActive' in ind) {
-                (ind as any).isHtfOverlayActive = false;
-            }
-            if (typeof (ind as any).getParam === 'function' && (ind as any).getParam('checkHtfBox') === true) {
-                (ind as any).updateParams({ checkHtfBox: false });
-            }
-        }
 
         this.updateHtfOverlayControl();
     }
@@ -1969,6 +1953,7 @@ export class EcoChart {
             htfOverlayDurationSec: this.htfOverlayDurationSec,
             showHtfWicks: this.showHtfWicks,
             htfCandleOpacity: this.htfCandleOpacity,
+            showHtfOverlayHud: this.showHtfOverlayHud,
             indicators: this.indicatorManager.activeIndicators.map(i => IndicatorRegistry.serialize(i))
         };
     }
@@ -1983,6 +1968,7 @@ export class EcoChart {
         if (state.htfOverlayDurationSec !== undefined) this.htfOverlayDurationSec = state.htfOverlayDurationSec;
         if (state.showHtfWicks !== undefined) this.showHtfWicks = state.showHtfWicks;
         if (state.htfCandleOpacity !== undefined) this.htfCandleOpacity = state.htfCandleOpacity;
+        if (state.showHtfOverlayHud !== undefined) this.showHtfOverlayHud = state.showHtfOverlayHud;
 
         await this.drawingManager.loadDrawings(this.currentSymbol);
 
@@ -1995,10 +1981,6 @@ export class EcoChart {
                 const ind = IndicatorRegistry.deserialize(indState);
                 if (ind) this.indicatorManager.addIndicator(ind);
             });
-        }
-
-        if (this.candleHtfTimeframe !== 'Off') {
-            this.ensureCandleHtfIndicator();
         }
 
         await this.startLiveBinance(this.currentSymbol, this.currentInterval);
@@ -2122,6 +2104,10 @@ export class EcoChart {
             }
             // Propagate live unclosed tick state to indicator pipeline
             this.indicatorManager.update(this.dataStore, isClosed);
+            if (this.dataStore.length > 0) {
+                const lastBase = (this.dataStore.length - 1) * 6;
+                this.checkAutoPeekOnClose(this.dataStore.data[lastBase]);
+            }
             this.renderer.forceNextRender = true;
             this.renderer.isSessionDirty = true;
             this.isDirty = true;
@@ -2166,6 +2152,9 @@ export class EcoChart {
                             this.network.handleWatchdogRecovery();
                         }
                     }
+
+                    // Check if HTF candle boundary was crossed in real time
+                    this.checkAutoPeekOnClose(BinanceClient.getServerTime());
                 }
 
                 // Isolated partial update: Only repaints the countdown pill and clock badges
@@ -2226,6 +2215,13 @@ export class EcoChart {
                             this.renderer.indicatorOscGraphics.clear();
                             this.renderer.hideAllIndicatorMeshes();
                             this.indicatorManager.render(this.renderer, this.renderer.indicatorMainGraphics, this.renderer.indicatorOscGraphics);
+
+                            if (this.isHtfOverlayActive) {
+                                const htfBars = this.getResampledHtfBars();
+                                this.renderer.renderHtfOverlayCandles(htfBars, this.showHtfWicks, this.htfCandleOpacity);
+                            } else {
+                                this.renderer.clearHtfOverlay();
+                            }
 
                             this.drawingManager.render(this.renderer, this.renderer.drawingGraphics);
                             this.timeAxisRenderer.render();
@@ -3701,6 +3697,30 @@ export class WorkspaceManager {
 
             const chkSepFuture = document.getElementById('check-separator-future') as HTMLInputElement;
             if (chkSepFuture) chkSepFuture.checked = WorkspaceManager.separatorConfig.showFuture;
+
+            // Sync Candle Tab HTF & Auto-Peek Controls
+            if (this.activeChart) {
+                const c = this.activeChart;
+                const activeTf = c.candleHtfTimeframe;
+                const activeCustomMins = c.candleHtfCustomMins;
+                const isAutoPeek = c.autoPeekOnClose;
+                const peekDur = c.htfOverlayDurationSec;
+                const showWicks = c.showHtfWicks;
+                const opacity = Math.round(c.htfCandleOpacity * 100);
+                const showHud = c.showHtfOverlayHud;
+
+                syncVal('select-candle-htf-timeframe', activeTf);
+                const rowCustom = document.getElementById('row-candle-htf-custom');
+                if (rowCustom) rowCustom.style.display = activeTf === 'Custom' ? 'flex' : 'none';
+                syncVal('input-candle-htf-custom-mins', activeCustomMins);
+                syncCheck('check-candle-auto-peek-close', isAutoPeek);
+                syncVal('select-candle-peek-duration', peekDur);
+                syncCheck('check-candle-htf-wicks', showWicks);
+                syncCheck('check-candle-show-htf-hud', showHud);
+                syncVal('range-candle-htf-opacity', opacity);
+                const lblOp = document.getElementById('label-candle-htf-opacity');
+                if (lblOp) lblOp.textContent = `${opacity}%`;
+            }
         };
 
 
@@ -4154,6 +4174,94 @@ export class WorkspaceManager {
         document.getElementById('check-paint-log')?.addEventListener('change', (e) => {
             WorkspaceManager.logPaintFps = (e.target as HTMLInputElement).checked;
             WorkspaceManager.triggerAutoSave();
+        });
+
+        // Bind Candle Tab HTF & Auto-Peek Controls
+        const selCandleHtf = document.getElementById('select-candle-htf-timeframe') as HTMLSelectElement | null;
+        const rowCandleHtfCustom = document.getElementById('row-candle-htf-custom');
+        const inpCandleCustomMins = document.getElementById('input-candle-htf-custom-mins') as HTMLInputElement | null;
+        const chkCandleAutoPeek = document.getElementById('check-candle-auto-peek-close') as HTMLInputElement | null;
+        const selCandlePeekDur = document.getElementById('select-candle-peek-duration') as HTMLSelectElement | null;
+        const chkCandleWicks = document.getElementById('check-candle-htf-wicks') as HTMLInputElement | null;
+        const chkCandleShowHtfHud = document.getElementById('check-candle-show-htf-hud') as HTMLInputElement | null;
+        const rangeCandleOpacity = document.getElementById('range-candle-htf-opacity') as HTMLInputElement | null;
+        const lblCandleOpacity = document.getElementById('label-candle-htf-opacity');
+        const btnCandlePeekNow = document.getElementById('btn-candle-peek-now');
+
+        selCandleHtf?.addEventListener('change', () => {
+            const chart = WorkspaceManager.getActiveChart();
+            if (!chart) return;
+            const val = selCandleHtf.value;
+            if (rowCandleHtfCustom) rowCandleHtfCustom.style.display = val === 'Custom' ? 'flex' : 'none';
+            const customMins = inpCandleCustomMins ? parseInt(inpCandleCustomMins.value, 10) || 60 : 60;
+            chart.setCandleHtfTimeframe(val, customMins);
+            WorkspaceManager.triggerAutoSave();
+        });
+
+        inpCandleCustomMins?.addEventListener('input', () => {
+            const chart = WorkspaceManager.getActiveChart();
+            if (!chart) return;
+            const mins = parseInt(inpCandleCustomMins.value, 10) || 60;
+            chart.candleHtfCustomMins = mins;
+            if (chart.candleHtfTimeframe === 'Custom') {
+                chart.setCandleHtfTimeframe('Custom', mins);
+            }
+            WorkspaceManager.triggerAutoSave();
+        });
+
+        chkCandleAutoPeek?.addEventListener('change', () => {
+            const chart = WorkspaceManager.getActiveChart();
+            if (!chart) return;
+            chart.autoPeekOnClose = chkCandleAutoPeek.checked;
+            chart.updateHtfOverlayControl();
+            WorkspaceManager.triggerAutoSave();
+        });
+
+        selCandlePeekDur?.addEventListener('change', () => {
+            const chart = WorkspaceManager.getActiveChart();
+            if (!chart) return;
+            const dur = parseInt(selCandlePeekDur.value, 10) || 30;
+            chart.htfOverlayDurationSec = Math.max(5, Math.min(120, dur));
+            chart.updateHtfOverlayControl();
+            WorkspaceManager.triggerAutoSave();
+        });
+
+        chkCandleWicks?.addEventListener('change', () => {
+            const chart = WorkspaceManager.getActiveChart();
+            if (!chart) return;
+            chart.showHtfWicks = chkCandleWicks.checked;
+            chart.renderer.forceNextRender = true;
+            chart.renderer.isHistoricalDirty = true;
+            chart.isDirty = true;
+            WorkspaceManager.triggerAutoSave();
+        });
+
+        chkCandleShowHtfHud?.addEventListener('change', () => {
+            const chart = WorkspaceManager.getActiveChart();
+            if (!chart) return;
+            chart.showHtfOverlayHud = chkCandleShowHtfHud.checked;
+            chart.updateHtfOverlayControl();
+            WorkspaceManager.triggerAutoSave();
+        });
+
+        rangeCandleOpacity?.addEventListener('input', () => {
+            const chart = WorkspaceManager.getActiveChart();
+            if (!chart) return;
+            const val = parseInt(rangeCandleOpacity.value, 10) || 85;
+            if (lblCandleOpacity) lblCandleOpacity.textContent = `${val}%`;
+            chart.htfCandleOpacity = val / 100;
+            chart.renderer.forceNextRender = true;
+            chart.renderer.isHistoricalDirty = true;
+            chart.isDirty = true;
+            WorkspaceManager.triggerAutoSave();
+        });
+
+        btnCandlePeekNow?.addEventListener('click', () => {
+            const chart = WorkspaceManager.getActiveChart();
+            if (!chart) return;
+            const modal = document.getElementById('settings-modal') as HTMLDialogElement | null;
+            if (modal) modal.close();
+            chart.startHtfOverlay(chart.htfOverlayDurationSec);
         });
 
         // Workspace Reset
@@ -4760,6 +4868,12 @@ export class WorkspaceManager {
                                 this.activeChart?.stopHtfOverlay(false);
                             }
                         }
+                        if (param.id === 'autoPeekOnClose' && this.activeChart) {
+                            this.activeChart.autoPeekOnClose = check.checked;
+                        }
+                        if (param.id === 'showHtfWicks' && this.activeChart) {
+                            this.activeChart.showHtfWicks = check.checked;
+                        }
                         this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
                         this.activeChart!.renderer.isHistoricalDirty = true;
                         this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
@@ -4797,6 +4911,9 @@ export class WorkspaceManager {
 
                     select.onchange = () => {
                         indicator.updateParams({ [param.id]: select.value });
+                        if (param.id === 'timeframe' && this.activeChart) {
+                            this.activeChart.candleHtfTimeframe = select.value === 'Current' ? 'Off' : (select.value === 'Custom HTF' ? 'Custom' : select.value);
+                        }
                         this.activeChart!.renderer.forceNextRender = true; // Bypass Eco-Mode throttle
                         this.activeChart!.indicatorManager.update(this.activeChart!.dataStore);
                         this.activeChart!.updateLegend();
