@@ -4,7 +4,8 @@ import {
     ExhaustionIndicator, HTFBoxIndicator, HTFBiasIndicator, 
     HTFProjectionsIndicator, ZigZag123Indicator, CBCFlipIndicator,
     PeriodSeparatorIndicator, MarketSessionsIndicator,
-    MarketStructurePullbackZonesIndicator, PullbackDoubleTopBottomIndicator
+    MarketStructurePullbackZonesIndicator, PullbackDoubleTopBottomIndicator,
+    StrictCBCPullbackZonesIndicator
 } from './plugins';
 
 export interface SavedIndicatorState {
@@ -27,6 +28,7 @@ export class IndicatorRegistry {
         else if (ind instanceof CBCFlipIndicator) type = 'CBC_FLIP';
         else if (ind instanceof PeriodSeparatorIndicator) type = 'PERIOD_SEP';
         else if (ind instanceof MarketSessionsIndicator) type = 'MARKET_SESSIONS';
+        else if (ind instanceof StrictCBCPullbackZonesIndicator) type = 'STRICT_CBC_PULLBACK';
         else if (ind instanceof MarketStructurePullbackZonesIndicator) type = 'PULLBACK_ZONES';
         else if (ind instanceof PullbackDoubleTopBottomIndicator) type = 'MS_PULLBACK_DTDB';
 
@@ -55,6 +57,8 @@ export class IndicatorRegistry {
             case 'MS_PULLBACK_ZONES': ind = new MarketStructurePullbackZonesIndicator(); break;
             case 'MS_PULLBACK_DTDB':
             case 'PULLBACK_DTDB': ind = new PullbackDoubleTopBottomIndicator(); break;
+            case 'STRICT_CBC_PULLBACK':
+            case 'STRICT_CBC_PULLBACK_ZONES': ind = new StrictCBCPullbackZonesIndicator(); break;
         }
 
         if (ind) {

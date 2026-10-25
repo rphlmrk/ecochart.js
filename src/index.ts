@@ -19,7 +19,8 @@ import {
     PeriodSeparatorIndicator,
     MarketSessionsIndicator,
     MarketStructurePullbackZonesIndicator,
-    PullbackDoubleTopBottomIndicator
+    PullbackDoubleTopBottomIndicator,
+    StrictCBCPullbackZonesIndicator
 } from './indicators/plugins';
 
 import { DrawingManager, type ToolType } from './tools/DrawingManager';
@@ -4753,7 +4754,8 @@ export class WorkspaceManager {
             { type: 'ZZ123', name: 'ZigZag 1-2-3 Breakout', factory: () => new ZigZag123Indicator(4) },
             { type: 'CBC_FLIP', name: 'CBC Flip (Exact Wick Alignment)', factory: () => new CBCFlipIndicator() },
             { type: 'PULLBACK_ZONES', name: 'Market Structure Pullback Zones', factory: () => new MarketStructurePullbackZonesIndicator() },
-            { type: 'MS_PULLBACK_DTDB', name: 'Market Structure Double Top & Bottom', factory: () => new PullbackDoubleTopBottomIndicator() }
+            { type: 'MS_PULLBACK_DTDB', name: 'Market Structure Double Top & Bottom', factory: () => new PullbackDoubleTopBottomIndicator() },
+            { type: 'STRICT_CBC_PULLBACK', name: 'Strict CBC Pullback Zones', factory: () => new StrictCBCPullbackZonesIndicator() }
         ];
 
         const showListView = () => {
@@ -4937,9 +4939,18 @@ export class WorkspaceManager {
             indicatorsList.innerHTML = '';
 
             availableIndicators.forEach(cat => {
-                const activeInstance = this.activeChart!.indicatorManager.activeIndicators.find(
-                    i => i.id.startsWith(cat.type) || i.name.startsWith(cat.name)
-                );
+                const activeInstance = this.activeChart!.indicatorManager.activeIndicators.find(i => {
+                    if (cat.type === 'STRICT_CBC_PULLBACK') {
+                        return i instanceof StrictCBCPullbackZonesIndicator || i.id === 'STRICT_CBC_PULLBACK' || i.id.startsWith('STRICT_CBC_PULLBACK');
+                    }
+                    if (cat.type === 'PULLBACK_ZONES') {
+                        return (i instanceof MarketStructurePullbackZonesIndicator) && !(i instanceof StrictCBCPullbackZonesIndicator);
+                    }
+                    if (cat.type === 'MS_PULLBACK_DTDB') {
+                        return i instanceof PullbackDoubleTopBottomIndicator || i.id === 'MS_PULLBACK_DTDB';
+                    }
+                    return i.id === cat.type || i.id.startsWith(cat.type);
+                });
                 const isActive = activeInstance !== undefined;
 
                 const row = document.createElement('div');
