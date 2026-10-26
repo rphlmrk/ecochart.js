@@ -6,6 +6,20 @@ import { StrokeEngine } from './StrokeEngine';
 import type { OscillatorScale } from '../indicators/Indicator';
 import { alertManager } from '../alerts/AlertManager';
 
+export interface ResampledHtfBar {
+    time?: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    firstChartBar: number;
+    lastChartBar: number;
+    expectedBars?: number;
+    exactSpanBars?: number;
+    durationMs?: number;
+    isForming?: boolean;
+}
+
 export class ChartRenderer {
     public app: Application;
     public dataStore: DataStore;
@@ -802,6 +816,13 @@ export class ChartRenderer {
             if (t === time) return mid;
             if (t < time) low = mid + 1;
             else high = mid - 1;
+        }
+        if (low > 0 && low <= lastIdx) {
+            const tPrev = this.dataStore.data[(low - 1) * 6];
+            const tNext = this.dataStore.data[low * 6];
+            if (tNext > tPrev) {
+                return (low - 1) + (time - tPrev) / (tNext - tPrev);
+            }
         }
         return low;
     }
@@ -1979,21 +2000,15 @@ export class ChartRenderer {
      * - Pixel-snapped coordinates for razor-sharp edges
      * - Batched GPU draw calls (bull wicks, bear wicks, bull bodies, bear bodies)
      * - Clean proportional candlestick spacing with proper whitespace gap
+     * - Strictly uniform candlestick width even when base timeframe does not divide cleanly into HTF
      * - Full-width and perfectly centered current forming candle
      */
     public renderHtfOverlayCandles(
-        bars: {
-            open: number;
-            high: number;
-            low: number;
-            close: number;
-            firstChartBar: number;
-            lastChartBar: number;
-            expectedBars?: number;
-            isForming?: boolean;
-        }[],
+        bars: ResampledHtfBar[],
         showWicks: boolean = true,
-        opacity: number = 0.85
+        opacity: number = 0.85,
+        htfMs?: number,
+        chartTfMs?: number
     ): void {
         this.htfOverlayGraphics.clear();
         if (!bars || bars.length === 0) return;
@@ -2001,7 +2016,22 @@ export class ChartRenderer {
         const sp = this.candleSpacing * this.zoom;
         const chartW = (this.app?.screen?.width || 800) - this.priceAxisWidth;
         const boundedOpacity = Math.max(0.1, Math.min(1.0, opacity));
-        const totalChartBars = this.dataStore.length;
+
+        const effectiveChartTfMs = chartTfMs || this.parseIntervalMs(this.currentInterval);
+        const effectiveHtfMs = htfMs || (bars[0]?.durationMs) || (bars[0]?.expectedBars ? bars[0].expectedBars * effectiveChartTfMs : effectiveChartTfMs);
+
+        // Exact floating-point ratio of HTF duration to chart timeframe.
+        // Ensures identical uniform slot & body width for EVERY candle, even when the custom timeframe is not divisible by HTF.
+        const exactRatio = (effectiveHtfMs > 0 && effectiveChartTfMs > 0)
+            ? (effectiveHtfMs / effectiveChartTfMs)
+            : (bars[0]?.exactSpanBars || bars[0]?.expectedBars || 1);
+
+        const uniformSlotW = Math.max(3, exactRatio * sp);
+
+        // Proportional candlestick spacing: keep 28% whitespace gap between bodies.
+        // Uniform body width ensures every candle has the exact same thickness.
+        const gap = Math.max(2, Math.min(32, Math.round(uniformSlotW * 0.28)));
+        const uniformBodyW = Math.max(2, Math.min(Math.round(uniformSlotW - gap), 180));
 
         interface StraightCandleGeom {
             left: number;
@@ -2020,27 +2050,18 @@ export class ChartRenderer {
         for (let i = 0; i < bars.length; i++) {
             const bar = bars[i];
             const isLastBar = (i === bars.length - 1);
-            const expectedBars = bar.expectedBars || 1;
 
-            // Compute span of base chart bars this HTF slot covers:
-            // For closed bars, use the distance to the next HTF bar start.
-            // For the forming candle, use the full expected HTF span so it has full width from tick 1.
-            let spanBars: number;
-            if (!isLastBar && bars[i + 1]) {
-                spanBars = Math.max(1, bars[i + 1].firstChartBar - bar.firstChartBar);
+            // Center candle precisely at the HTF time bucket midpoint using continuous timeToX:
+            let xMid: number;
+            if (bar.time !== undefined && effectiveHtfMs > 0) {
+                const midTime = bar.time + (effectiveHtfMs * 0.5);
+                xMid = Math.round(this.timeToX(midTime));
             } else {
-                const elapsedInBucket = Math.max(1, totalChartBars - bar.firstChartBar);
-                spanBars = Math.max(expectedBars, elapsedInBucket);
+                const startX = (bar.firstChartBar * sp) - this.cameraX;
+                xMid = Math.round(startX + (uniformSlotW * 0.5));
             }
 
-            const startX = (bar.firstChartBar * sp) - this.cameraX;
-            const slotW = Math.max(3, spanBars * sp);
-            const xMid = Math.round(startX + (slotW * 0.5));
-
-            // Proportional candlestick spacing: keep 25-30% whitespace gap between bodies
-            // so candles look like clean, well-spaced candlesticks, not touching solid blocks.
-            const gap = Math.max(2, Math.min(32, Math.round(slotW * 0.28)));
-            const bodyW = Math.max(2, Math.min(Math.round(slotW - gap), 180));
+            const bodyW = uniformBodyW;
             const bodyLeft = Math.round(xMid - (bodyW * 0.5));
 
             // Frustum culling: skip bars completely outside visible screen

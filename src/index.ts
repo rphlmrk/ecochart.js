@@ -1,6 +1,6 @@
 import { DataStore } from './data/DataStore';
 import { BinanceClient } from './network/BinanceClient';
-import { ChartRenderer } from './renderer/ChartRenderer';
+import { ChartRenderer, type ResampledHtfBar } from './renderer/ChartRenderer';
 import { themeManager } from './theme/ThemeManager';
 import { THEME_PRESETS } from './theme/presets';
 import { colorPicker } from './ui/ColorPicker';
@@ -789,18 +789,19 @@ export class EcoChart {
         return 0;
     }
 
-    public getResampledHtfBars(): { open: number; high: number; low: number; close: number; firstChartBar: number; lastChartBar: number; expectedBars?: number; isForming?: boolean }[] {
+    public getResampledHtfBars(): ResampledHtfBar[] {
         const effectiveMs = this.getEffectiveHtfMs();
         const chartTfMs = this.renderer.parseIntervalMs(this.currentInterval);
         if (effectiveMs <= chartTfMs || this.dataStore.length === 0) return [];
 
-        const expectedBarsPerBucket = Math.max(1, Math.round(effectiveMs / chartTfMs));
+        const exactSpanBars = effectiveMs / chartTfMs;
+        const expectedBarsPerBucket = Math.max(1, Math.round(exactSpanBars));
         const data = this.dataStore.data;
         const len = this.dataStore.length;
-        const bars: { open: number; high: number; low: number; close: number; firstChartBar: number; lastChartBar: number; expectedBars?: number; isForming?: boolean }[] = [];
+        const bars: ResampledHtfBar[] = [];
 
         let currBucketTime = -1;
-        let currBar: { open: number; high: number; low: number; close: number; firstChartBar: number; lastChartBar: number; expectedBars?: number; isForming?: boolean } | null = null;
+        let currBar: ResampledHtfBar | null = null;
 
         for (let i = 0; i < len; i++) {
             const base = i * 6;
@@ -814,6 +815,7 @@ export class EcoChart {
             if (bTime !== currBucketTime) {
                 currBucketTime = bTime;
                 currBar = {
+                    time: bTime,
                     open: o,
                     high: h,
                     low: l,
@@ -821,6 +823,8 @@ export class EcoChart {
                     firstChartBar: i,
                     lastChartBar: i,
                     expectedBars: expectedBarsPerBucket,
+                    exactSpanBars: exactSpanBars,
+                    durationMs: effectiveMs,
                     isForming: false
                 };
                 bars.push(currBar);
@@ -2227,7 +2231,9 @@ export class EcoChart {
 
                             if (this.isHtfOverlayActive) {
                                 const htfBars = this.getResampledHtfBars();
-                                this.renderer.renderHtfOverlayCandles(htfBars, this.showHtfWicks, this.htfCandleOpacity);
+                                const effectiveMs = this.getEffectiveHtfMs();
+                                const chartTfMs = this.renderer.parseIntervalMs(this.currentInterval);
+                                this.renderer.renderHtfOverlayCandles(htfBars, this.showHtfWicks, this.htfCandleOpacity, effectiveMs, chartTfMs);
                             } else {
                                 this.renderer.clearHtfOverlay();
                             }

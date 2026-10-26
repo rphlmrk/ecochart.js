@@ -3,6 +3,7 @@ import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { StrokeEngine } from '../../renderer/StrokeEngine';
 import { Graphics } from 'pixi.js';
+import { TimeframeResampler } from '../../data/TimeframeResampler';
 
 export class HTFBoxIndicator extends BaseIndicator {
     constructor(tfMins = 60) {
@@ -58,17 +59,18 @@ export class HTFBoxIndicator extends BaseIndicator {
     protected next(index: number, _isClosed: boolean, ds: DataStore): void {
         const tfMs = this.getEffectiveTfMins() * 60 * 1000;
         const intervalMs = (ds.length >= 2 && ds.data[6] > ds.data[0]) ? (ds.data[6] - ds.data[0]) : 60000;
-        const barsPerBlock = Math.max(1, Math.round(tfMs / intervalMs));
+        const barsPerBlock = tfMs / intervalMs;
 
         const base = index * 6;
         const t = ds.data[base];
-        const bTime = Math.floor(t / tfMs) * tfMs;
+        const bTime = TimeframeResampler.getBucketStart(t, tfMs);
         const o = ds.data[base + 1], h = ds.data[base + 2], l = ds.data[base + 3], c = ds.data[base + 4];
 
         if (this.state.blockStartMs === 0 || bTime !== this.state.blockStartMs) {
             if (this.state.blockStartMs !== 0) {
                 this.state.cachedBlocks.push({
                     startBarIdx: this.state.startBarIdx,
+                    startTime: this.state.blockStartMs,
                     barsCount: barsPerBlock,
                     o: this.state.o, h: this.state.h, l: this.state.l, c: this.state.c
                 });
@@ -104,22 +106,18 @@ export class HTFBoxIndicator extends BaseIndicator {
 
         const history = this.state.cachedBlocks || [];
         const totalBlocks = history.length + (this.state.blockStartMs !== 0 ? 1 : 0);
-
-        let liveBarsPerBlock = 1;
-        if (this.state.blockStartMs !== 0) {
-            const intervalMs = (r.dataStore.length >= 2) ? (r.dataStore.data[6] - r.dataStore.data[0]) : 60000;
-            liveBarsPerBlock = Math.max(1, Math.round((this.getEffectiveTfMins() * 60000) / intervalMs));
-        }
+        const exactBars = tfMs / chartTfMs;
 
         // Zero allocations: loops over existing arrays without spreading
         for (let i = 0; i < totalBlocks; i++) {
             const b = i < history.length ? history[i] : {
                 startBarIdx: this.state.startBarIdx,
-                barsCount: liveBarsPerBlock,
+                startTime: this.state.blockStartMs,
+                barsCount: exactBars,
                 o: this.state.o, h: this.state.h, l: this.state.l, c: this.state.c
             };
-            const x1 = (b.startBarIdx * sp) - r.cameraX;
-            const x2 = x1 + (b.barsCount * sp);
+            const x1 = b.startTime ? r.timeToX(b.startTime) : ((b.startBarIdx * sp) - r.cameraX);
+            const x2 = b.startTime ? r.timeToX(b.startTime + tfMs) : (x1 + (exactBars * sp));
 
             // Frustum culling: skip blocks outside the screen
             if (x2 < 0 || x1 > layout.chartWidth) continue;
