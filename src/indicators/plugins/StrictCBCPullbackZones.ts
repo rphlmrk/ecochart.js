@@ -42,6 +42,7 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
     constructor() {
         super('STRICT_CBC_PULLBACK', 'Strict CBC Pullback Zones');
         this.isOscillator = false;
+        this.layerType = 'pullback_zone';
 
         this.params = [
             // Timeframe selection
@@ -769,8 +770,12 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
         // 🚀 BATCH 5: Zero-GC Pooled Bitmap Labels
         // =========================================================================
         if (showLabels && (visibleBull.length > 0 || visibleBear.length > 0)) {
-            if (!this.isContainerMounted) {
-                r.app.stage.addChild(this.labelContainer);
+            const parent = r.strictCbcContainer || r.app.stage;
+            if (!this.isContainerMounted || this.labelContainer.parent !== parent) {
+                if (this.labelContainer.parent) {
+                    this.labelContainer.parent.removeChild(this.labelContainer);
+                }
+                parent.addChild(this.labelContainer);
                 this.isContainerMounted = true;
             }
             this.labelContainer.visible = true;

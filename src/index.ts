@@ -2212,10 +2212,18 @@ export class EcoChart {
                     if (this.renderer.isRenderDirty) {
                         // Only rebuild indicators, drawings & time axis if camera moved, candle closed, OR live price changed
                         if (this.renderer.isHistoricalDirty || this.renderer.isLivePriceDirty) {
+                            this.renderer.sessionBoxGraphics?.clear();
+                            this.renderer.strictCbcGraphics?.clear();
                             this.renderer.indicatorMainGraphics.clear();
                             this.renderer.indicatorOscGraphics.clear();
                             this.renderer.hideAllIndicatorMeshes();
-                            this.indicatorManager.render(this.renderer, this.renderer.indicatorMainGraphics, this.renderer.indicatorOscGraphics);
+                            this.indicatorManager.render(
+                                this.renderer,
+                                this.renderer.indicatorMainGraphics,
+                                this.renderer.indicatorOscGraphics,
+                                this.renderer.sessionBoxGraphics,
+                                this.renderer.strictCbcGraphics
+                            );
 
                             if (this.isHtfOverlayActive) {
                                 const htfBars = this.getResampledHtfBars();

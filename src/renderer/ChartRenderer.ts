@@ -76,6 +76,10 @@ export class ChartRenderer {
 
     public canvas?: HTMLCanvasElement;
     private uiGraphics: Graphics = new Graphics(); // Dividers & live price line
+    public sessionBoxContainer: Container = new Container(); // Session Box background layer
+    public sessionBoxGraphics: Graphics = new Graphics();
+    public strictCbcContainer: Container = new Container(); // Strict CBC Pullback Zone layer (behind candles, above sessions)
+    public strictCbcGraphics: Graphics = new Graphics();
     public indicatorMainContainer: Container = new Container(); 
     public indicatorOscContainer: Container = new Container();  
     public indicatorMainGraphics: Graphics = new Graphics();
@@ -290,12 +294,23 @@ export class ChartRenderer {
         if (!this.liveCandlesGraphics) this.liveCandlesGraphics = new Graphics();
 
         // Setup new containers for Pixi v8 compatibility
+        if (!this.sessionBoxContainer) this.sessionBoxContainer = new Container();
+        if (!this.sessionBoxGraphics) this.sessionBoxGraphics = new Graphics();
+        if (!this.strictCbcContainer) this.strictCbcContainer = new Container();
+        if (!this.strictCbcGraphics) this.strictCbcGraphics = new Graphics();
+
         if (!this.indicatorMainContainer) this.indicatorMainContainer = new Container();
         if (!this.indicatorOscContainer) this.indicatorOscContainer = new Container();
         if (!this.indicatorMainGraphics) this.indicatorMainGraphics = new Graphics();
         if (!this.indicatorOscGraphics) this.indicatorOscGraphics = new Graphics();
 
         // Put CPU graphics inside the new containers
+        this.sessionBoxContainer.removeChildren();
+        this.sessionBoxContainer.addChild(this.sessionBoxGraphics);
+
+        this.strictCbcContainer.removeChildren();
+        this.strictCbcContainer.addChild(this.strictCbcGraphics);
+
         this.indicatorMainContainer.removeChildren();
         this.indicatorOscContainer.removeChildren();
         this.indicatorMainContainer.addChild(this.indicatorMainGraphics);
@@ -312,15 +327,27 @@ export class ChartRenderer {
         this.initGridMesh();
         this.initInstancedCandleMesh();
 
+        // Layer Stacking (Bottom to Top):
+        // 1. Grid
         this.app.stage.addChild(this.gridMesh);
-        this.app.stage.addChild(this.gridGraphics); // 1. Opaque axis background drawn here
-        this.app.stage.addChild(this.sessionMesh);  // 2. Session shade drawn OVER the background!
+        this.app.stage.addChild(this.gridGraphics); // Opaque axis background drawn here
+
+        // 2. Market Session Box layer (Lowest chart content)
+        this.app.stage.addChild(this.sessionMesh);  // GPU Instanced Session Shade
+        this.app.stage.addChild(this.sessionBoxContainer); // Market Sessions range boxes, outlines, pre-open
+
+        // 3. Strict CBC Pullback Zone layer (ABOVE session box, but BEHIND candlesticks)
+        this.app.stage.addChild(this.strictCbcContainer); // Strict CBC pullback zones
+
+        // 4. Candlesticks (ABOVE Strict CBC pullback zones!)
         this.app.stage.addChild(this.historicalCandlesGraphics); // Static layer
         this.app.stage.addChild(this.liveCandlesGraphics);       // Dynamic live layer
-        this.app.stage.addChild(this.candleMesh);
-        this.app.stage.addChild(this.htfOverlayGraphics); // Dedicated Higher Timeframe Overlay layer
-        this.app.stage.addChild(this.indicatorMainContainer); // <-- UPDATED
-        this.app.stage.addChild(this.indicatorOscContainer);  // <-- UPDATED
+        this.app.stage.addChild(this.candleMesh);                // Candlesticks / Bars / HA mesh
+        this.app.stage.addChild(this.htfOverlayGraphics);        // Dedicated Higher Timeframe Overlay layer
+
+        // 5. Main Foreground Indicators (Above candlesticks)
+        this.app.stage.addChild(this.indicatorMainContainer); // Moving averages, signals, etc.
+        this.app.stage.addChild(this.indicatorOscContainer);  // Oscillators
         this.app.stage.addChild(this.drawingGraphics);
         this.app.stage.addChild(this.oscHeaderContainer);
         this.app.stage.addChild(this.uiGraphics);
@@ -889,6 +916,10 @@ export class ChartRenderer {
         try { if (this.candleOHLCBuffer) this.candleOHLCBuffer.destroy(); } catch {}
         try { if (this.sessionGeometry) this.sessionGeometry.destroy(); } catch {}
         try { if (this.sessionBuffer) this.sessionBuffer.destroy(); } catch {}
+        try { if (this.sessionBoxGraphics) this.sessionBoxGraphics.destroy(); } catch {}
+        try { if (this.strictCbcGraphics) this.strictCbcGraphics.destroy(); } catch {}
+        try { if (this.sessionBoxContainer) this.sessionBoxContainer.destroy({ children: true }); } catch {}
+        try { if (this.strictCbcContainer) this.strictCbcContainer.destroy({ children: true }); } catch {}
 
         // 2. Destroy dynamically generated Indicator Meshes
         for (const entry of this.indicatorMeshes.values()) {

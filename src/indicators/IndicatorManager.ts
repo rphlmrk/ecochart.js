@@ -59,7 +59,13 @@ export class IndicatorManager {
         }
     }
 
-    public render(renderer: ChartRenderer, mainGraphics: Graphics, oscGraphics: Graphics) {
+    public render(
+        renderer: ChartRenderer,
+        mainGraphics: Graphics,
+        oscGraphics: Graphics,
+        sessionBoxGraphics?: Graphics,
+        strictCbcGraphics?: Graphics
+    ) {
         if (!(renderer as any).isRenderDirty) return; // 🛑 ECO-MODE: Skip rebuilding indicators if chart is idle
 
         const totalOscH = this.getTotalOscillatorHeight();
@@ -68,6 +74,9 @@ export class IndicatorManager {
         const chartWidth = renderer.app.screen.width - renderer.priceAxisWidth;
 
         let currentOscY = mainChartHeight;
+
+        const targetSessionG = sessionBoxGraphics || renderer.sessionBoxGraphics || mainGraphics;
+        const targetPullbackG = strictCbcGraphics || renderer.strictCbcGraphics || mainGraphics;
 
         for (const ind of this.activeIndicators) {
             if (!ind.visible) {
@@ -94,7 +103,25 @@ export class IndicatorManager {
                     oscHeight: 0,
                     chartWidth
                 };
-                ind.render(renderer, layout, mainGraphics);
+
+                // Route to appropriate layer:
+                // 1. Session box (Lowest content layer)
+                // 2. Pullback zone (Strict CBC / Market Structure Pullback Zones - behind candles, above sessions)
+                // 3. Foreground indicators (Above candlesticks)
+                let targetG = mainGraphics;
+                if ((ind as any).layerType === 'session' || ind.id === 'MARKET_SESSIONS') {
+                    targetG = targetSessionG;
+                } else if (
+                    (ind as any).layerType === 'pullback_zone' ||
+                    ind.id === 'STRICT_CBC_PULLBACK' ||
+                    ind.id.startsWith('STRICT_CBC') ||
+                    ind.id === 'PULLBACK_ZONES' ||
+                    ind.id === 'MS_PULLBACK_DTDB'
+                ) {
+                    targetG = targetPullbackG;
+                }
+
+                ind.render(renderer, layout, targetG);
             }
         }
     }

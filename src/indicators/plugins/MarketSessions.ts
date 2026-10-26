@@ -39,6 +39,7 @@ export class MarketSessionsIndicator extends BaseIndicator {
     constructor() {
         super('MARKET_SESSIONS', 'Market Sessions');
         this.isOscillator = false;
+        this.layerType = 'session';
         this.params = [
             // Master toggle
             { id: 'showRanges', name: 'Show Range Boxes', type: 'boolean', value: true },
@@ -543,8 +544,12 @@ export class MarketSessionsIndicator extends BaseIndicator {
             this.buildCachedBoxes(r.dataStore);
         }
 
-        if (!this.isContainerMounted) {
-            r.app.stage.addChild(this.labelContainer);
+        const parent = r.sessionBoxContainer || r.app.stage;
+        if (!this.isContainerMounted || this.labelContainer.parent !== parent) {
+            if (this.labelContainer.parent) {
+                this.labelContainer.parent.removeChild(this.labelContainer);
+            }
+            parent.addChild(this.labelContainer);
             this.isContainerMounted = true;
         }
         this.labelContainer.visible = true;

@@ -55,6 +55,7 @@ export abstract class BaseIndicator {
     public name: string;
     public isOscillator: boolean;
     public visible = true;                     // <-- NEW: Toggle visibility without clearing calculations
+    public layerType?: 'session' | 'pullback_zone' | 'main'; // Layer positioning: session (back), pullback_zone (mid), main (front)
     public oscillatorScale?: OscillatorScale;  // <-- NEW: Custom scale definition for sub-panels
     public values: Float64Array;
     public params: ParamDef[] = [];

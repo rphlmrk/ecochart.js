@@ -60,6 +60,7 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
     constructor() {
         super('MS_PULLBACK_ZONES', 'Market Structure Pullback Zones');
         this.isOscillator = false;
+        this.layerType = 'pullback_zone';
 
         this.params = [
             // Timeframe Selection
@@ -884,8 +885,12 @@ export class MarketStructurePullbackZonesIndicator extends BaseIndicator {
         // --- Setup Labels & Breakout Signals ---
         const needLabels = showLabels || showBreakoutSignals;
         if (needLabels) {
-            if (!this.isContainerMounted) {
-                r.app.stage.addChild(this.labelContainer);
+            const parent = r.strictCbcContainer || r.app.stage;
+            if (!this.isContainerMounted || this.labelContainer.parent !== parent) {
+                if (this.labelContainer.parent) {
+                    this.labelContainer.parent.removeChild(this.labelContainer);
+                }
+                parent.addChild(this.labelContainer);
                 this.isContainerMounted = true;
             }
             this.labelContainer.visible = true;

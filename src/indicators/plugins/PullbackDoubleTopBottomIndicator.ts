@@ -56,6 +56,7 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
     constructor() {
         super('MS_PULLBACK_DTDB', 'Market Structure Double Top & Bottom');
         this.isOscillator = false;
+        this.layerType = 'pullback_zone';
 
         this.params = [
             // Timeframe Selection
@@ -1050,7 +1051,14 @@ export class PullbackDoubleTopBottomIndicator extends BaseIndicator {
         // --- Setup Labels ---
         const needLabels = showLabels || showPatterns || showBreakoutSignals;
         if (needLabels) {
-            if (!this.isContainerMounted) { r.app.stage.addChild(this.labelContainer); this.isContainerMounted = true; }
+            const parent = r.strictCbcContainer || r.app.stage;
+            if (!this.isContainerMounted || this.labelContainer.parent !== parent) {
+                if (this.labelContainer.parent) {
+                    this.labelContainer.parent.removeChild(this.labelContainer);
+                }
+                parent.addChild(this.labelContainer);
+                this.isContainerMounted = true;
+            }
             this.labelContainer.visible = true;
 
             for (let i = 0; i < this.labelTextPool.length; i++) this.labelTextPool[i].visible = false;
