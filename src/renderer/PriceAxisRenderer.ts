@@ -1,6 +1,7 @@
 import type { ChartRenderer } from './ChartRenderer';
 import { BinanceClient } from '../network/BinanceClient';
 import { alertManager } from '../alerts/AlertManager';
+import { TimeframeResampler } from '../data/TimeframeResampler';
 
 export class PriceAxisRenderer {
     private canvas: HTMLCanvasElement;
@@ -13,6 +14,8 @@ export class PriceAxisRenderer {
     private lastLiveColor = 0;
     private lastClosePriceStr = '';
     private lastCountdownStr = '';
+    private lastHtfCountdownStr = '';
+    private lastIsHtfActive = false;
     private lastWidth = 60;
 
     constructor(canvas: HTMLCanvasElement, renderer: ChartRenderer) {
@@ -129,18 +132,22 @@ export class PriceAxisRenderer {
             if (liveY >= 0 && liveY <= mainChartHeight) {
                 const isBull = lastClose >= lastOpen;
                 const liveColor = isBull ? this.renderer.bullColor : this.renderer.bearColor;
-                const badgeH = 34;
-                const badgeY = Math.max(0, Math.min(mainChartHeight - badgeH, liveY - 17));
+                const isHtfActive = Boolean(this.renderer.isHtfOverlayActive && this.renderer.htfEffectiveMs > 0);
+                const badgeH = isHtfActive ? 46 : 34;
+                const badgeY = Math.max(0, Math.min(mainChartHeight - badgeH, liveY - (badgeH / 2)));
 
                 this.ctx.fillStyle = this.hexToCSS(liveColor);
                 this.ctx.fillRect(0, badgeY, w, badgeH);
 
                 this.ctx.fillStyle = '#ffffff';
                 this.ctx.font = 'bold 11px sans-serif';
-                this.ctx.fillText(lastClose.toFixed(2), w / 2, badgeY + 11);
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillText(lastClose.toFixed(2), w / 2, badgeY + (isHtfActive ? 10 : 11));
 
+                const serverTime = BinanceClient.getServerTime();
                 const intervalMs = this.renderer.parseIntervalMs(this.renderer.currentInterval);
-                const remainingMs = Math.max(0, (lastTime + intervalMs) - BinanceClient.getServerTime());
+                const remainingMs = Math.max(0, (lastTime + intervalMs) - serverTime);
                 const totalSecs = Math.floor(remainingMs / 1000);
                 const hours = Math.floor(totalSecs / 3600);
                 const mins = Math.floor((totalSecs % 3600) / 60);
@@ -148,8 +155,30 @@ export class PriceAxisRenderer {
                 let countdownStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
                 if (hours > 0) countdownStr = `${hours}:${countdownStr}`;
 
-                this.ctx.font = '10px sans-serif';
-                this.ctx.fillText(countdownStr, w / 2, badgeY + 24);
+                let htfCountdownStr = '';
+                if (isHtfActive) {
+                    // Line 2: Chart candle close countdown
+                    this.ctx.font = '10px sans-serif';
+                    this.ctx.fillText(`${this.renderer.currentInterval} ${countdownStr}`, w / 2, badgeY + 22);
+
+                    // Line 3: HTF candle close countdown
+                    const htfMs = this.renderer.htfEffectiveMs;
+                    const htfBucket = TimeframeResampler.getBucketStart(serverTime, htfMs);
+                    const htfRemainingMs = Math.max(0, (htfBucket + htfMs) - serverTime);
+                    const totalHtfSecs = Math.floor(htfRemainingMs / 1000);
+                    const htfHours = Math.floor(totalHtfSecs / 3600);
+                    const htfMins = Math.floor((totalHtfSecs % 3600) / 60);
+                    const htfSecs = totalHtfSecs % 60;
+                    htfCountdownStr = `${htfMins.toString().padStart(2, '0')}:${htfSecs.toString().padStart(2, '0')}`;
+                    if (htfHours > 0) htfCountdownStr = `${htfHours}:${htfCountdownStr}`;
+
+                    const htfLabel = this.renderer.htfOverlayTfLabel || 'HTF';
+                    this.ctx.font = 'bold 9px sans-serif';
+                    this.ctx.fillText(`${htfLabel} ${htfCountdownStr}`, w / 2, badgeY + 34);
+                } else {
+                    this.ctx.font = '10px sans-serif';
+                    this.ctx.fillText(countdownStr, w / 2, badgeY + 24);
+                }
 
                 // Cache coordinates for partial 1-second updates
                 this.lastBadgeY = badgeY;
@@ -157,6 +186,8 @@ export class PriceAxisRenderer {
                 this.lastLiveColor = liveColor;
                 this.lastClosePriceStr = lastClose.toFixed(2);
                 this.lastCountdownStr = countdownStr;
+                this.lastHtfCountdownStr = htfCountdownStr;
+                this.lastIsHtfActive = isHtfActive;
                 this.lastWidth = w;
             } else {
                 this.lastBadgeY = -1;
@@ -264,7 +295,7 @@ export class PriceAxisRenderer {
     }
 
     /**
-     * Partial Update: Only redraws the live price pill (60x34px)
+     * Partial Update: Only redraws the live price pill (60x34px or 60x46px when HTF is active)
      * Skips full canvas clearing, background fills, and scale calculations.
      */
     public updateCountdownOnly() {
@@ -273,11 +304,19 @@ export class PriceAxisRenderer {
             return;
         }
 
+        const isHtfActive = Boolean(this.renderer.isHtfOverlayActive && this.renderer.htfEffectiveMs > 0);
+        // If active state switched between HTF and normal, trigger full render to resize badge geometry
+        if (isHtfActive !== this.lastIsHtfActive) {
+            this.render();
+            return;
+        }
+
         const len = this.renderer.dataStore.length;
         const lastBase = (len - 1) * 6;
         const lastTime = this.renderer.dataStore.data[lastBase];
+        const serverTime = BinanceClient.getServerTime();
         const intervalMs = this.renderer.parseIntervalMs(this.renderer.currentInterval);
-        const remainingMs = Math.max(0, (lastTime + intervalMs) - BinanceClient.getServerTime());
+        const remainingMs = Math.max(0, (lastTime + intervalMs) - serverTime);
         const totalSecs = Math.floor(remainingMs / 1000);
         const hours = Math.floor(totalSecs / 3600);
         const mins = Math.floor((totalSecs % 3600) / 60);
@@ -285,7 +324,22 @@ export class PriceAxisRenderer {
         let countdownStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
         if (hours > 0) countdownStr = `${hours}:${countdownStr}`;
 
-        if (countdownStr === this.lastCountdownStr) return; // Zero work if second didn't change
+        let htfCountdownStr = '';
+        if (isHtfActive) {
+            const htfMs = this.renderer.htfEffectiveMs;
+            const htfBucket = TimeframeResampler.getBucketStart(serverTime, htfMs);
+            const htfRemainingMs = Math.max(0, (htfBucket + htfMs) - serverTime);
+            const totalHtfSecs = Math.floor(htfRemainingMs / 1000);
+            const htfHours = Math.floor(totalHtfSecs / 3600);
+            const htfMins = Math.floor((totalHtfSecs % 3600) / 60);
+            const htfSecs = totalHtfSecs % 60;
+            htfCountdownStr = `${htfMins.toString().padStart(2, '0')}:${htfSecs.toString().padStart(2, '0')}`;
+            if (htfHours > 0) htfCountdownStr = `${htfHours}:${htfCountdownStr}`;
+        }
+
+        if (countdownStr === this.lastCountdownStr && (!isHtfActive || htfCountdownStr === this.lastHtfCountdownStr)) {
+            return; // Zero work if second didn't change
+        }
 
         const w = this.lastWidth;
 
@@ -297,11 +351,21 @@ export class PriceAxisRenderer {
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
         this.ctx.font = 'bold 11px sans-serif';
-        this.ctx.fillText(this.lastClosePriceStr, w / 2, this.lastBadgeY + 11);
+        this.ctx.fillText(this.lastClosePriceStr, w / 2, this.lastBadgeY + (isHtfActive ? 10 : 11));
 
-        this.ctx.font = '10px sans-serif';
-        this.ctx.fillText(countdownStr, w / 2, this.lastBadgeY + 24);
+        if (isHtfActive) {
+            this.ctx.font = '10px sans-serif';
+            this.ctx.fillText(`${this.renderer.currentInterval} ${countdownStr}`, w / 2, this.lastBadgeY + 22);
+
+            const htfLabel = this.renderer.htfOverlayTfLabel || 'HTF';
+            this.ctx.font = 'bold 9px sans-serif';
+            this.ctx.fillText(`${htfLabel} ${htfCountdownStr}`, w / 2, this.lastBadgeY + 34);
+        } else {
+            this.ctx.font = '10px sans-serif';
+            this.ctx.fillText(countdownStr, w / 2, this.lastBadgeY + 24);
+        }
 
         this.lastCountdownStr = countdownStr;
+        this.lastHtfCountdownStr = htfCountdownStr;
     }
 }

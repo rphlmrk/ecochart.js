@@ -100,6 +100,9 @@ export class ChartRenderer {
     public indicatorOscGraphics: Graphics = new Graphics();
     public drawingGraphics: Graphics = new Graphics();
     public htfOverlayGraphics: Graphics = new Graphics();
+    public isHtfOverlayActive: boolean = false;
+    public htfOverlayTfLabel: string = '';
+    public htfEffectiveMs: number = 0;
 
     // Dedicated Crosshair Graphics & Sync State
     private crosshairGraphics: Graphics = new Graphics();

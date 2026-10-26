@@ -1129,15 +1129,30 @@
               style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 12px; width: 75px; text-align: right; outline: none;" />
           </div>
 
-          <!-- Automatic Peek when timeframe closes -->
-          <div style="background: rgba(0, 0, 0, 0.25); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 6px; padding: 10px; margin-top: 4px;">
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: var(--chart-text, #D1D4DC); font-weight: 600;">
-              <input type="checkbox" id="check-candle-auto-peek-close"
-                style="cursor: pointer; width: 16px; height: 16px; accent-color: var(--chart-accent, #2962FF);">
-              Automatic Peek on Timeframe Close
-            </label>
-            <div style="font-size: 11px; color: #787B86; margin-top: 4px; margin-left: 24px; line-height: 1.4;">
-              Automatically overlays the closed HTF candle and hides current candlesticks right when the selected timeframe closes.
+          <!-- Automatic Peek Configuration (Option to peek after every 1m close, custom minute, hour, or HTF close) -->
+          <div style="background: rgba(0, 0, 0, 0.25); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 6px; padding: 12px; margin-top: 4px; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
+              <span style="color: var(--chart-text, #D1D4DC); font-weight: 600;">Auto-Peek Cadence:</span>
+              <select id="select-candle-auto-peek-cadence"
+                style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none; min-width: 170px;">
+                <option value="off">Disabled (Manual Only)</option>
+                <option value="1m">Every 1 Minute Close</option>
+                <option value="custom_m">Custom Minutes Close</option>
+                <option value="1h">Every 1 Hour Close</option>
+                <option value="custom_h">Custom Hours Close</option>
+                <option value="htf_close">On HTF Candle Close</option>
+              </select>
+            </div>
+            <div id="row-candle-autopeek-custom" style="display: none; align-items: center; justify-content: space-between; font-size: 12px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
+              <span id="label-candle-autopeek-custom" style="color: var(--chart-text, #D1D4DC);">Custom Interval:</span>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <input type="number" id="input-candle-autopeek-custom-val" value="5" min="1" max="1440"
+                  style="background: var(--chart-panel-bg, #1e222d); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 3px 6px; font-size: 12px; width: 65px; text-align: right; outline: none;" />
+                <span id="label-candle-autopeek-unit" style="font-size: 12px; color: var(--chart-text, #787B86);">mins</span>
+              </div>
+            </div>
+            <div style="font-size: 11px; color: #787B86; line-height: 1.4;">
+              Automatically overlays the higher timeframe candles and hides current candlesticks whenever the chosen cadence closes.
             </div>
           </div>
 
