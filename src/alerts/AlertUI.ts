@@ -258,9 +258,8 @@ export class AlertUI {
                                 width: 100%; background: #1e222d; color: #fff; border: 1px solid var(--chart-grid, #434651);
                                 border-radius: 4px; padding: 6px 8px; font-size: 12px; outline: none; cursor: pointer;
                             ">
-                                <option value="both" selected>Both (Micro & Macro Boxes)</option>
-                                <option value="micro">Micro Box (Blue Swing Period)</option>
-                                <option value="macro">Macro Box (Red Major Period)</option>
+                                <option value="macro" selected>Pullback Zone (Swing Period 11)</option>
+                                <option value="both">Active Pullback Structure</option>
                             </select>
                         </div>
                         <div>
@@ -599,18 +598,15 @@ export class AlertUI {
 
         const updatePullbackDefaults = () => {
             const sym = (document.getElementById('input-alert-symbol') as HTMLInputElement)?.value?.trim().toUpperCase() || 'BTCUSDT';
-            const box = selectPullbackBox?.value || 'both';
             const dir = selectPullbackDir?.value || 'any';
-
-            const boxLabel = box === 'micro' ? 'Micro Box' : box === 'macro' ? 'Macro Box' : 'Micro & Macro';
             const dirLabel = dir === 'up' ? 'Breakout UP ▲' : dir === 'down' ? 'Breakdown DOWN ▼' : 'Breakout';
 
             if (inputName) {
-                inputName.value = `${sym} ${boxLabel} ${dirLabel}`;
+                inputName.value = `${sym} Pullback Zone ${dirLabel}`;
             }
 
             if (selectColor) {
-                selectColor.value = box === 'macro' ? '#EF5350' : '#2962FF';
+                selectColor.value = '#EF5350';
             }
         };
 
@@ -754,16 +750,12 @@ export class AlertUI {
         const status = alertManager.getPullbackStatus(sym);
 
         let lines: string[] = [];
-        if (status.microBox) {
-            lines.push(`🔵 <strong>Micro Box:</strong> $${status.microBox.bottom.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} — $${status.microBox.top.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} (Upper: &gt; $${status.microBox.top.toFixed(2)}, Lower: &lt; $${status.microBox.bottom.toFixed(2)})`);
-        } else {
-            lines.push(`🔵 <strong>Micro Box:</strong> Waiting for micro pivot swings to form box`);
-        }
-
         if (status.macroBox) {
-            lines.push(`🔴 <strong>Macro Box:</strong> $${status.macroBox.bottom.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} — $${status.macroBox.top.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} (Upper: &gt; $${status.macroBox.top.toFixed(2)}, Lower: &lt; $${status.macroBox.bottom.toFixed(2)})`);
+            lines.push(`🔴 <strong>Pullback Zone:</strong> $${status.macroBox.bottom.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} — $${status.macroBox.top.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} (Upper: &gt; $${status.macroBox.top.toFixed(2)}, Lower: &lt; $${status.macroBox.bottom.toFixed(2)})`);
+        } else if (status.microBox) {
+            lines.push(`🔴 <strong>Pullback Zone:</strong> $${status.microBox.bottom.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} — $${status.microBox.top.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`);
         } else {
-            lines.push(`🔴 <strong>Macro Box:</strong> Waiting for macro pivot swings to form box`);
+            lines.push(`🔴 <strong>Pullback Zone:</strong> Scanning active swing structure (period 11)...`);
         }
 
         telemetry.innerHTML = lines.join('<br/>');
