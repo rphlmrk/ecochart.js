@@ -3854,7 +3854,6 @@ export class WorkspaceManager {
                 const c = this.activeChart;
                 const activeTf = c.candleHtfTimeframe;
                 const activeCustomMins = c.candleHtfCustomMins;
-                const isAutoPeek = c.autoPeekOnClose;
                 const peekDur = c.htfOverlayDurationSec;
                 const showWicks = c.showHtfWicks;
                 const opacity = Math.round(c.htfCandleOpacity * 100);
