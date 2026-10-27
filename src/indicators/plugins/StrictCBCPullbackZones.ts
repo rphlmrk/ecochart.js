@@ -1,9 +1,8 @@
 import { BaseIndicator, parseColorAndAlpha, parseColor, type IndicatorLayout } from '../Indicator';
 import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
-import { StrokeEngine } from '../../renderer/StrokeEngine';
 import { TimeframeResampler } from '../../data/TimeframeResampler';
-import { Graphics, Container, BitmapText } from 'pixi.js';
+import { Graphics } from 'pixi.js';
 import { alertManager } from '../../alerts/AlertManager';
 
 export interface StrictCBCBox {
@@ -18,6 +17,16 @@ export interface StrictCBCBox {
     createdBar: number;
 }
 
+/**
+ * Strict CBC Pullback Zones (Simplified)
+ * 
+ * Clean, high-performance Strict Candle Breakout (CBC) Pullback Zones:
+ * - Precise anchor-based Bull and Bear pullback zones
+ * - Clean multi-timeframe projection (Native and Resampled HTF)
+ * - Automatic breakout & trend flip detection for alerts
+ * - Extraneous midlines, high/low projections, and text labels removed for a clean chart
+ * - Batched single draw-call GPU WebGL rendering
+ */
 export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
     // Cached structure boxes to eliminate render-loop CPU calculations
     public cachedBoxes: StrictCBCBox[] = [];
@@ -33,11 +42,6 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
     public trends: Int8Array = new Int8Array(20000); // 1 = Bullish Push, -1 = Bearish Pullback / Down
     public anchorHighs: Float64Array = new Float64Array(20000);
     public anchorLows: Float64Array = new Float64Array(20000);
-
-    // Zero-GC text pooling for optional zone labels
-    private labelContainer = new Container();
-    private labelTextPool: BitmapText[] = [];
-    private isContainerMounted = false;
 
     constructor() {
         super('STRICT_CBC_PULLBACK', 'Strict CBC Pullback Zones');
@@ -55,34 +59,16 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
             },
             { id: 'customTfMins', name: 'Custom HTF Minutes', type: 'number', value: 60, min: 1, max: 43200, step: 1 },
 
-            // General Box Settings
-            { id: 'maxBoxes', name: 'Max Boxes Count', type: 'number', value: 500, min: 10, max: 1000, step: 10 },
-            { id: 'extendBoxes', name: 'Extend Boxes to Right', type: 'boolean', value: false },
-            { id: 'borderWidth', name: 'Border Width', type: 'number', value: 1, min: 1, max: 4, step: 0.5 },
-
             // Bear Zone (Red Box)
-            { id: 'bearBg', name: 'Bear Box Background', type: 'color', value: '#CC00004D' }, // #CC0000 with 30% alpha
             { id: 'bearBorder', name: 'Bear Border Color', type: 'color', value: '#CC0000' },
+            { id: 'bearBg', name: 'Bear Background Color', type: 'color', value: '#CC00004D' },
 
             // Bull Zone (Gray Box)
-            { id: 'bullBg', name: 'Bull Box Background', type: 'color', value: '#9E9E9E4D' }, // #9E9E9E with 30% alpha
             { id: 'bullBorder', name: 'Bull Border Color', type: 'color', value: '#9E9E9E' },
+            { id: 'bullBg', name: 'Bull Background Color', type: 'color', value: '#9E9E9E4D' },
 
-            // 50% Midline (Equilibrium) Settings
-            { id: 'showMidline', name: 'Show 50% Midline (Equilibrium)', type: 'boolean', value: false },
-            { id: 'midlineColor', name: '50% Midline Color', type: 'color', value: '#EF5350' },
-
-            // Box High & Low Horizontal Lines
-            { id: 'showHighLowLines', name: 'Draw Box High & Low Lines', type: 'boolean', value: false },
-            { id: 'highLowLineColor', name: 'High & Low Lines Color', type: 'color', value: '#787B86' },
-
-            // Zone Labels
-            { id: 'showLabels', name: 'Show Status Labels', type: 'boolean', value: false },
-
-            // Alerts
-            { id: 'alertBearishFlip', name: '🔔 Alert on Bearish Flip', type: 'boolean', value: true },
-            { id: 'alertBullishFlip', name: '🔔 Alert on Bullish Flip', type: 'boolean', value: true },
-            { id: 'alertBoxBreakout', name: '🔔 Alert on Box Breakout', type: 'boolean', value: true }
+            // Border Width
+            { id: 'borderWidth', name: 'Border Width', type: 'number', value: 1, min: 0.5, max: 4, step: 0.5 }
         ];
     }
 
@@ -110,6 +96,24 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
             return chartTfMs;
         }
         return parsedMs;
+    }
+
+    public getLatestOpenBox(): StrictCBCBox | null {
+        for (let i = this.cachedBoxes.length - 1; i >= 0; i--) {
+            if (this.cachedBoxes[i].isOpen) return this.cachedBoxes[i];
+        }
+        return null;
+    }
+
+    public getPullbackStatus(): {
+        microBox: { top: number; bottom: number } | null;
+        macroBox: { top: number; bottom: number } | null;
+    } {
+        const latest = this.getLatestOpenBox();
+        return {
+            microBox: null,
+            macroBox: latest ? { top: latest.top, bottom: latest.bottom } : null
+        };
     }
 
     protected override onParamsUpdated(): void {
@@ -181,7 +185,7 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
             if (firstKey) this.notifiedBreakouts.delete(firstKey);
         }
 
-        if (kind === 'bear_flip' && this.getParam<boolean>('alertBearishFlip', true)) {
+        if (kind === 'bear_flip') {
             window.dispatchEvent(new CustomEvent('ecochart-alert', {
                 detail: {
                     id: this.id,
@@ -189,7 +193,7 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
                     message: `${sym}: Strict CBC Bearish Flip at $${price.toFixed(2)} (Closed below Anchor Low)`
                 }
             }));
-        } else if (kind === 'bull_flip' && this.getParam<boolean>('alertBullishFlip', true)) {
+        } else if (kind === 'bull_flip') {
             window.dispatchEvent(new CustomEvent('ecochart-alert', {
                 detail: {
                     id: this.id,
@@ -197,7 +201,7 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
                     message: `${sym}: Strict CBC Bullish Flip at $${price.toFixed(2)} (Closed above Anchor High)`
                 }
             }));
-        } else if (kind === 'box_breakout' && this.getParam<boolean>('alertBoxBreakout', true) && box) {
+        } else if (kind === 'box_breakout' && box) {
             alertManager.triggerPullbackBreakout(
                 sym,
                 box.type === 'bear' ? 'macro' : 'micro',
@@ -210,7 +214,7 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
     }
 
     /**
-     * Builds and caches Strict CBC Pullback Zones with strict Pine Script //@version=5 execution order
+     * Builds and caches Strict CBC Pullback Zones
      */
     private buildCachedBoxes(ds: DataStore): void {
         const len = ds.length;
@@ -221,19 +225,18 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
             return;
         }
 
-        const maxBoxes = Math.max(10, Math.min(1000, this.getParam<number>('maxBoxes', 500)));
+        const maxBoxes = 500;
         const chartTfMs = (ds.length >= 2 && ds.data[6] > ds.data[0]) ? (ds.data[6] - ds.data[0]) : 60000;
         const tfMs = this.getEffectiveTfMs(chartTfMs);
         const isHTF = tfMs > chartTfMs;
 
-        const extendBoxes = this.getParam<boolean>('extendBoxes', false);
         const lastIdx = len - 1;
         const baseLast = lastIdx * 6;
         const lastH = ds.data[baseLast + 2];
         const lastL = ds.data[baseLast + 3];
         const lastC = ds.data[baseLast + 4];
 
-        const stateHash = `${maxBoxes}:${extendBoxes}:${tfMs}:${isHTF}:${len}:${lastH}:${lastL}:${lastC}`;
+        const stateHash = `${tfMs}:${isHTF}:${len}:${lastH}:${lastL}:${lastC}`;
         if (this.lastStateHash === stateHash && this.lastCalculatedLength === len) {
             return;
         }
@@ -246,16 +249,8 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
             const boxes: StrictCBCBox[] = [];
             let nextBoxId = 1;
 
-            // Pine Script State Variables:
-            // var float anchorHigh = high
-            // var float anchorLow = low
-            // var bool isBullish = true
-            // var float phaseHigh = high, phaseHighIdx = bar_index
-            // var float phaseLow = low, phaseLowIdx = bar_index
-            // var box activeBearBox = na, activeBullBox = na
-
-            let anchorHigh = data[2]; // high of bar 0
-            let anchorLow = data[3];  // low of bar 0
+            let anchorHigh = data[2];
+            let anchorLow = data[3];
             let isBullish = true;
 
             let phaseHigh = data[2];
@@ -274,15 +269,12 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
                 const l = data[base + 3];
                 const c = data[base + 4];
 
-                // 1. CANDLE DEFINITIONS
                 const isBuy = c > o;
                 const isSell = c < o;
 
-                // 2. STRICT CBC FLIP CONDITIONS (evaluated against previous anchor bounds)
                 const bearishFlip = isBullish && isSell && (c < anchorLow);
                 const bullishFlip = !isBullish && isBuy && (c > anchorHigh);
 
-                // 3. EXTREME TRACKERS (Find absolute highest wick / lowest wick before flip)
                 if (isBullish) {
                     if (h > phaseHigh) {
                         phaseHigh = h;
@@ -295,11 +287,9 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
                     }
                 }
 
-                // 4. DRAWING THE ZONES ON FLIP
                 if (bearishFlip) {
                     isBullish = false;
 
-                    // Draw Red Box: From highest wick down to breakout candle's low
                     const newBearBox: StrictCBCBox = {
                         id: nextBoxId++,
                         type: 'bear',
@@ -314,8 +304,6 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
                     if (boxes.length > maxBoxes) boxes.shift();
 
                     activeBearBox = newBearBox;
-
-                    // Reset low tracker for new bearish phase
                     phaseLow = l;
                     phaseLowIdx = i;
 
@@ -327,7 +315,6 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
                 if (bullishFlip) {
                     isBullish = true;
 
-                    // Draw Gray Box: From lowest wick up to breakout candle's high
                     const newBullBox: StrictCBCBox = {
                         id: nextBoxId++,
                         type: 'bull',
@@ -342,8 +329,6 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
                     if (boxes.length > maxBoxes) boxes.shift();
 
                     activeBullBox = newBullBox;
-
-                    // Reset high tracker for new bullish phase
                     phaseHigh = h;
                     phaseHighIdx = i;
 
@@ -352,38 +337,28 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
                     }
                 }
 
-                // 5. EXTEND THE ZONES (Only pushes boxes right if extendBoxes is enabled)
                 if (activeBearBox !== null) {
-                    if (extendBoxes) {
-                        activeBearBox.rightBar = i;
-                    }
                     if (c < activeBearBox.bottom || c > activeBearBox.top) {
                         activeBearBox.isOpen = false;
                         activeBearBox.breakoutDir = c > activeBearBox.top ? 'up' : 'down';
                         if (i === len - 1) {
                             this.dispatchAlert('box_breakout', activeBearBox.breakoutDir, c, time, i, activeBearBox);
                         }
-                        activeBearBox = null; // Stop tracking once broken
+                        activeBearBox = null;
                     }
                 }
 
                 if (activeBullBox !== null) {
-                    if (extendBoxes) {
-                        activeBullBox.rightBar = i;
-                    }
                     if (c > activeBullBox.top || c < activeBullBox.bottom) {
                         activeBullBox.isOpen = false;
                         activeBullBox.breakoutDir = c > activeBullBox.top ? 'up' : 'down';
                         if (i === len - 1) {
                             this.dispatchAlert('box_breakout', activeBullBox.breakoutDir, c, time, i, activeBullBox);
                         }
-                        activeBullBox = null; // Stop tracking once broken
+                        activeBullBox = null;
                     }
                 }
 
-                // 6. UPDATE THE ANCHOR CANDLE
-                // Rule: "Skip if it wicks below and closes inside".
-                // Anchor ONLY updates if candle closes beyond the bounds, or on full trend flip.
                 const validContinuation = (isBullish && c > anchorHigh) || (!isBullish && c < anchorLow);
 
                 if (validContinuation || bearishFlip || bullishFlip) {
@@ -391,7 +366,6 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
                     anchorLow = l;
                 }
 
-                // Record per-bar telemetry
                 this.flips[i] = bullishFlip ? 1 : (bearishFlip ? -1 : 0);
                 this.trends[i] = isBullish ? 1 : -1;
                 this.anchorHighs[i] = anchorHigh;
@@ -550,9 +524,6 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
             }
 
             if (activeBearBox !== null) {
-                if (extendBoxes) {
-                    activeBearBox.rightBar = chartIdx;
-                }
                 if (c < activeBearBox.bottom || c > activeBearBox.top) {
                     activeBearBox.isOpen = false;
                     activeBearBox.breakoutDir = c > activeBearBox.top ? 'up' : 'down';
@@ -564,9 +535,6 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
             }
 
             if (activeBullBox !== null) {
-                if (extendBoxes) {
-                    activeBullBox.rightBar = chartIdx;
-                }
                 if (c > activeBullBox.top || c < activeBullBox.bottom) {
                     activeBullBox.isOpen = false;
                     activeBullBox.breakoutDir = c > activeBullBox.top ? 'up' : 'down';
@@ -584,7 +552,6 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
                 anchorLow = l;
             }
 
-            // Project onto lower timeframe chart bars
             const fBar = bar.firstChartBar;
             const lBar = Math.min(len - 1, bar.lastChartBar);
             for (let k = fBar; k <= lBar; k++) {
@@ -602,13 +569,10 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
 
     /**
      * Hardware-accelerated GPU Rendering
-     * - Batched single draw call per zone type (all Bull fills, all Bull borders, all Bear fills, all Bear borders)
-     * - Viewport culling to eliminate off-screen projection
-     * - Zero-GC BitmapText pooling for crisp status labels
+     * Batched single draw calls for Bull and Bear zones with viewport culling
      */
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics): void {
         if (!this.visible || r.dataStore.length === 0) {
-            this.labelContainer.visible = false;
             return;
         }
 
@@ -617,7 +581,6 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
         }
 
         if (this.cachedBoxes.length === 0) {
-            this.labelContainer.visible = false;
             return;
         }
 
@@ -627,20 +590,11 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
         const bullBg = parseColorAndAlpha(this.getParam<string>('bullBg', '#9E9E9E4D'), 0.30);
         const bullBorder = parseColorAndAlpha(this.getParam<string>('bullBorder', '#9E9E9E'), 1.0);
 
-        const showMidline = this.getParam<boolean>('showMidline', false);
-        const midlineColor = parseColorAndAlpha(this.getParam<string>('midlineColor', '#EF5350'), 0.85);
-
-        const showHighLowLines = this.getParam<boolean>('showHighLowLines', false);
-        const highLowLineColor = parseColorAndAlpha(this.getParam<string>('highLowLineColor', '#787B86'), 0.85);
-
-        const showLabels = this.getParam<boolean>('showLabels', false);
-
         const screenW = layout.chartWidth;
         const sp = r.candleSpacing * r.zoom;
         const halfSp = sp * 0.45;
         const minX = -40;
         const maxX = screenW + 40;
-        const dsLength = r.dataStore.length;
 
         interface VisibleZoneGeometry {
             x1: number;
@@ -649,19 +603,15 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
             yBot: number;
             w: number;
             h: number;
-            yMid: number;
-            box: StrictCBCBox;
         }
 
         const visibleBull: VisibleZoneGeometry[] = [];
         const visibleBear: VisibleZoneGeometry[] = [];
 
-        const extendBoxes = this.getParam<boolean>('extendBoxes', false);
-
         for (let i = 0; i < this.cachedBoxes.length; i++) {
             const b = this.cachedBoxes[i];
             const x1 = r.getCandleCenterX(b.leftBar) - halfSp;
-            const rightIdx = (extendBoxes && b.isOpen) ? (dsLength - 1) : b.rightBar;
+            const rightIdx = b.rightBar; // Strictly bounded, never extended to the right side of chart
             const x2 = r.getCandleCenterX(rightIdx) + halfSp;
 
             // Viewport culling
@@ -673,9 +623,8 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
             const yBot = r.priceToY(botPrice);
             const w = Math.max(2, x2 - x1);
             const h = Math.max(2, yBot - yTop);
-            const yMid = r.priceToY((topPrice + botPrice) * 0.5);
 
-            const geom: VisibleZoneGeometry = { x1, x2, yTop, yBot, w, h, yMid, box: b };
+            const geom: VisibleZoneGeometry = { x1, x2, yTop, yBot, w, h };
             if (b.type === 'bull') {
                 visibleBull.push(geom);
             } else {
@@ -683,9 +632,7 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
             }
         }
 
-        // =========================================================================
-        // 🚀 GPU BATCH 1: Bull Zones (Gray Boxes) - Single Fill & Single Stroke
-        // =========================================================================
+        // Bull Zones (Gray Boxes) - Single Fill & Stroke Batch
         if (visibleBull.length > 0) {
             g.beginPath();
             for (let i = 0; i < visibleBull.length; i++) {
@@ -699,12 +646,10 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
                 const vb = visibleBull[i];
                 g.rect(vb.x1, vb.yTop, vb.w, vb.h);
             }
-            g.stroke({ color: bullBorder.color, width: borderWidth, alpha: bullBorder.alpha, cap: 'butt' });
+            g.stroke({ color: bullBorder.color, width: borderWidth, alpha: bullBorder.alpha });
         }
 
-        // =========================================================================
-        // 🚀 GPU BATCH 2: Bear Zones (Red Boxes) - Single Fill & Single Stroke
-        // =========================================================================
+        // Bear Zones (Red Boxes) - Single Fill & Stroke Batch
         if (visibleBear.length > 0) {
             g.beginPath();
             for (let i = 0; i < visibleBear.length; i++) {
@@ -718,110 +663,7 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
                 const vb = visibleBear[i];
                 g.rect(vb.x1, vb.yTop, vb.w, vb.h);
             }
-            g.stroke({ color: bearBorder.color, width: borderWidth, alpha: bearBorder.alpha, cap: 'butt' });
-        }
-
-        // =========================================================================
-        // 🚀 GPU BATCH 3: 50% Midline (Equilibrium)
-        // =========================================================================
-        if (showMidline && (visibleBull.length > 0 || visibleBear.length > 0)) {
-            g.beginPath();
-            const allVisible = visibleBull.concat(visibleBear);
-            for (let i = 0; i < allVisible.length; i++) {
-                const vb = allVisible[i];
-                const startX = Math.max(0, vb.x1);
-                const endX = Math.min(screenW, vb.x2);
-                if (endX > startX) {
-                    StrokeEngine.addDashedLinePath(g, startX, vb.yMid, endX, vb.yMid, 'dashed', 6, 4);
-                }
-            }
-            g.stroke({
-                color: midlineColor.color,
-                width: Math.max(1, borderWidth),
-                alpha: midlineColor.alpha,
-                cap: 'butt'
-            });
-        }
-
-        // =========================================================================
-        // 🚀 GPU BATCH 4: Box High & Low Horizontal Lines
-        // =========================================================================
-        if (showHighLowLines && (visibleBull.length > 0 || visibleBear.length > 0)) {
-            g.beginPath();
-            const allVisible = visibleBull.concat(visibleBear);
-            for (let i = 0; i < allVisible.length; i++) {
-                const vb = allVisible[i];
-                const startX = Math.max(0, vb.x1);
-                const endX = Math.min(screenW, vb.x2);
-                if (endX > startX) {
-                    g.moveTo(startX, vb.yTop).lineTo(endX, vb.yTop);
-                    g.moveTo(startX, vb.yBot).lineTo(endX, vb.yBot);
-                }
-            }
-            g.stroke({
-                color: highLowLineColor.color,
-                width: Math.max(1, borderWidth),
-                alpha: highLowLineColor.alpha,
-                cap: 'butt'
-            });
-        }
-
-        // =========================================================================
-        // 🚀 BATCH 5: Zero-GC Pooled Bitmap Labels
-        // =========================================================================
-        if (showLabels && (visibleBull.length > 0 || visibleBear.length > 0)) {
-            const parent = r.strictCbcContainer || r.app.stage;
-            if (!this.isContainerMounted || this.labelContainer.parent !== parent) {
-                if (this.labelContainer.parent) {
-                    this.labelContainer.parent.removeChild(this.labelContainer);
-                }
-                parent.addChild(this.labelContainer);
-                this.isContainerMounted = true;
-            }
-            this.labelContainer.visible = true;
-
-            for (let i = 0; i < this.labelTextPool.length; i++) {
-                this.labelTextPool[i].visible = false;
-            }
-            let activeTextCount = 0;
-
-            const placeLabel = (text: string, xPos: number, yPos: number, tintColor: number) => {
-                let item: BitmapText;
-                if (activeTextCount < this.labelTextPool.length) {
-                    item = this.labelTextPool[activeTextCount];
-                } else {
-                    item = new BitmapText({
-                        text: '',
-                        style: { fontFamily: 'ChartFont', fontSize: 10, fontWeight: 'bold' }
-                    });
-                    this.labelTextPool.push(item);
-                    this.labelContainer.addChild(item);
-                }
-                item.text = text;
-                item.tint = tintColor;
-                item.x = xPos;
-                item.y = yPos;
-                item.visible = true;
-                activeTextCount++;
-            };
-
-            for (let i = 0; i < visibleBull.length; i++) {
-                const vb = visibleBull[i];
-                if (vb.x1 <= screenW - 30) {
-                    const status = vb.box.isOpen ? 'STRICT CBC BULL' : (vb.box.breakoutDir === 'up' ? 'BULL BRK UP' : 'BULL BRK DN');
-                    placeLabel(status, Math.max(4, vb.x1 + 3), Math.max(12, vb.yTop - 11), bullBorder.color);
-                }
-            }
-
-            for (let i = 0; i < visibleBear.length; i++) {
-                const vb = visibleBear[i];
-                if (vb.x1 <= screenW - 30) {
-                    const status = vb.box.isOpen ? 'STRICT CBC BEAR' : (vb.box.breakoutDir === 'up' ? 'BEAR BRK UP' : 'BEAR BRK DN');
-                    placeLabel(status, Math.max(4, vb.x1 + 3), Math.max(12, vb.yTop - 11), bearBorder.color);
-                }
-            }
-        } else {
-            this.labelContainer.visible = false;
+            g.stroke({ color: bearBorder.color, width: borderWidth, alpha: bearBorder.alpha });
         }
     }
 
@@ -850,19 +692,19 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
         let valueColor = defaultTextClr;
 
         if (flip === -1) {
-            valueStr = `▼ Bearish Flip [Strict CBC] (Anchor L: ${fmt(aLow)})`;
+            valueStr = `▼ Bearish Flip (Anchor: ${fmt(aLow)})`;
             valueColor = bearClr;
         } else if (flip === 1) {
-            valueStr = `▲ Bullish Flip [Strict CBC] (Anchor H: ${fmt(aHigh)})`;
+            valueStr = `▲ Bullish Flip (Anchor: ${fmt(aHigh)})`;
             valueColor = bullClr;
         } else if (trend === 1) {
-            valueStr = `Bullish Push (Anchor H: ${fmt(aHigh)} | L: ${fmt(aLow)})`;
+            valueStr = `Bullish Push (Anchor: ${fmt(aHigh)})`;
             valueColor = bullClr;
         } else if (trend === -1) {
-            valueStr = `Bearish Pullback (Anchor H: ${fmt(aHigh)} | L: ${fmt(aLow)})`;
+            valueStr = `Bearish Pullback (Anchor: ${fmt(aLow)})`;
             valueColor = bearClr;
         } else {
-            valueStr = `Strict CBC (Anchor H: ${fmt(aHigh)} | L: ${fmt(aLow)})`;
+            valueStr = `Strict CBC (H: ${fmt(aHigh)} | L: ${fmt(aLow)})`;
         }
 
         return {
@@ -873,13 +715,6 @@ export class StrictCBCPullbackZonesIndicator extends BaseIndicator {
     }
 
     public destroy(): void {
-        this.labelContainer.visible = false;
-        for (let i = 0; i < this.labelTextPool.length; i++) {
-            this.labelTextPool[i].visible = false;
-        }
-        if (this.labelContainer.parent) {
-            this.labelContainer.parent.removeChild(this.labelContainer);
-        }
-        this.isContainerMounted = false;
+        this.cachedBoxes = [];
     }
 }
