@@ -32,7 +32,13 @@ export class AlertToastManager {
         const toast = document.createElement('div');
         toast.className = 'alert-toast-card';
         const isPullback = !!event.boxDetails || event.condition.startsWith('pullback_');
-        const borderColor = event.boxDetails?.boxType === 'macro' ? '#EF5350' : event.boxDetails?.boxType === 'micro' ? '#2962FF' : '#FF9800';
+        const isCross = !!event.crossDetails || event.condition.startsWith('ema_sma_');
+        let borderColor = '#FF9800';
+        if (isCross) {
+            borderColor = event.condition === 'ema_sma_bull_cross' || event.crossDetails?.direction === 'bull' ? '#00E676' : '#EF5350';
+        } else if (isPullback) {
+            borderColor = event.boxDetails?.boxType === 'macro' ? '#EF5350' : event.boxDetails?.boxType === 'micro' ? '#2962FF' : '#FF9800';
+        }
 
         toast.style.cssText = `
             pointer-events: auto;
@@ -66,13 +72,16 @@ export class AlertToastManager {
             pullback_micro_break_down: 'Micro Box Breakdown Down ▼',
             pullback_macro_break: 'Macro Box Breakout',
             pullback_macro_break_up: 'Macro Box Breakout Up ▲',
-            pullback_macro_break_down: 'Macro Box Breakdown Down ▼'
+            pullback_macro_break_down: 'Macro Box Breakdown Down ▼',
+            ema_sma_any_cross: 'MA Cross 🔀',
+            ema_sma_bull_cross: 'Golden Cross (Bullish Breakout ▲)',
+            ema_sma_bear_cross: 'Death Cross (Bearish Breakdown ▼)'
         };
 
         const condLabel = conditionLabels[event.condition] || event.condition;
         const timeStr = new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-        const icon = isPullback ? '📦' : '🔔';
+        const icon = isCross ? (event.condition === 'ema_sma_bull_cross' ? '📈' : '📉') : (isPullback ? '📦' : '🔔');
 
         toast.innerHTML = `
             <div style="font-size: 18px; line-height: 1; margin-top: 2px;">${icon}</div>

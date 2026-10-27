@@ -10,7 +10,10 @@ export type AlertCondition =
     | 'pullback_micro_break_down'
     | 'pullback_macro_break'
     | 'pullback_macro_break_up'
-    | 'pullback_macro_break_down';
+    | 'pullback_macro_break_down'
+    | 'ema_sma_any_cross'
+    | 'ema_sma_bull_cross'
+    | 'ema_sma_bear_cross';
 
 export type AlertFrequency = 'once' | 'every_time';
 
@@ -69,5 +72,10 @@ export interface TriggerEvent {
         direction: 'up' | 'down';
         top: number;
         bottom: number;
+    };
+    crossDetails?: {
+        direction: 'bull' | 'bear';
+        fastName: string;
+        slowName: string;
     };
 }

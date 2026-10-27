@@ -122,6 +122,10 @@ export class AlertUI {
                     </button>
                 </div>
                 <div style="display: flex; gap: 6px;">
+                    <button id="btn-modal-quick-cross" title="Quickly alert on EMA 10 & SMA 30 Golden/Death Crosses" style="
+                        background: rgba(0, 230, 118, 0.15); color: #00E676; border: 1px solid #00E676; border-radius: 4px;
+                        padding: 4px 8px; font-size: 11px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 4px;
+                    ">🔀 + EMA/SMA Cross</button>
                     <button id="btn-modal-quick-pullback" title="Quickly monitor Micro & Macro Pullback breakouts" style="
                         background: rgba(41, 98, 255, 0.15); color: #2962FF; border: 1px solid #2962FF; border-radius: 4px;
                         padding: 4px 8px; font-size: 11px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 4px;
@@ -210,6 +214,7 @@ export class AlertUI {
                         border-radius: 4px; padding: 6px 8px; font-size: 12px; outline: none; cursor: pointer;
                     ">
                         <option value="price">💰 Real-Time Price Level Crossing</option>
+                        <option value="indicator_cross">🔀 EMA 10 & SMA 30 Cross (Golden / Death Cross)</option>
                         <option value="indicator_pullback" selected>📦 Market Structure Pullback Zones (Micro / Macro Box Breakout)</option>
                     </select>
                 </div>
@@ -281,6 +286,45 @@ export class AlertUI {
                         </div>
                         <div id="pullback-telemetry-content" style="color: #A0A5B5;">
                             Scanning active chart structure...
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SECTION C: EMA 10 & SMA 30 Indicator Cross Options -->
+                <div id="section-cross-options" style="display: none; flex-direction: column; gap: 10px;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                        <div>
+                            <label style="display: block; font-size: 11px; color: #787B86; margin-bottom: 4px; font-weight: 600;">Cross Pair</label>
+                            <select id="select-cross-indicator" style="
+                                width: 100%; background: #1e222d; color: #fff; border: 1px solid var(--chart-grid, #434651);
+                                border-radius: 4px; padding: 6px 8px; font-size: 12px; outline: none; cursor: pointer;
+                            ">
+                                <option value="EMA_SMA_CROSS" selected>EMA 10 / SMA 30 Cross</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 11px; color: #787B86; margin-bottom: 4px; font-weight: 600;">Trigger Event</label>
+                            <select id="select-cross-direction" style="
+                                width: 100%; background: #1e222d; color: #fff; border: 1px solid var(--chart-grid, #434651);
+                                border-radius: 4px; padding: 6px 8px; font-size: 12px; outline: none; cursor: pointer;
+                            ">
+                                <option value="any" selected>Any Cross (Bull or Bear)</option>
+                                <option value="bull">Golden Cross (EMA &gt; SMA) 🐂</option>
+                                <option value="bear">Death Cross (EMA &lt; SMA) 🐻</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Cross Info Note Card -->
+                    <div style="
+                        background: rgba(38, 166, 154, 0.08); border: 1px solid rgba(38, 166, 154, 0.3); border-radius: 6px;
+                        padding: 8px 12px; font-size: 11px; line-height: 1.5; color: #D1D4DC;
+                    ">
+                        <div style="font-weight: 700; color: #26a69a; margin-bottom: 2px; display: flex; align-items: center; gap: 4px;">
+                            <span>⚡ EMA 10 &amp; SMA 30 Cross Trigger</span>
+                        </div>
+                        <div style="color: #A0A5B5;">
+                            Fires automatically when Fast EMA (10) crosses Slow SMA (30). Plots configurable shapes (circles, rings, or bull/bear directional symbols) and triggers audio/toast/push notifications.
                         </div>
                     </div>
                 </div>
@@ -419,6 +463,12 @@ export class AlertUI {
             this.openCreateModal();
         });
 
+        // Quick Cross Alert Button
+        document.getElementById('btn-modal-quick-cross')?.addEventListener('click', () => {
+            modal.close();
+            this.openCreateModal(undefined, undefined, 'indicator_cross');
+        });
+
         // Quick Pullback Alert Button
         document.getElementById('btn-modal-quick-pullback')?.addEventListener('click', () => {
             modal.close();
@@ -482,10 +532,11 @@ export class AlertUI {
             }
         });
 
-        // Source Type change (Price Crossing vs Pullback Zones)
+        // Source Type change (Price Crossing vs Cross vs Pullback Zones)
         const selectSource = document.getElementById('select-alert-source') as HTMLSelectElement;
         const secPrice = document.getElementById('section-price-options');
         const secPullback = document.getElementById('section-pullback-options');
+        const secCross = document.getElementById('section-cross-options');
         const inputPrice = document.getElementById('input-alert-target-price') as HTMLInputElement;
         const inputName = document.getElementById('input-alert-name') as HTMLInputElement;
         const selectColor = document.getElementById('select-alert-color') as HTMLSelectElement;
@@ -494,11 +545,16 @@ export class AlertUI {
         const submitBtn = document.getElementById('btn-submit-create-alert');
 
         const onSourceChange = () => {
-            const isPullback = selectSource?.value === 'indicator_pullback';
-            if (secPrice) secPrice.style.display = isPullback ? 'none' : 'flex';
-            if (secPullback) secPullback.style.display = isPullback ? 'flex' : 'none';
+            const val = selectSource?.value;
+            const isPullback = val === 'indicator_pullback';
+            const isCross = val === 'indicator_cross';
+            const isPrice = !isPullback && !isCross;
 
-            if (inputPrice) inputPrice.required = !isPullback;
+            if (secPrice) secPrice.style.display = isPrice ? 'flex' : 'none';
+            if (secPullback) secPullback.style.display = isPullback ? 'flex' : 'none';
+            if (secCross) secCross.style.display = isCross ? 'flex' : 'none';
+
+            if (inputPrice) inputPrice.required = isPrice;
 
             if (isPullback) {
                 if (modalTitle) modalTitle.textContent = 'Create Pullback Zone Breakout Alert';
@@ -511,6 +567,17 @@ export class AlertUI {
                     submitBtn.textContent = 'Track Breakouts';
                 }
                 this.updatePullbackTelemetry();
+            } else if (isCross) {
+                if (modalTitle) modalTitle.textContent = 'Create EMA 10 / SMA 30 Cross Alert';
+                if (modalIcon) {
+                    modalIcon.textContent = '⚡';
+                    modalIcon.style.color = '#26A69A';
+                }
+                if (submitBtn) {
+                    submitBtn.style.background = '#26A69A';
+                    submitBtn.textContent = 'Track EMA/SMA Cross';
+                }
+                updateCrossDefaults();
             } else {
                 if (modalTitle) modalTitle.textContent = 'Create Price Alert';
                 if (modalIcon) {
@@ -550,6 +617,22 @@ export class AlertUI {
         selectPullbackBox?.addEventListener('change', updatePullbackDefaults);
         selectPullbackDir?.addEventListener('change', updatePullbackDefaults);
 
+        // Update Cross details when Cross Direction changes
+        const selectCrossDir = document.getElementById('select-cross-direction') as HTMLSelectElement;
+        const updateCrossDefaults = () => {
+            const sym = (document.getElementById('input-alert-symbol') as HTMLInputElement)?.value?.trim().toUpperCase() || 'BTCUSDT';
+            const dir = selectCrossDir?.value || 'any';
+            const dirLabel = dir === 'bull' ? 'Golden Cross (Bull) 🐂' : dir === 'bear' ? 'Death Cross (Bear) 🐻' : 'Cross (Bull/Bear)';
+
+            if (inputName) {
+                inputName.value = `${sym} EMA 10 / SMA 30 ${dirLabel}`;
+            }
+            if (selectColor) {
+                selectColor.value = dir === 'bull' ? '#26A69A' : dir === 'bear' ? '#EF5350' : '#2962FF';
+            }
+        };
+        selectCrossDir?.addEventListener('change', updateCrossDefaults);
+
         // Use Current Price button
         document.getElementById('btn-use-current-price')?.addEventListener('click', () => {
             const activeChart = (window as any).WorkspaceManager?.getActiveChart?.();
@@ -564,7 +647,7 @@ export class AlertUI {
             e.preventDefault();
             const symbol = (document.getElementById('input-alert-symbol') as HTMLInputElement)?.value?.trim().toUpperCase();
             const name = (document.getElementById('input-alert-name') as HTMLInputElement)?.value?.trim();
-            const source = (document.getElementById('select-alert-source') as HTMLSelectElement)?.value as 'price' | 'indicator_pullback';
+            const source = (document.getElementById('select-alert-source') as HTMLSelectElement)?.value as 'price' | 'indicator_pullback' | 'indicator_cross';
             const frequency = (document.getElementById('select-alert-frequency') as HTMLSelectElement)?.value as AlertFrequency;
             const cooldown = parseInt((document.getElementById('select-alert-cooldown') as HTMLSelectElement)?.value || '5', 10);
             const color = (document.getElementById('select-alert-color') as HTMLSelectElement)?.value || '#2962FF';
@@ -573,7 +656,29 @@ export class AlertUI {
 
             if (!symbol) return;
 
-            if (source === 'indicator_pullback') {
+            if (source === 'indicator_cross') {
+                const dir = (document.getElementById('select-cross-direction') as HTMLSelectElement)?.value as 'any' | 'bull' | 'bear';
+                let condition: AlertCondition = 'ema_sma_any_cross';
+                if (dir === 'bull') condition = 'ema_sma_bull_cross';
+                else if (dir === 'bear') condition = 'ema_sma_bear_cross';
+
+                alertManager.addAlert({
+                    symbol,
+                    name: name || `${symbol} EMA 10 / SMA 30 Cross`,
+                    source: 'indicator',
+                    condition,
+                    targetPrice: 0,
+                    indicatorConfig: {
+                        indicatorId: 'EMA_SMA_CROSS',
+                        indicatorName: 'EMA 10 & SMA 30 Cross'
+                    },
+                    frequency,
+                    cooldownMinutes: cooldown,
+                    soundEnabled,
+                    color,
+                    note: note || `EMA 10 & SMA 30 ${dir.toUpperCase()} Cross alert`
+                });
+            } else if (source === 'indicator_pullback') {
                 const boxType = (document.getElementById('select-pullback-box') as HTMLSelectElement)?.value as 'micro' | 'macro' | 'both';
                 const direction = (document.getElementById('select-pullback-direction') as HTMLSelectElement)?.value as 'any' | 'up' | 'down';
 
@@ -685,7 +790,7 @@ export class AlertUI {
         }
     }
 
-    public static openCreateModal(symbol?: string, price?: number, defaultSource: 'price' | 'indicator_pullback' = 'indicator_pullback'): void {
+    public static openCreateModal(symbol?: string, price?: number, defaultSource: 'price' | 'indicator_pullback' | 'indicator_cross' = 'indicator_cross'): void {
         const createModal = document.getElementById('create-alert-modal') as HTMLDialogElement;
         if (!createModal) return;
 
@@ -712,7 +817,10 @@ export class AlertUI {
             selectSource.dispatchEvent(new Event('change'));
         }
 
-        if (defaultSource === 'indicator_pullback') {
+        if (defaultSource === 'indicator_cross') {
+            if (inputName) inputName.value = `${activeSymbol} EMA 10 / SMA 30 Cross`;
+            if (selectColor) selectColor.value = '#26A69A';
+        } else if (defaultSource === 'indicator_pullback') {
             if (inputName) inputName.value = `${activeSymbol} Pullback Breakout`;
             if (selectColor) selectColor.value = '#2962FF';
             this.updatePullbackTelemetry();

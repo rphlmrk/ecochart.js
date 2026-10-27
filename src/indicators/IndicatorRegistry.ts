@@ -5,7 +5,7 @@ import {
     HTFProjectionsIndicator, ZigZag123Indicator, CBCFlipIndicator,
     PeriodSeparatorIndicator, MarketSessionsIndicator,
     MarketStructurePullbackZonesIndicator, PullbackDoubleTopBottomIndicator,
-    StrictCBCPullbackZonesIndicator
+    StrictCBCPullbackZonesIndicator, EmaSmaCrossIndicator
 } from './plugins';
 
 export interface SavedIndicatorState {
@@ -19,6 +19,7 @@ export class IndicatorRegistry {
         let type = 'UNKNOWN';
         if (ind instanceof SMAIndicator) type = 'SMA';
         else if (ind instanceof EMAIndicator) type = 'EMA';
+        else if (ind instanceof EmaSmaCrossIndicator) type = 'EMA_SMA_CROSS';
         else if (ind instanceof VolumeIndicator) type = 'VOL';
         else if (ind instanceof ExhaustionIndicator) type = 'EXHAUST';
         else if (ind instanceof HTFBoxIndicator) type = 'HTF_BOX';
@@ -43,6 +44,7 @@ export class IndicatorRegistry {
         switch (state.type) {
             case 'SMA': ind = new SMAIndicator(); break;
             case 'EMA': ind = new EMAIndicator(); break;
+            case 'EMA_SMA_CROSS': ind = new EmaSmaCrossIndicator(); break;
             case 'VOL': ind = new VolumeIndicator(); break;
             case 'EXHAUST': ind = new ExhaustionIndicator(); break;
             case 'HTF_BOX': ind = new HTFBoxIndicator(); break;

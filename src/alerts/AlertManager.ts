@@ -475,6 +475,94 @@ export class AlertManager {
     }
 
     /**
+     * EMA / SMA Cross Alert: Triggered when Fast EMA crosses Slow SMA
+     */
+    public triggerCrossAlert(
+        symbol: string,
+        direction: 'bull' | 'bear',
+        fastName: string,
+        slowName: string,
+        price: number,
+        soundEnabled: boolean = true,
+        note?: string
+    ): void {
+        const normSymbol = symbol.toUpperCase();
+        const now = Date.now();
+        const dirLabel = direction === 'bull' ? 'Golden Cross (Bullish ▲)' : 'Death Cross (Bearish ▼)';
+        const conditionType: AlertCondition = direction === 'bull' ? 'ema_sma_bull_cross' : 'ema_sma_bear_cross';
+        const eventName = `${fastName} / ${slowName} ${dirLabel}`;
+
+        // Check if there are active user-configured indicator alerts for this symbol
+        const matchingAlerts = this.alerts.filter(a => {
+            if (a.symbol.toUpperCase() !== normSymbol || a.status !== 'active') return false;
+            if (a.frequency === 'every_time' && a.lastTriggeredAt) {
+                const cooldownMs = (a.cooldownMinutes || 1) * 60 * 1000;
+                if (now - a.lastTriggeredAt < cooldownMs) return false;
+            }
+            if (a.condition === 'ema_sma_any_cross') return true;
+            if (direction === 'bull' && a.condition === 'ema_sma_bull_cross') return true;
+            if (direction === 'bear' && a.condition === 'ema_sma_bear_cross') return true;
+            return false;
+        });
+
+        for (const alert of matchingAlerts) {
+            alert.lastTriggeredAt = now;
+            if (alert.frequency === 'once') {
+                alert.status = 'triggered';
+            }
+        }
+
+        const triggerEvent: TriggerEvent = {
+            id: 'trig_' + now + '_' + Math.random().toString(36).substring(2, 6),
+            alertId: matchingAlerts[0]?.id || `cross_${direction}_${now}`,
+            symbol: normSymbol,
+            targetPrice: price,
+            triggeredPrice: price,
+            timestamp: now,
+            condition: conditionType,
+            name: matchingAlerts[0]?.name || eventName,
+            note: note || `${fastName} crossed ${direction === 'bull' ? 'above' : 'below'} ${slowName}`,
+            crossDetails: {
+                direction,
+                fastName,
+                slowName
+            }
+        };
+
+        this.history.unshift(triggerEvent);
+        if (this.history.length > 200) {
+            this.history = this.history.slice(0, 200);
+        }
+        this.save();
+
+        const shouldPlaySound = matchingAlerts.length > 0
+            ? matchingAlerts.some(a => a.soundEnabled)
+            : soundEnabled;
+
+        if (shouldPlaySound) {
+            AlarmOverlay.triggerAlarm(triggerEvent);
+        } else {
+            AlertToastManager.show(triggerEvent, (sym) => {
+                window.dispatchEvent(new CustomEvent('ecochart-switch-symbol', { detail: sym }));
+            });
+        }
+
+        // Native Capacitor Android & Web Push Notification
+        CapacitorNotificationService.send(
+            `🔀 ${normSymbol} ${eventName}`,
+            `${fastName} crossed ${direction === 'bull' ? 'ABOVE' : 'BELOW'} ${slowName} at $${price.toLocaleString()}`,
+            { symbol: normSymbol, direction, price }
+        );
+
+        ForegroundServiceManager.updateServiceStatus(
+            normSymbol,
+            `CROSS: ${dirLabel} at $${price.toLocaleString()}`
+        );
+
+        window.dispatchEvent(new CustomEvent('ecochart-alert-triggered', { detail: triggerEvent }));
+    }
+
+    /**
      * Retrieves currently active pullback structure ranges from active chart indicator.
      */
     public getPullbackStatus(symbol?: string): {

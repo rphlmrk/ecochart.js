@@ -917,15 +917,16 @@ export class ChartRenderer {
      * Explicitly frees GPU buffers and geometry when an individual indicator is deleted
      */
     public removeIndicatorMesh(id: string) {
-        const entry = this.indicatorMeshes.get(id);
-        if (entry) {
-            if (entry.mesh && entry.mesh.geometry) entry.mesh.geometry.destroy();
-            if (entry.buffer) entry.buffer.destroy();
-            if (entry.mesh) {
-                if (entry.mesh.parent) entry.mesh.parent.removeChild(entry.mesh);
-                entry.mesh.destroy();
+        for (const [meshId, entry] of this.indicatorMeshes.entries()) {
+            if (meshId === id || meshId.startsWith(id + '_') || meshId.startsWith(id)) {
+                if (entry.mesh && entry.mesh.geometry) entry.mesh.geometry.destroy();
+                if (entry.buffer) entry.buffer.destroy();
+                if (entry.mesh) {
+                    if (entry.mesh.parent) entry.mesh.parent.removeChild(entry.mesh);
+                    entry.mesh.destroy({ children: true });
+                }
+                this.indicatorMeshes.delete(meshId);
             }
-            this.indicatorMeshes.delete(id);
         }
     }
 

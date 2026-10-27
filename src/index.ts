@@ -20,7 +20,8 @@ import {
     MarketSessionsIndicator,
     MarketStructurePullbackZonesIndicator,
     PullbackDoubleTopBottomIndicator,
-    StrictCBCPullbackZonesIndicator
+    StrictCBCPullbackZonesIndicator,
+    EmaSmaCrossIndicator
 } from './indicators/plugins';
 
 import { DrawingManager, type ToolType } from './tools/DrawingManager';
@@ -4931,6 +4932,7 @@ export class WorkspaceManager {
         const availableIndicators = [
             { type: 'SMA', name: 'SMA', factory: () => new SMAIndicator(20) },
             { type: 'EMA', name: 'EMA', factory: () => new EMAIndicator(20) },
+            { type: 'EMA_SMA_CROSS', name: 'EMA 10 & SMA 30 Cross (Alerts & Shapes)', factory: () => new EmaSmaCrossIndicator(10, 30) },
             { type: 'VOL', name: 'Volume', factory: () => new VolumeIndicator() },
             { type: 'EXHAUST', name: 'Exhaustion (CCI)', factory: () => new ExhaustionIndicator() },
             { type: 'HTF_BOX', name: 'HTF Box', factory: () => new HTFBoxIndicator(60) },
@@ -5125,6 +5127,15 @@ export class WorkspaceManager {
 
             availableIndicators.forEach(cat => {
                 const activeInstance = this.activeChart!.indicatorManager.activeIndicators.find(i => {
+                    if (cat.type === 'EMA_SMA_CROSS') {
+                        return i instanceof EmaSmaCrossIndicator || i.id === 'EMA_SMA_CROSS' || i.id.includes('CROSS');
+                    }
+                    if (cat.type === 'EMA') {
+                        return (i instanceof EMAIndicator) && !(i instanceof EmaSmaCrossIndicator);
+                    }
+                    if (cat.type === 'SMA') {
+                        return (i instanceof SMAIndicator) && !(i instanceof EmaSmaCrossIndicator);
+                    }
                     if (cat.type === 'STRICT_CBC_PULLBACK') {
                         return i instanceof StrictCBCPullbackZonesIndicator || i.id === 'STRICT_CBC_PULLBACK' || i.id.startsWith('STRICT_CBC_PULLBACK');
                     }
