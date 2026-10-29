@@ -9,8 +9,20 @@ export interface StructuralBoxLike {
     [key: string]: any;
 }
 
+export interface GhostHorizons {
+    mfe_5: number;
+    mae_5: number;
+    mfe_15: number;
+    mae_15: number;
+    mfe_30: number;
+    mae_30: number;
+}
+
 export interface MLFeatureRow {
     timestamp: number;
+    signal: string;
+    outcome?: number;
+    bars_to_resolution?: number;
     closePrice: number;
     atr: number;
     emaSmaSpreadPct: number;
@@ -24,6 +36,13 @@ export interface MLFeatureRow {
     // Phase 2: Kinematics (Time & Speed)
     swing_duration_bars: number;
     swing_velocity_atr: number;
+    // Phase 3: The Ghost Engine (Continuous Future Targets)
+    mfe_5_bars: number;
+    mae_5_bars: number;
+    mfe_15_bars: number;
+    mae_15_bars: number;
+    mfe_30_bars: number;
+    mae_30_bars: number;
     [key: string]: any;
 }
 
@@ -36,6 +55,9 @@ export interface ExportAIOptions {
     macroTop?: number | null;
     macroBot?: number | null;
     includeHeader?: boolean;
+    signalsOnly?: boolean; // When true (default), exports rows where signal !== 'NONE'
+    outcomesPerBar?: number[];
+    barsToResolutionPerBar?: number[];
     // Phase 2: Box Kinematics & Signal series options
     activeMacroBox?: StructuralBoxLike | null;
     activeBoxesPerBar?: Array<StructuralBoxLike | null>;
@@ -88,11 +110,91 @@ export function calculateATRArray(dataStore: any, period: number = 14): Float64A
 }
 
 /**
- * AI Exporter for generating stationary ML feature vectors, sequence memory, and kinematic datasets.
+ * Phase 3: The Ghost Engine Look-Ahead Function
+ * Evaluates future candles up to 30 bars to compute Maximum Favorable Excursion (MFE)
+ * and Maximum Adverse Excursion (MAE) normalized by current ATR.
+ */
+export function calculateGhostHorizons(
+    dataStore: any,
+    currentIndex: number,
+    entryPrice: number,
+    direction: 'LONG' | 'SHORT',
+    currentAtr: number
+): GhostHorizons {
+    const len = dataStore.length;
+
+    // Initialize tracking variables with the entry price
+    let maxHigh5 = entryPrice, minLow5 = entryPrice;
+    let maxHigh15 = entryPrice, minLow15 = entryPrice;
+    let maxHigh30 = entryPrice, minLow30 = entryPrice;
+
+    // Ensure we don't look past the end of the available historical data
+    const end5 = Math.min(currentIndex + 5, len - 1);
+    const end15 = Math.min(currentIndex + 15, len - 1);
+    const end30 = Math.min(currentIndex + 30, len - 1);
+
+    // Loop forward in time up to 30 bars
+    for (let i = currentIndex + 1; i <= end30; i++) {
+        const high = dataStore.data[i * 6 + 2];
+        const low = dataStore.data[i * 6 + 3];
+
+        // Track extremes for the 5-bar horizon
+        if (i <= end5) {
+            if (high > maxHigh5) maxHigh5 = high;
+            if (low < minLow5) minLow5 = low;
+        }
+        // Track extremes for the 15-bar horizon
+        if (i <= end15) {
+            if (high > maxHigh15) maxHigh15 = high;
+            if (low < minLow15) minLow15 = low;
+        }
+        // Track extremes for the 30-bar horizon
+        if (i <= end30) {
+            if (high > maxHigh30) maxHigh30 = high;
+            if (low < minLow30) minLow30 = low;
+        }
+    }
+
+    // Calculate MFE (Favorable) and MAE (Adverse) as positive ATR-multiples
+    let mfe5: number, mae5: number, mfe15: number, mae15: number, mfe30: number, mae30: number;
+
+    // Normalize distances by ATR so AI targets are stationary (e.g., "Moved +1.5 ATRs")
+    const safeAtr = Math.max(currentAtr, 0.000001);
+
+    if (direction === 'LONG') {
+        mfe5 = (maxHigh5 - entryPrice) / safeAtr;
+        mae5 = (entryPrice - minLow5) / safeAtr;
+        mfe15 = (maxHigh15 - entryPrice) / safeAtr;
+        mae15 = (entryPrice - minLow15) / safeAtr;
+        mfe30 = (maxHigh30 - entryPrice) / safeAtr;
+        mae30 = (entryPrice - minLow30) / safeAtr;
+    } else {
+        // SHORT logic is inverted
+        mfe5 = (entryPrice - minLow5) / safeAtr;
+        mae5 = (maxHigh5 - entryPrice) / safeAtr;
+        mfe15 = (entryPrice - minLow15) / safeAtr;
+        mae15 = (maxHigh15 - entryPrice) / safeAtr;
+        mfe30 = (entryPrice - minLow30) / safeAtr;
+        mae30 = (maxHigh30 - entryPrice) / safeAtr;
+    }
+
+    return {
+        mfe_5: mfe5, mae_5: mae5,
+        mfe_15: mfe15, mae_15: mae15,
+        mfe_30: mfe30, mae_30: mae30
+    };
+}
+
+/**
+ * AI Exporter for generating stationary ML feature vectors, sequence memory, kinematics,
+ * and Ghost Engine look-ahead excursion targets.
  */
 export class AIExporter {
     public static readonly CSV_HEADERS = [
         'timestamp',
+        'signal',
+        'outcome',
+        'bars_to_resolution',
         'close',
         'atr',
         'ema_sma_spread_pct',
@@ -103,7 +205,13 @@ export class AIExporter {
         'event_t_minus_2',
         'event_t_minus_3',
         'swing_duration_bars',
-        'swing_velocity_atr'
+        'swing_velocity_atr',
+        'mfe_5_bars',
+        'mae_5_bars',
+        'mfe_15_bars',
+        'mae_15_bars',
+        'mfe_30_bars',
+        'mae_30_bars'
     ];
 
     /**
@@ -124,6 +232,7 @@ export class AIExporter {
 
         // Phase 2 Step 1: Rolling memory of the last 3 distinct signals (N-Grams)
         const eventLatch = ['NONE', 'NONE', 'NONE'];
+        const signalsOnly = options.signalsOnly ?? false;
 
         for (let i = 0; i < len; i++) {
             const base = i * 6;
@@ -201,14 +310,47 @@ export class AIExporter {
                 eventLatch.pop();                  // Remove the oldest signal
             }
 
+            // If filtering to signals only and current candle has no signal, skip forward
+            if (signalsOnly && currentSignal === 'NONE') {
+                continue;
+            }
+
             // 2. Extract N-Gram features for the current row
             // Note: These represent the last 3 signals that happened UP TO and INCLUDING this bar.
             const event_t_minus_1 = eventLatch[0];
             const event_t_minus_2 = eventLatch[1];
             const event_t_minus_3 = eventLatch[2];
 
+            // Phase 3: The Ghost Engine Look-Ahead
+            let ghosts: GhostHorizons = {
+                mfe_5: 0, mae_5: 0,
+                mfe_15: 0, mae_15: 0,
+                mfe_30: 0, mae_30: 0
+            };
+
+            if (currentSignal !== 'NONE') {
+                // Determine the intended direction of the trade based on signal
+                const tradeDirection = (currentSignal === 'BULL_CROSS' || currentSignal.includes('UP') || currentSignal.includes('BULL'))
+                    ? 'LONG'
+                    : 'SHORT';
+
+                ghosts = calculateGhostHorizons(
+                    dataStore,
+                    i,
+                    closePrice,
+                    tradeDirection,
+                    currentAtr
+                );
+            }
+
+            const outcome = options.outcomesPerBar ? options.outcomesPerBar[i] : 0;
+            const barsToResolution = options.barsToResolutionPerBar ? options.barsToResolutionPerBar[i] : 0;
+
             rows.push({
                 timestamp,
+                signal: currentSignal,
+                outcome,
+                bars_to_resolution: barsToResolution,
                 closePrice,
                 atr: atrValues[i],
                 emaSmaSpreadPct,
@@ -219,7 +361,13 @@ export class AIExporter {
                 event_t_minus_2,
                 event_t_minus_3,
                 swing_duration_bars: swingDurationBars,
-                swing_velocity_atr: swingVelocityAtr
+                swing_velocity_atr: swingVelocityAtr,
+                mfe_5_bars: ghosts.mfe_5,
+                mae_5_bars: ghosts.mae_5,
+                mfe_15_bars: ghosts.mfe_15,
+                mae_15_bars: ghosts.mae_15,
+                mfe_30_bars: ghosts.mfe_30,
+                mae_30_bars: ghosts.mae_30
             });
         }
 
@@ -238,6 +386,9 @@ export class AIExporter {
         for (const row of rows) {
             lines.push([
                 row.timestamp,
+                row.signal,
+                row.outcome !== undefined ? row.outcome : 0,
+                row.bars_to_resolution !== undefined ? row.bars_to_resolution : 0,
                 row.closePrice.toFixed(6),
                 row.atr.toFixed(6),
                 row.emaSmaSpreadPct.toFixed(8),
@@ -248,7 +399,13 @@ export class AIExporter {
                 row.event_t_minus_2,
                 row.event_t_minus_3,
                 row.swing_duration_bars,
-                row.swing_velocity_atr.toFixed(4)
+                row.swing_velocity_atr.toFixed(4),
+                row.mfe_5_bars.toFixed(4),
+                row.mae_5_bars.toFixed(4),
+                row.mfe_15_bars.toFixed(4),
+                row.mae_15_bars.toFixed(4),
+                row.mfe_30_bars.toFixed(4),
+                row.mae_30_bars.toFixed(4)
             ].join(','));
         }
 
