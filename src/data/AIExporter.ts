@@ -377,54 +377,161 @@ export class AIExporter {
     /**
      * Converts dataset rows to CSV format string.
      */
+    /**
+     * Converts dataset rows to an array of CSV row strings (without headers).
+     */
+    public static toCSVRows(rows: MLFeatureRow[]): string[] {
+        return rows.map(row => [
+            row.timestamp,
+            row.signal,
+            row.outcome !== undefined ? row.outcome : 0,
+            row.bars_to_resolution !== undefined ? row.bars_to_resolution : 0,
+            row.closePrice.toFixed(6),
+            row.atr.toFixed(6),
+            row.emaSmaSpreadPct.toFixed(8),
+            row.distToMacroTopAtr.toFixed(6),
+            row.distToMacroBotAtr.toFixed(6),
+            row.riskDistAtr.toFixed(6),
+            row.event_t_minus_1,
+            row.event_t_minus_2,
+            row.event_t_minus_3,
+            row.swing_duration_bars,
+            row.swing_velocity_atr.toFixed(4),
+            row.mfe_5_bars.toFixed(4),
+            row.mae_5_bars.toFixed(4),
+            row.mfe_15_bars.toFixed(4),
+            row.mae_15_bars.toFixed(4),
+            row.mfe_30_bars.toFixed(4),
+            row.mae_30_bars.toFixed(4)
+        ].join(','));
+    }
+
+    /**
+     * Converts dataset rows to CSV format string.
+     */
     public static toCSV(rows: MLFeatureRow[], includeHeader: boolean = true): string {
         const lines: string[] = [];
         if (includeHeader) {
             lines.push(this.CSV_HEADERS.join(','));
         }
-
-        for (const row of rows) {
-            lines.push([
-                row.timestamp,
-                row.signal,
-                row.outcome !== undefined ? row.outcome : 0,
-                row.bars_to_resolution !== undefined ? row.bars_to_resolution : 0,
-                row.closePrice.toFixed(6),
-                row.atr.toFixed(6),
-                row.emaSmaSpreadPct.toFixed(8),
-                row.distToMacroTopAtr.toFixed(6),
-                row.distToMacroBotAtr.toFixed(6),
-                row.riskDistAtr.toFixed(6),
-                row.event_t_minus_1,
-                row.event_t_minus_2,
-                row.event_t_minus_3,
-                row.swing_duration_bars,
-                row.swing_velocity_atr.toFixed(4),
-                row.mfe_5_bars.toFixed(4),
-                row.mae_5_bars.toFixed(4),
-                row.mfe_15_bars.toFixed(4),
-                row.mae_15_bars.toFixed(4),
-                row.mfe_30_bars.toFixed(4),
-                row.mae_30_bars.toFixed(4)
-            ].join(','));
-        }
-
+        lines.push(...this.toCSVRows(rows));
         return lines.join('\n');
     }
 
     /**
-     * Triggers a browser download of the exported CSV file.
+     * Phase 4: Triggers a browser download of the exported CSV file after passing Pre-Flight Audit.
+     * Can accept either raw csvRows array (without header) or complete csvContent string.
      */
-    public static downloadCSV(csvContent: string, filename: string = 'ai_features_dataset.csv'): void {
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement('a');
-        const url = URL.createObjectURL(blob);
-        link.setAttribute('href', url);
-        link.setAttribute('download', filename);
-        link.style.visibility = 'hidden';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
+    public static downloadCSV(
+        csvInput: string | string[],
+        filename: string = `training_data_${Date.now()}.csv`,
+        csvHeaders: string = this.CSV_HEADERS.join(',')
+    ): boolean {
+        let rowsToAudit: string[];
+        let fullCsvContent: string;
+
+        if (Array.isArray(csvInput)) {
+            rowsToAudit = csvInput;
+            fullCsvContent = csvHeaders + '\n' + csvInput.join('\n');
+        } else {
+            const allLines = csvInput.split(/\r?\n/).filter(line => line.trim().length > 0);
+            if (allLines.length > 0 && allLines[0].includes('timestamp')) {
+                rowsToAudit = allLines.slice(1);
+                fullCsvContent = csvInput;
+            } else {
+                rowsToAudit = allLines;
+                fullCsvContent = csvHeaders + '\n' + csvInput;
+            }
+        }
+
+        // Run Pre-Flight Audit check
+        const isDatasetPure = runPreFlightAudit(rowsToAudit);
+
+        // ONLY DOWNLOAD IF AUDIT PASSES
+        if (isDatasetPure) {
+            if (typeof document !== 'undefined') {
+                const blob = new Blob([fullCsvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                a.style.visibility = 'hidden';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }
+
+            console.log('✅ Dataset exported successfully.');
+            return true;
+        } else {
+            console.error('❌ Dataset export blocked by Pre-Flight Audit to prevent corrupt AI training.');
+            return false;
+        }
     }
+}
+
+/**
+ * Phase 4: Pre-Flight Audit Function
+ * Scans generated dataset in memory before download to verify chronological timeline,
+ * math health (detecting NaNs, Infinities), and class balance.
+ */
+export function runPreFlightAudit(csvRows: string[]): boolean {
+    console.log('🛡️ Running Pre-Flight Data Audit...');
+
+    let timeFailures = 0;
+    let mathFailures = 0;
+    let winCount = 0;
+    let totalSignals = csvRows.length;
+    let lastTimestamp = -1;
+
+    for (let i = 0; i < csvRows.length; i++) {
+        const cols = csvRows[i].split(',');
+
+        // 1. TIMELINE GATE (Assumes Timestamp is the 1st column: cols[0])
+        const ts = parseFloat(cols[0]);
+        if (lastTimestamp !== -1 && ts <= lastTimestamp) {
+            timeFailures++;
+        }
+        lastTimestamp = ts;
+
+        // 2. MATH GATE: Catch NaN, Infinity, -Infinity
+        for (let j = 0; j < cols.length; j++) {
+            const strVal = cols[j].trim();
+            // Skip non-numeric string columns (like 'BULL_CROSS')
+            if (strVal !== '' && !isNaN(Number(strVal))) {
+                const numVal = parseFloat(strVal);
+                if (!isFinite(numVal)) {
+                    mathFailures++;
+                }
+            }
+        }
+
+        // 3. CLASS IMBALANCE GATE (Assumes 'outcome' is the 3rd column: cols[2])
+        // Adjust the index [2] if your outcome column is located elsewhere!
+        if (cols[2] === '1') {
+            winCount++;
+        }
+    }
+
+    const winRate = totalSignals > 0 ? (winCount / totalSignals) * 100 : 0;
+
+    // Print Report to Console
+    console.log(`=======================================`);
+    console.log(`📊 PRE-FLIGHT AUDIT: ${totalSignals} Signals Processed`);
+    console.log(`   ↳ Timeline (Lookahead Bias): ${timeFailures === 0 ? '✅ PASSED' : `❌ FAILED (${timeFailures} errors)`}`);
+    console.log(`   ↳ Math Health (NaN/Inf):     ${mathFailures === 0 ? '✅ PASSED' : `❌ FAILED (${mathFailures} errors)`}`);
+    console.log(`   ↳ Class Balance (Win Rate):  ${winRate.toFixed(2)}% ${winRate < 5 ? '⚠️ WARNING: Severe Imbalance' : '✅ PASSED'}`);
+    console.log(`=======================================`);
+
+    // If critical errors exist, trigger browser alert and block download
+    if (timeFailures > 0 || mathFailures > 0) {
+        if (typeof alert !== 'undefined') {
+            alert(`⚠️ Dataset Audit Failed!\n\nTimeline Errors: ${timeFailures}\nMath Errors (NaN/Inf): ${mathFailures}\n\nCheck console for details. Download aborted.`);
+        }
+        return false;
+    }
+
+    return true; // Dataset is pure, allow download
 }

@@ -32,7 +32,7 @@ import { favoritesManager } from './data/FavoritesManager';
 import { DataWorkerClient } from './workers/DataWorkerClient';
 import { TimeframeResampler } from './data/TimeframeResampler';
 export { alertManager } from './alerts/AlertManager';
-export { AIExporter, calculateATRArray, calculateGhostHorizons, type MLFeatureRow, type ExportAIOptions, type StructuralBoxLike, type GhostHorizons } from './data/AIExporter';
+export { AIExporter, calculateATRArray, calculateGhostHorizons, runPreFlightAudit, type MLFeatureRow, type ExportAIOptions, type StructuralBoxLike, type GhostHorizons } from './data/AIExporter';
 import { AlertUI } from './alerts/AlertUI';
 
 export interface SavedPaneState {
