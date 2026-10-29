@@ -32,6 +32,7 @@ import { favoritesManager } from './data/FavoritesManager';
 import { DataWorkerClient } from './workers/DataWorkerClient';
 import { TimeframeResampler } from './data/TimeframeResampler';
 export { alertManager } from './alerts/AlertManager';
+export { AIExporter, calculateATRArray, type MLFeatureRow, type ExportAIOptions } from './data/AIExporter';
 import { AlertUI } from './alerts/AlertUI';
 
 export interface SavedPaneState {
