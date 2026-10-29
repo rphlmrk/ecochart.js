@@ -4515,6 +4515,7 @@ export class WorkspaceManager {
 
         // AI Training Dataset Exporter Modal Integration (Phase 5)
         const btnOpenAiExportModal = document.getElementById('btn-open-ai-export-modal');
+        const btnTopbarAiExport = document.getElementById('btn-topbar-ai-export'); // <-- ADDED THIS
         const modalAiExport = document.getElementById('ai-export-modal') as HTMLDialogElement | null;
         const btnAiExportClose = document.getElementById('btn-ai-export-close');
         const btnAiExportCancel = document.getElementById('btn-ai-export-cancel');
@@ -4524,6 +4525,11 @@ export class WorkspaceManager {
         const loadingText = document.getElementById('ai-export-loading-text') as HTMLElement | null;
 
         btnOpenAiExportModal?.addEventListener('click', () => {
+            modalAiExport?.showModal();
+        });
+
+        // 👇 ADDED THIS CLICK LISTENER FOR THE NEW TOOLBAR BUTTON
+        btnTopbarAiExport?.addEventListener('click', () => {
             modalAiExport?.showModal();
         });
 
@@ -4610,7 +4616,12 @@ export class WorkspaceManager {
                     macroBot,
                     activeMacroBox: latestMacro,
                     activeBoxesPerBar: activeBoxesPerBar.length > 0 ? activeBoxesPerBar : undefined,
-                    cbcFlips: cbcIndicator?.flips || undefined
+                    cbcFlips: cbcIndicator?.flips || undefined,
+
+                    // Map Structural Stop Losses
+                    entryPrice: chart.dataStore.data[(chart.dataStore.length - 1) * 6 + 4], // Current Close
+                    stopLossPrice: crossIndicator?.crossSignals?.[chart.dataStore.length - 1] === 1 ? macroBot : 
+                                   (crossIndicator?.crossSignals?.[chart.dataStore.length - 1] === -1 ? macroTop : undefined)
                 });
 
                 if (rows.length === 0) {

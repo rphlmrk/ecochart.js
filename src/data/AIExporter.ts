@@ -52,6 +52,8 @@ export interface ExportAIOptions {
     smaPeriod?: number;
     entryPrice?: number;
     stopLossPrice?: number;
+    entryPricesPerBar?: number[];
+    stopLossPricesPerBar?: number[];
     macroTop?: number | null;
     macroBot?: number | null;
     includeHeader?: boolean;
@@ -275,12 +277,6 @@ export class AIExporter {
             const distToMacroTopAtr = macroTop ? ((macroTop - closePrice) / currentAtr) : 0;
             const distToMacroBotAtr = macroBot ? ((closePrice - macroBot) / currentAtr) : 0;
 
-            // 3. ATR-Normalized Risk Distance (For Stop Loss)
-            // Tells the AI "This stop loss is 1.5 ATRs wide", preventing regime-scaling issues
-            const entryPrice = options.entryPrice ?? closePrice;
-            const stopLossPrice = options.stopLossPrice ?? closePrice;
-            const riskDistAtr = Math.abs(entryPrice - stopLossPrice) / currentAtr;
-
             // Phase 2 Step 2: Signal Detection & N-Gram Event Latch Update
             let currentSignal = 'NONE';
             if (options.signalsPerBar && options.signalsPerBar[i]) {
@@ -313,6 +309,29 @@ export class AIExporter {
             if (signalsOnly && currentSignal === 'NONE') {
                 continue;
             }
+
+            // 3. ATR-Normalized Risk Distance (For Stop Loss)
+            // Tells the AI "This stop loss is 1.5 ATRs wide", preventing regime-scaling issues
+            const entryPrice = options.entryPricesPerBar ? (options.entryPricesPerBar[i] ?? closePrice) : (options.entryPrice ?? closePrice);
+            let stopLossPrice: number;
+            if (options.stopLossPricesPerBar && options.stopLossPricesPerBar[i] !== undefined) {
+                stopLossPrice = options.stopLossPricesPerBar[i];
+            } else if (options.stopLossPrice !== undefined) {
+                stopLossPrice = options.stopLossPrice;
+            } else {
+                // Auto-map structural stop loss based on signal direction:
+                // Long trades put structural stop at macroBot; Short trades put structural stop at macroTop
+                const isLong = currentSignal === 'BULL_CROSS' || currentSignal.includes('UP') || currentSignal.includes('BULL');
+                const isShort = currentSignal === 'BEAR_CROSS' || currentSignal.includes('DN') || currentSignal.includes('BEAR');
+                if (isLong && macroBot) {
+                    stopLossPrice = macroBot;
+                } else if (isShort && macroTop) {
+                    stopLossPrice = macroTop;
+                } else {
+                    stopLossPrice = closePrice;
+                }
+            }
+            const riskDistAtr = Math.abs(entryPrice - stopLossPrice) / currentAtr;
 
             // 2. Extract N-Gram features for the current row
             // Note: These represent the last 3 signals that happened UP TO and INCLUDING this bar.
