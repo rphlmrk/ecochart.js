@@ -32,7 +32,8 @@ import { favoritesManager } from './data/FavoritesManager';
 import { DataWorkerClient } from './workers/DataWorkerClient';
 import { TimeframeResampler } from './data/TimeframeResampler';
 export { alertManager } from './alerts/AlertManager';
-export { AIExporter, calculateATRArray, calculateGhostHorizons, runPreFlightAudit, type MLFeatureRow, type ExportAIOptions, type StructuralBoxLike, type GhostHorizons } from './data/AIExporter';
+import { AIExporter, calculateATRArray, calculateGhostHorizons, runPreFlightAudit, type MLFeatureRow, type ExportAIOptions, type StructuralBoxLike, type GhostHorizons } from './data/AIExporter';
+export { AIExporter, calculateATRArray, calculateGhostHorizons, runPreFlightAudit, type MLFeatureRow, type ExportAIOptions, type StructuralBoxLike, type GhostHorizons };
 import { AlertUI } from './alerts/AlertUI';
 
 export interface SavedPaneState {
@@ -4510,6 +4511,124 @@ export class WorkspaceManager {
                 inputImportWorkspace.value = ''; // Reset input
             };
             reader.readAsText(file);
+        });
+
+        // AI Training Dataset Exporter Modal Integration (Phase 5)
+        const btnOpenAiExportModal = document.getElementById('btn-open-ai-export-modal');
+        const modalAiExport = document.getElementById('ai-export-modal') as HTMLDialogElement | null;
+        const btnAiExportClose = document.getElementById('btn-ai-export-close');
+        const btnAiExportCancel = document.getElementById('btn-ai-export-cancel');
+        const btnAiExportStart = document.getElementById('btn-ai-export-start');
+        const checkExportGhosts = document.getElementById('check-export-ghosts') as HTMLInputElement | null;
+        const loadingOverlay = document.getElementById('ai-export-loading-overlay') as HTMLElement | null;
+        const loadingText = document.getElementById('ai-export-loading-text') as HTMLElement | null;
+
+        btnOpenAiExportModal?.addEventListener('click', () => {
+            modalAiExport?.showModal();
+        });
+
+        btnAiExportClose?.addEventListener('click', () => {
+            modalAiExport?.close();
+        });
+
+        btnAiExportCancel?.addEventListener('click', () => {
+            modalAiExport?.close();
+        });
+
+        btnAiExportStart?.addEventListener('click', async () => {
+            const chart = WorkspaceManager.activeChart || WorkspaceManager.charts[0];
+            if (!chart || !chart.dataStore || chart.dataStore.length === 0) {
+                alert("No chart candle data available for AI dataset export.");
+                return;
+            }
+
+            // Step 3: Update Progress HUD (Loading Spinner)
+            if (loadingOverlay) loadingOverlay.style.display = 'flex';
+            if (loadingText) {
+                loadingText.innerHTML = `
+                    <div style="font-weight: bold; margin-bottom: 4px;">Mining Dataset...</div>
+                    <div style="font-size: 11px; color: #00E676;">⚡ Simulating Ghost Horizons & Kinematics</div>
+                `;
+            }
+
+            // Yield to browser to render the loading overlay
+            await new Promise(r => setTimeout(r, 60));
+
+            try {
+                const includeGhosts = checkExportGhosts ? checkExportGhosts.checked : true;
+                const scopeRadio = document.querySelector('input[name="ai-export-scope"]:checked') as HTMLInputElement | null;
+                const signalsOnly = scopeRadio ? scopeRadio.value === 'signals' : true;
+
+                // Find active indicators on the chart to extract features
+                let emaIndicator: any = null;
+                let smaIndicator: any = null;
+                let crossIndicator: any = null;
+                let macroIndicator: any = null;
+                let cbcIndicator: any = null;
+
+                for (const ind of chart.indicatorManager.activeIndicators) {
+                    if (ind instanceof EmaSmaCrossIndicator) {
+                        crossIndicator = ind;
+                    } else if (ind instanceof EMAIndicator && !emaIndicator) {
+                        emaIndicator = ind;
+                    } else if (ind instanceof SMAIndicator && !smaIndicator) {
+                        smaIndicator = ind;
+                    } else if (ind instanceof MarketStructurePullbackZonesIndicator) {
+                        macroIndicator = ind;
+                    } else if (ind instanceof StrictCBCPullbackZonesIndicator) {
+                        cbcIndicator = ind;
+                    }
+                }
+
+                const emaValues = crossIndicator?.emaValues || emaIndicator?.values || new Float64Array(chart.dataStore.length);
+                const smaValues = crossIndicator?.smaValues || smaIndicator?.values || new Float64Array(chart.dataStore.length);
+                const crossSignals = crossIndicator?.crossSignals || undefined;
+
+                // Get Macro zones and boxes
+                const latestMacro = macroIndicator?.getLatestOpenMacroBox?.() || null;
+                const macroTop = latestMacro ? latestMacro.top : null;
+                const macroBot = latestMacro ? latestMacro.bottom : null;
+                const activeBoxesPerBar: any[] = [];
+                if (macroIndicator && macroIndicator.cachedMacroBoxes) {
+                    for (let i = 0; i < chart.dataStore.length; i++) {
+                        let activeB: any = null;
+                        for (const b of macroIndicator.cachedMacroBoxes) {
+                            if (i >= b.leftBar && (!b.rightBar || i <= b.rightBar)) {
+                                activeB = b;
+                                break;
+                            }
+                        }
+                        activeBoxesPerBar.push(activeB);
+                    }
+                }
+
+                const rows = AIExporter.extractFeatures(chart.dataStore, emaValues, smaValues, {
+                    includeGhosts,
+                    signalsOnly,
+                    crossSignals,
+                    macroTop,
+                    macroBot,
+                    activeMacroBox: latestMacro,
+                    activeBoxesPerBar: activeBoxesPerBar.length > 0 ? activeBoxesPerBar : undefined,
+                    cbcFlips: cbcIndicator?.flips || undefined
+                });
+
+                if (rows.length === 0) {
+                    alert("No signals or records found for dataset export.");
+                    return;
+                }
+
+                const csvRows = AIExporter.toCSVRows(rows);
+                const exported = AIExporter.downloadCSV(csvRows, `ai_training_dataset_${chart.currentSymbol}_${Date.now()}.csv`);
+                if (exported) {
+                    modalAiExport?.close();
+                }
+            } catch (err: any) {
+                console.error("AI Export Error:", err);
+                alert(`Export failed: ${err?.message || err}`);
+            } finally {
+                if (loadingOverlay) loadingOverlay.style.display = 'none';
+            }
         });
 
         // Workspace Quick Access Icon (Top Toolbar)

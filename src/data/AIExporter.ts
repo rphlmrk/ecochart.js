@@ -55,6 +55,7 @@ export interface ExportAIOptions {
     macroTop?: number | null;
     macroBot?: number | null;
     includeHeader?: boolean;
+    includeGhosts?: boolean; // When true (default), calculates Ghost Engine MFE/MAE targets
     signalsOnly?: boolean; // When true (default), exports rows where signal !== 'NONE'
     outcomesPerBar?: number[];
     barsToResolutionPerBar?: number[];
@@ -195,8 +196,6 @@ export class AIExporter {
         'signal',
         'outcome',
         'bars_to_resolution',
-        'close',
-        'atr',
         'ema_sma_spread_pct',
         'dist_to_macro_top_atr',
         'dist_to_macro_bot_atr',
@@ -321,14 +320,14 @@ export class AIExporter {
             const event_t_minus_2 = eventLatch[1];
             const event_t_minus_3 = eventLatch[2];
 
-            // Phase 3: The Ghost Engine Look-Ahead
+            const includeGhosts = options.includeGhosts ?? true;
             let ghosts: GhostHorizons = {
                 mfe_5: 0, mae_5: 0,
                 mfe_15: 0, mae_15: 0,
                 mfe_30: 0, mae_30: 0
             };
 
-            if (currentSignal !== 'NONE') {
+            if (includeGhosts && currentSignal !== 'NONE') {
                 // Determine the intended direction of the trade based on signal
                 const tradeDirection = (currentSignal === 'BULL_CROSS' || currentSignal.includes('UP') || currentSignal.includes('BULL'))
                     ? 'LONG'
@@ -386,12 +385,10 @@ export class AIExporter {
             row.signal,
             row.outcome !== undefined ? row.outcome : 0,
             row.bars_to_resolution !== undefined ? row.bars_to_resolution : 0,
-            row.closePrice.toFixed(6),
-            row.atr.toFixed(6),
-            row.emaSmaSpreadPct.toFixed(8),
-            row.distToMacroTopAtr.toFixed(6),
-            row.distToMacroBotAtr.toFixed(6),
-            row.riskDistAtr.toFixed(6),
+            row.emaSmaSpreadPct.toFixed(4),
+            row.distToMacroTopAtr.toFixed(4),
+            row.distToMacroBotAtr.toFixed(4),
+            row.riskDistAtr.toFixed(4),
             row.event_t_minus_1,
             row.event_t_minus_2,
             row.event_t_minus_3,
