@@ -4513,34 +4513,63 @@ export class WorkspaceManager {
             reader.readAsText(file);
         });
 
-        // AI Training Dataset Exporter Modal Integration (Phase 5)
+        // ==========================================================
+        // 🧠 COMPREHENSIVE AI EXPORTER MODAL INTEGRATION
+        // ==========================================================
         const btnOpenAiExportModal = document.getElementById('btn-open-ai-export-modal');
-        const btnTopbarAiExport = document.getElementById('btn-topbar-ai-export'); // <-- ADDED THIS
+        const btnTopbarAiExport = document.getElementById('btn-topbar-ai-export'); 
         const modalAiExport = document.getElementById('ai-export-modal') as HTMLDialogElement | null;
         const btnAiExportClose = document.getElementById('btn-ai-export-close');
         const btnAiExportCancel = document.getElementById('btn-ai-export-cancel');
         const btnAiExportStart = document.getElementById('btn-ai-export-start');
-        const checkExportGhosts = document.getElementById('check-export-ghosts') as HTMLInputElement | null;
+        
         const loadingOverlay = document.getElementById('ai-export-loading-overlay') as HTMLElement | null;
         const loadingText = document.getElementById('ai-export-loading-text') as HTMLElement | null;
+        const aiSubtitle = document.getElementById('ai-export-subtitle');
 
-        btnOpenAiExportModal?.addEventListener('click', () => {
+        const openModalAndSync = () => {
+            if (aiSubtitle && WorkspaceManager.activeChart) {
+                const c = WorkspaceManager.activeChart;
+                aiSubtitle.textContent = `${c.currentSymbol} • ${c.currentInterval} • Ground truth signal outcomes & range detection`;
+            }
             modalAiExport?.showModal();
+        };
+
+        btnOpenAiExportModal?.addEventListener('click', openModalAndSync);
+        btnTopbarAiExport?.addEventListener('click', openModalAndSync);
+
+        btnAiExportClose?.addEventListener('click', () => modalAiExport?.close());
+        btnAiExportCancel?.addEventListener('click', () => modalAiExport?.close());
+
+        // UI: Handle Range Tabs
+        document.querySelectorAll('.ai-range-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.ai-range-btn').forEach(b => {
+                    (b as HTMLElement).style.background = 'transparent';
+                    (b as HTMLElement).style.color = '#787B86';
+                    b.classList.remove('active');
+                });
+                const target = e.currentTarget as HTMLElement;
+                target.classList.add('active');
+                target.style.background = 'var(--chart-bg, #131722)';
+                target.style.color = '#EF5350';
+            });
         });
 
-        // 👇 ADDED THIS CLICK LISTENER FOR THE NEW TOOLBAR BUTTON
-        btnTopbarAiExport?.addEventListener('click', () => {
-            modalAiExport?.showModal();
+        // UI: Handle Packaging Format Cards
+        document.querySelectorAll('.ai-pack-card').forEach(card => {
+            card.addEventListener('click', (e) => {
+                document.querySelectorAll('.ai-pack-card').forEach(c => {
+                    (c as HTMLElement).style.borderColor = 'transparent';
+                    c.classList.remove('active');
+                });
+                const target = e.currentTarget as HTMLElement;
+                target.classList.add('active');
+                target.style.borderColor = '#EF5350';
+            });
         });
 
-        btnAiExportClose?.addEventListener('click', () => {
-            modalAiExport?.close();
-        });
-
-        btnAiExportCancel?.addEventListener('click', () => {
-            modalAiExport?.close();
-        });
-
+        // Export Trigger
         btnAiExportStart?.addEventListener('click', async () => {
             const chart = WorkspaceManager.activeChart || WorkspaceManager.charts[0];
             if (!chart || !chart.dataStore || chart.dataStore.length === 0) {
@@ -4548,12 +4577,20 @@ export class WorkspaceManager {
                 return;
             }
 
-            // Step 3: Update Progress HUD (Loading Spinner)
+            // Extract values from the new UI (These can be passed to your backend Python scripts later)
+            const activeRange = document.querySelector('.ai-range-btn.active') as HTMLElement;
+            const rangeVal = activeRange?.dataset.val || '1m';
+            const activePack = document.querySelector('.ai-pack-card.active') as HTMLElement;
+            const packFormat = (activePack?.dataset.pack || 'csv').toUpperCase();
+            const targetRR = (document.getElementById('ai-export-rr') as HTMLSelectElement)?.value || "2.0";
+            const forwardHorizon = (document.getElementById('ai-export-horizon') as HTMLInputElement)?.value || "30";
+
+            // Show Loading Spinner
             if (loadingOverlay) loadingOverlay.style.display = 'flex';
             if (loadingText) {
                 loadingText.innerHTML = `
-                    <div style="font-weight: bold; margin-bottom: 4px;">Mining Dataset...</div>
-                    <div style="font-size: 11px; color: #00E676;">⚡ Simulating Ghost Horizons & Kinematics</div>
+                    <div style="font-weight: bold; margin-bottom: 6px;">Mining ${packFormat} Dataset... (${rangeVal})</div>
+                    <div style="font-size: 12px; color: #00E676;">⚡ Simulating Horizons (R:R ${targetRR})</div>
                 `;
             }
 
@@ -4561,10 +4598,6 @@ export class WorkspaceManager {
             await new Promise(r => setTimeout(r, 60));
 
             try {
-                const includeGhosts = checkExportGhosts ? checkExportGhosts.checked : true;
-                const scopeRadio = document.querySelector('input[name="ai-export-scope"]:checked') as HTMLInputElement | null;
-                const signalsOnly = scopeRadio ? scopeRadio.value === 'signals' : true;
-
                 // Find active indicators on the chart to extract features
                 let emaIndicator: any = null;
                 let smaIndicator: any = null;
@@ -4573,28 +4606,19 @@ export class WorkspaceManager {
                 let cbcIndicator: any = null;
 
                 for (const ind of chart.indicatorManager.activeIndicators) {
-                    if (ind instanceof EmaSmaCrossIndicator) {
-                        crossIndicator = ind;
-                    } else if (ind instanceof EMAIndicator && !emaIndicator) {
-                        emaIndicator = ind;
-                    } else if (ind instanceof SMAIndicator && !smaIndicator) {
-                        smaIndicator = ind;
-                    } else if (ind instanceof MarketStructurePullbackZonesIndicator) {
-                        macroIndicator = ind;
-                    } else if (ind instanceof StrictCBCPullbackZonesIndicator) {
-                        cbcIndicator = ind;
-                    }
+                    if (ind instanceof EmaSmaCrossIndicator) crossIndicator = ind;
+                    else if (ind instanceof EMAIndicator && !emaIndicator) emaIndicator = ind;
+                    else if (ind instanceof SMAIndicator && !smaIndicator) smaIndicator = ind;
+                    else if (ind instanceof MarketStructurePullbackZonesIndicator) macroIndicator = ind;
+                    else if (ind instanceof StrictCBCPullbackZonesIndicator) cbcIndicator = ind;
                 }
 
                 const emaValues = crossIndicator?.emaValues || emaIndicator?.values || new Float64Array(chart.dataStore.length);
                 const smaValues = crossIndicator?.smaValues || smaIndicator?.values || new Float64Array(chart.dataStore.length);
-                const crossSignals = crossIndicator?.crossSignals || undefined;
-
-                // Get Macro zones and boxes
+                
                 const latestMacro = macroIndicator?.getLatestOpenMacroBox?.() || null;
-                const macroTop = latestMacro ? latestMacro.top : null;
-                const macroBot = latestMacro ? latestMacro.bottom : null;
                 const activeBoxesPerBar: any[] = [];
+                
                 if (macroIndicator && macroIndicator.cachedMacroBoxes) {
                     for (let i = 0; i < chart.dataStore.length; i++) {
                         let activeB: any = null;
@@ -4609,28 +4633,30 @@ export class WorkspaceManager {
                 }
 
                 const rows = AIExporter.extractFeatures(chart.dataStore, emaValues, smaValues, {
-                    includeGhosts,
-                    signalsOnly,
-                    crossSignals,
-                    macroTop,
-                    macroBot,
+                    includeGhosts: true, // Always true based on the new UI assumption
+                    signalsOnly: true,   // Always export only actual events to save space
+                    crossSignals: crossIndicator?.crossSignals || undefined,
+                    macroTop: latestMacro ? latestMacro.top : null,
+                    macroBot: latestMacro ? latestMacro.bottom : null,
                     activeMacroBox: latestMacro,
                     activeBoxesPerBar: activeBoxesPerBar.length > 0 ? activeBoxesPerBar : undefined,
                     cbcFlips: cbcIndicator?.flips || undefined,
-
-                    // Map Structural Stop Losses
-                    entryPrice: chart.dataStore.data[(chart.dataStore.length - 1) * 6 + 4], // Current Close
-                    stopLossPrice: crossIndicator?.crossSignals?.[chart.dataStore.length - 1] === 1 ? macroBot : 
-                                   (crossIndicator?.crossSignals?.[chart.dataStore.length - 1] === -1 ? macroTop : undefined)
+                    
+                    // Stationary mapping
+                    entryPrice: chart.dataStore.data[(chart.dataStore.length - 1) * 6 + 4],
+                    stopLossPrice: crossIndicator?.crossSignals?.[chart.dataStore.length - 1] === 1 ? (latestMacro ? latestMacro.bottom : undefined) : 
+                                  (crossIndicator?.crossSignals?.[chart.dataStore.length - 1] === -1 ? (latestMacro ? latestMacro.top : undefined) : undefined)
                 });
 
                 if (rows.length === 0) {
-                    alert("No signals or records found for dataset export.");
+                    alert("No signals found in the current dataset to export.");
                     return;
                 }
 
                 const csvRows = AIExporter.toCSVRows(rows);
-                const exported = AIExporter.downloadCSV(csvRows, `ai_training_dataset_${chart.currentSymbol}_${Date.now()}.csv`);
+                const filename = `AI_DATA_${chart.currentSymbol}_${chart.currentInterval}_RR${targetRR}_H${forwardHorizon}_${Date.now()}.csv`;
+                
+                const exported = AIExporter.downloadCSV(csvRows, filename);
                 if (exported) {
                     modalAiExport?.close();
                 }
