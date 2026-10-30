@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 
 <head>
@@ -663,6 +663,11 @@
     }
     #btn-modal-close-x {
       color: var(--chart-text, #787B86) !important;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
     }
   </style>
 </head>
@@ -2309,6 +2314,18 @@
           <button class="ai-range-btn active" data-val="1m" style="flex: 1; background: var(--chart-bg, #131722); border: none; color: #EF5350; padding: 6px 0; font-size: 12px; font-weight: 600; cursor: pointer; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); transition: all 0.2s;">1 Month</button>
           <button class="ai-range-btn" data-val="3m" style="flex: 1; background: transparent; border: none; color: #787B86; padding: 6px 0; font-size: 12px; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.2s;">3 Months</button>
           <button class="ai-range-btn" data-val="custom" style="flex: 1; background: transparent; border: none; color: #787B86; padding: 6px 0; font-size: 12px; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.2s;">Custom</button>
+        </div>
+
+        <!-- Custom Date Range Picker (Revealed only when 'Custom' is active) -->
+        <div id="ai-custom-date-container" style="display: none; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; background: rgba(0,0,0,0.25); border: 1px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 8px 12px;">
+          <div>
+            <span style="font-size: 10px; color: #787B86; text-transform: uppercase; font-weight: 700; display: block; margin-bottom: 4px;">Start Date</span>
+            <input type="date" id="ai-custom-start-date" style="width: 100%; box-sizing: border-box; background: var(--chart-bg, #131722); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; outline: none; font-family: inherit;">
+          </div>
+          <div>
+            <span style="font-size: 10px; color: #787B86; text-transform: uppercase; font-weight: 700; display: block; margin-bottom: 4px;">End Date</span>
+            <input type="date" id="ai-custom-end-date" style="width: 100%; box-sizing: border-box; background: var(--chart-bg, #131722); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #434651); border-radius: 4px; padding: 4px 8px; font-size: 12px; outline: none; font-family: inherit;">
+          </div>
         </div>
       </div>
 

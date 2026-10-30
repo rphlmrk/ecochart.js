@@ -59,7 +59,9 @@ export class BackgroundDataMiner {
         symbol: string,
         interval: string,
         totalDurationMs: number,
-        onProgress: (p: MiningProgress) => void
+        onProgress: (p: MiningProgress) => void,
+        customStartMs?: number,
+        customEndMs?: number
     ): Promise<Float64Array> {
         this.abort();
         this.abortController = new AbortController();
@@ -67,16 +69,18 @@ export class BackgroundDataMiner {
 
         const intervalMs = this.intervalToMs(interval);
         const now = Date.now();
-        const startTarget = now - totalDurationMs;
+        const startTarget = customStartMs !== undefined ? customStartMs : (now - totalDurationMs);
+        const endTarget = customEndMs !== undefined ? customEndMs : now;
+        const effectiveDuration = Math.max(intervalMs, endTarget - startTarget);
 
-        const estimatedTotalCandles = Math.ceil(totalDurationMs / intervalMs);
+        const estimatedTotalCandles = Math.ceil(effectiveDuration / intervalMs);
         const totalBatches = Math.max(1, Math.ceil(estimatedTotalCandles / 1000));
 
         const collectedCandles: number[][] = [];
         let fetchStart = startTarget;
         let batchIndex = 0;
 
-        while (fetchStart < now) {
+        while (fetchStart < endTarget) {
             if (signal.aborted) {
                 throw new Error('Mining cancelled by user.');
             }

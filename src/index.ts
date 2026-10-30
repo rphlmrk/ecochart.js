@@ -4541,7 +4541,18 @@ export class WorkspaceManager {
         btnAiExportClose?.addEventListener('click', () => modalAiExport?.close());
         btnAiExportCancel?.addEventListener('click', () => modalAiExport?.close());
 
-        // UI: Handle Range Tabs
+        // UI: Custom Date Inputs Setup
+        const customDateBox = document.getElementById('ai-custom-date-container');
+        const customStartDate = document.getElementById('ai-custom-start-date') as HTMLInputElement | null;
+        const customEndDate = document.getElementById('ai-custom-end-date') as HTMLInputElement | null;
+
+        // Initialize default dates (today & 30 days prior)
+        const nowIso = new Date().toISOString().split('T')[0];
+        const monthAgoIso = new Date(Date.now() - 30 * 86_400_000).toISOString().split('T')[0];
+        if (customEndDate && !customEndDate.value) customEndDate.value = nowIso;
+        if (customStartDate && !customStartDate.value) customStartDate.value = monthAgoIso;
+
+        // UI: Handle Range Tabs with Custom Date Toggle
         document.querySelectorAll('.ai-range-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 document.querySelectorAll('.ai-range-btn').forEach(b => {
@@ -4553,6 +4564,10 @@ export class WorkspaceManager {
                 target.classList.add('active');
                 target.style.background = 'var(--chart-bg, #131722)';
                 target.style.color = '#EF5350';
+
+                // Toggle Custom Date inputs
+                const isCustom = target.dataset.val === 'custom';
+                if (customDateBox) customDateBox.style.display = isCustom ? 'grid' : 'none';
             });
         });
 
@@ -4569,7 +4584,38 @@ export class WorkspaceManager {
             });
         });
 
-        // --- START PHASE 5: CHUNK A (Binance Paginator & Live Progress HUD) ---
+        // Top-Bar Button State Management for Background Mining
+        let isMiningActive = false;
+        const resetTopbarButton = () => {
+            isMiningActive = false;
+            if (btnTopbarAiExport) {
+                btnTopbarAiExport.innerHTML = `<span>🧠</span><span class="desktop-only">AI Export</span>`;
+                btnTopbarAiExport.title = "Export AI Training Data (.csv)";
+                btnTopbarAiExport.style.borderColor = "var(--chart-accent, #2962FF)";
+                btnTopbarAiExport.style.color = "var(--chart-accent, #2962FF)";
+            }
+        };
+
+        const setTopbarMiningState = (pct: number) => {
+            isMiningActive = true;
+            if (btnTopbarAiExport) {
+                btnTopbarAiExport.innerHTML = `
+                  <span style="display:inline-block;width:12px;height:12px;border:2px solid rgba(239,83,80,0.3);border-top-color:#EF5350;border-radius:50%;animation:spin 0.8s linear infinite;"></span>
+                  <span style="font-size:11px;font-family:monospace;font-weight:800;color:#EF5350;margin-left:2px;">${pct}%</span>
+                `;
+                btnTopbarAiExport.title = `Mining Binance data in background (${pct}%)... Click to view details / cancel`;
+                btnTopbarAiExport.style.borderColor = "#EF5350";
+                btnTopbarAiExport.style.color = "#EF5350";
+            }
+        };
+
+        // If user clicks the top-bar button while mining, show the detailed status overlay
+        btnTopbarAiExport?.addEventListener('click', () => {
+            if (isMiningActive && modalAiExport && loadingOverlay) {
+                loadingOverlay.style.display = 'flex';
+            }
+        });
+
         const btnAiExportAbort = document.getElementById('btn-ai-export-abort');
         const progressFill = document.getElementById('ai-export-progress-fill');
         const progressPct = document.getElementById('ai-export-progress-pct');
@@ -4580,6 +4626,7 @@ export class WorkspaceManager {
 
         btnAiExportAbort?.addEventListener('click', () => {
             BackgroundDataMiner.abort();
+            resetTopbarButton();
             if (loadingOverlay) loadingOverlay.style.display = 'none';
         });
 
@@ -4589,7 +4636,25 @@ export class WorkspaceManager {
 
             const activeRange = document.querySelector('.ai-range-btn.active') as HTMLElement;
             const rangeKey = activeRange?.dataset.val || '1m';
-            const durationMs = BackgroundDataMiner.rangeToMs(rangeKey);
+
+            let durationMs = BackgroundDataMiner.rangeToMs(rangeKey);
+            let customStartMs: number | undefined;
+            let customEndMs: number | undefined;
+
+            if (rangeKey === 'custom') {
+                if (!customStartDate?.value || !customEndDate?.value) {
+                    alert('Please select both a Start Date and an End Date.');
+                    return;
+                }
+                customStartMs = new Date(`${customStartDate.value}T00:00:00Z`).getTime();
+                customEndMs = new Date(`${customEndDate.value}T23:59:59Z`).getTime();
+
+                if (isNaN(customStartMs) || isNaN(customEndMs) || customStartMs >= customEndMs) {
+                    alert('Invalid custom date range. The start date must precede the end date.');
+                    return;
+                }
+                durationMs = customEndMs - customStartMs;
+            }
 
             const activePack = document.querySelector('.ai-pack-card.active') as HTMLElement;
             const _packFormat = (activePack?.dataset.pack || 'csv').toUpperCase();
@@ -4597,7 +4662,11 @@ export class WorkspaceManager {
             const targetRR = (document.getElementById('ai-export-rr') as HTMLSelectElement)?.value || "2.0";
             const forwardHorizon = (document.getElementById('ai-export-horizon') as HTMLInputElement)?.value || "30";
 
-            // Initialize Progress HUD
+            // 1. NON-BLOCKING: Close modal immediately so the chart is 100% usable!
+            modalAiExport?.close();
+            setTopbarMiningState(0);
+
+            // Also keep overlay ready in case they open it
             if (loadingOverlay) loadingOverlay.style.display = 'flex';
             if (loadingTitle) loadingTitle.textContent = `Mining Binance History (${rangeKey.toUpperCase()})...`;
             if (progressFill) progressFill.style.width = '0%';
@@ -4606,18 +4675,21 @@ export class WorkspaceManager {
             if (progressEta) progressEta.textContent = 'ETA: --s';
 
             try {
-                // Step 1: Execute 500ms Paged Download from Binance
+                // Step 1: Execute 500ms Paged Background Download from Binance
                 const rawCandleBuffer = await BackgroundDataMiner.mineHistoricalCandles(
                     chart.currentSymbol,
                     chart.currentInterval,
                     durationMs,
                     (p) => {
+                        setTopbarMiningState(p.percent);
                         if (progressFill) progressFill.style.width = `${p.percent}%`;
                         if (progressPct) progressPct.textContent = `${p.percent}%`;
                         if (progressCount) progressCount.textContent = `Batch ${p.currentBatch} / ${p.totalBatches}`;
                         if (progressEta) progressEta.textContent = `ETA: ${p.etaSeconds}s`;
                         if (loadingDetail) loadingDetail.textContent = `${p.candlesFetched.toLocaleString()} candles fetched (${p.statusText})`;
-                    }
+                    },
+                    customStartMs,
+                    customEndMs
                 );
 
                 if (rawCandleBuffer.length === 0) {
@@ -4753,12 +4825,14 @@ export class WorkspaceManager {
                     if (loadingDetail) loadingDetail.textContent = `Successfully exported ${rows.length.toLocaleString()} rows (${candleCount.toLocaleString()} candles analyzed).`;
                     if (progressFill) progressFill.style.width = "100%";
                     if (progressPct) progressPct.textContent = "100%";
+                    resetTopbarButton();
                     setTimeout(() => {
                         if (loadingOverlay) loadingOverlay.style.display = 'none';
                         const modalAiExport = document.getElementById('ai-export-modal') as HTMLDialogElement | null;
                         modalAiExport?.close();
                     }, 1400);
                 } else {
+                    resetTopbarButton();
                     if (loadingOverlay) loadingOverlay.style.display = 'none';
                 }
                 // =========================================================================
@@ -4767,6 +4841,7 @@ export class WorkspaceManager {
 
             } catch (err: any) {
                 console.error("Mining error:", err);
+                resetTopbarButton();
                 if (err.message !== 'Mining cancelled by user.') {
                     alert(`Mining stopped: ${err.message}`);
                 }
