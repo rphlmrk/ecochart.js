@@ -17,18 +17,21 @@ export interface ContinuousBarRow {
     volume: number;
     atr: string;
     volume_sma_20: string;
-    ema_10: string;       // Fast Price EMA (10)
-    sma_30: string;       // Slow Price SMA (30)
-    macro_top: string;    // Macro Structure Zone Top
-    macro_bottom: string; // Macro Structure Zone Bottom
-    cbc_top: string;      // Strict CBC Micro Pullback Zone Top
-    cbc_bottom: string;   // Strict CBC Micro Pullback Zone Bottom
-    cbc_flip: string;     // Micro Pullback Flip: +1 (Bull), -1 (Bear), 0 (None)
+    ema_10: string;
+    sma_30: string;
+    macro_top: string;
+    macro_bottom: string;
+    cbc_top: string;
+    cbc_bottom: string;
+    cbc_flip: string;
+    bars_between_crosses: number;                // Inter-cross spacing
+    crosses_in_last_30_bars: number;              // Raw cross density in trailing 30 bars
+    direction_reversals_in_last_30_bars: number;  // True whipsaw flips (+1 to -1) in trailing 30 bars
 }
 
 export interface TradeManifestRow {
     trade_id: string;
-    signal_type: 'EMA_SMA_CROSS' | 'STRICT_CBC_FLIP'; // Identifies which strategy fired!
+    signal_type: 'EMA_SMA_CROSS';
     signal_bar_index: number;
     resolution_bar_index: number;
     signal_timestamp: number;
@@ -43,6 +46,9 @@ export interface TradeManifestRow {
     session_id: 'London' | 'NewYorkPostOpen' | 'Outside';
     session_elapsed_minutes: number;
     session_trade_number: number;
+    bars_between_crosses: number;
+    crosses_in_last_30_bars: number;
+    direction_reversals_in_last_30_bars: number;
 }
 
 export interface ExportAIOptions {
@@ -208,6 +214,55 @@ export class AIExporter {
         const atrRaw = calculateATRArray(dataStore, atrPeriod);
         const volSmaRaw = calculateVolumeSMAArray(dataStore, 20);
 
+        // LAYER 1: Continuous Market Telemetry (Spacing, Density, and Directional Reversals)
+        const barsBetweenCrossesArr = new Int32Array(len).fill(999);
+        const crossesInLast30BarsArr = new Int32Array(len).fill(0);
+        const reversalsInLast30BarsArr = new Int32Array(len).fill(0);
+
+        interface CrossEvent {
+            barIndex: number;
+            direction: number; // +1 = Golden Cross, -1 = Death Cross
+        }
+        const crossHistory: CrossEvent[] = [];
+        let lastCrossBar = -999;
+
+        for (let i = 0; i < len; i++) {
+            const crossDir = options.crossSignals ? options.crossSignals[i] : 0;
+            const hasCross = crossDir !== 0;
+
+            if (lastCrossBar >= 0) {
+                barsBetweenCrossesArr[i] = i - lastCrossBar;
+            }
+
+            if (hasCross) {
+                crossHistory.push({ barIndex: i, direction: crossDir });
+                lastCrossBar = i;
+            }
+
+            // Window: Trailing 30 bars [i - 29 to i]
+            const windowStart = i - 29;
+            const crossesInWindow: CrossEvent[] = [];
+            for (let c = crossHistory.length - 1; c >= 0; c--) {
+                if (crossHistory[c].barIndex >= windowStart) {
+                    crossesInWindow.unshift(crossHistory[c]);
+                } else {
+                    break;
+                }
+            }
+
+            // Count total crosses
+            crossesInLast30BarsArr[i] = crossesInWindow.length;
+
+            // Count true directional reversals (+1 to -1 or -1 to +1)
+            let revCount = 0;
+            for (let k = 1; k < crossesInWindow.length; k++) {
+                if (crossesInWindow[k].direction !== crossesInWindow[k - 1].direction) {
+                    revCount++;
+                }
+            }
+            reversalsInLast30BarsArr[i] = revCount;
+        }
+
         for (let i = 0; i < len; i++) {
             const base = i * 6;
             const macroBox = options.activeBoxesPerBar ? options.activeBoxesPerBar[i] : null;
@@ -230,7 +285,10 @@ export class AIExporter {
                 macro_bottom: macroBox ? macroBox.bottom.toFixed(4) : '',
                 cbc_top: cbcBox ? cbcBox.top.toFixed(4) : '',
                 cbc_bottom: cbcBox ? cbcBox.bottom.toFixed(4) : '',
-                cbc_flip: cbcFlipVal !== 0 ? cbcFlipVal.toString() : '0'
+                cbc_flip: cbcFlipVal !== 0 ? cbcFlipVal.toString() : '0',
+                bars_between_crosses: barsBetweenCrossesArr[i],
+                crosses_in_last_30_bars: crossesInLast30BarsArr[i],
+                direction_reversals_in_last_30_bars: reversalsInLast30BarsArr[i]
             });
         }
 
@@ -240,6 +298,7 @@ export class AIExporter {
         const TRADE_COST_R = 0.05; // Fixed simulated slippage + exchange fees
         const sessionCounters = new Map<string, number>();
         let tradeSequenceId = 1;
+        let activePositionEndBar = -1; // SOLUTION 1: Tracks when current open position closes
 
         for (let i = 0; i < len; i++) {
             const base = i * 6;
@@ -257,6 +316,13 @@ export class AIExporter {
 
             // Strictly skip any candle that is not an EMA/SMA Cross
             if (!signalDir) continue;
+
+            // LAYER 2: Single Active Position Invariant (Prevents same-bar re-entry)
+            // If an earlier trade is running or resolving on bar i, lockout until bar i > activePositionEndBar
+            if (i <= activePositionEndBar) {
+                continue;
+            }
+
             const signalType: 'EMA_SMA_CROSS' = 'EMA_SMA_CROSS';
 
             // Priority Stop-Loss Selection:
@@ -385,9 +451,14 @@ export class AIExporter {
                 outcome_class: outcomeClass,
                 session_id: sessionInfo.sessionId,
                 session_elapsed_minutes: sessionInfo.elapsedMinutes,
-                session_trade_number: currentSessionCount
+                session_trade_number: currentSessionCount,
+                bars_between_crosses: barsBetweenCrossesArr[i],
+                crosses_in_last_30_bars: crossesInLast30BarsArr[i],
+                direction_reversals_in_last_30_bars: reversalsInLast30BarsArr[i]
             });
 
+            // Lock out subsequent entries until after this trade's resolution candle
+            activePositionEndBar = resolutionBarIndex;
             tradeSequenceId++;
         }
 
@@ -406,13 +477,13 @@ export class AIExporter {
         if (typeof document === 'undefined') return false;
 
         // 1. Build bars.csv
-        const barHeader = 'bar_index,timestamp,open,high,low,close,volume,atr,volume_sma_20,ema_10,sma_30,macro_top,macro_bottom,cbc_top,cbc_bottom,cbc_flip';
-        const barLines = bars.map(b => `${b.bar_index},${b.timestamp},${b.open},${b.high},${b.low},${b.close},${b.volume},${b.atr},${b.volume_sma_20},${b.ema_10},${b.sma_30},${b.macro_top},${b.macro_bottom},${b.cbc_top},${b.cbc_bottom},${b.cbc_flip}`);
+        const barHeader = 'bar_index,timestamp,open,high,low,close,volume,atr,volume_sma_20,ema_10,sma_30,macro_top,macro_bottom,cbc_top,cbc_bottom,cbc_flip,bars_between_crosses,crosses_in_last_30_bars,direction_reversals_in_last_30_bars';
+        const barLines = bars.map(b => `${b.bar_index},${b.timestamp},${b.open},${b.high},${b.low},${b.close},${b.volume},${b.atr},${b.volume_sma_20},${b.ema_10},${b.sma_30},${b.macro_top},${b.macro_bottom},${b.cbc_top},${b.cbc_bottom},${b.cbc_flip},${b.bars_between_crosses},${b.crosses_in_last_30_bars},${b.direction_reversals_in_last_30_bars}`);
         const barsCsv = `${barHeader}\n${barLines.join('\n')}`;
 
         // 2. Build trades.csv
-        const tradeHeader = 'trade_id,signal_type,signal_bar_index,resolution_bar_index,signal_timestamp,signal_direction,entry_price,stop_price,target_price,gross_R,trading_cost_R,realized_net_R,outcome_class,session_id,session_elapsed_minutes,session_trade_number';
-        const tradeLines = trades.map(t => `${t.trade_id},${t.signal_type},${t.signal_bar_index},${t.resolution_bar_index},${t.signal_timestamp},${t.signal_direction},${t.entry_price},${t.stop_price},${t.target_price},${t.gross_R},${t.trading_cost_R},${t.realized_net_R},${t.outcome_class},${t.session_id},${t.session_elapsed_minutes},${t.session_trade_number}`);
+        const tradeHeader = 'trade_id,signal_type,signal_bar_index,resolution_bar_index,signal_timestamp,signal_direction,entry_price,stop_price,target_price,gross_R,trading_cost_R,realized_net_R,outcome_class,session_id,session_elapsed_minutes,session_trade_number,bars_between_crosses,crosses_in_last_30_bars,direction_reversals_in_last_30_bars';
+        const tradeLines = trades.map(t => `${t.trade_id},${t.signal_type},${t.signal_bar_index},${t.resolution_bar_index},${t.signal_timestamp},${t.signal_direction},${t.entry_price},${t.stop_price},${t.target_price},${t.gross_R},${t.trading_cost_R},${t.realized_net_R},${t.outcome_class},${t.session_id},${t.session_elapsed_minutes},${t.session_trade_number},${t.bars_between_crosses},${t.crosses_in_last_30_bars},${t.direction_reversals_in_last_30_bars}`);
         const tradesCsv = `${tradeHeader}\n${tradeLines.join('\n')}`;
 
         const baseFilename = `RAD04_${symbol.toUpperCase()}_${interval}`;
