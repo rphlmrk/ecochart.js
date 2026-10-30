@@ -21,6 +21,10 @@ export interface GhostHorizons {
 export interface MLFeatureRow {
     timestamp: number;
     signal: string;
+    signal_bar_index?: number;
+    resolution_bar_index?: number;
+    gross_R?: number;
+    trading_cost_R?: number;
     realized_net_R?: number;
     bars_to_resolution?: number;
     closePrice: number;
@@ -202,6 +206,10 @@ export class AIExporter {
     public static readonly CSV_HEADERS = [
         'timestamp',
         'signal',
+        'signal_bar_index',
+        'resolution_bar_index',
+        'gross_R',
+        'trading_cost_R',
         'realized_net_R',
         'bars_to_resolution',
         'ema_sma_spread_pct',
@@ -357,9 +365,13 @@ export class AIExporter {
                 mfe_30: 0, mae_30: 0
             };
 
-            let realizedNetR = 0;
+            let gross_R = 0;
+            let trading_cost_R = 0.05; // Simulated slippage & fees
+            let realized_net_R = 0;
             let barsToResolution = 0;
+            let resolution_bar_index = -1;
             let dynamicRiskDistAtr = 0;
+            let isCensored = false; // Flag for unresolved trades
 
             if (currentSignal !== 'NONE') {
                 const isLong = (currentSignal === 'BULL_CROSS' || currentSignal.includes('UP') || currentSignal.includes('BULL'));
@@ -382,64 +394,86 @@ export class AIExporter {
                 if (rawRisk <= 0 || isNaN(rawRisk)) rawRisk = currentAtr * 1.5;
 
                 dynamicRiskDistAtr = rawRisk / currentAtr;
+                const targetPrice = isLong ? closePrice + (rawRisk * targetRR) : closePrice - (rawRisk * targetRR);
 
-                const targetPrice = isLong 
-                    ? closePrice + (rawRisk * targetRR) 
-                    : closePrice - (rawRisk * targetRR);
-
-                // 3. Simulate Forward Trade Outcome (Causal & Continuous)
+                // 3. Strict Market Execution Engine
                 const lookAheadLimit = Math.min(len - 1, i + maxHorizon);
                 let resolved = false;
-                
-                // Assume a realistic 0.05 R cost for exchange fees and slippage per round-trip trade
-                const TRADE_COST_R = 0.05;
+                let exitPrice = closePrice;
 
                 for (let f = i + 1; f <= lookAheadLimit; f++) {
+                    const fOpen = dataStore.data[f * 6 + 1];
                     const fHigh = dataStore.data[f * 6 + 2];
                     const fLow = dataStore.data[f * 6 + 3];
 
                     if (isLong) {
-                        if (fLow <= stopPrice) {
-                            realizedNetR = -1.0 - TRADE_COST_R; // Stopped out
-                            barsToResolution = f - i;
+                        const hitSL = fLow <= stopPrice;
+                        const hitTP = fHigh >= targetPrice;
+
+                        if (hitSL && hitTP) {
+                            // Conservative assumption: Stop loss hit first if both hit in same candle
+                            exitPrice = fOpen <= stopPrice ? fOpen : stopPrice; // Account for gap downs
+                            resolution_bar_index = f;
+                            resolved = true;
+                            break;
+                        } else if (hitSL) {
+                            exitPrice = fOpen <= stopPrice ? fOpen : stopPrice;
+                            resolution_bar_index = f;
+                            resolved = true;
+                            break;
+                        } else if (hitTP) {
+                            exitPrice = fOpen >= targetPrice ? fOpen : targetPrice; // Account for gap ups
+                            resolution_bar_index = f;
                             resolved = true;
                             break;
                         }
-                        if (fHigh >= targetPrice) {
-                            realizedNetR = targetRR - TRADE_COST_R; // Target hit
-                            barsToResolution = f - i;
+                    } else { // SHORT
+                        const hitSL = fHigh >= stopPrice;
+                        const hitTP = fLow <= targetPrice;
+
+                        if (hitSL && hitTP) {
+                            // Conservative assumption: Stop loss hit first
+                            exitPrice = fOpen >= stopPrice ? fOpen : stopPrice;
+                            resolution_bar_index = f;
                             resolved = true;
                             break;
-                        }
-                    } else {
-                        if (fHigh >= stopPrice) {
-                            realizedNetR = -1.0 - TRADE_COST_R; // Stopped out
-                            barsToResolution = f - i;
+                        } else if (hitSL) {
+                            exitPrice = fOpen >= stopPrice ? fOpen : stopPrice;
+                            resolution_bar_index = f;
                             resolved = true;
                             break;
-                        }
-                        if (fLow <= targetPrice) {
-                            realizedNetR = targetRR - TRADE_COST_R; // Target hit
-                            barsToResolution = f - i;
+                        } else if (hitTP) {
+                            exitPrice = fOpen <= targetPrice ? fOpen : targetPrice;
+                            resolution_bar_index = f;
                             resolved = true;
                             break;
                         }
                     }
                 }
 
-                // 4. Calculate continuous R-multiple if the trade timed out in chop
+                // 4. Resolve Timeouts and Filter Censored Trades
                 if (!resolved) {
-                    const timeoutClose = dataStore.data[lookAheadLimit * 6 + 4];
-                    let rawR = isLong 
-                        ? (timeoutClose - closePrice) / rawRisk
-                        : (closePrice - timeoutClose) / rawRisk;
-                    
-                    // Cap rawR just in case of massive gap-ups/downs
-                    rawR = Math.max(-1.0, Math.min(targetRR, rawR));
-                    realizedNetR = rawR - TRADE_COST_R;
-                    
-                    barsToResolution = maxHorizon;
+                    if (lookAheadLimit === len - 1 && lookAheadLimit - i < maxHorizon) {
+                        isCensored = true; // Trade hasn't finished its natural life. Do not export to ML.
+                    } else {
+                        exitPrice = dataStore.data[lookAheadLimit * 6 + 4]; // Exit at close of final bar
+                        resolution_bar_index = lookAheadLimit;
+                    }
                 }
+
+                if (isCensored) {
+                    continue; // Skip the rest of the loop; don't push this row to the dataset
+                }
+
+                // 5. Continuous Economic Output
+                barsToResolution = resolution_bar_index - i;
+                gross_R = isLong 
+                    ? (exitPrice - closePrice) / rawRisk
+                    : (closePrice - exitPrice) / rawRisk;
+                
+                // Cap R at target RR to prevent distorted targets from massive gaps
+                gross_R = Math.min(targetRR, gross_R);
+                realized_net_R = gross_R - trading_cost_R;
             }
 
             // --- ADD HISTORICAL SHELF TO ROW ---
@@ -495,7 +529,11 @@ export class AIExporter {
             rows.push({
                 timestamp,
                 signal: currentSignal,
-                realized_net_R: realizedNetR,
+                signal_bar_index: i,
+                resolution_bar_index: resolution_bar_index,
+                gross_R: gross_R,
+                trading_cost_R: trading_cost_R,
+                realized_net_R: realized_net_R,
                 bars_to_resolution: barsToResolution,
                 closePrice,
                 atr: atrValues[i],
@@ -533,6 +571,10 @@ export class AIExporter {
         return rows.map(row => [
             row.timestamp,
             row.signal,
+            row.signal_bar_index !== undefined ? row.signal_bar_index : 0,
+            row.resolution_bar_index !== undefined ? row.resolution_bar_index : 0,
+            row.gross_R !== undefined ? row.gross_R.toFixed(4) : "0.0000",
+            row.trading_cost_R !== undefined ? row.trading_cost_R.toFixed(4) : "0.0000",
             row.realized_net_R !== undefined ? row.realized_net_R.toFixed(4) : "0.0000",
             row.bars_to_resolution !== undefined ? row.bars_to_resolution : 0,
             row.emaSmaSpreadPct.toFixed(4),
@@ -662,9 +704,9 @@ export function runPreFlightAudit(csvRows: string[]): boolean {
             }
         }
 
-        // 3. CLASS IMBALANCE GATE (Assumes 'realized_net_R' is the 3rd column: cols[2])
+        // 3. CLASS IMBALANCE GATE (Assumes 'realized_net_R' is the 7th column: cols[6])
         // Positive net R indicates a profitable trade after fees/slippage
-        if (parseFloat(cols[2]) > 0) {
+        if (parseFloat(cols[6]) > 0) {
             winCount++;
         }
     }
