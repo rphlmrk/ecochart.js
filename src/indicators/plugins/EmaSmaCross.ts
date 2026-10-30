@@ -6,6 +6,35 @@ import { alertManager } from '../../alerts/AlertManager';
 
 export type CrossMarkerShape = 'triangle_up' | 'triangle_down' | 'circle' | 'circle_ring' | 'arrow_up' | 'arrow_down' | 'star' | 'cross' | 'diamond';
 
+// Causal Timezone Session Classifier for Production Filter
+function classifySession(timestampMs: number): { sessionId: 'London' | 'NewYorkPostOpen' | 'Outside'; sessionDate: string } {
+    const date = new Date(timestampMs);
+    try {
+        const lonFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour12: false, weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        const lonParts = lonFormatter.formatToParts(date);
+        const lonWeekday = lonParts.find(p => p.type === 'weekday')?.value || '';
+        const lonH = parseInt(lonParts.find(p => p.type === 'hour')?.value || '0', 10);
+        const lonDateStr = `${lonParts.find(p => p.type === 'year')?.value}-${lonParts.find(p => p.type === 'month')?.value}-${lonParts.find(p => p.type === 'day')?.value}`;
+        if (lonWeekday !== 'Sat' && lonWeekday !== 'Sun' && lonH >= 8 && lonH < 10) {
+            return { sessionId: 'London', sessionDate: `LON_${lonDateStr}` };
+        }
+
+        const nyFormatter = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour12: false, weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        const nyParts = nyFormatter.formatToParts(date);
+        const nyWeekday = nyParts.find(p => p.type === 'weekday')?.value || '';
+        const nyH = parseInt(nyParts.find(p => p.type === 'hour')?.value || '0', 10);
+        const nyM = parseInt(nyParts.find(p => p.type === 'minute')?.value || '0', 10);
+        const nyDateStr = `${nyParts.find(p => p.type === 'year')?.value}-${nyParts.find(p => p.type === 'month')?.value}-${nyParts.find(p => p.type === 'day')?.value}`;
+        if (nyWeekday !== 'Sat' && nyWeekday !== 'Sun') {
+            const nyTotalMin = nyH * 60 + nyM;
+            if (nyTotalMin >= 9 * 60 + 30 && nyTotalMin < 11 * 60 + 30) {
+                return { sessionId: 'NewYorkPostOpen', sessionDate: `NY_${nyDateStr}` };
+            }
+        }
+    } catch (e) {}
+    return { sessionId: 'Outside', sessionDate: 'OUTSIDE' };
+}
+
 export class EmaSmaCrossIndicator extends BaseIndicator {
     public emaValues: Float64Array = new Float64Array(20000);
     public smaValues: Float64Array = new Float64Array(20000);
@@ -13,14 +42,19 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
     public crossSignals: Int8Array = new Int8Array(20000);
     public crossPrices: Float64Array = new Float64Array(20000);
 
-    // --- START NEW: Historical Shelf Registry ---
+    // --- START NEW: Historical Shelf Registry & Quant Telemetry ---
     public crossRegistry: Array<{
         price: number; timeMs: number; direction: number;
         maxRunAtr: number; isMature: boolean; broken: boolean;
         startIndex: number;
     }> = [];
     private rollingAtr = 0;
-    // --- END NEW ---
+
+    // Telemetry for Quant Filters (Causal tracking)
+    private rawCrossHistory: Array<{ barIndex: number; direction: number }> = [];
+    private sessionCounters = new Map<string, number>();
+    private volSum20 = 0;
+    // -------------------------------------------------------------
 
     // Alert Deduplication State
     private lastAlertedTime = -1;
@@ -39,9 +73,22 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
             { id: 'smaWidth', name: 'Slow SMA Width', type: 'number', value: 2, min: 1, max: 5, step: 1 },
             { id: 'showLines', name: 'Show Moving Average Lines', type: 'boolean', value: true },
             { id: 'showCrossSignals', name: 'Show Cross Markers', type: 'boolean', value: true },
-            // --- START NEW ---
             { id: 'showHistoricalShelves', name: 'Show Mature Historical Shelves', type: 'boolean', value: true },
-            // --- END NEW ---
+            // --- RAD-ML-04F: PRODUCTION QUANT FILTERS ---
+            {
+                id: 'quantFilterMode',
+                name: 'Quant Quality Filter',
+                type: 'select',
+                value: 'Off (Raw Mechanical)',
+                options: [
+                    'Off (Raw Mechanical)',
+                    '24/7 Momentum (Chop <= 1 & RVOL >= 1.2)',
+                    'Session Specialist (London/NY & Skip #1)'
+                ]
+            },
+            { id: 'minRvol', name: 'Min Volume Surge (RVOL)', type: 'number', value: 1.2, min: 0.5, max: 5.0, step: 0.1 },
+            { id: 'maxReversals', name: 'Max Whipsaws (30 Bars)', type: 'number', value: 1, min: 0, max: 5, step: 1 },
+            // --------------------------------------------
             {
                 id: 'shapeMode',
                 name: 'Marker Style',
@@ -107,7 +154,9 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
         // --- START NEW ---
         this.crossRegistry = [];
         this.rollingAtr = 0;
-        // --- END NEW ---
+        this.rawCrossHistory = [];
+        this.sessionCounters.clear();
+        this.volSum20 = 0;
         super.reset();
     }
 
@@ -176,9 +225,16 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                     this.smaValues[i] = smaSum / (i + 1);
                 }
 
-                // 3. Detect Crosses
+                // 3. Detect Crosses with RAD-ML-04F Quant Gating
                 this.crossSignals[i] = 0;
                 this.crossPrices[i] = 0;
+
+                // Rolling Volume SMA 20 for RVOL
+                const barVol = ds.data[i * 6 + 5];
+                this.volSum20 += barVol;
+                if (i >= 20) this.volSum20 -= ds.data[(i - 20) * 6 + 5];
+                const volSma20 = i >= 19 ? Math.max(this.volSum20 / 20, 0.0001) : 0;
+                const rvol = volSma20 > 0 ? (barVol / volSma20) : 1.0;
 
                 const minWarmup = Math.max(emaLen, smaLen) - 1;
                 if (i > minWarmup) {
@@ -187,14 +243,57 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                     const prevSma = this.smaValues[i - 1];
                     const currSma = this.smaValues[i];
 
-                    if (prevEma <= prevSma && currEma > currSma) {
-                        // Bullish Golden Cross
-                        this.crossSignals[i] = 1;
-                        this.crossPrices[i] = this.interpolateCross(prevEma, currEma, prevSma, currSma, c);
-                    } else if (prevEma >= prevSma && currEma < currSma) {
-                        // Bearish Death Cross
-                        this.crossSignals[i] = -1;
-                        this.crossPrices[i] = this.interpolateCross(prevEma, currEma, prevSma, currSma, c);
+                    let rawCrossDir = 0;
+                    if (prevEma <= prevSma && currEma > currSma) rawCrossDir = 1;  // Golden Cross
+                    else if (prevEma >= prevSma && currEma < currSma) rawCrossDir = -1; // Death Cross
+
+                    if (rawCrossDir !== 0) {
+                        // 1. Record raw market event into history (for causal reversal counting)
+                        this.rawCrossHistory.push({ barIndex: i, direction: rawCrossDir });
+
+                        // 2. Count true directional reversals in trailing 30 bars
+                        const windowStart = i - 29;
+                        const recentCrosses: Array<{ barIndex: number; direction: number }> = [];
+                        for (let k = this.rawCrossHistory.length - 1; k >= 0; k--) {
+                            if (this.rawCrossHistory[k].barIndex >= windowStart) {
+                                recentCrosses.unshift(this.rawCrossHistory[k]);
+                            } else {
+                                break;
+                            }
+                        }
+                        let reversals30 = 0;
+                        for (let k = 1; k < recentCrosses.length; k++) {
+                            if (recentCrosses[k].direction !== recentCrosses[k - 1].direction) reversals30++;
+                        }
+
+                        // 3. Session Telemetry
+                        const barTimestamp = ds.data[i * 6];
+                        const sessionInfo = classifySession(barTimestamp);
+                        const sTradeNum = (this.sessionCounters.get(sessionInfo.sessionDate) || 0) + 1;
+                        this.sessionCounters.set(sessionInfo.sessionDate, sTradeNum);
+
+                        // 4. Evaluate Quant Filter Rules
+                        const filterMode = this.getParam<string>('quantFilterMode', 'Off (Raw Mechanical)');
+                        const minRvolReq = this.getParam<number>('minRvol', 1.2);
+                        const maxRevAllowed = this.getParam<number>('maxReversals', 1);
+
+                        let allowTrade = true;
+                        if (filterMode === '24/7 Momentum (Chop <= 1 & RVOL >= 1.2)') {
+                            if (reversals30 > maxRevAllowed || rvol < minRvolReq) {
+                                allowTrade = false; // Suppress chop or low-volume trades
+                            }
+                        } else if (filterMode === 'Session Specialist (London/NY & Skip #1)') {
+                            const isEligibleSession = sessionInfo.sessionId === 'London' || sessionInfo.sessionId === 'NewYorkPostOpen';
+                            if (!isEligibleSession || sTradeNum < 2 || reversals30 > maxRevAllowed) {
+                                allowTrade = false; // Suppress outside-hours, Trade #1, or chop
+                            }
+                        }
+
+                        // 5. Accept or Suppress Signal
+                        if (allowTrade) {
+                            this.crossSignals[i] = rawCrossDir as any;
+                            this.crossPrices[i] = this.interpolateCross(prevEma, currEma, prevSma, currSma, c);
+                        }
                     }
                 }
 
@@ -267,9 +366,16 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                     this.smaValues[i] = sum / windowCount;
                 }
 
-                // Cross detection on current bar
+                // Cross detection with RAD-ML-04F Quant Gating
                 this.crossSignals[i] = 0;
                 this.crossPrices[i] = 0;
+
+                // Rolling Volume SMA 20 for RVOL
+                const barVol = ds.data[i * 6 + 5];
+                this.volSum20 += barVol;
+                if (i >= 20) this.volSum20 -= ds.data[(i - 20) * 6 + 5];
+                const volSma20 = i >= 19 ? Math.max(this.volSum20 / 20, 0.0001) : 0;
+                const rvol = volSma20 > 0 ? (barVol / volSma20) : 1.0;
 
                 const minWarmup = Math.max(emaLen, smaLen) - 1;
                 if (i > minWarmup) {
@@ -278,12 +384,48 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                     const prevSma = this.smaValues[i - 1];
                     const currSma = this.smaValues[i];
 
-                    if (prevEma <= prevSma && currEma > currSma) {
-                        this.crossSignals[i] = 1;
-                        this.crossPrices[i] = this.interpolateCross(prevEma, currEma, prevSma, currSma, c);
-                    } else if (prevEma >= prevSma && currEma < currSma) {
-                        this.crossSignals[i] = -1;
-                        this.crossPrices[i] = this.interpolateCross(prevEma, currEma, prevSma, currSma, c);
+                    let rawCrossDir = 0;
+                    if (prevEma <= prevSma && currEma > currSma) rawCrossDir = 1;
+                    else if (prevEma >= prevSma && currEma < currSma) rawCrossDir = -1;
+
+                    if (rawCrossDir !== 0) {
+                        this.rawCrossHistory.push({ barIndex: i, direction: rawCrossDir });
+
+                        const windowStart = i - 29;
+                        const recentCrosses: Array<{ barIndex: number; direction: number }> = [];
+                        for (let k = this.rawCrossHistory.length - 1; k >= 0; k--) {
+                            if (this.rawCrossHistory[k].barIndex >= windowStart) {
+                                recentCrosses.unshift(this.rawCrossHistory[k]);
+                            } else {
+                                break;
+                            }
+                        }
+                        let reversals30 = 0;
+                        for (let k = 1; k < recentCrosses.length; k++) {
+                            if (recentCrosses[k].direction !== recentCrosses[k - 1].direction) reversals30++;
+                        }
+
+                        const barTimestamp = ds.data[i * 6];
+                        const sessionInfo = classifySession(barTimestamp);
+                        const sTradeNum = (this.sessionCounters.get(sessionInfo.sessionDate) || 0) + 1;
+                        this.sessionCounters.set(sessionInfo.sessionDate, sTradeNum);
+
+                        const filterMode = this.getParam<string>('quantFilterMode', 'Off (Raw Mechanical)');
+                        const minRvolReq = this.getParam<number>('minRvol', 1.2);
+                        const maxRevAllowed = this.getParam<number>('maxReversals', 1);
+
+                        let allowTrade = true;
+                        if (filterMode === '24/7 Momentum (Chop <= 1 & RVOL >= 1.2)') {
+                            if (reversals30 > maxRevAllowed || rvol < minRvolReq) allowTrade = false;
+                        } else if (filterMode === 'Session Specialist (London/NY & Skip #1)') {
+                            const isEligibleSession = sessionInfo.sessionId === 'London' || sessionInfo.sessionId === 'NewYorkPostOpen';
+                            if (!isEligibleSession || sTradeNum < 2 || reversals30 > maxRevAllowed) allowTrade = false;
+                        }
+
+                        if (allowTrade) {
+                            this.crossSignals[i] = rawCrossDir as any;
+                            this.crossPrices[i] = this.interpolateCross(prevEma, currEma, prevSma, currSma, c);
+                        }
                     }
                 }
                 // --- START NEW: ATR & Historical Shelf Tracker ---
@@ -698,9 +840,17 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
             }
         }
 
+        const filterMode = this.getParam<string>('quantFilterMode', 'Off (Raw Mechanical)');
+        let filterTag = '';
+        if (filterMode === '24/7 Momentum (Chop <= 1 & RVOL >= 1.2)') {
+            filterTag = ' [⚡ 24/7 MOMENTUM ON]';
+        } else if (filterMode === 'Session Specialist (London/NY & Skip #1)') {
+            filterTag = ' [🎯 SESSION SPECIALIST ON]';
+        }
+
         return {
             label: `EMA(${emaLen})/SMA(${smaLen})`,
-            valueStr: `E:${fmt(emaVal)} S:${fmt(smaVal)}${crossTag}${shelfAlert}`,
+            valueStr: `E:${fmt(emaVal)} S:${fmt(smaVal)}${crossTag}${filterTag}${shelfAlert}`,
             valueColor: valColor
         };
         // --- END PHASE 4 ---
