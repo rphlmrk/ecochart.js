@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 
 <head>
@@ -2377,14 +2377,36 @@
       
     </div>
 
-    <!-- Loading Overlay -->
-    <div id="ai-export-loading-overlay" style="display: none; position: absolute; inset: 0; background: rgba(30, 34, 45, 0.92); backdrop-filter: blur(4px); flex-direction: column; align-items: center; justify-content: center; z-index: 10; text-align: center; padding: 20px;">
-      <div style="width: 32px; height: 32px; border: 3px solid rgba(239, 83, 80, 0.3); border-top-color: #EF5350; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 16px;"></div>
-      <div id="ai-export-loading-text" style="color: #D1D4DC; font-size: 14px;">
-        <div style="font-weight: bold; margin-bottom: 6px;">Mining Dataset...</div>
-        <div style="font-size: 12px; color: #00E676;">⚡ Simulating Ghost Horizons & Kinematics</div>
+    <!-- Loading Overlay (Phase 5 Live Progress HUD) -->
+    <div id="ai-export-loading-overlay" style="display: none; position: absolute; inset: 0; background: rgba(19, 23, 34, 0.95); backdrop-filter: blur(6px); flex-direction: column; align-items: center; justify-content: center; z-index: 20; text-align: center; padding: 24px; box-sizing: border-box;">
+      <div style="width: 38px; height: 38px; border: 3px solid rgba(239, 83, 80, 0.2); border-top-color: #EF5350; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 16px;"></div>
+
+      <div id="ai-export-loading-title" style="font-size: 15px; font-weight: 700; color: #F0F3FA; margin-bottom: 4px;">
+        Mining Deep Binance History...
       </div>
+
+      <div id="ai-export-loading-detail" style="font-size: 12px; color: #787B86; margin-bottom: 16px;">
+        Preparing pagination engine...
+      </div>
+
+      <!-- Live Visual Progress Bar Container -->
+      <div style="width: 85%; max-width: 380px; height: 8px; background: rgba(255, 255, 255, 0.08); border-radius: 4px; overflow: hidden; margin-bottom: 10px; border: 1px solid rgba(255, 255, 255, 0.05);">
+        <div id="ai-export-progress-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #EF5350, #FF7043); transition: width 0.2s ease;"></div>
+      </div>
+
+      <!-- Stats: Batches, Percentage & Remaining Time -->
+      <div style="display: flex; justify-content: space-between; width: 85%; max-width: 380px; font-size: 11px; font-family: monospace; color: #A0A5B5; margin-bottom: 18px;">
+        <span id="ai-export-progress-pct">0%</span>
+        <span id="ai-export-progress-count">Batch 0 / 0</span>
+        <span id="ai-export-progress-eta">ETA: --s</span>
+      </div>
+
+      <!-- Abort / Cancel Button -->
+      <button id="btn-ai-export-abort" type="button" style="background: rgba(255, 255, 255, 0.08); color: #D1D4DC; border: 1px solid rgba(255, 255, 255, 0.15); padding: 6px 16px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s ease;">
+        ✕ Cancel Mining
+      </button>
     </div>
+
   </dialog>
 
   <script type="module">

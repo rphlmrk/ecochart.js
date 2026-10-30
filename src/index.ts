@@ -34,6 +34,7 @@ import { TimeframeResampler } from './data/TimeframeResampler';
 export { alertManager } from './alerts/AlertManager';
 import { AIExporter, calculateATRArray, calculateGhostHorizons, runPreFlightAudit, type MLFeatureRow, type ExportAIOptions, type StructuralBoxLike, type GhostHorizons } from './data/AIExporter';
 export { AIExporter, calculateATRArray, calculateGhostHorizons, runPreFlightAudit, type MLFeatureRow, type ExportAIOptions, type StructuralBoxLike, type GhostHorizons };
+import { BackgroundDataMiner } from './data/BackgroundDataMiner';
 import { AlertUI } from './alerts/AlertUI';
 
 export interface SavedPaneState {
@@ -4569,101 +4570,81 @@ export class WorkspaceManager {
             });
         });
 
-        // Export Trigger
+        // --- START PHASE 5: CHUNK A (Binance Paginator & Live Progress HUD) ---
+        const btnAiExportAbort = document.getElementById('btn-ai-export-abort');
+        const progressFill = document.getElementById('ai-export-progress-fill');
+        const progressPct = document.getElementById('ai-export-progress-pct');
+        const progressCount = document.getElementById('ai-export-progress-count');
+        const progressEta = document.getElementById('ai-export-progress-eta');
+        const loadingTitle = document.getElementById('ai-export-loading-title');
+        const loadingDetail = document.getElementById('ai-export-loading-detail');
+
+        btnAiExportAbort?.addEventListener('click', () => {
+            BackgroundDataMiner.abort();
+            if (loadingOverlay) loadingOverlay.style.display = 'none';
+        });
+
         btnAiExportStart?.addEventListener('click', async () => {
             const chart = WorkspaceManager.activeChart || WorkspaceManager.charts[0];
-            if (!chart || !chart.dataStore || chart.dataStore.length === 0) {
-                alert("No chart candle data available for AI dataset export.");
-                return;
-            }
+            if (!chart) return;
 
-            // Extract values from the new UI (These can be passed to your backend Python scripts later)
             const activeRange = document.querySelector('.ai-range-btn.active') as HTMLElement;
-            const rangeVal = activeRange?.dataset.val || '1m';
+            const rangeKey = activeRange?.dataset.val || '1m';
+            const durationMs = BackgroundDataMiner.rangeToMs(rangeKey);
+
             const activePack = document.querySelector('.ai-pack-card.active') as HTMLElement;
             const packFormat = (activePack?.dataset.pack || 'csv').toUpperCase();
             const targetRR = (document.getElementById('ai-export-rr') as HTMLSelectElement)?.value || "2.0";
             const forwardHorizon = (document.getElementById('ai-export-horizon') as HTMLInputElement)?.value || "30";
 
-            // Show Loading Spinner
+            // Initialize Progress HUD
             if (loadingOverlay) loadingOverlay.style.display = 'flex';
-            if (loadingText) {
-                loadingText.innerHTML = `
-                    <div style="font-weight: bold; margin-bottom: 6px;">Mining ${packFormat} Dataset... (${rangeVal})</div>
-                    <div style="font-size: 12px; color: #00E676;">⚡ Simulating Horizons (R:R ${targetRR})</div>
-                `;
-            }
-
-            // Yield to browser to render the loading overlay
-            await new Promise(r => setTimeout(r, 60));
+            if (loadingTitle) loadingTitle.textContent = `Mining Binance History (${rangeKey.toUpperCase()})...`;
+            if (progressFill) progressFill.style.width = '0%';
+            if (progressPct) progressPct.textContent = '0%';
+            if (progressCount) progressCount.textContent = 'Batch 0 / 0';
+            if (progressEta) progressEta.textContent = 'ETA: --s';
 
             try {
-                // Find active indicators on the chart to extract features
-                let emaIndicator: any = null;
-                let smaIndicator: any = null;
-                let crossIndicator: any = null;
-                let macroIndicator: any = null;
-                let cbcIndicator: any = null;
-
-                for (const ind of chart.indicatorManager.activeIndicators) {
-                    if (ind instanceof EmaSmaCrossIndicator) crossIndicator = ind;
-                    else if (ind instanceof EMAIndicator && !emaIndicator) emaIndicator = ind;
-                    else if (ind instanceof SMAIndicator && !smaIndicator) smaIndicator = ind;
-                    else if (ind instanceof MarketStructurePullbackZonesIndicator) macroIndicator = ind;
-                    else if (ind instanceof StrictCBCPullbackZonesIndicator) cbcIndicator = ind;
-                }
-
-                const emaValues = crossIndicator?.emaValues || emaIndicator?.values || new Float64Array(chart.dataStore.length);
-                const smaValues = crossIndicator?.smaValues || smaIndicator?.values || new Float64Array(chart.dataStore.length);
-                
-                const latestMacro = macroIndicator?.getLatestOpenMacroBox?.() || null;
-                const activeBoxesPerBar: any[] = [];
-                
-                if (macroIndicator && macroIndicator.cachedMacroBoxes) {
-                    for (let i = 0; i < chart.dataStore.length; i++) {
-                        let activeB: any = null;
-                        for (const b of macroIndicator.cachedMacroBoxes) {
-                            if (i >= b.leftBar && (!b.rightBar || i <= b.rightBar)) {
-                                activeB = b;
-                                break;
-                            }
-                        }
-                        activeBoxesPerBar.push(activeB);
+                // Step 1: Execute 500ms Paged Download from Binance
+                const rawCandleBuffer = await BackgroundDataMiner.mineHistoricalCandles(
+                    chart.currentSymbol,
+                    chart.currentInterval,
+                    durationMs,
+                    (p) => {
+                        if (progressFill) progressFill.style.width = `${p.percent}%`;
+                        if (progressPct) progressPct.textContent = `${p.percent}%`;
+                        if (progressCount) progressCount.textContent = `Batch ${p.currentBatch} / ${p.totalBatches}`;
+                        if (progressEta) progressEta.textContent = `ETA: ${p.etaSeconds}s`;
+                        if (loadingDetail) loadingDetail.textContent = `${p.candlesFetched.toLocaleString()} candles fetched (${p.statusText})`;
                     }
-                }
+                );
 
-                const rows = AIExporter.extractFeatures(chart.dataStore, emaValues, smaValues, {
-                    includeGhosts: true,
-                    signalsOnly: true,
-                    crossSignals: crossIndicator?.crossSignals || undefined,
-                    macroTop: latestMacro ? latestMacro.top : null,
-                    macroBot: latestMacro ? latestMacro.bottom : null,
-                    activeMacroBox: latestMacro,
-                    activeBoxesPerBar: activeBoxesPerBar.length > 0 ? activeBoxesPerBar : undefined,
-                    cbcFlips: cbcIndicator?.flips || undefined,
-                    targetRR: parseFloat(targetRR) || 2.0,
-                    forwardHorizon: parseInt(forwardHorizon, 10) || 30
-                });
-
-                if (rows.length === 0) {
-                    alert("No signals found in the current dataset to export.");
+                if (rawCandleBuffer.length === 0) {
+                    alert("No candle history found on Binance for this range.");
+                    if (loadingOverlay) loadingOverlay.style.display = 'none';
                     return;
                 }
 
-                const csvRows = AIExporter.toCSVRows(rows);
-                const filename = `AI_DATA_${chart.currentSymbol}_${chart.currentInterval}_RR${targetRR}_H${forwardHorizon}_${Date.now()}.csv`;
-                
-                const exported = AIExporter.downloadCSV(csvRows, filename);
-                if (exported) {
-                    modalAiExport?.close();
+                if (loadingDetail) {
+                    loadingDetail.textContent = `Downloaded ${Math.floor(rawCandleBuffer.length / 6).toLocaleString()} candles. Ready for Chunk B math processing.`;
                 }
+
+                // Chunk A test confirmation notice
+                console.log(`✅ [Chunk A Complete] Successfully mined ${rawCandleBuffer.length / 6} candles from Binance at 500ms pacing.`);
+                setTimeout(() => {
+                    if (loadingOverlay) loadingOverlay.style.display = 'none';
+                }, 1000);
+
             } catch (err: any) {
-                console.error("AI Export Error:", err);
-                alert(`Export failed: ${err?.message || err}`);
-            } finally {
+                console.error("Mining error:", err);
+                if (err.message !== 'Mining cancelled by user.') {
+                    alert(`Mining stopped: ${err.message}`);
+                }
                 if (loadingOverlay) loadingOverlay.style.display = 'none';
             }
         });
+        // --- END PHASE 5: CHUNK A ---
 
         // Workspace Quick Access Icon (Top Toolbar)
         const btnWorkspaceModal = document.getElementById('btn-workspace-modal');
