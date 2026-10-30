@@ -4525,7 +4525,6 @@ export class WorkspaceManager {
         const btnAiExportStart = document.getElementById('btn-ai-export-start');
         
         const loadingOverlay = document.getElementById('ai-export-loading-overlay') as HTMLElement | null;
-        const loadingText = document.getElementById('ai-export-loading-text') as HTMLElement | null;
         const aiSubtitle = document.getElementById('ai-export-subtitle');
 
         const openModalAndSync = () => {
@@ -4593,7 +4592,8 @@ export class WorkspaceManager {
             const durationMs = BackgroundDataMiner.rangeToMs(rangeKey);
 
             const activePack = document.querySelector('.ai-pack-card.active') as HTMLElement;
-            const packFormat = (activePack?.dataset.pack || 'csv').toUpperCase();
+            const _packFormat = (activePack?.dataset.pack || 'csv').toUpperCase();
+            void _packFormat;
             const targetRR = (document.getElementById('ai-export-rr') as HTMLSelectElement)?.value || "2.0";
             const forwardHorizon = (document.getElementById('ai-export-horizon') as HTMLInputElement)?.value || "30";
 
@@ -4626,15 +4626,144 @@ export class WorkspaceManager {
                     return;
                 }
 
-                if (loadingDetail) {
-                    loadingDetail.textContent = `Downloaded ${Math.floor(rawCandleBuffer.length / 6).toLocaleString()} candles. Ready for Chunk B math processing.`;
+                // =========================================================================
+                // --- START CHUNK B: HEADLESS MATH & DATASET GENERATION ---
+                // =========================================================================
+                const candleCount = Math.floor(rawCandleBuffer.length / 6);
+
+                // 1. Wrap mined buffer in a lightweight Headless DataStore
+                const headlessDs = {
+                    data: rawCandleBuffer,
+                    length: candleCount,
+                    clear: () => {}
+                } as unknown as DataStore;
+
+                // 2. Instantiate Headless Indicators with user's active chart settings
+                const headlessCross = new EmaSmaCrossIndicator(10, 30);
+                headlessCross.setParam('notificationsEnabled', false); // Mute alerts during export
+                const chartCross = chart.indicatorManager.activeIndicators.find(i => i instanceof EmaSmaCrossIndicator) as EmaSmaCrossIndicator | undefined;
+                if (chartCross) {
+                    headlessCross.params.forEach(p => {
+                        const val = chartCross.getParam(p.id);
+                        if (val !== undefined && p.id !== 'notificationsEnabled') p.value = val;
+                    });
                 }
 
-                // Chunk A test confirmation notice
-                console.log(`✅ [Chunk A Complete] Successfully mined ${rawCandleBuffer.length / 6} candles from Binance at 500ms pacing.`);
-                setTimeout(() => {
+                const headlessMacro = new MarketStructurePullbackZonesIndicator();
+                const chartMacro = chart.indicatorManager.activeIndicators.find(i => i instanceof MarketStructurePullbackZonesIndicator) as MarketStructurePullbackZonesIndicator | undefined;
+                if (chartMacro) {
+                    headlessMacro.params.forEach(p => {
+                        const val = chartMacro.getParam(p.id);
+                        if (val !== undefined) p.value = val;
+                    });
+                }
+
+                const headlessCbc = new StrictCBCPullbackZonesIndicator();
+                const chartCbc = chart.indicatorManager.activeIndicators.find(i => i instanceof StrictCBCPullbackZonesIndicator) as StrictCBCPullbackZonesIndicator | undefined;
+                if (chartCbc) {
+                    headlessCbc.params.forEach(p => {
+                        const val = chartCbc.getParam(p.id);
+                        if (val !== undefined) p.value = val;
+                    });
+                }
+
+                // Step A: Calculate EMA / SMA Cross & Shelf Registry
+                if (loadingTitle) loadingTitle.textContent = "Processing Indicator Layers...";
+                if (loadingDetail) loadingDetail.textContent = `Running EMA 10 / SMA 30 Cross Engine on ${candleCount.toLocaleString()} bars...`;
+                if (progressFill) progressFill.style.width = "82%";
+                if (progressPct) progressPct.textContent = "82%";
+                await new Promise(r => setTimeout(r, 25)); // Allow UI repaint
+
+                headlessCross.update(headlessDs, true);
+
+                // Step B: Calculate Market Structure Pullback Zones
+                if (loadingDetail) loadingDetail.textContent = "Computing Market Structure Pullback Zones...";
+                if (progressFill) progressFill.style.width = "88%";
+                if (progressPct) progressPct.textContent = "88%";
+                await new Promise(r => setTimeout(r, 25));
+
+                headlessMacro.calculate(headlessDs);
+
+                // Step C: Calculate Strict CBC Candle Flips & Anchors
+                if (loadingDetail) loadingDetail.textContent = "Evaluating Strict CBC Anchor High/Low Flips...";
+                if (progressFill) progressFill.style.width = "92%";
+                if (progressPct) progressPct.textContent = "92%";
+                await new Promise(r => setTimeout(r, 25));
+
+                headlessCbc.update(headlessDs, true);
+
+                // Step D: Pre-index active Macro boxes per bar (O(M * Span) ultra-fast sweep)
+                const activeBoxesPerBar: any[] = new Array(candleCount).fill(null);
+                if (headlessMacro.cachedMacroBoxes) {
+                    for (const b of headlessMacro.cachedMacroBoxes) {
+                        const end = b.rightBar ? Math.min(candleCount - 1, b.rightBar) : candleCount - 1;
+                        for (let k = b.leftBar; k <= end; k++) {
+                            activeBoxesPerBar[k] = b;
+                        }
+                    }
+                }
+
+                // Step E: Extract Stationary Vectors & Simulate Ghost Horizons
+                if (loadingTitle) loadingTitle.textContent = "Mining AI Feature Tensor...";
+                if (loadingDetail) loadingDetail.textContent = "Calculating Ghost Horizons (MFE/MAE) & Historical Shelf Retests...";
+                if (progressFill) progressFill.style.width = "96%";
+                if (progressPct) progressPct.textContent = "96%";
+                await new Promise(r => setTimeout(r, 25));
+
+                const latestMacro = headlessMacro.getLatestOpenMacroBox();
+
+                const rows = AIExporter.extractFeatures(
+                    headlessDs,
+                    headlessCross.emaValues,
+                    headlessCross.smaValues,
+                    {
+                        includeGhosts: true,
+                        signalsOnly: true,
+                        crossSignals: headlessCross.crossSignals,
+                        macroTop: latestMacro ? latestMacro.top : null,
+                        macroBot: latestMacro ? latestMacro.bottom : null,
+                        activeMacroBox: latestMacro,
+                        activeBoxesPerBar: activeBoxesPerBar,
+                        cbcFlips: headlessCbc.flips,
+                        targetRR: parseFloat(targetRR) || 2.0,
+                        forwardHorizon: parseInt(forwardHorizon, 10) || 30
+                    }
+                );
+
+                if (rows.length === 0) {
+                    alert("No valid trade signals were detected in this historical window.");
                     if (loadingOverlay) loadingOverlay.style.display = 'none';
-                }, 1000);
+                    return;
+                }
+
+                // Step F: Format CSV & Run Pre-Flight Integrity Audit
+                if (loadingTitle) loadingTitle.textContent = "Auditing Dataset...";
+                if (loadingDetail) loadingDetail.textContent = `Running Pre-Flight Audit on ${rows.length.toLocaleString()} signal vectors...`;
+                if (progressFill) progressFill.style.width = "99%";
+                if (progressPct) progressPct.textContent = "99%";
+                await new Promise(r => setTimeout(r, 25));
+
+                const csvRows = AIExporter.toCSVRows(rows);
+                const filename = `AI_DATA_${chart.currentSymbol}_${chart.currentInterval}_RR${targetRR}_H${forwardHorizon}_${rangeKey.toUpperCase()}_${Date.now()}.csv`;
+
+                const exported = AIExporter.downloadCSV(csvRows, filename);
+
+                if (exported) {
+                    if (loadingTitle) loadingTitle.textContent = "Export Complete!";
+                    if (loadingDetail) loadingDetail.textContent = `Successfully exported ${rows.length.toLocaleString()} rows (${candleCount.toLocaleString()} candles analyzed).`;
+                    if (progressFill) progressFill.style.width = "100%";
+                    if (progressPct) progressPct.textContent = "100%";
+                    setTimeout(() => {
+                        if (loadingOverlay) loadingOverlay.style.display = 'none';
+                        const modalAiExport = document.getElementById('ai-export-modal') as HTMLDialogElement | null;
+                        modalAiExport?.close();
+                    }, 1400);
+                } else {
+                    if (loadingOverlay) loadingOverlay.style.display = 'none';
+                }
+                // =========================================================================
+                // --- END CHUNK B ---
+                // =========================================================================
 
             } catch (err: any) {
                 console.error("Mining error:", err);
