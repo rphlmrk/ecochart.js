@@ -229,7 +229,7 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                     // Invalidation: Price closed 1.5 ATR past the shelf
                     if ((shelf.direction === 1 && c < shelf.price - 1.5 * currentAtr) ||
                         (shelf.direction === -1 && c > shelf.price + 1.5 * currentAtr)) {
-                        shelf.broken = true;
+                        this.crossRegistry.splice(r, 1); // Prune broken shelf immediately to keep memory lean
                         continue;
                     }
 
@@ -317,7 +317,7 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                     // Invalidation: Price closed 1.5 ATR past the shelf
                     if ((shelf.direction === 1 && c < shelf.price - 1.5 * currentAtr) ||
                         (shelf.direction === -1 && c > shelf.price + 1.5 * currentAtr)) {
-                        shelf.broken = true;
+                        this.crossRegistry.splice(r, 1); // Prune broken shelf immediately to keep memory lean
                         continue;
                     }
 

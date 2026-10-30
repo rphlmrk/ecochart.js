@@ -36,6 +36,10 @@ export interface MLFeatureRow {
     // Phase 2: Kinematics (Time & Speed)
     swing_duration_bars: number;
     swing_velocity_atr: number;
+    // Historical Shelf features
+    distToHistoricalShelfAtr?: number;
+    historicalShelfAgeHrs?: number;
+    isHistoricalShelfRetest?: number;
     // Phase 3: The Ghost Engine (Continuous Future Targets)
     mfe_5_bars: number;
     mae_5_bars: number;
@@ -204,6 +208,13 @@ export class AIExporter {
         'dist_to_macro_top_atr',
         'dist_to_macro_bot_atr',
         'risk_dist_atr',
+
+        // --- ADD THESE 3 LINES ---
+        'dist_to_historical_shelf_atr',
+        'historical_shelf_age_hrs',
+        'is_historical_shelf_retest',
+        // -------------------------
+
         'event_t_minus_1',
         'event_t_minus_2',
         'event_t_minus_3',
@@ -236,6 +247,14 @@ export class AIExporter {
         // Phase 2 Step 1: Rolling memory of the last 3 distinct signals (N-Grams)
         const eventLatch = ['NONE', 'NONE', 'NONE'];
         const signalsOnly = options.signalsOnly ?? false;
+
+        const crossRegistry: Array<{
+            price: number;
+            timeMs: number;
+            direction: number;
+            maxRunAtr: number;
+            isMature: boolean;
+        }> = [];
 
         for (let i = 0; i < len; i++) {
             const base = i * 6;
@@ -407,6 +426,56 @@ export class AIExporter {
                 }
             }
 
+            // --- ADD HISTORICAL SHELF TO ROW ---
+            const highPrice = dataStore.data[base + 2];
+            const lowPrice = dataStore.data[base + 3];
+
+            // 1. Register new cross
+            const crossSignal = options.crossSignals ? options.crossSignals[i] : 0;
+            if (crossSignal !== 0) {
+                crossRegistry.push({
+                    price: closePrice,
+                    timeMs: timestamp,
+                    direction: crossSignal,
+                    maxRunAtr: 0,
+                    isMature: false
+                });
+            }
+
+            let closestShelfDistAtr = 999;
+            let closestShelfAgeHrs = 0;
+            let isHistoricalShelfRetest = 0;
+
+            for (let c = crossRegistry.length - 1; c >= 0; c--) {
+                const cross = crossRegistry[c];
+                const ageHours = (timestamp - cross.timeMs) / 3600000;
+
+                // Invalidation
+                if ((cross.direction === 1 && closePrice < cross.price - (1.5 * currentAtr)) ||
+                    (cross.direction === -1 && closePrice > cross.price + (1.5 * currentAtr))) {
+                    crossRegistry.splice(c, 1);
+                    continue;
+                }
+
+                // Excursion tracking
+                const runAtr = cross.direction === 1 ? (highPrice - cross.price) / currentAtr : (cross.price - lowPrice) / currentAtr;
+                if (runAtr > cross.maxRunAtr) cross.maxRunAtr = runAtr;
+
+                // Maturation (>= 5 ATR & >= 12h)
+                if (!cross.isMature && cross.maxRunAtr >= 5.0 && ageHours >= 12.0) {
+                    cross.isMature = true;
+                }
+
+                if (cross.isMature) {
+                    const distAtr = Math.abs(closePrice - cross.price) / currentAtr;
+                    if (distAtr < closestShelfDistAtr) {
+                        closestShelfDistAtr = distAtr;
+                        closestShelfAgeHrs = ageHours;
+                        if (distAtr <= 0.5) isHistoricalShelfRetest = 1;
+                    }
+                }
+            }
+
             rows.push({
                 timestamp,
                 signal: currentSignal,
@@ -418,6 +487,9 @@ export class AIExporter {
                 distToMacroTopAtr,
                 distToMacroBotAtr,
                 riskDistAtr: dynamicRiskDistAtr,
+                distToHistoricalShelfAtr: closestShelfDistAtr === 999 ? 0 : closestShelfDistAtr,
+                historicalShelfAgeHrs: closestShelfAgeHrs,
+                isHistoricalShelfRetest: isHistoricalShelfRetest,
                 event_t_minus_1,
                 event_t_minus_2,
                 event_t_minus_3,
@@ -451,6 +523,13 @@ export class AIExporter {
             row.distToMacroTopAtr.toFixed(4),
             row.distToMacroBotAtr.toFixed(4),
             row.riskDistAtr.toFixed(4),
+
+            // --- ADD THESE 3 LINES ---
+            (row.distToHistoricalShelfAtr ?? 0).toFixed(4),
+            (row.historicalShelfAgeHrs ?? 0).toFixed(2),
+            row.isHistoricalShelfRetest ?? 0,
+            // -------------------------
+
             row.event_t_minus_1,
             row.event_t_minus_2,
             row.event_t_minus_3,
