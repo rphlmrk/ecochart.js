@@ -46,7 +46,7 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
     public crossRegistry: Array<{
         price: number; timeMs: number; direction: number;
         maxRunAtr: number; isMature: boolean; broken: boolean;
-        startIndex: number;
+        startIndex: number; endIndex?: number;
     }> = [];
     private rollingAtr = 0;
 
@@ -73,6 +73,8 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
             { id: 'showLines', name: 'Show Moving Average Lines', type: 'boolean', value: true },
             { id: 'showCrossSignals', name: 'Show Cross Markers', type: 'boolean', value: true },
             { id: 'showHistoricalShelves', name: 'Show Mature Historical Shelves', type: 'boolean', value: true },
+            { id: 'maxShelfAgeDays', name: 'Max Shelf Age (Days)', type: 'number', value: 2, min: 0.5, max: 30, step: 0.5 },
+            { id: 'hideCrossedShelves', name: 'Hide Shelves Once Crossed', type: 'boolean', value: false },
             // --- RAD-ML-04F: PRODUCTION QUANT FILTERS ---
             {
                 id: 'quantFilterMode',
@@ -324,12 +326,13 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                 this.rollingAtr = i === 0 ? tr : (this.rollingAtr * 13 + tr) / 14;
                 const currentAtr = Math.max(this.rollingAtr, 0.000001);
 
-                // 1. Register New Cross
-                if (this.crossSignals[i] !== 0) {
+                // 1. Register New Cross: ONLY accepted signals (+1 or -1) can spawn shelves.
+                // Filtered chop crosses (+2 or -2) are strictly blocked from creating lines!
+                if (Math.abs(this.crossSignals[i]) === 1) {
                     this.crossRegistry.push({
                         price: this.crossPrices[i] || c,
                         timeMs: ds.data[i * 6],
-                        direction: this.crossSignals[i],
+                        direction: Math.sign(this.crossSignals[i]), // Strictly normalized to +1 or -1
                         maxRunAtr: 0,
                         isMature: false,
                         broken: false,
@@ -338,26 +341,43 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                 }
 
                 // 2. Update existing crosses in memory
+                const maxAgeHours = Math.max(1, this.getParam<number>('maxShelfAgeDays', 2)) * 24;
+
                 for (let r = this.crossRegistry.length - 1; r >= 0; r--) {
                     const shelf = this.crossRegistry[r];
-                    if (shelf.broken) continue;
-
                     const ageHours = (ds.data[i * 6] - shelf.timeMs) / 3600000;
 
-                    // Invalidation: Price closed 1.5 ATR past the shelf
-                    if ((shelf.direction === 1 && c < shelf.price - 1.5 * currentAtr) ||
-                        (shelf.direction === -1 && c > shelf.price + 1.5 * currentAtr)) {
-                        this.crossRegistry.splice(r, 1); // Prune broken shelf immediately to keep memory lean
+                    // AGE FILTER: Prune shelves older than Max Shelf Age (default 2 days)
+                    if (ageHours > maxAgeHours) {
+                        this.crossRegistry.splice(r, 1);
                         continue;
                     }
 
-                    // Excursion: Track how far price ran from this cross
-                    const runAtr = shelf.direction === 1 ? (h - shelf.price) / currentAtr : (shelf.price - l) / currentAtr;
+                    const dir = Math.sign(shelf.direction);
+
+                    // Track Excursion
+                    const runAtr = dir === 1 ? (h - shelf.price) / currentAtr : (shelf.price - l) / currentAtr;
                     if (runAtr > shelf.maxRunAtr) shelf.maxRunAtr = runAtr;
 
                     // Maturation: Ran > 5 ATR and is > 12 hours old
                     if (!shelf.isMature && shelf.maxRunAtr >= 5.0 && ageHours >= 12.0) {
                         shelf.isMature = true;
+                    }
+
+                    // TERMINATION: When price crosses the line, STOP EXTENDING at this candle!
+                    if (shelf.isMature && !shelf.broken && i > shelf.startIndex) {
+                        const isCrossed = dir === 1 ? (l <= shelf.price) : (h >= shelf.price);
+                        if (isCrossed) {
+                            shelf.broken = true;
+                            shelf.endIndex = i; // Locks the line end to this candle
+                        }
+                    }
+
+                    // Invalidation: Price closed 1.5 ATR past the shelf -> Prune completely
+                    if ((dir === 1 && c < shelf.price - 1.5 * currentAtr) ||
+                        (dir === -1 && c > shelf.price + 1.5 * currentAtr)) {
+                        this.crossRegistry.splice(r, 1);
+                        continue;
                     }
                 }
 
@@ -414,12 +434,12 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                 this.rollingAtr = i === 0 ? tr : (this.rollingAtr * 13 + tr) / 14;
                 const currentAtr = Math.max(this.rollingAtr, 0.000001);
 
-                // 1. Register New Cross
-                if (this.crossSignals[i] !== 0) {
+                // 1. Register New Cross (Accepted signals only)
+                if (Math.abs(this.crossSignals[i]) === 1) {
                     this.crossRegistry.push({
                         price: this.crossPrices[i] || c,
                         timeMs: ds.data[i * 6],
-                        direction: this.crossSignals[i],
+                        direction: Math.sign(this.crossSignals[i]),
                         maxRunAtr: 0,
                         isMature: false,
                         broken: false,
@@ -428,26 +448,39 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                 }
 
                 // 2. Update existing crosses in memory
+                const maxAgeHours = Math.max(1, this.getParam<number>('maxShelfAgeDays', 2)) * 24;
+
                 for (let r = this.crossRegistry.length - 1; r >= 0; r--) {
                     const shelf = this.crossRegistry[r];
-                    if (shelf.broken) continue;
-
                     const ageHours = (ds.data[i * 6] - shelf.timeMs) / 3600000;
 
-                    // Invalidation: Price closed 1.5 ATR past the shelf
-                    if ((shelf.direction === 1 && c < shelf.price - 1.5 * currentAtr) ||
-                        (shelf.direction === -1 && c > shelf.price + 1.5 * currentAtr)) {
-                        this.crossRegistry.splice(r, 1); // Prune broken shelf immediately to keep memory lean
+                    if (ageHours > maxAgeHours) {
+                        this.crossRegistry.splice(r, 1);
                         continue;
                     }
 
-                    // Excursion: Track how far price ran from this cross
-                    const runAtr = shelf.direction === 1 ? (h - shelf.price) / currentAtr : (shelf.price - l) / currentAtr;
+                    const dir = Math.sign(shelf.direction);
+
+                    const runAtr = dir === 1 ? (h - shelf.price) / currentAtr : (shelf.price - l) / currentAtr;
                     if (runAtr > shelf.maxRunAtr) shelf.maxRunAtr = runAtr;
 
-                    // Maturation: Ran > 5 ATR and is > 12 hours old
                     if (!shelf.isMature && shelf.maxRunAtr >= 5.0 && ageHours >= 12.0) {
                         shelf.isMature = true;
+                    }
+
+                    // TERMINATION: Stop extending once crossed
+                    if (shelf.isMature && !shelf.broken && i > shelf.startIndex) {
+                        const isCrossed = dir === 1 ? (l <= shelf.price) : (h >= shelf.price);
+                        if (isCrossed) {
+                            shelf.broken = true;
+                            shelf.endIndex = i;
+                        }
+                    }
+
+                    if ((dir === 1 && c < shelf.price - 1.5 * currentAtr) ||
+                        (dir === -1 && c > shelf.price + 1.5 * currentAtr)) {
+                        this.crossRegistry.splice(r, 1);
+                        continue;
                     }
                 }
 
@@ -640,27 +673,42 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
 
         // --- START PHASE 4: Institutional Dotted Rays ---
         if (this.getParam<boolean>('showHistoricalShelves', true)) {
+            const hideCrossed = this.getParam<boolean>('hideCrossedShelves', false);
+
             for (const shelf of this.crossRegistry) {
-                if (!shelf.isMature || shelf.broken) continue;
+                if (!shelf.isMature) continue;
+                if (shelf.broken && hideCrossed) continue;
 
                 const startX = r.getCandleCenterX(shelf.startIndex);
-                const endX = layout.chartWidth + 200;
+                
+                // If price crossed the line, STOP EXTENDING at the candle where it was crossed!
+                // If still unbroken, extend to the right edge of the chart
+                let endX = layout.chartWidth + 200;
+                if (shelf.endIndex !== undefined) {
+                    endX = r.getCandleCenterX(shelf.endIndex);
+                }
+
                 const y = r.priceToY(shelf.price);
 
-                // FIX: Changed layout.chartHeight to layout.mainChartHeight
                 if (y < -50 || y > layout.mainChartHeight + 50 || startX > endX) continue;
 
-                const shelfColor = shelf.direction === 1 ? bullColor : bearColor;
+                const dir = Math.sign(shelf.direction);
+                const shelfColor = dir === 1 ? bullColor : bearColor;
+                const shelfAlpha = shelf.broken ? 0.30 : 0.65; // Dim line if crossed
 
-                // Draw a professional dotted line to represent the Institutional Shelf
+                // Fast clipped viewport drawing
+                const drawStartX = Math.max(-50, startX);
+                const drawEndX = Math.min(layout.chartWidth + 50, endX);
+                if (drawStartX >= drawEndX) continue;
+
                 const dash = 8;
                 const gap = 6;
-                g.moveTo(startX, y);
-                for (let curX = startX; curX < endX; curX += dash + gap) {
+                g.moveTo(drawStartX, y);
+                for (let curX = drawStartX; curX < drawEndX; curX += dash + gap) {
                     g.moveTo(curX, y);
-                    g.lineTo(Math.min(curX + dash, endX), y);
+                    g.lineTo(Math.min(curX + dash, drawEndX), y);
                 }
-                g.stroke({ color: shelfColor, width: 2, alpha: 0.65 });
+                g.stroke({ color: shelfColor, width: 2, alpha: shelfAlpha });
             }
         }
         // --- END PHASE 4 ---
