@@ -47,6 +47,8 @@ export interface MLFeatureRow {
 }
 
 export interface ExportAIOptions {
+    targetRR?: number;
+    forwardHorizon?: number;
     atrPeriod?: number;
     emaPeriod?: number;
     smaPeriod?: number;
@@ -310,31 +312,7 @@ export class AIExporter {
                 continue;
             }
 
-            // 3. ATR-Normalized Risk Distance (For Stop Loss)
-            // Tells the AI "This stop loss is 1.5 ATRs wide", preventing regime-scaling issues
-            const entryPrice = options.entryPricesPerBar ? (options.entryPricesPerBar[i] ?? closePrice) : (options.entryPrice ?? closePrice);
-            let stopLossPrice: number;
-            if (options.stopLossPricesPerBar && options.stopLossPricesPerBar[i] !== undefined) {
-                stopLossPrice = options.stopLossPricesPerBar[i];
-            } else if (options.stopLossPrice !== undefined) {
-                stopLossPrice = options.stopLossPrice;
-            } else {
-                // Auto-map structural stop loss based on signal direction:
-                // Long trades put structural stop at macroBot; Short trades put structural stop at macroTop
-                const isLong = currentSignal === 'BULL_CROSS' || currentSignal.includes('UP') || currentSignal.includes('BULL');
-                const isShort = currentSignal === 'BEAR_CROSS' || currentSignal.includes('DN') || currentSignal.includes('BEAR');
-                if (isLong && macroBot) {
-                    stopLossPrice = macroBot;
-                } else if (isShort && macroTop) {
-                    stopLossPrice = macroTop;
-                } else {
-                    stopLossPrice = closePrice;
-                }
-            }
-            const riskDistAtr = Math.abs(entryPrice - stopLossPrice) / currentAtr;
-
             // 2. Extract N-Gram features for the current row
-            // Note: These represent the last 3 signals that happened UP TO and INCLUDING this bar.
             const event_t_minus_1 = eventLatch[0];
             const event_t_minus_2 = eventLatch[1];
             const event_t_minus_3 = eventLatch[2];
@@ -346,23 +324,88 @@ export class AIExporter {
                 mfe_30: 0, mae_30: 0
             };
 
-            if (includeGhosts && currentSignal !== 'NONE') {
-                // Determine the intended direction of the trade based on signal
-                const tradeDirection = (currentSignal === 'BULL_CROSS' || currentSignal.includes('UP') || currentSignal.includes('BULL'))
-                    ? 'LONG'
-                    : 'SHORT';
+            let outcome = 0;
+            let barsToResolution = 0;
+            let dynamicRiskDistAtr = 0;
 
-                ghosts = calculateGhostHorizons(
-                    dataStore,
-                    i,
-                    closePrice,
-                    tradeDirection,
-                    currentAtr
-                );
+            if (currentSignal !== 'NONE') {
+                const isLong = (currentSignal === 'BULL_CROSS' || currentSignal.includes('UP') || currentSignal.includes('BULL'));
+                const tradeDirection: 'LONG' | 'SHORT' = isLong ? 'LONG' : 'SHORT';
+
+                // 1. Calculate Ghost Engine Horizons
+                if (includeGhosts) {
+                    ghosts = calculateGhostHorizons(
+                        dataStore,
+                        i,
+                        closePrice,
+                        tradeDirection,
+                        currentAtr
+                    );
+                }
+
+                // 2. Dynamic Per-Bar Structural Stop Loss & Target R:R Simulation
+                const targetRR = options.targetRR ?? 2.0;
+                const maxHorizon = options.forwardHorizon ?? 30;
+
+                // Stop loss: Structural zone floor/ceiling, fallback to 1.5 ATR
+                let stopPrice = isLong 
+                    ? (activeMacroBox ? activeMacroBox.bottom : closePrice - (currentAtr * 1.5))
+                    : (activeMacroBox ? activeMacroBox.top : closePrice + (currentAtr * 1.5));
+
+                let rawRisk = Math.abs(closePrice - stopPrice);
+                if (rawRisk <= 0 || isNaN(rawRisk)) rawRisk = currentAtr * 1.5;
+
+                dynamicRiskDistAtr = rawRisk / currentAtr;
+
+                const targetPrice = isLong 
+                    ? closePrice + (rawRisk * targetRR) 
+                    : closePrice - (rawRisk * targetRR);
+
+                // 3. Simulate Forward Trade Outcome (1 = Win, 0 = Loss, -1 = Timeout)
+                const lookAheadLimit = Math.min(len - 1, i + maxHorizon);
+                let resolved = false;
+
+                for (let f = i + 1; f <= lookAheadLimit; f++) {
+                    const fHigh = dataStore.data[f * 6 + 2];
+                    const fLow = dataStore.data[f * 6 + 3];
+
+                    if (isLong) {
+                        // Conservative: Check Stop Loss before Target
+                        if (fLow <= stopPrice) {
+                            outcome = 0; // Stopped out
+                            barsToResolution = f - i;
+                            resolved = true;
+                            break;
+                        }
+                        if (fHigh >= targetPrice) {
+                            outcome = 1; // Target hit (Win)
+                            barsToResolution = f - i;
+                            resolved = true;
+                            break;
+                        }
+                    } else {
+                        // Short trade
+                        if (fHigh >= stopPrice) {
+                            outcome = 0; // Stopped out
+                            barsToResolution = f - i;
+                            resolved = true;
+                            break;
+                        }
+                        if (fLow <= targetPrice) {
+                            outcome = 1; // Target hit (Win)
+                            barsToResolution = f - i;
+                            resolved = true;
+                            break;
+                        }
+                    }
+                }
+
+                // If neither Stop nor Target hit within the horizon, mark as Timeout (-1)
+                if (!resolved) {
+                    outcome = -1;
+                    barsToResolution = maxHorizon;
+                }
             }
-
-            const outcome = options.outcomesPerBar ? options.outcomesPerBar[i] : 0;
-            const barsToResolution = options.barsToResolutionPerBar ? options.barsToResolutionPerBar[i] : 0;
 
             rows.push({
                 timestamp,
@@ -374,7 +417,7 @@ export class AIExporter {
                 emaSmaSpreadPct,
                 distToMacroTopAtr,
                 distToMacroBotAtr,
-                riskDistAtr,
+                riskDistAtr: dynamicRiskDistAtr,
                 event_t_minus_1,
                 event_t_minus_2,
                 event_t_minus_3,

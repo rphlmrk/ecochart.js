@@ -4633,19 +4633,16 @@ export class WorkspaceManager {
                 }
 
                 const rows = AIExporter.extractFeatures(chart.dataStore, emaValues, smaValues, {
-                    includeGhosts: true, // Always true based on the new UI assumption
-                    signalsOnly: true,   // Always export only actual events to save space
+                    includeGhosts: true,
+                    signalsOnly: true,
                     crossSignals: crossIndicator?.crossSignals || undefined,
                     macroTop: latestMacro ? latestMacro.top : null,
                     macroBot: latestMacro ? latestMacro.bottom : null,
                     activeMacroBox: latestMacro,
                     activeBoxesPerBar: activeBoxesPerBar.length > 0 ? activeBoxesPerBar : undefined,
                     cbcFlips: cbcIndicator?.flips || undefined,
-                    
-                    // Stationary mapping
-                    entryPrice: chart.dataStore.data[(chart.dataStore.length - 1) * 6 + 4],
-                    stopLossPrice: crossIndicator?.crossSignals?.[chart.dataStore.length - 1] === 1 ? (latestMacro ? latestMacro.bottom : undefined) : 
-                                  (crossIndicator?.crossSignals?.[chart.dataStore.length - 1] === -1 ? (latestMacro ? latestMacro.top : undefined) : undefined)
+                    targetRR: parseFloat(targetRR) || 2.0,
+                    forwardHorizon: parseInt(forwardHorizon, 10) || 30
                 });
 
                 if (rows.length === 0) {
