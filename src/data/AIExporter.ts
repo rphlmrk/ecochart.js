@@ -270,10 +270,19 @@ export class AIExporter {
             const smaVal = smaValues[i] !== undefined ? smaValues[i] : closePrice;
             const emaSmaSpreadPct = closePrice !== 0 ? (emaVal - smaVal) / closePrice : 0;
 
-            // Phase 2 Step 3: Structural box and kinematics calculation
-            const activeMacroBox = options.activeBoxesPerBar ? options.activeBoxesPerBar[i] : (options.activeMacroBox ?? null);
-            const macroTop = activeMacroBox ? activeMacroBox.top : (options.macroTop ?? 0);
-            const macroBot = activeMacroBox ? activeMacroBox.bottom : (options.macroBot ?? 0);
+            // Phase 2 Step 3: Structural box and kinematics calculation (NO FUTURE LEAK)
+            const activeMacroBox = options.activeBoxesPerBar 
+                ? options.activeBoxesPerBar[i] 
+                : (options.activeMacroBox ?? null);
+            
+            // If activeBoxesPerBar is used, DO NOT fall back to options.macroTop (prevents leaking Day 7 into Day 1)
+            const macroTop = activeMacroBox 
+                ? activeMacroBox.top 
+                : (options.activeBoxesPerBar ? 0 : (options.macroTop ?? 0));
+                
+            const macroBot = activeMacroBox 
+                ? activeMacroBox.bottom 
+                : (options.activeBoxesPerBar ? 0 : (options.macroBot ?? 0));
 
             // Default kinematic values if no zone is active
             let swingDurationBars = 0;
