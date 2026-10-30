@@ -114,7 +114,7 @@ export class IndicatorManager {
                 } else if (
                     (ind as any).layerType === 'pullback_zone' ||
                     ind.id === 'STRICT_CBC_PULLBACK' ||
-                    ind.id.startsWith('STRICT_CBC') ||
+                    ind.id.startsWith('STRICT_CBC_PULLBACK') ||
                     ind.id === 'PULLBACK_ZONES' ||
                     ind.id === 'MS_PULLBACK_DTDB'
                 ) {

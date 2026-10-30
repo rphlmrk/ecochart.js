@@ -21,6 +21,7 @@ import {
     MarketStructurePullbackZonesIndicator,
     PullbackDoubleTopBottomIndicator,
     StrictCBCPullbackZonesIndicator,
+    StrictCBCZigZagIndicator,
     EmaSmaCrossIndicator
 } from './indicators/plugins';
 
@@ -5272,7 +5273,8 @@ export class WorkspaceManager {
             { type: 'CBC_FLIP', name: 'CBC Flip (Exact Wick Alignment)', factory: () => new CBCFlipIndicator() },
             { type: 'PULLBACK_ZONES', name: 'Market Structure Pullback Zones', factory: () => new MarketStructurePullbackZonesIndicator() },
             { type: 'MS_PULLBACK_DTDB', name: 'Market Structure Double Top & Bottom', factory: () => new PullbackDoubleTopBottomIndicator() },
-            { type: 'STRICT_CBC_PULLBACK', name: 'Strict CBC Pullback Zones', factory: () => new StrictCBCPullbackZonesIndicator() }
+            { type: 'STRICT_CBC_PULLBACK', name: 'Strict CBC Pullback Zones', factory: () => new StrictCBCPullbackZonesIndicator() },
+            { type: 'STRICT_CBC_ZIGZAG', name: 'Strict CBC ZigZag', factory: () => new StrictCBCZigZagIndicator() }
         ];
 
         const showListView = () => {

@@ -11,5 +11,6 @@ export * from './PeriodSeparator';
 export * from './MarketSessions';
 export * from './MarketStructurePullbackZones';
 export * from './StrictCBCPullbackZones';
+export * from './StrictCBCZigZagIndicator';
 export * from './EmaSmaCross';
 export { PullbackDoubleTopBottomIndicator, type DoublePattern, type PullbackZoneBox as PullbackDTDBZoneBox } from './PullbackDoubleTopBottomIndicator';
