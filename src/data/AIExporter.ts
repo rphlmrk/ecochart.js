@@ -298,29 +298,14 @@ export class AIExporter {
                 const fOpen = dataStore.data[f * 6 + 1];
                 const fHigh = dataStore.data[f * 6 + 2];
                 const fLow = dataStore.data[f * 6 + 3];
-                const fClose = dataStore.data[f * 6 + 4];
-
-                // RULE: Trade stays active UNTIL an opposite EMA/SMA cross occurs
-                const isOppositeCross = isLong
-                    ? (options.crossSignals && options.crossSignals[f] === -1)
-                    : (options.crossSignals && options.crossSignals[f] === 1);
-
-                if (isOppositeCross) {
-                    exitPrice = fClose; // Exit trade at market close of the reversal cross
-                    resolutionBarIndex = f;
-                    outcomeClass = isLong
-                        ? (exitPrice >= closePrice ? 'timeout_gain' : 'timeout_loss')
-                        : (closePrice >= exitPrice ? 'timeout_gain' : 'timeout_loss');
-                    resolved = true;
-                    break;
-                }
 
                 if (isLong) {
                     const hitSL = fLow <= stopPrice;
                     const hitTP = fHigh >= targetPrice;
 
                     if (hitSL && hitTP) {
-                        exitPrice = fOpen <= stopPrice ? fOpen : stopPrice; // Conservative: Stop Loss first
+                        // Conservative assumption: Stop Loss hit first
+                        exitPrice = fOpen <= stopPrice ? fOpen : stopPrice;
                         resolutionBarIndex = f;
                         outcomeClass = 'hard_stop';
                         resolved = true;
@@ -343,6 +328,7 @@ export class AIExporter {
                     const hitTP = fLow <= targetPrice;
 
                     if (hitSL && hitTP) {
+                        // Conservative assumption: Stop Loss hit first
                         exitPrice = fOpen >= stopPrice ? fOpen : stopPrice;
                         resolutionBarIndex = f;
                         outcomeClass = 'hard_stop';
