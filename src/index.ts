@@ -32,8 +32,8 @@ import { favoritesManager } from './data/FavoritesManager';
 import { DataWorkerClient } from './workers/DataWorkerClient';
 import { TimeframeResampler } from './data/TimeframeResampler';
 export { alertManager } from './alerts/AlertManager';
-import { AIExporter, calculateATRArray, calculateGhostHorizons, runPreFlightAudit, type MLFeatureRow, type ExportAIOptions, type StructuralBoxLike, type GhostHorizons } from './data/AIExporter';
-export { AIExporter, calculateATRArray, calculateGhostHorizons, runPreFlightAudit, type MLFeatureRow, type ExportAIOptions, type StructuralBoxLike, type GhostHorizons };
+import { AIExporter, calculateATRArray, calculateVolumeSMAArray, classifyTradeSession, runPreFlightAudit, type ContinuousBarRow, type TradeManifestRow, type ExportAIOptions, type StructuralBoxLike } from './data/AIExporter';
+export { AIExporter, calculateATRArray, calculateVolumeSMAArray, classifyTradeSession, runPreFlightAudit, type ContinuousBarRow, type TradeManifestRow, type ExportAIOptions, type StructuralBoxLike };
 import { BackgroundDataMiner } from './data/BackgroundDataMiner';
 import { AlertUI } from './alerts/AlertUI';
 
@@ -4764,7 +4764,7 @@ export class WorkspaceManager {
 
                 headlessCbc.update(headlessDs, true);
 
-                // Step D: Pre-index active Macro boxes per bar (O(M * Span) ultra-fast sweep)
+                // Step D: Pre-index active Macro & Strict CBC boxes per bar
                 const activeBoxesPerBar: any[] = new Array(candleCount).fill(null);
                 if (headlessMacro.cachedMacroBoxes) {
                     for (const b of headlessMacro.cachedMacroBoxes) {
@@ -4775,65 +4775,56 @@ export class WorkspaceManager {
                     }
                 }
 
-                // Step E: Extract Stationary Vectors & Simulate Ghost Horizons
-                if (loadingTitle) loadingTitle.textContent = "Mining AI Feature Tensor...";
-                if (loadingDetail) loadingDetail.textContent = "Calculating Ghost Horizons (MFE/MAE) & Historical Shelf Retests...";
+                const activeCbcBoxesPerBar: any[] = new Array(candleCount).fill(null);
+                if (headlessCbc.cachedBoxes) {
+                    for (const b of headlessCbc.cachedBoxes) {
+                        const end = b.rightBar ? Math.min(candleCount - 1, b.rightBar) : candleCount - 1;
+                        for (let k = b.leftBar; k <= end; k++) {
+                            activeCbcBoxesPerBar[k] = b;
+                        }
+                    }
+                }
+
+                // Step E: Build Continuous Bars & Trade Manifest (RAD-ML-04A Contract)
+                if (loadingTitle) loadingTitle.textContent = "Building RAD-ML-04 Datasets...";
+                if (loadingDetail) loadingDetail.textContent = `Formatting continuous bars and causal trade manifest for ${candleCount.toLocaleString()} candles...`;
                 if (progressFill) progressFill.style.width = "96%";
                 if (progressPct) progressPct.textContent = "96%";
                 await new Promise(r => setTimeout(r, 25));
 
-                const latestMacro = headlessMacro.getLatestOpenMacroBox();
+                const { bars, trades } = AIExporter.buildDataset(headlessDs, {
+                    crossSignals: headlessCross.crossSignals,
+                    cbcFlips: headlessCbc.flips,
+                    emaValues: headlessCross.emaValues,
+                    smaValues: headlessCross.smaValues,
+                    activeBoxesPerBar: activeBoxesPerBar,
+                    activeCbcBoxesPerBar: activeCbcBoxesPerBar,
+                    targetRR: parseFloat(targetRR) || 2.0,
+                    forwardHorizon: parseInt(forwardHorizon, 10) || 30
+                });
 
-                const rows = AIExporter.extractFeatures(
-                    headlessDs,
-                    headlessCross.emaValues,
-                    headlessCross.smaValues,
-                    {
-                        includeGhosts: true,
-                        signalsOnly: true,
-                        crossSignals: headlessCross.crossSignals,
-                        macroTop: latestMacro ? latestMacro.top : null,
-                        macroBot: latestMacro ? latestMacro.bottom : null,
-                        activeMacroBox: latestMacro,
-                        activeBoxesPerBar: activeBoxesPerBar,
-                        cbcFlips: headlessCbc.flips,
-                        targetRR: parseFloat(targetRR) || 2.0,
-                        forwardHorizon: parseInt(forwardHorizon, 10) || 30
-                    }
-                );
-
-                if (rows.length === 0) {
+                if (trades.length === 0) {
                     alert("No valid trade signals were detected in this historical window.");
                     if (loadingOverlay) loadingOverlay.style.display = 'none';
+                    resetTopbarButton();
                     return;
                 }
 
-                // Step F: Format CSV & Run Pre-Flight Integrity Audit
-                if (loadingTitle) loadingTitle.textContent = "Auditing Dataset...";
-                if (loadingDetail) loadingDetail.textContent = `Running Pre-Flight Audit on ${rows.length.toLocaleString()} signal vectors...`;
-                if (progressFill) progressFill.style.width = "99%";
-                if (progressPct) progressPct.textContent = "99%";
+                // Step F: Download bars.csv and trades.csv
+                if (loadingTitle) loadingTitle.textContent = "Exporting Files...";
+                if (loadingDetail) loadingDetail.textContent = `Generated ${bars.length.toLocaleString()} continuous bars and ${trades.length.toLocaleString()} trades.`;
+                if (progressFill) progressFill.style.width = "100%";
+                if (progressPct) progressPct.textContent = "100%";
                 await new Promise(r => setTimeout(r, 25));
 
-                const csvRows = AIExporter.toCSVRows(rows);
-                const filename = `AI_DATA_${chart.currentSymbol}_${chart.currentInterval}_RR${targetRR}_H${forwardHorizon}_${rangeKey.toUpperCase()}_${Date.now()}.csv`;
-
-                const exported = AIExporter.downloadCSV(csvRows, filename);
+                const exported = AIExporter.exportDualCSV(bars, trades, chart.currentSymbol, chart.currentInterval);
 
                 if (exported) {
-                    if (loadingTitle) loadingTitle.textContent = "Export Complete!";
-                    if (loadingDetail) loadingDetail.textContent = `Successfully exported ${rows.length.toLocaleString()} rows (${candleCount.toLocaleString()} candles analyzed).`;
-                    if (progressFill) progressFill.style.width = "100%";
-                    if (progressPct) progressPct.textContent = "100%";
                     resetTopbarButton();
                     setTimeout(() => {
                         if (loadingOverlay) loadingOverlay.style.display = 'none';
-                        const modalAiExport = document.getElementById('ai-export-modal') as HTMLDialogElement | null;
                         modalAiExport?.close();
                     }, 1400);
-                } else {
-                    resetTopbarButton();
-                    if (loadingOverlay) loadingOverlay.style.display = 'none';
                 }
                 // =========================================================================
                 // --- END CHUNK B ---
