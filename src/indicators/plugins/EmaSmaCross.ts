@@ -53,7 +53,6 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
     // Telemetry for Quant Filters (Causal tracking)
     private rawCrossHistory: Array<{ barIndex: number; direction: number }> = [];
     private sessionCounters = new Map<string, number>();
-    private volSum20 = 0;
     // -------------------------------------------------------------
 
     // Alert Deduplication State
@@ -88,6 +87,21 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
             },
             { id: 'minRvol', name: 'Min Volume Surge (RVOL)', type: 'number', value: 1.2, min: 0.5, max: 5.0, step: 0.1 },
             { id: 'maxReversals', name: 'Max Whipsaws (30 Bars)', type: 'number', value: 1, min: 0, max: 5, step: 1 },
+            { id: 'showFilteredSignals', name: 'Show Rejected Signals', type: 'boolean', value: true },
+            {
+                id: 'filteredShape',
+                name: 'Rejected Signal Style',
+                type: 'select',
+                value: 'Hollow Ring (○)',
+                options: [
+                    'Hollow Ring (○)',
+                    'Cross / X (✖)',
+                    'Small Dot (•)',
+                    'Diamond (◆)',
+                    'Same Shape (Dimmed)'
+                ]
+            },
+            { id: 'filteredAlpha', name: 'Rejected Signal Opacity', type: 'number', value: 0.40, min: 0.1, max: 1.0, step: 0.05 },
             // --------------------------------------------
             {
                 id: 'shapeMode',
@@ -156,7 +170,6 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
         this.rollingAtr = 0;
         this.rawCrossHistory = [];
         this.sessionCounters.clear();
-        this.volSum20 = 0;
         super.reset();
     }
 
@@ -183,6 +196,61 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
             newValues.set(this.values);
             this.values = newValues;
         }
+    }
+
+    /**
+     * Evaluates a raw cross against the active Quant Filter.
+     * Returns: +1/-1 = Accepted, +2/-2 = Rejected (show with distinct dimmed shape)
+     */
+    private evaluateQuantSignal(rawCrossDir: number, i: number, ds: DataStore): number {
+        if (rawCrossDir === 0) return 0;
+        const filterMode = this.getParam<string>('quantFilterMode', 'Off (Raw Mechanical)');
+        if (filterMode === 'Off (Raw Mechanical)') return rawCrossDir;
+
+        // 1. Trailing 30-bar true directional reversals
+        const windowStart = i - 29;
+        const recentCrosses: Array<{ barIndex: number; direction: number }> = [];
+        for (let k = this.rawCrossHistory.length - 1; k >= 0; k--) {
+            if (this.rawCrossHistory[k].barIndex >= windowStart) {
+                recentCrosses.unshift(this.rawCrossHistory[k]);
+            } else {
+                break;
+            }
+        }
+        let reversals30 = 0;
+        for (let k = 1; k < recentCrosses.length; k++) {
+            if (recentCrosses[k].direction !== recentCrosses[k - 1].direction) reversals30++;
+        }
+
+        // 2. Relative Volume (RVOL)
+        let volSum = 0;
+        const startBar = Math.max(0, i - 19);
+        const count = i - startBar + 1;
+        for (let j = startBar; j <= i; j++) volSum += ds.data[j * 6 + 5];
+        const avgVol = count > 0 ? (volSum / count) : 1.0;
+        const curVol = ds.data[i * 6 + 5];
+        const rvol = avgVol > 0 ? (curVol / avgVol) : 1.0;
+
+        // 3. Session Info & Causal Count
+        const barTimestamp = ds.data[i * 6];
+        const sessionInfo = classifySession(barTimestamp);
+        const sTradeNum = (this.sessionCounters.get(sessionInfo.sessionDate) || 0) + 1;
+        this.sessionCounters.set(sessionInfo.sessionDate, sTradeNum);
+
+        // 4. Filter Evaluation
+        const minRvolReq = this.getParam<number>('minRvol', 1.2);
+        const maxRevAllowed = this.getParam<number>('maxReversals', 1);
+
+        let allowTrade = true;
+        if (filterMode === '24/7 Momentum (Chop <= 1 & RVOL >= 1.2)') {
+            if (reversals30 > maxRevAllowed || rvol < minRvolReq) allowTrade = false;
+        } else if (filterMode === 'Session Specialist (London/NY & Skip #1)') {
+            const isEligibleSession = sessionInfo.sessionId === 'London' || sessionInfo.sessionId === 'NewYorkPostOpen';
+            if (!isEligibleSession || sTradeNum < 2 || reversals30 > maxRevAllowed) allowTrade = false;
+        }
+
+        // +1/-1 = ACCEPTED, +2/-2 = REJECTED/FILTERED
+        return allowTrade ? rawCrossDir : (rawCrossDir * 2);
     }
 
     protected override calculate(ds: DataStore): void {
@@ -225,16 +293,9 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                     this.smaValues[i] = smaSum / (i + 1);
                 }
 
-                // 3. Detect Crosses with RAD-ML-04F Quant Gating
+                // 3. Detect Crosses with Unified Quant Tagging
                 this.crossSignals[i] = 0;
                 this.crossPrices[i] = 0;
-
-                // Rolling Volume SMA 20 for RVOL
-                const barVol = ds.data[i * 6 + 5];
-                this.volSum20 += barVol;
-                if (i >= 20) this.volSum20 -= ds.data[(i - 20) * 6 + 5];
-                const volSma20 = i >= 19 ? Math.max(this.volSum20 / 20, 0.0001) : 0;
-                const rvol = volSma20 > 0 ? (barVol / volSma20) : 1.0;
 
                 const minWarmup = Math.max(emaLen, smaLen) - 1;
                 if (i > minWarmup) {
@@ -244,56 +305,14 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                     const currSma = this.smaValues[i];
 
                     let rawCrossDir = 0;
-                    if (prevEma <= prevSma && currEma > currSma) rawCrossDir = 1;  // Golden Cross
-                    else if (prevEma >= prevSma && currEma < currSma) rawCrossDir = -1; // Death Cross
+                    if (prevEma <= prevSma && currEma > currSma) rawCrossDir = 1;
+                    else if (prevEma >= prevSma && currEma < currSma) rawCrossDir = -1;
 
                     if (rawCrossDir !== 0) {
-                        // 1. Record raw market event into history (for causal reversal counting)
                         this.rawCrossHistory.push({ barIndex: i, direction: rawCrossDir });
-
-                        // 2. Count true directional reversals in trailing 30 bars
-                        const windowStart = i - 29;
-                        const recentCrosses: Array<{ barIndex: number; direction: number }> = [];
-                        for (let k = this.rawCrossHistory.length - 1; k >= 0; k--) {
-                            if (this.rawCrossHistory[k].barIndex >= windowStart) {
-                                recentCrosses.unshift(this.rawCrossHistory[k]);
-                            } else {
-                                break;
-                            }
-                        }
-                        let reversals30 = 0;
-                        for (let k = 1; k < recentCrosses.length; k++) {
-                            if (recentCrosses[k].direction !== recentCrosses[k - 1].direction) reversals30++;
-                        }
-
-                        // 3. Session Telemetry
-                        const barTimestamp = ds.data[i * 6];
-                        const sessionInfo = classifySession(barTimestamp);
-                        const sTradeNum = (this.sessionCounters.get(sessionInfo.sessionDate) || 0) + 1;
-                        this.sessionCounters.set(sessionInfo.sessionDate, sTradeNum);
-
-                        // 4. Evaluate Quant Filter Rules
-                        const filterMode = this.getParam<string>('quantFilterMode', 'Off (Raw Mechanical)');
-                        const minRvolReq = this.getParam<number>('minRvol', 1.2);
-                        const maxRevAllowed = this.getParam<number>('maxReversals', 1);
-
-                        let allowTrade = true;
-                        if (filterMode === '24/7 Momentum (Chop <= 1 & RVOL >= 1.2)') {
-                            if (reversals30 > maxRevAllowed || rvol < minRvolReq) {
-                                allowTrade = false; // Suppress chop or low-volume trades
-                            }
-                        } else if (filterMode === 'Session Specialist (London/NY & Skip #1)') {
-                            const isEligibleSession = sessionInfo.sessionId === 'London' || sessionInfo.sessionId === 'NewYorkPostOpen';
-                            if (!isEligibleSession || sTradeNum < 2 || reversals30 > maxRevAllowed) {
-                                allowTrade = false; // Suppress outside-hours, Trade #1, or chop
-                            }
-                        }
-
-                        // 5. Accept or Suppress Signal
-                        if (allowTrade) {
-                            this.crossSignals[i] = rawCrossDir as any;
-                            this.crossPrices[i] = this.interpolateCross(prevEma, currEma, prevSma, currSma, c);
-                        }
+                        const signalTag = this.evaluateQuantSignal(rawCrossDir, i, ds);
+                        this.crossSignals[i] = signalTag as any;
+                        this.crossPrices[i] = this.interpolateCross(prevEma, currEma, prevSma, currSma, c);
                     }
                 }
 
@@ -366,16 +385,9 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                     this.smaValues[i] = sum / windowCount;
                 }
 
-                // Cross detection with RAD-ML-04F Quant Gating
+                // Cross detection on current bar with live Quant Tagging
                 this.crossSignals[i] = 0;
                 this.crossPrices[i] = 0;
-
-                // Rolling Volume SMA 20 for RVOL
-                const barVol = ds.data[i * 6 + 5];
-                this.volSum20 += barVol;
-                if (i >= 20) this.volSum20 -= ds.data[(i - 20) * 6 + 5];
-                const volSma20 = i >= 19 ? Math.max(this.volSum20 / 20, 0.0001) : 0;
-                const rvol = volSma20 > 0 ? (barVol / volSma20) : 1.0;
 
                 const minWarmup = Math.max(emaLen, smaLen) - 1;
                 if (i > minWarmup) {
@@ -389,43 +401,9 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                     else if (prevEma >= prevSma && currEma < currSma) rawCrossDir = -1;
 
                     if (rawCrossDir !== 0) {
-                        this.rawCrossHistory.push({ barIndex: i, direction: rawCrossDir });
-
-                        const windowStart = i - 29;
-                        const recentCrosses: Array<{ barIndex: number; direction: number }> = [];
-                        for (let k = this.rawCrossHistory.length - 1; k >= 0; k--) {
-                            if (this.rawCrossHistory[k].barIndex >= windowStart) {
-                                recentCrosses.unshift(this.rawCrossHistory[k]);
-                            } else {
-                                break;
-                            }
-                        }
-                        let reversals30 = 0;
-                        for (let k = 1; k < recentCrosses.length; k++) {
-                            if (recentCrosses[k].direction !== recentCrosses[k - 1].direction) reversals30++;
-                        }
-
-                        const barTimestamp = ds.data[i * 6];
-                        const sessionInfo = classifySession(barTimestamp);
-                        const sTradeNum = (this.sessionCounters.get(sessionInfo.sessionDate) || 0) + 1;
-                        this.sessionCounters.set(sessionInfo.sessionDate, sTradeNum);
-
-                        const filterMode = this.getParam<string>('quantFilterMode', 'Off (Raw Mechanical)');
-                        const minRvolReq = this.getParam<number>('minRvol', 1.2);
-                        const maxRevAllowed = this.getParam<number>('maxReversals', 1);
-
-                        let allowTrade = true;
-                        if (filterMode === '24/7 Momentum (Chop <= 1 & RVOL >= 1.2)') {
-                            if (reversals30 > maxRevAllowed || rvol < minRvolReq) allowTrade = false;
-                        } else if (filterMode === 'Session Specialist (London/NY & Skip #1)') {
-                            const isEligibleSession = sessionInfo.sessionId === 'London' || sessionInfo.sessionId === 'NewYorkPostOpen';
-                            if (!isEligibleSession || sTradeNum < 2 || reversals30 > maxRevAllowed) allowTrade = false;
-                        }
-
-                        if (allowTrade) {
-                            this.crossSignals[i] = rawCrossDir as any;
-                            this.crossPrices[i] = this.interpolateCross(prevEma, currEma, prevSma, currSma, c);
-                        }
+                        const signalTag = this.evaluateQuantSignal(rawCrossDir, i, ds);
+                        this.crossSignals[i] = signalTag as any;
+                        this.crossPrices[i] = this.interpolateCross(prevEma, currEma, prevSma, currSma, c);
                     }
                 }
                 // --- START NEW: ATR & Historical Shelf Tracker ---
@@ -511,6 +489,9 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
 
         const signal = this.crossSignals[checkIdx];
         if (signal === 0) return;
+
+        // INVARIANT: Never fire audio alarms or notifications for rejected/filtered signals
+        if (Math.abs(signal) === 2) return;
 
         if (signal === 1 && !notifyBull) return;
         if (signal === -1 && !notifyBear) return;
@@ -608,22 +589,39 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
         const bullShapeType = resolveShape(true);
         const bearShapeType = resolveShape(false);
 
+        const showFiltered = this.getParam<boolean>('showFilteredSignals', true);
+        const filteredShapeChoice = this.getParam<string>('filteredShape', 'Hollow Ring (○)');
+        const filteredAlpha = Math.max(0.1, Math.min(1.0, this.getParam<number>('filteredAlpha', 0.40)));
+
+        const resolveFilteredShape = (isBull: boolean): CrossMarkerShape => {
+            if (filteredShapeChoice.includes('Cross') || filteredShapeChoice.includes('(✖)')) return 'cross';
+            if (filteredShapeChoice.includes('Small Dot') || filteredShapeChoice.includes('(•)')) return 'circle';
+            if (filteredShapeChoice.includes('Diamond') || filteredShapeChoice.includes('(◆)')) return 'diamond';
+            if (filteredShapeChoice.includes('Same Shape')) return isBull ? bullShapeType : bearShapeType;
+            return 'circle_ring'; // Default: Hollow Ring (○)
+        };
+
         for (let i = visStart; i < visEnd; i++) {
             const sig = this.crossSignals[i];
             if (sig === 0) continue;
 
-            const isBull = sig === 1;
-            const clr = isBull ? bullColor : bearColor;
-            const shapeType = isBull ? bullShapeType : bearShapeType;
-            const x = r.getCandleCenterX(i);
+            const isFiltered = Math.abs(sig) === 2;
+            if (isFiltered && !showFiltered) continue;
 
+            const isBull = sig > 0;
+            const baseClr = isBull ? bullColor : bearColor;
+            const shapeType = isFiltered ? resolveFilteredShape(isBull) : (isBull ? bullShapeType : bearShapeType);
+            const alpha = isFiltered ? filteredAlpha : 1.0;
+            const markerDrawSize = isFiltered ? Math.max(3, markerSize * 0.8) : markerSize;
+
+            const x = r.getCandleCenterX(i);
             const base = i * 6;
             const high = ds.data[base + 2];
             const low = ds.data[base + 3];
             const crossP = this.crossPrices[i] || ds.data[base + 4];
 
             const drawAtPositions: number[] = [];
-            const offset = markerSize + 5;
+            const offset = markerDrawSize + 5;
 
             if (markerPosition === 'Above / Below Bar' || markerPosition === 'Both') {
                 const yBar = isBull ? r.priceToY(low) + offset : r.priceToY(high) - offset;
@@ -636,7 +634,7 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
             }
 
             for (const y of drawAtPositions) {
-                this.drawMarker(g, x, y, shapeType, markerSize, clr);
+                this.drawMarker(g, x, y, shapeType, markerDrawSize, baseClr, alpha);
             }
         }
 
@@ -668,45 +666,40 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
         // --- END PHASE 4 ---
     }
 
-    private drawMarker(g: Graphics, x: number, y: number, shape: CrossMarkerShape, size: number, color: number): void {
+    private drawMarker(g: Graphics, x: number, y: number, shape: CrossMarkerShape, size: number, color: number, alpha: number = 1.0): void {
         switch (shape) {
             case 'circle': {
-                // Solid Circle
-                g.circle(x, y, size * 0.75).fill({ color, alpha: 1.0 });
-                g.circle(x, y, size * 0.75).stroke({ color: 0x000000, width: 1.5, alpha: 0.6 });
+                g.circle(x, y, size * 0.75).fill({ color, alpha });
+                g.circle(x, y, size * 0.75).stroke({ color: 0x000000, width: 1.5, alpha: alpha * 0.6 });
                 break;
             }
             case 'circle_ring': {
-                // Hollow Circle Ring
-                g.circle(x, y, size * 0.85).stroke({ color, width: 2.5, alpha: 1.0 });
+                g.circle(x, y, size * 0.85).stroke({ color, width: 2.2, alpha });
                 break;
             }
             case 'triangle_up': {
-                // Solid Triangle Up ▲
                 const h = size * 1.4;
                 const halfW = size * 0.95;
                 g.moveTo(x, y - h * 0.6)
                  .lineTo(x - halfW, y + h * 0.5)
                  .lineTo(x + halfW, y + h * 0.5)
                  .closePath();
-                g.fill({ color, alpha: 1.0 });
-                g.stroke({ color: 0x000000, width: 1.2, alpha: 0.5 });
+                g.fill({ color, alpha });
+                g.stroke({ color: 0x000000, width: 1.2, alpha: alpha * 0.5 });
                 break;
             }
             case 'triangle_down': {
-                // Solid Triangle Down ▼
                 const h = size * 1.4;
                 const halfW = size * 0.95;
                 g.moveTo(x, y + h * 0.6)
                  .lineTo(x - halfW, y - h * 0.5)
                  .lineTo(x + halfW, y - h * 0.5)
                  .closePath();
-                g.fill({ color, alpha: 1.0 });
-                g.stroke({ color: 0x000000, width: 1.2, alpha: 0.5 });
+                g.fill({ color, alpha });
+                g.stroke({ color: 0x000000, width: 1.2, alpha: alpha * 0.5 });
                 break;
             }
             case 'arrow_up': {
-                // Stylized Arrow Up ⬆
                 const w = size * 0.85;
                 const h = size * 1.4;
                 g.moveTo(x, y - h * 0.6)
@@ -717,12 +710,11 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                  .lineTo(x + w * 0.45, y)
                  .lineTo(x + w, y)
                  .closePath();
-                g.fill({ color, alpha: 1.0 });
-                g.stroke({ color: 0x000000, width: 1, alpha: 0.5 });
+                g.fill({ color, alpha });
+                g.stroke({ color: 0x000000, width: 1, alpha: alpha * 0.5 });
                 break;
             }
             case 'arrow_down': {
-                // Stylized Arrow Down ⬇
                 const w = size * 0.85;
                 const h = size * 1.4;
                 g.moveTo(x, y + h * 0.6)
@@ -733,33 +725,30 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                  .lineTo(x + w * 0.45, y)
                  .lineTo(x + w, y)
                  .closePath();
-                g.fill({ color, alpha: 1.0 });
-                g.stroke({ color: 0x000000, width: 1, alpha: 0.5 });
+                g.fill({ color, alpha });
+                g.stroke({ color: 0x000000, width: 1, alpha: alpha * 0.5 });
                 break;
             }
             case 'cross': {
-                // Cross / X ✖
                 const s = size * 0.8;
                 const th = Math.max(2, size * 0.28);
                 g.moveTo(x - s, y - s).lineTo(x + s, y + s);
                 g.moveTo(x - s, y + s).lineTo(x + s, y - s);
-                g.stroke({ color, width: th, alpha: 1.0 });
+                g.stroke({ color, width: th, alpha });
                 break;
             }
             case 'diamond': {
-                // Diamond ◆
                 const s = size * 0.95;
                 g.moveTo(x, y - s)
                  .lineTo(x + s * 0.75, y)
                  .lineTo(x, y + s)
                  .lineTo(x - s * 0.75, y)
                  .closePath();
-                g.fill({ color, alpha: 1.0 });
-                g.stroke({ color: 0x000000, width: 1.2, alpha: 0.5 });
+                g.fill({ color, alpha });
+                g.stroke({ color: 0x000000, width: 1.2, alpha: alpha * 0.5 });
                 break;
             }
             case 'star': {
-                // 5-Point Star ★
                 const points = 5;
                 const outerR = size * 1.1;
                 const innerR = size * 0.45;
@@ -772,8 +761,8 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
                     else g.lineTo(px, py);
                 }
                 g.closePath();
-                g.fill({ color, alpha: 1.0 });
-                g.stroke({ color: 0x000000, width: 1, alpha: 0.5 });
+                g.fill({ color, alpha });
+                g.stroke({ color: 0x000000, width: 1, alpha: alpha * 0.5 });
                 break;
             }
         }
@@ -806,6 +795,12 @@ export class EmaSmaCrossIndicator extends BaseIndicator {
         } else if (sig === -1) {
             crossTag = ' [▼ DEATH CROSS]';
             valColor = bearClr;
+        } else if (sig === 2) {
+            crossTag = ' [○ GOLDEN CROSS (FILTERED)]';
+            valColor = 0x787B86; // Dimmed gray
+        } else if (sig === -2) {
+            crossTag = ' [○ DEATH CROSS (FILTERED)]';
+            valColor = 0x787B86; // Dimmed gray
         }
 
         const emaLen = this.getParam<number>('emaLength', 10);
