@@ -21,7 +21,7 @@ export interface GhostHorizons {
 export interface MLFeatureRow {
     timestamp: number;
     signal: string;
-    outcome?: number;
+    realized_net_R?: number;
     bars_to_resolution?: number;
     closePrice: number;
     atr: number;
@@ -202,7 +202,7 @@ export class AIExporter {
     public static readonly CSV_HEADERS = [
         'timestamp',
         'signal',
-        'outcome',
+        'realized_net_R',
         'bars_to_resolution',
         'ema_sma_spread_pct',
         'dist_to_macro_top_atr',
@@ -270,10 +270,15 @@ export class AIExporter {
             const smaVal = smaValues[i] !== undefined ? smaValues[i] : closePrice;
             const emaSmaSpreadPct = closePrice !== 0 ? (emaVal - smaVal) / closePrice : 0;
 
-            // Phase 2 Step 3: Structural box and kinematics calculation (NO FUTURE LEAK)
-            const activeMacroBox = options.activeBoxesPerBar 
+            // Phase 2 Step 3: Structural box and kinematics calculation (STRICT CAUSALITY LOCK)
+            let activeMacroBox = options.activeBoxesPerBar 
                 ? options.activeBoxesPerBar[i] 
                 : (options.activeMacroBox ?? null);
+            
+            // PREVENT RETROSPECTIVE LEAKAGE: Hide boxes that were officially confirmed AFTER the current bar
+            if (activeMacroBox && activeMacroBox.createdBar !== undefined && activeMacroBox.createdBar > i) {
+                activeMacroBox = null;
+            }
             
             // If activeBoxesPerBar is used, DO NOT fall back to options.macroTop (prevents leaking Day 7 into Day 1)
             const macroTop = activeMacroBox 
@@ -352,7 +357,7 @@ export class AIExporter {
                 mfe_30: 0, mae_30: 0
             };
 
-            let outcome = 0;
+            let realizedNetR = 0;
             let barsToResolution = 0;
             let dynamicRiskDistAtr = 0;
 
@@ -362,20 +367,13 @@ export class AIExporter {
 
                 // 1. Calculate Ghost Engine Horizons
                 if (includeGhosts) {
-                    ghosts = calculateGhostHorizons(
-                        dataStore,
-                        i,
-                        closePrice,
-                        tradeDirection,
-                        currentAtr
-                    );
+                    ghosts = calculateGhostHorizons(dataStore, i, closePrice, tradeDirection, currentAtr);
                 }
 
                 // 2. Dynamic Per-Bar Structural Stop Loss & Target R:R Simulation
                 const targetRR = options.targetRR ?? 2.0;
                 const maxHorizon = options.forwardHorizon ?? 30;
 
-                // Stop loss: Structural zone floor/ceiling, fallback to 1.5 ATR
                 let stopPrice = isLong 
                     ? (activeMacroBox ? activeMacroBox.bottom : closePrice - (currentAtr * 1.5))
                     : (activeMacroBox ? activeMacroBox.top : closePrice + (currentAtr * 1.5));
@@ -389,38 +387,39 @@ export class AIExporter {
                     ? closePrice + (rawRisk * targetRR) 
                     : closePrice - (rawRisk * targetRR);
 
-                // 3. Simulate Forward Trade Outcome (1 = Win, 0 = Loss, -1 = Timeout)
+                // 3. Simulate Forward Trade Outcome (Causal & Continuous)
                 const lookAheadLimit = Math.min(len - 1, i + maxHorizon);
                 let resolved = false;
+                
+                // Assume a realistic 0.05 R cost for exchange fees and slippage per round-trip trade
+                const TRADE_COST_R = 0.05;
 
                 for (let f = i + 1; f <= lookAheadLimit; f++) {
                     const fHigh = dataStore.data[f * 6 + 2];
                     const fLow = dataStore.data[f * 6 + 3];
 
                     if (isLong) {
-                        // Conservative: Check Stop Loss before Target
                         if (fLow <= stopPrice) {
-                            outcome = 0; // Stopped out
+                            realizedNetR = -1.0 - TRADE_COST_R; // Stopped out
                             barsToResolution = f - i;
                             resolved = true;
                             break;
                         }
                         if (fHigh >= targetPrice) {
-                            outcome = 1; // Target hit (Win)
+                            realizedNetR = targetRR - TRADE_COST_R; // Target hit
                             barsToResolution = f - i;
                             resolved = true;
                             break;
                         }
                     } else {
-                        // Short trade
                         if (fHigh >= stopPrice) {
-                            outcome = 0; // Stopped out
+                            realizedNetR = -1.0 - TRADE_COST_R; // Stopped out
                             barsToResolution = f - i;
                             resolved = true;
                             break;
                         }
                         if (fLow <= targetPrice) {
-                            outcome = 1; // Target hit (Win)
+                            realizedNetR = targetRR - TRADE_COST_R; // Target hit
                             barsToResolution = f - i;
                             resolved = true;
                             break;
@@ -428,9 +427,17 @@ export class AIExporter {
                     }
                 }
 
-                // If neither Stop nor Target hit within the horizon, mark as Timeout (-1)
+                // 4. Calculate continuous R-multiple if the trade timed out in chop
                 if (!resolved) {
-                    outcome = -1;
+                    const timeoutClose = dataStore.data[lookAheadLimit * 6 + 4];
+                    let rawR = isLong 
+                        ? (timeoutClose - closePrice) / rawRisk
+                        : (closePrice - timeoutClose) / rawRisk;
+                    
+                    // Cap rawR just in case of massive gap-ups/downs
+                    rawR = Math.max(-1.0, Math.min(targetRR, rawR));
+                    realizedNetR = rawR - TRADE_COST_R;
+                    
                     barsToResolution = maxHorizon;
                 }
             }
@@ -488,7 +495,7 @@ export class AIExporter {
             rows.push({
                 timestamp,
                 signal: currentSignal,
-                outcome,
+                realized_net_R: realizedNetR,
                 bars_to_resolution: barsToResolution,
                 closePrice,
                 atr: atrValues[i],
@@ -526,7 +533,7 @@ export class AIExporter {
         return rows.map(row => [
             row.timestamp,
             row.signal,
-            row.outcome !== undefined ? row.outcome : 0,
+            row.realized_net_R !== undefined ? row.realized_net_R.toFixed(4) : "0.0000",
             row.bars_to_resolution !== undefined ? row.bars_to_resolution : 0,
             row.emaSmaSpreadPct.toFixed(4),
             row.distToMacroTopAtr.toFixed(4),
@@ -655,9 +662,9 @@ export function runPreFlightAudit(csvRows: string[]): boolean {
             }
         }
 
-        // 3. CLASS IMBALANCE GATE (Assumes 'outcome' is the 3rd column: cols[2])
-        // Adjust the index [2] if your outcome column is located elsewhere!
-        if (cols[2] === '1') {
+        // 3. CLASS IMBALANCE GATE (Assumes 'realized_net_R' is the 3rd column: cols[2])
+        // Positive net R indicates a profitable trade after fees/slippage
+        if (parseFloat(cols[2]) > 0) {
             winCount++;
         }
     }
