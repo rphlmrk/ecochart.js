@@ -16,9 +16,10 @@ export interface MLR1EventRow {
 
     // Causal Candle Context
     context_net_return_atr: number;
-    context_max_excursion_atr: number;
+    context_max_favorable_atr: number; // Replaced single excursion
+    context_max_adverse_atr: number;   // Replaced single excursion
     context_candle_count: number;
-    context_avg_vol_sma: number;
+    context_relative_volume: number;   // Replaced raw SMA avg
     
     // Execution (Frozen next_open)
     entry_bar_index: number;
@@ -69,9 +70,9 @@ export class MarketFeatureEngine {
             atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period;
         }
 
-        // CRITICAL FIX: No backfilling! Keep warm-up period as 0 to prevent lookahead bias.
+        // NO BACKFILLING: Keep warm-up period as 0 to prevent lookahead bias.
         for (let i = 0; i < period - 1 && i < len; i++) {
-            atr[i] = 0; // Unusable until period matures
+            atr[i] = 0; 
         }
         return atr;
     }
@@ -104,34 +105,42 @@ export class CandleContextAggregator {
         volSma: Float64Array
     ) {
         if (startBar > endBar || currentAtr <= 0) {
-            return { netReturnAtr: 0, maxExcursionAtr: 0, count: 0, avgVolSma: 0 };
+            return { netReturnAtr: 0, maxFavorableAtr: 0, maxAdverseAtr: 0, count: 0, relativeVolume: 1.0 };
         }
 
         const startOpen = dataStore.data[startBar * 6 + 1];
         const endClose = dataStore.data[endBar * 6 + 4];
         let maxH = -Infinity;
         let minL = Infinity;
+        
+        let validVolCount = 0;
+        let volSum = 0;
         let volSmaSum = 0;
         
         for (let i = startBar; i <= endBar; i++) {
             const base = i * 6;
             if (dataStore.data[base + 2] > maxH) maxH = dataStore.data[base + 2];
             if (dataStore.data[base + 3] < minL) minL = dataStore.data[base + 3];
-            volSmaSum += volSma[i];
+            
+            if (volSma[i] > 0) {
+                validVolCount++;
+                volSum += dataStore.data[base + 5];
+                volSmaSum += volSma[i];
+            }
         }
 
         const count = endBar - startBar + 1;
         const netReturnAtr = (endClose - startOpen) / currentAtr;
-        
-        const maxFavorable = (maxH - startOpen) / currentAtr;
-        const maxAdverse = (startOpen - minL) / currentAtr;
-        const maxExcursionAtr = Math.max(Math.abs(maxFavorable), Math.abs(maxAdverse));
+        const maxFavorableAtr = (maxH - startOpen) / currentAtr;
+        const maxAdverseAtr = (startOpen - minL) / currentAtr; // Kept as positive distance for adverse scale
+        const relativeVolume = (validVolCount > 0 && volSmaSum > 0) ? (volSum / volSmaSum) : 1.0;
 
         return {
             netReturnAtr,
-            maxExcursionAtr,
+            maxFavorableAtr,
+            maxAdverseAtr,
             count,
-            avgVolSma: count > 0 ? (volSmaSum / count) : 0
+            relativeVolume
         };
     }
 }
@@ -146,15 +155,11 @@ export class HybridTokenBuilder {
     ) {
         const confBar = event.confirmedBarIndex;
         const prevConfBar = prevEvent ? prevEvent.confirmedBarIndex : 0;
-        
         const currentAtr = atrRaw[confBar] || 0.0001;
         
-        // Structural Features (Normalized)
         const barsSinceLast = confBar - prevConfBar;
         const legDistAtr = prevEvent ? (event.price - prevEvent.price) / currentAtr : 0;
 
-        // Candle Context Features
-        // Rule: Only closed candles. Between previous confirmation and current confirmation.
         const contextStart = prevEvent ? prevEvent.confirmedBarIndex + 1 : 0;
         const contextEnd = confBar; 
         
@@ -164,21 +169,18 @@ export class HybridTokenBuilder {
             bars_since_last_pivot: barsSinceLast,
             leg_distance_atr: legDistAtr,
             context_net_return_atr: ctx.netReturnAtr,
-            context_max_excursion_atr: ctx.maxExcursionAtr,
+            context_max_favorable_atr: ctx.maxFavorableAtr,
+            context_max_adverse_atr: ctx.maxAdverseAtr,
             context_candle_count: ctx.count,
-            context_avg_vol_sma: ctx.avgVolSma
+            context_relative_volume: ctx.relativeVolume
         };
     }
 }
 
 export class AIExporter {
-    /**
-     * ML-R1: Core Dataset Builder
-     * Coordinates Feature Engine, Context Aggregator, Token Builder, and Outcome Engine.
-     */
     public static buildMLR1Dataset(
         dataStore: any,
-        cachedPivots: any[], // From StrictCBCZigZagIndicator.cachedPivots
+        cachedPivots: any[],
         symbol: string,
         timeframe: string
     ): MLR1EventRow[] {
@@ -197,17 +199,32 @@ export class AIExporter {
         const volSmaRaw = MarketFeatureEngine.calculateVolumeSMAArray(dataStore, 20);
         const events: MLR1EventRow[] = [];
 
+        // Stable Indentity Prefix capturing the frozen config
+        const indVersion = `v2_ATR${ATR_PERIOD}_SL${STOP_ATR_MULT}_TP${TARGET_R_MULT}_HZ${MAX_HORIZON_BARS}`;
+
         for (let i = 0; i < cachedPivots.length; i++) {
             const pivot = cachedPivots[i];
             const confBar = pivot.confirmedBarIndex;
             const entryBar = confBar + 1; // Strict rule: next_open
 
-            // Cannot evaluate if the entry candle doesn't exist yet, or ATR hasn't warmed up
-            if (entryBar >= len || atrRaw[confBar] === 0) continue;
+            // 🛑 EXCLUSION 1: Cannot evaluate if the entry candle doesn't exist yet
+            if (entryBar >= len) continue;
+
+            // 🛑 EXCLUSION 2: ATR Warm-up filter. 
+            const currentAtr = atrRaw[confBar];
+            if (confBar < ATR_PERIOD - 1 || !Number.isFinite(currentAtr) || currentAtr <= 0) {
+                continue; // Exclude event completely; never fabricate features.
+            }
+
+            // 🛑 EXCLUSION 3: Incomplete Outcome Censorship
+            const horizonEnd = entryBar + MAX_HORIZON_BARS;
+            if (horizonEnd >= len) {
+                // Dataset ends before the 60-bar horizon fully matures. Skip to prevent bias.
+                continue; 
+            }
 
             const entryTime = dataStore.data[entryBar * 6];
             const entryOpen = dataStore.data[entryBar * 6 + 1];
-            const currentAtr = Math.max(atrRaw[confBar], 0.0001);
 
             // --- 1. HYBRID TOKEN BUILDING ---
             const prevPivot = i > 0 ? cachedPivots[i - 1] : null;
@@ -225,8 +242,6 @@ export class AIExporter {
             let lExitPrice = entryOpen, lOutcome: any = 'timeout_loss', lResolved = false;
             let sExitPrice = entryOpen, sOutcome: any = 'timeout_loss', sResolved = false;
 
-            const horizonEnd = Math.min(len - 1, entryBar + MAX_HORIZON_BARS);
-
             for (let f = entryBar; f <= horizonEnd; f++) {
                 const base = f * 6;
                 const fOpen = dataStore.data[base + 1];
@@ -241,7 +256,7 @@ export class AIExporter {
                     else {
                         const hitSL = fLow <= lStop;
                         const hitTP = fHigh >= lTarget;
-                        if (hitSL && hitTP) { lExitPrice = lStop; lOutcome = 'hard_stop'; lResolved = true; } // Collision handling
+                        if (hitSL && hitTP) { lExitPrice = lStop; lOutcome = 'hard_stop'; lResolved = true; } 
                         else if (hitSL) { lExitPrice = lStop; lOutcome = 'hard_stop'; lResolved = true; }
                         else if (hitTP) { lExitPrice = lTarget; lOutcome = 'full_target'; lResolved = true; }
                     }
@@ -259,7 +274,7 @@ export class AIExporter {
                     else {
                         const hitSL = fHigh >= sStop;
                         const hitTP = fLow <= sTarget;
-                        if (hitSL && hitTP) { sExitPrice = sStop; sOutcome = 'hard_stop'; sResolved = true; } // Collision handling
+                        if (hitSL && hitTP) { sExitPrice = sStop; sOutcome = 'hard_stop'; sResolved = true; } 
                         else if (hitSL) { sExitPrice = sStop; sOutcome = 'hard_stop'; sResolved = true; }
                         else if (hitTP) { sExitPrice = sTarget; sOutcome = 'full_target'; sResolved = true; }
                     }
@@ -280,7 +295,7 @@ export class AIExporter {
 
             // --- 3. ROW ASSEMBLY ---
             events.push({
-                event_id: `MLR1_${symbol}_${timeframe}_v1_${dataStore.data[confBar * 6]}_${pivot.time}_${pivot.type}`,
+                event_id: `MLR1_${symbol}_${timeframe}_${indVersion}_${dataStore.data[confBar * 6]}_${pivot.time}_${pivot.type}`,
                 symbol, timeframe,
                 pivot_type: pivot.type,
                 pivot_label: pivot.label,
@@ -294,9 +309,10 @@ export class AIExporter {
                 leg_distance_atr: parseFloat(tokenFeatures.leg_distance_atr.toFixed(4)),
                 
                 context_net_return_atr: parseFloat(tokenFeatures.context_net_return_atr.toFixed(4)),
-                context_max_excursion_atr: parseFloat(tokenFeatures.context_max_excursion_atr.toFixed(4)),
+                context_max_favorable_atr: parseFloat(tokenFeatures.context_max_favorable_atr.toFixed(4)),
+                context_max_adverse_atr: parseFloat(tokenFeatures.context_max_adverse_atr.toFixed(4)),
                 context_candle_count: tokenFeatures.context_candle_count,
-                context_avg_vol_sma: parseFloat(tokenFeatures.context_avg_vol_sma.toFixed(2)),
+                context_relative_volume: parseFloat(tokenFeatures.context_relative_volume.toFixed(4)),
 
                 entry_bar_index: entryBar,
                 entry_time: entryTime,
@@ -346,32 +362,48 @@ export class DatasetAuditor {
         let timeFailures = 0;
         let indexFailures = 0;
         let mathFailures = 0;
+        let duplicateFailures = 0;
+        let leakFailures = 0;
+        const idSet = new Set<string>();
 
         for (let i = 0; i < events.length; i++) {
             const ev = events[i];
 
-            // 1. Chronology Check
-            if (i > 0) {
-                if (ev.confirmation_time_ms < events[i - 1].confirmation_time_ms) timeFailures++;
+            // 1. Uniqueness Check
+            if (idSet.has(ev.event_id)) duplicateFailures++;
+            idSet.add(ev.event_id);
+
+            // 2. Chronology Check
+            if (i > 0 && ev.confirmation_time_ms < events[i - 1].confirmation_time_ms) {
+                timeFailures++;
             }
 
-            // 2. Causality Check (Entry MUST be strictly after confirmation)
+            // 3. Causality Check (Entry MUST be strictly after confirmation)
             if (ev.entry_bar_index <= ev.confirmed_bar_index) indexFailures++;
 
-            // 3. Math Health (No NaNs/Infinities from ATR bugs)
-            if (!isFinite(ev.atr_at_confirmation) || ev.atr_at_confirmation <= 0) mathFailures++;
-            if (!isFinite(ev.leg_distance_atr)) mathFailures++;
+            // 4. Leakage Check (No outcome metadata slipping into input features)
+            // (Enforced implicitly via typing, but double checking entry dependencies)
+            if (ev.entry_time <= ev.confirmation_time_ms) {
+                leakFailures++;
+                indexFailures++;
+            }
+
+            // 5. Math Health (No NaNs/Infinities from ATR bugs or div/0)
+            if (!Number.isFinite(ev.atr_at_confirmation) || ev.atr_at_confirmation <= 0) mathFailures++;
+            if (!Number.isFinite(ev.leg_distance_atr)) mathFailures++;
+            if (!Number.isFinite(ev.context_relative_volume)) mathFailures++;
         }
 
         console.log(`=======================================`);
         console.log(`📊 PRE-FLIGHT AUDIT: ${events.length} Events Evaluated`);
         console.log(`   ↳ Timeline (Chronological):  ${timeFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`   ↳ Causality (Next Open):     ${indexFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
-        console.log(`   ↳ Math Health (Valid ATR):   ${mathFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Identity (No Duplicates):  ${duplicateFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Math Health (Valid Feat.): ${mathFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`=======================================`);
 
-        if (timeFailures > 0 || indexFailures > 0 || mathFailures > 0) {
-            if (typeof alert !== 'undefined') alert(`⚠️ ML-R1 Audit Failed!\nCausality broken. Check console.`);
+        if (timeFailures > 0 || indexFailures > 0 || mathFailures > 0 || duplicateFailures > 0 || leakFailures > 0) {
+            if (typeof alert !== 'undefined') alert(`⚠️ ML-R1 Audit Failed!\nCheck developer console for causality/math errors.`);
             return false;
         }
         return true;
