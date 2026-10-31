@@ -100,7 +100,7 @@ export class AiExportService {
         // 3. Serialize and trigger download
         if (config.packageMode === 'single_csv') {
             const csvText = this.buildCsvString(exportRows);
-            const filename = `${symbol}_${interval}_${Math.round((endTime - startTime) / 86400000)}D_ai_dataset.csv`;
+            const filename = `MLR1_${symbol}_${interval}_Events.csv`;
             this.downloadBlob(new Blob([csvText], { type: 'text/csv;charset=utf-8;' }), filename);
         } else {
             // Daily ZIP
@@ -637,11 +637,11 @@ export class AiExportService {
 
         for (const [dateStr, dayRows] of dailyGroups.entries()) {
             const csvData = this.buildCsvString(dayRows);
-            zip.file(`${symbol}_${interval}_${dateStr}.csv`, csvData);
+            zip.file(`MLR1_${symbol}_${interval}_${dateStr}.csv`, csvData);
         }
 
         const zipBlob = await zip.generateAsync({ type: 'blob' });
-        const zipFilename = `${symbol}_${interval}_${dailyGroups.size}Days_daily_dataset.zip`;
+        const zipFilename = `MLR1_${symbol}_${interval}_Daily_Events.zip`;
         this.downloadBlob(zipBlob, zipFilename);
     }
 
