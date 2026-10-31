@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for an AI Training Data Exporter (.csv) with user-selectable range (1 week to 3 months), daily/consolidated packaging, signal outcome labeling (positive/negative/range detection), and top toolbar integration.",
+  "updatedAt":  "2026-10-29T06:42:36.238161280Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

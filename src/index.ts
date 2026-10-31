@@ -33,10 +33,11 @@ import { favoritesManager } from './data/FavoritesManager';
 import { DataWorkerClient } from './workers/DataWorkerClient';
 import { TimeframeResampler } from './data/TimeframeResampler';
 export { alertManager } from './alerts/AlertManager';
-import { AIExporter, calculateATRArray, calculateVolumeSMAArray, classifyTradeSession, runPreFlightAudit, type ContinuousBarRow, type TradeManifestRow, type ExportAIOptions, type StructuralBoxLike } from './data/AIExporter';
-export { AIExporter, calculateATRArray, calculateVolumeSMAArray, classifyTradeSession, runPreFlightAudit, type ContinuousBarRow, type TradeManifestRow, type ExportAIOptions, type StructuralBoxLike };
+import { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregator, HybridTokenBuilder, type MLR1EventRow } from './data/AIExporter';
+export { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregator, HybridTokenBuilder, type MLR1EventRow };
 import { BackgroundDataMiner } from './data/BackgroundDataMiner';
 import { AlertUI } from './alerts/AlertUI';
+import { AiExportModal } from './ui/AiExportModal';
 
 export interface SavedPaneState {
     symbol: string;
@@ -3571,6 +3572,13 @@ export class WorkspaceManager {
         });
 
         // (Note: Per-pane Nav Bars and Auto buttons are bound directly inside each EcoChart instance)
+        const btnAiExport = document.getElementById('btn-ai-export');
+        btnAiExport?.addEventListener('click', () => {
+            const chart = this.getActiveChart();
+            if (chart) {
+                AiExportModal.open(chart.currentSymbol, chart.currentInterval, chart.dataStore);
+            }
+        });
 
         // --- Settings Modal & Theme Customization ---
         const btnSettings = document.getElementById('btn-settings');
@@ -4664,6 +4672,8 @@ export class WorkspaceManager {
             void _packFormat;
             const targetRR = (document.getElementById('ai-export-rr') as HTMLSelectElement)?.value || "2.0";
             const forwardHorizon = (document.getElementById('ai-export-horizon') as HTMLInputElement)?.value || "30";
+            void targetRR;
+            void forwardHorizon;
 
             // 1. NON-BLOCKING: Close modal immediately so the chart is 100% usable!
             modalAiExport?.close();
@@ -4713,114 +4723,63 @@ export class WorkspaceManager {
                     clear: () => {}
                 } as unknown as DataStore;
 
-                // 2. Instantiate Headless Indicators with user's active chart settings
-                const headlessCross = new EmaSmaCrossIndicator(10, 30);
-                headlessCross.setParam('notificationsEnabled', false); // Mute alerts during export
-                const chartCross = chart.indicatorManager.activeIndicators.find(i => i instanceof EmaSmaCrossIndicator) as EmaSmaCrossIndicator | undefined;
-                if (chartCross) {
-                    headlessCross.params.forEach(p => {
-                        const val = chartCross.getParam(p.id);
-                        if (val !== undefined && p.id !== 'notificationsEnabled') p.value = val;
-                    });
-                }
-
-                const headlessMacro = new MarketStructurePullbackZonesIndicator();
-                const chartMacro = chart.indicatorManager.activeIndicators.find(i => i instanceof MarketStructurePullbackZonesIndicator) as MarketStructurePullbackZonesIndicator | undefined;
-                if (chartMacro) {
-                    headlessMacro.params.forEach(p => {
-                        const val = chartMacro.getParam(p.id);
+                // 2. Instantiate Headless Strict CBC ZigZag Indicator with user's chart settings
+                const headlessZigZag = new StrictCBCZigZagIndicator();
+                headlessZigZag.currentSymbol = chart.currentSymbol;
+                const chartZigZag = chart.indicatorManager.activeIndicators.find(i => i instanceof StrictCBCZigZagIndicator) as StrictCBCZigZagIndicator | undefined;
+                if (chartZigZag) {
+                    headlessZigZag.params.forEach(p => {
+                        const val = chartZigZag.getParam(p.id);
                         if (val !== undefined) p.value = val;
                     });
                 }
 
-                const headlessCbc = new StrictCBCPullbackZonesIndicator();
-                const chartCbc = chart.indicatorManager.activeIndicators.find(i => i instanceof StrictCBCPullbackZonesIndicator) as StrictCBCPullbackZonesIndicator | undefined;
-                if (chartCbc) {
-                    headlessCbc.params.forEach(p => {
-                        const val = chartCbc.getParam(p.id);
-                        if (val !== undefined) p.value = val;
-                    });
-                }
-
-                // Step A: Calculate EMA / SMA Cross & Shelf Registry
-                if (loadingTitle) loadingTitle.textContent = "Processing Indicator Layers...";
-                if (loadingDetail) loadingDetail.textContent = `Running EMA 10 / SMA 30 Cross Engine on ${candleCount.toLocaleString()} bars...`;
-                if (progressFill) progressFill.style.width = "82%";
-                if (progressPct) progressPct.textContent = "82%";
+                // Step A: Calculate Strict CBC ZigZag Structure & Cached Pivots
+                if (loadingTitle) loadingTitle.textContent = "Processing Structural Events...";
+                if (loadingDetail) loadingDetail.textContent = `Computing Strict CBC ZigZag pivots on ${candleCount.toLocaleString()} candles...`;
+                if (progressFill) progressFill.style.width = "85%";
+                if (progressPct) progressPct.textContent = "85%";
                 await new Promise(r => setTimeout(r, 25)); // Allow UI repaint
 
-                headlessCross.update(headlessDs, true);
+                headlessZigZag.calculate(headlessDs);
 
-                // Step B: Calculate Market Structure Pullback Zones
-                if (loadingDetail) loadingDetail.textContent = "Computing Market Structure Pullback Zones...";
-                if (progressFill) progressFill.style.width = "88%";
-                if (progressPct) progressPct.textContent = "88%";
+                // Step B: Build ML-R1 Dataset (Features, Context, and Frozen Outcome Engine)
+                if (loadingTitle) loadingTitle.textContent = "Building ML-R1 Dataset...";
+                if (loadingDetail) loadingDetail.textContent = `Generating causal features and counterfactual outcomes for ${headlessZigZag.cachedPivots.length} pivots...`;
+                if (progressFill) progressFill.style.width = "95%";
+                if (progressPct) progressPct.textContent = "95%";
                 await new Promise(r => setTimeout(r, 25));
 
-                headlessMacro.calculate(headlessDs);
+                const events = AIExporter.buildMLR1Dataset(
+                    headlessDs,
+                    headlessZigZag.cachedPivots,
+                    chart.currentSymbol,
+                    chart.currentInterval
+                );
 
-                // Step C: Calculate Strict CBC Candle Flips & Anchors
-                if (loadingDetail) loadingDetail.textContent = "Evaluating Strict CBC Anchor High/Low Flips...";
-                if (progressFill) progressFill.style.width = "92%";
-                if (progressPct) progressPct.textContent = "92%";
-                await new Promise(r => setTimeout(r, 25));
-
-                headlessCbc.update(headlessDs, true);
-
-                // Step D: Pre-index active Macro & Strict CBC boxes per bar
-                const activeBoxesPerBar: any[] = new Array(candleCount).fill(null);
-                if (headlessMacro.cachedMacroBoxes) {
-                    for (const b of headlessMacro.cachedMacroBoxes) {
-                        const end = b.rightBar ? Math.min(candleCount - 1, b.rightBar) : candleCount - 1;
-                        for (let k = b.leftBar; k <= end; k++) {
-                            activeBoxesPerBar[k] = b;
-                        }
-                    }
-                }
-
-                const activeCbcBoxesPerBar: any[] = new Array(candleCount).fill(null);
-                if (headlessCbc.cachedBoxes) {
-                    for (const b of headlessCbc.cachedBoxes) {
-                        const end = b.rightBar ? Math.min(candleCount - 1, b.rightBar) : candleCount - 1;
-                        for (let k = b.leftBar; k <= end; k++) {
-                            activeCbcBoxesPerBar[k] = b;
-                        }
-                    }
-                }
-
-                // Step E: Build Continuous Bars & Trade Manifest (RAD-ML-04A Contract)
-                if (loadingTitle) loadingTitle.textContent = "Building RAD-ML-04 Datasets...";
-                if (loadingDetail) loadingDetail.textContent = `Formatting continuous bars and causal trade manifest for ${candleCount.toLocaleString()} candles...`;
-                if (progressFill) progressFill.style.width = "96%";
-                if (progressPct) progressPct.textContent = "96%";
-                await new Promise(r => setTimeout(r, 25));
-
-                const { bars, trades } = AIExporter.buildDataset(headlessDs, {
-                    crossSignals: headlessCross.crossSignals,
-                    cbcFlips: headlessCbc.flips,
-                    emaValues: headlessCross.emaValues,
-                    smaValues: headlessCross.smaValues,
-                    activeBoxesPerBar: activeBoxesPerBar,
-                    activeCbcBoxesPerBar: activeCbcBoxesPerBar,
-                    targetRR: parseFloat(targetRR) || 2.0,
-                    forwardHorizon: parseInt(forwardHorizon, 10) || 30
-                });
-
-                if (trades.length === 0) {
-                    alert("No valid trade signals were detected in this historical window.");
+                if (events.length === 0) {
+                    alert("No valid confirmed structural events were detected in this historical window.");
                     if (loadingOverlay) loadingOverlay.style.display = 'none';
                     resetTopbarButton();
                     return;
                 }
 
-                // Step F: Download bars.csv and trades.csv
-                if (loadingTitle) loadingTitle.textContent = "Exporting Files...";
-                if (loadingDetail) loadingDetail.textContent = `Generated ${bars.length.toLocaleString()} continuous bars and ${trades.length.toLocaleString()} trades.`;
+                // Step C: Run Pre-Flight Causality Audit
+                const auditPassed = DatasetAuditor.runCausalityAudit(events);
+                if (!auditPassed) {
+                    if (loadingOverlay) loadingOverlay.style.display = 'none';
+                    resetTopbarButton();
+                    return;
+                }
+
+                // Step D: Export ML-R1 Events CSV
+                if (loadingTitle) loadingTitle.textContent = "Exporting ML-R1 CSV...";
+                if (loadingDetail) loadingDetail.textContent = `Generated ${events.length.toLocaleString()} ML-R1 structural event records.`;
                 if (progressFill) progressFill.style.width = "100%";
                 if (progressPct) progressPct.textContent = "100%";
                 await new Promise(r => setTimeout(r, 25));
 
-                const exported = AIExporter.exportDualCSV(bars, trades, chart.currentSymbol, chart.currentInterval);
+                const exported = AIExporter.exportMLR1CSV(events, chart.currentSymbol, chart.currentInterval);
 
                 if (exported) {
                     resetTopbarButton();

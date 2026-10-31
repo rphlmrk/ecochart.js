@@ -1,573 +1,379 @@
-export interface StructuralBoxLike {
-    leftBar: number;
-    top: number;
-    bottom: number;
-    isOpen?: boolean;
-    rightBar?: number;
-    [key: string]: any;
-}
+export interface MLR1EventRow {
+    event_id: string;
+    symbol: string;
+    timeframe: string;
+    pivot_type: 'high' | 'low';
+    pivot_label: string;
+    pivot_price: number;
+    pivot_bar_index: number;
+    confirmed_bar_index: number;
+    confirmation_time_ms: number;
 
-export interface ContinuousBarRow {
-    bar_index: number;
-    timestamp: number;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume: number;
-    atr: string;
-    volume_sma_20: string;
-    ema_10: string;
-    sma_30: string;
-    macro_top: string;
-    macro_bottom: string;
-    cbc_top: string;
-    cbc_bottom: string;
-    cbc_flip: string;
-    bars_between_crosses: number;                // Inter-cross spacing
-    crosses_in_last_30_bars: number;              // Raw cross density in trailing 30 bars
-    direction_reversals_in_last_30_bars: number;  // True whipsaw flips (+1 to -1) in trailing 30 bars
-}
+    // Structural Features
+    leg_direction: 'up' | 'down';
+    bars_since_last_pivot: number;
+    leg_distance_atr: number;
 
-export interface TradeManifestRow {
-    trade_id: string;
-    signal_type: 'EMA_SMA_CROSS';
-    signal_bar_index: number;
-    resolution_bar_index: number;
-    signal_timestamp: number;
-    signal_direction: 'BUY' | 'SELL';
+    // Causal Candle Context
+    context_net_return_atr: number;
+    context_max_excursion_atr: number;
+    context_candle_count: number;
+    context_avg_vol_sma: number;
+    
+    // Execution (Frozen next_open)
+    entry_bar_index: number;
+    entry_time: number;
     entry_price: number;
-    stop_price: number;
-    target_price: number;
-    gross_R: number;
-    trading_cost_R: number;
-    realized_net_R: number;
-    outcome_class: 'hard_stop' | 'timeout_loss' | 'timeout_gain' | 'full_target';
-    session_id: 'London' | 'NewYorkPostOpen' | 'Outside';
-    session_elapsed_minutes: number;
-    session_trade_number: number;
-    bars_between_crosses: number;
-    crosses_in_last_30_bars: number;
-    direction_reversals_in_last_30_bars: number;
+    atr_at_confirmation: number;
+    
+    // Counterfactual 1: LONG
+    long_stop_price: number;
+    long_target_price: number;
+    long_exit_price: number;
+    long_net_r: number;
+    long_outcome: 'full_target' | 'hard_stop' | 'timeout_gain' | 'timeout_loss';
+    
+    // Counterfactual 2: SHORT
+    short_stop_price: number;
+    short_target_price: number;
+    short_exit_price: number;
+    short_net_r: number;
+    short_outcome: 'full_target' | 'hard_stop' | 'timeout_gain' | 'timeout_loss';
 }
 
-export interface ExportAIOptions {
-    targetRR?: number;
-    forwardHorizon?: number;
-    atrPeriod?: number;
-    crossSignals?: Int8Array | number[];
-    cbcFlips?: Int8Array | number[];
-    emaValues?: Float64Array | number[];
-    smaValues?: Float64Array | number[];
-    activeBoxesPerBar?: Array<StructuralBoxLike | null>;
-    activeCbcBoxesPerBar?: Array<any | null>;
-}
+export class MarketFeatureEngine {
+    public static calculateATRArray(dataStore: any, period: number = 14): Float64Array {
+        const len = dataStore.length;
+        const atr = new Float64Array(len);
+        const tr = new Float64Array(len);
+        if (len === 0) return atr;
 
-/**
- * Calculates a 14-period Average True Range using Wilder's Smoothing (RMA)
- * to match standard trading logic.
- */
-export function calculateATRArray(dataStore: any, period: number = 14): Float64Array {
-    const len = dataStore.length;
-    const atr = new Float64Array(len);
-    const tr = new Float64Array(len);
-    if (len === 0) return atr;
-
-    // 1. Calculate True Range (TR)
-    tr[0] = dataStore.data[2] - dataStore.data[3]; // High - Low for first bar
-    for (let i = 1; i < len; i++) {
-        const base = i * 6;
-        const prevC = dataStore.data[(i - 1) * 6 + 4]; // Previous Close
-        const h = dataStore.data[base + 2];
-        const l = dataStore.data[base + 3];
-
-        tr[i] = Math.max(h - l, Math.abs(h - prevC), Math.abs(l - prevC));
-    }
-
-    // 2. Initial SMA for the first ATR value
-    let sum = 0;
-    for (let i = 0; i < period && i < len; i++) {
-        sum += tr[i];
-    }
-    atr[period - 1] = sum / period;
-
-    // 3. Wilder's Smoothing (RMA) for the rest
-    for (let i = period; i < len; i++) {
-        atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period;
-    }
-
-    // 4. Backfill warmup period to prevent NaNs/Zeros
-    for (let i = 0; i < period - 1 && i < len; i++) {
-        atr[i] = atr[period - 1] || tr[i] || 0.0001;
-    }
-
-    return atr;
-}
-
-/**
- * Calculates a causal 20-period Volume Simple Moving Average.
- * Returns empty string for warm-up candles (< 20 bars).
- */
-export function calculateVolumeSMAArray(dataStore: any, period: number = 20): string[] {
-    const len = dataStore.length;
-    const result: string[] = new Array(len).fill('');
-    if (len < period) return result;
-
-    let sum = 0;
-    for (let i = 0; i < period; i++) {
-        sum += dataStore.data[i * 6 + 5];
-    }
-    result[period - 1] = (sum / period).toFixed(2);
-
-    for (let i = period; i < len; i++) {
-        sum += dataStore.data[i * 6 + 5] - dataStore.data[(i - period) * 6 + 5];
-        result[i] = (sum / period).toFixed(2);
-    }
-    return result;
-}
-
-/**
- * Causal Timezone Session Classifier (Daylight Saving Compliant)
- * - London: 08:00 - 10:00 Europe/London
- * - New York Post-Open: 09:30 - 11:30 America/New_York
- * - Outside: All other hours
- */
-export function classifyTradeSession(timestampMs: number): {
-    sessionId: 'London' | 'NewYorkPostOpen' | 'Outside';
-    elapsedMinutes: number;
-    sessionDate: string;
-} {
-    const date = new Date(timestampMs);
-
-    // 1. Check London Window (08:00 to 10:00 Europe/London)
-    try {
-        const lonFormatter = new Intl.DateTimeFormat('en-GB', {
-            timeZone: 'Europe/London',
-            hour12: false,
-            weekday: 'short',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
-        const lonParts = lonFormatter.formatToParts(date);
-        const lonWeekday = lonParts.find(p => p.type === 'weekday')?.value || '';
-        const lonH = parseInt(lonParts.find(p => p.type === 'hour')?.value || '0', 10);
-        const lonM = parseInt(lonParts.find(p => p.type === 'minute')?.value || '0', 10);
-        const lonDateStr = `${lonParts.find(p => p.type === 'year')?.value}-${lonParts.find(p => p.type === 'month')?.value}-${lonParts.find(p => p.type === 'day')?.value}`;
-
-        if (lonWeekday !== 'Sat' && lonWeekday !== 'Sun') {
-            if (lonH >= 8 && lonH < 10) {
-                const elapsed = (lonH - 8) * 60 + lonM;
-                return { sessionId: 'London', elapsedMinutes: elapsed, sessionDate: `LON_${lonDateStr}` };
-            }
+        tr[0] = dataStore.data[2] - dataStore.data[3]; 
+        for (let i = 1; i < len; i++) {
+            const base = i * 6;
+            const prevC = dataStore.data[(i - 1) * 6 + 4]; 
+            const h = dataStore.data[base + 2];
+            const l = dataStore.data[base + 3];
+            tr[i] = Math.max(h - l, Math.abs(h - prevC), Math.abs(l - prevC));
         }
 
-        // 2. Check New York Post-Open Window (09:30 to 11:30 America/New_York)
-        const nyFormatter = new Intl.DateTimeFormat('en-US', {
-            timeZone: 'America/New_York',
-            hour12: false,
-            weekday: 'short',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
-        const nyParts = nyFormatter.formatToParts(date);
-        const nyWeekday = nyParts.find(p => p.type === 'weekday')?.value || '';
-        const nyH = parseInt(nyParts.find(p => p.type === 'hour')?.value || '0', 10);
-        const nyM = parseInt(nyParts.find(p => p.type === 'minute')?.value || '0', 10);
-        const nyDateStr = `${nyParts.find(p => p.type === 'year')?.value}-${nyParts.find(p => p.type === 'month')?.value}-${nyParts.find(p => p.type === 'day')?.value}`;
-
-        if (nyWeekday !== 'Sat' && nyWeekday !== 'Sun') {
-            const nyTotalMin = nyH * 60 + nyM;
-            const openMin = 9 * 60 + 30;  // 09:30
-            const closeMin = 11 * 60 + 30; // 11:30
-            if (nyTotalMin >= openMin && nyTotalMin < closeMin) {
-                return { sessionId: 'NewYorkPostOpen', elapsedMinutes: nyTotalMin - openMin, sessionDate: `NY_${nyDateStr}` };
-            }
+        let sum = 0;
+        for (let i = 0; i < period && i < len; i++) {
+            sum += tr[i];
         }
-    } catch (e) {
-        // Fallback for environments with limited Intl support
+        if (len >= period) {
+            atr[period - 1] = sum / period;
+        }
+
+        for (let i = period; i < len; i++) {
+            atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period;
+        }
+
+        // CRITICAL FIX: No backfilling! Keep warm-up period as 0 to prevent lookahead bias.
+        for (let i = 0; i < period - 1 && i < len; i++) {
+            atr[i] = 0; // Unusable until period matures
+        }
+        return atr;
     }
 
-    return { sessionId: 'Outside', elapsedMinutes: 0, sessionDate: 'OUTSIDE' };
+    public static calculateVolumeSMAArray(dataStore: any, period: number = 20): Float64Array {
+        const len = dataStore.length;
+        const result = new Float64Array(len).fill(0);
+        if (len < period) return result;
+
+        let sum = 0;
+        for (let i = 0; i < period; i++) {
+            sum += dataStore.data[i * 6 + 5];
+        }
+        result[period - 1] = sum / period;
+
+        for (let i = period; i < len; i++) {
+            sum += dataStore.data[i * 6 + 5] - dataStore.data[(i - period) * 6 + 5];
+            result[i] = sum / period;
+        }
+        return result;
+    }
+}
+
+export class CandleContextAggregator {
+    public static summarize(
+        dataStore: any, 
+        startBar: number, 
+        endBar: number, 
+        currentAtr: number,
+        volSma: Float64Array
+    ) {
+        if (startBar > endBar || currentAtr <= 0) {
+            return { netReturnAtr: 0, maxExcursionAtr: 0, count: 0, avgVolSma: 0 };
+        }
+
+        const startOpen = dataStore.data[startBar * 6 + 1];
+        const endClose = dataStore.data[endBar * 6 + 4];
+        let maxH = -Infinity;
+        let minL = Infinity;
+        let volSmaSum = 0;
+        
+        for (let i = startBar; i <= endBar; i++) {
+            const base = i * 6;
+            if (dataStore.data[base + 2] > maxH) maxH = dataStore.data[base + 2];
+            if (dataStore.data[base + 3] < minL) minL = dataStore.data[base + 3];
+            volSmaSum += volSma[i];
+        }
+
+        const count = endBar - startBar + 1;
+        const netReturnAtr = (endClose - startOpen) / currentAtr;
+        
+        const maxFavorable = (maxH - startOpen) / currentAtr;
+        const maxAdverse = (startOpen - minL) / currentAtr;
+        const maxExcursionAtr = Math.max(Math.abs(maxFavorable), Math.abs(maxAdverse));
+
+        return {
+            netReturnAtr,
+            maxExcursionAtr,
+            count,
+            avgVolSma: count > 0 ? (volSmaSum / count) : 0
+        };
+    }
+}
+
+export class HybridTokenBuilder {
+    public static build(
+        event: any, 
+        prevEvent: any, 
+        dataStore: any, 
+        atrRaw: Float64Array, 
+        volSmaRaw: Float64Array
+    ) {
+        const confBar = event.confirmedBarIndex;
+        const prevConfBar = prevEvent ? prevEvent.confirmedBarIndex : 0;
+        
+        const currentAtr = atrRaw[confBar] || 0.0001;
+        
+        // Structural Features (Normalized)
+        const barsSinceLast = confBar - prevConfBar;
+        const legDistAtr = prevEvent ? (event.price - prevEvent.price) / currentAtr : 0;
+
+        // Candle Context Features
+        // Rule: Only closed candles. Between previous confirmation and current confirmation.
+        const contextStart = prevEvent ? prevEvent.confirmedBarIndex + 1 : 0;
+        const contextEnd = confBar; 
+        
+        const ctx = CandleContextAggregator.summarize(dataStore, contextStart, contextEnd, currentAtr, volSmaRaw);
+
+        return {
+            bars_since_last_pivot: barsSinceLast,
+            leg_distance_atr: legDistAtr,
+            context_net_return_atr: ctx.netReturnAtr,
+            context_max_excursion_atr: ctx.maxExcursionAtr,
+            context_candle_count: ctx.count,
+            context_avg_vol_sma: ctx.avgVolSma
+        };
+    }
 }
 
 export class AIExporter {
     /**
-     * Builds both the continuous bars array and the trade manifest.
+     * ML-R1: Core Dataset Builder
+     * Coordinates Feature Engine, Context Aggregator, Token Builder, and Outcome Engine.
      */
-    public static buildDataset(
+    public static buildMLR1Dataset(
         dataStore: any,
-        options: ExportAIOptions = {}
-    ): { bars: ContinuousBarRow[]; trades: TradeManifestRow[] } {
+        cachedPivots: any[], // From StrictCBCZigZagIndicator.cachedPivots
+        symbol: string,
+        timeframe: string
+    ): MLR1EventRow[] {
+        // ==========================================
+        // 🔒 FROZEN RESEARCH CONTRACT PARAMETERS
+        // ==========================================
+        const ATR_PERIOD = 14;
+        const STOP_ATR_MULT = 1.5;
+        const TARGET_R_MULT = 2.0;
+        const MAX_HORIZON_BARS = 60; 
+        const TRADE_COST_R = 0.05; 
+        // ==========================================
+
         const len = dataStore.length;
-        const bars: ContinuousBarRow[] = [];
-        const trades: TradeManifestRow[] = [];
-        if (len === 0) return { bars, trades };
+        const atrRaw = MarketFeatureEngine.calculateATRArray(dataStore, ATR_PERIOD);
+        const volSmaRaw = MarketFeatureEngine.calculateVolumeSMAArray(dataStore, 20);
+        const events: MLR1EventRow[] = [];
 
-        // 1. Build Causal Continuous Indicator Streams
-        const atrPeriod = options.atrPeriod ?? 14;
-        const atrRaw = calculateATRArray(dataStore, atrPeriod);
-        const volSmaRaw = calculateVolumeSMAArray(dataStore, 20);
+        for (let i = 0; i < cachedPivots.length; i++) {
+            const pivot = cachedPivots[i];
+            const confBar = pivot.confirmedBarIndex;
+            const entryBar = confBar + 1; // Strict rule: next_open
 
-        // LAYER 1: Continuous Market Telemetry (Spacing, Density, and Directional Reversals)
-        const barsBetweenCrossesArr = new Int32Array(len).fill(999);
-        const crossesInLast30BarsArr = new Int32Array(len).fill(0);
-        const reversalsInLast30BarsArr = new Int32Array(len).fill(0);
+            // Cannot evaluate if the entry candle doesn't exist yet, or ATR hasn't warmed up
+            if (entryBar >= len || atrRaw[confBar] === 0) continue;
 
-        interface CrossEvent {
-            barIndex: number;
-            direction: number; // +1 = Golden Cross, -1 = Death Cross
-        }
-        const crossHistory: CrossEvent[] = [];
-        let lastCrossBar = -999;
+            const entryTime = dataStore.data[entryBar * 6];
+            const entryOpen = dataStore.data[entryBar * 6 + 1];
+            const currentAtr = Math.max(atrRaw[confBar], 0.0001);
 
-        for (let i = 0; i < len; i++) {
-            const crossDir = options.crossSignals ? options.crossSignals[i] : 0;
-            const hasCross = crossDir !== 0;
+            // --- 1. HYBRID TOKEN BUILDING ---
+            const prevPivot = i > 0 ? cachedPivots[i - 1] : null;
+            const tokenFeatures = HybridTokenBuilder.build(pivot, prevPivot, dataStore, atrRaw, volSmaRaw);
 
-            if (lastCrossBar >= 0) {
-                barsBetweenCrossesArr[i] = i - lastCrossBar;
-            }
+            // --- 2. OUTCOME ENGINE (Frozen Counterfactuals) ---
+            const lStop = entryOpen - (currentAtr * STOP_ATR_MULT);
+            const lTarget = entryOpen + (currentAtr * STOP_ATR_MULT * TARGET_R_MULT);
+            const lRisk = entryOpen - lStop;
 
-            if (hasCross) {
-                crossHistory.push({ barIndex: i, direction: crossDir });
-                lastCrossBar = i;
-            }
+            const sStop = entryOpen + (currentAtr * STOP_ATR_MULT);
+            const sTarget = entryOpen - (currentAtr * STOP_ATR_MULT * TARGET_R_MULT);
+            const sRisk = sStop - entryOpen;
 
-            // Window: Trailing 30 bars [i - 29 to i]
-            const windowStart = i - 29;
-            const crossesInWindow: CrossEvent[] = [];
-            for (let c = crossHistory.length - 1; c >= 0; c--) {
-                if (crossHistory[c].barIndex >= windowStart) {
-                    crossesInWindow.unshift(crossHistory[c]);
-                } else {
-                    break;
-                }
-            }
+            let lExitPrice = entryOpen, lOutcome: any = 'timeout_loss', lResolved = false;
+            let sExitPrice = entryOpen, sOutcome: any = 'timeout_loss', sResolved = false;
 
-            // Count total crosses
-            crossesInLast30BarsArr[i] = crossesInWindow.length;
+            const horizonEnd = Math.min(len - 1, entryBar + MAX_HORIZON_BARS);
 
-            // Count true directional reversals (+1 to -1 or -1 to +1)
-            let revCount = 0;
-            for (let k = 1; k < crossesInWindow.length; k++) {
-                if (crossesInWindow[k].direction !== crossesInWindow[k - 1].direction) {
-                    revCount++;
-                }
-            }
-            reversalsInLast30BarsArr[i] = revCount;
-        }
+            for (let f = entryBar; f <= horizonEnd; f++) {
+                const base = f * 6;
+                const fOpen = dataStore.data[base + 1];
+                const fHigh = dataStore.data[base + 2];
+                const fLow = dataStore.data[base + 3];
+                const fClose = dataStore.data[base + 4];
 
-        for (let i = 0; i < len; i++) {
-            const base = i * 6;
-            const macroBox = options.activeBoxesPerBar ? options.activeBoxesPerBar[i] : null;
-            const cbcBox = options.activeCbcBoxesPerBar ? options.activeCbcBoxesPerBar[i] : null;
-            const cbcFlipVal = options.cbcFlips ? options.cbcFlips[i] : 0;
-
-            bars.push({
-                bar_index: i,
-                timestamp: dataStore.data[base],
-                open: dataStore.data[base + 1],
-                high: dataStore.data[base + 2],
-                low: dataStore.data[base + 3],
-                close: dataStore.data[base + 4],
-                volume: dataStore.data[base + 5],
-                atr: i >= atrPeriod - 1 ? atrRaw[i].toFixed(4) : '',
-                volume_sma_20: volSmaRaw[i],
-                ema_10: options.emaValues && options.emaValues[i] ? options.emaValues[i].toFixed(4) : '',
-                sma_30: options.smaValues && options.smaValues[i] ? options.smaValues[i].toFixed(4) : '',
-                macro_top: macroBox ? macroBox.top.toFixed(4) : '',
-                macro_bottom: macroBox ? macroBox.bottom.toFixed(4) : '',
-                cbc_top: cbcBox ? cbcBox.top.toFixed(4) : '',
-                cbc_bottom: cbcBox ? cbcBox.bottom.toFixed(4) : '',
-                cbc_flip: cbcFlipVal !== 0 ? cbcFlipVal.toString() : '0',
-                bars_between_crosses: barsBetweenCrossesArr[i],
-                crosses_in_last_30_bars: crossesInLast30BarsArr[i],
-                direction_reversals_in_last_30_bars: reversalsInLast30BarsArr[i]
-            });
-        }
-
-        // 2. Build Trade Manifest with Causal Session Tracking
-        const targetRR = options.targetRR ?? 2.0;
-        const maxHorizon = options.forwardHorizon ?? 30;
-        const TRADE_COST_R = 0.05; // Fixed simulated slippage + exchange fees
-        const sessionCounters = new Map<string, number>();
-        let tradeSequenceId = 1;
-        let activePositionEndBar = -1; // SOLUTION 1: Tracks when current open position closes
-
-        for (let i = 0; i < len; i++) {
-            const base = i * 6;
-            const timestamp = dataStore.data[base];
-            const closePrice = dataStore.data[base + 4];
-            const currentAtr = Math.max(atrRaw[i] || 0, 0.0001);
-
-            // TRADE ENTRY IS STRICTLY THE EMA (10) / SMA (30) CROSS
-            let signalDir: 'BUY' | 'SELL' | null = null;
-            if (options.crossSignals && options.crossSignals[i] === 1) {
-                signalDir = 'BUY';  // Golden Cross
-            } else if (options.crossSignals && options.crossSignals[i] === -1) {
-                signalDir = 'SELL'; // Death Cross
-            }
-
-            // Strictly skip any candle that is not an EMA/SMA Cross
-            if (!signalDir) continue;
-
-            // LAYER 2: Single Active Position Invariant (Prevents same-bar re-entry)
-            // If an earlier trade is running or resolving on bar i, lockout until bar i > activePositionEndBar
-            if (i <= activePositionEndBar) {
-                continue;
-            }
-
-            const signalType: 'EMA_SMA_CROSS' = 'EMA_SMA_CROSS';
-
-            // Priority Stop-Loss Selection:
-            // 1. Strict CBC Pullback Box (if active)
-            // 2. Market Structure Macro Box (if active)
-            // 3. Fallback to 1.5 ATR
-            const isLong = signalDir === 'BUY';
-            const macroBox = options.activeBoxesPerBar ? options.activeBoxesPerBar[i] : null;
-            const cbcBox = options.activeCbcBoxesPerBar ? options.activeCbcBoxesPerBar[i] : null;
-
-            let stopPrice = closePrice;
-            if (cbcBox) {
-                stopPrice = isLong ? cbcBox.bottom : cbcBox.top;
-            } else if (macroBox) {
-                stopPrice = isLong ? macroBox.bottom : macroBox.top;
-            } else {
-                stopPrice = isLong ? closePrice - (currentAtr * 1.5) : closePrice + (currentAtr * 1.5);
-            }
-
-            // Session Metadata & Causal Counter
-            const sessionInfo = classifyTradeSession(timestamp);
-            const sessionKey = sessionInfo.sessionDate;
-            const currentSessionCount = (sessionCounters.get(sessionKey) || 0) + 1;
-            sessionCounters.set(sessionKey, currentSessionCount);
-
-            let rawRisk = Math.abs(closePrice - stopPrice);
-            if (rawRisk <= 0 || isNaN(rawRisk)) rawRisk = currentAtr * 1.5;
-
-            const targetPrice = isLong ? closePrice + (rawRisk * targetRR) : closePrice - (rawRisk * targetRR);
-
-            // Forward Execution Simulation
-            const lookAheadLimit = Math.min(len - 1, i + maxHorizon);
-            let resolved = false;
-            let resolutionBarIndex = -1;
-            let exitPrice = closePrice;
-            let outcomeClass: 'hard_stop' | 'timeout_loss' | 'timeout_gain' | 'full_target' = 'hard_stop';
-
-            for (let f = i + 1; f <= lookAheadLimit; f++) {
-                const fOpen = dataStore.data[f * 6 + 1];
-                const fHigh = dataStore.data[f * 6 + 2];
-                const fLow = dataStore.data[f * 6 + 3];
-
-                if (isLong) {
-                    const hitSL = fLow <= stopPrice;
-                    const hitTP = fHigh >= targetPrice;
-
-                    if (hitSL && hitTP) {
-                        // Conservative assumption: Stop Loss hit first
-                        exitPrice = fOpen <= stopPrice ? fOpen : stopPrice;
-                        resolutionBarIndex = f;
-                        outcomeClass = 'hard_stop';
-                        resolved = true;
-                        break;
-                    } else if (hitSL) {
-                        exitPrice = fOpen <= stopPrice ? fOpen : stopPrice;
-                        resolutionBarIndex = f;
-                        outcomeClass = 'hard_stop';
-                        resolved = true;
-                        break;
-                    } else if (hitTP) {
-                        exitPrice = fOpen >= targetPrice ? fOpen : targetPrice;
-                        resolutionBarIndex = f;
-                        outcomeClass = 'full_target';
-                        resolved = true;
-                        break;
+                // LONG Counterfactual
+                if (!lResolved) {
+                    if (fOpen <= lStop) { lExitPrice = fOpen; lOutcome = 'hard_stop'; lResolved = true; }
+                    else if (fOpen >= lTarget) { lExitPrice = fOpen; lOutcome = 'full_target'; lResolved = true; }
+                    else {
+                        const hitSL = fLow <= lStop;
+                        const hitTP = fHigh >= lTarget;
+                        if (hitSL && hitTP) { lExitPrice = lStop; lOutcome = 'hard_stop'; lResolved = true; } // Collision handling
+                        else if (hitSL) { lExitPrice = lStop; lOutcome = 'hard_stop'; lResolved = true; }
+                        else if (hitTP) { lExitPrice = lTarget; lOutcome = 'full_target'; lResolved = true; }
                     }
-                } else { // SHORT
-                    const hitSL = fHigh >= stopPrice;
-                    const hitTP = fLow <= targetPrice;
-
-                    if (hitSL && hitTP) {
-                        // Conservative assumption: Stop Loss hit first
-                        exitPrice = fOpen >= stopPrice ? fOpen : stopPrice;
-                        resolutionBarIndex = f;
-                        outcomeClass = 'hard_stop';
-                        resolved = true;
-                        break;
-                    } else if (hitSL) {
-                        exitPrice = fOpen >= stopPrice ? fOpen : stopPrice;
-                        resolutionBarIndex = f;
-                        outcomeClass = 'hard_stop';
-                        resolved = true;
-                        break;
-                    } else if (hitTP) {
-                        exitPrice = fOpen <= targetPrice ? fOpen : targetPrice;
-                        resolutionBarIndex = f;
-                        outcomeClass = 'full_target';
-                        resolved = true;
-                        break;
+                    if (!lResolved && f === horizonEnd) {
+                        lExitPrice = fClose; 
+                        lOutcome = lExitPrice > entryOpen ? 'timeout_gain' : 'timeout_loss';
+                        lResolved = true;
                     }
                 }
-            }
 
-            // Exclude Censored Trades (Unfinished trades at historical dataset boundary)
-            if (!resolved) {
-                if (lookAheadLimit === len - 1 && lookAheadLimit - i < maxHorizon) {
-                    continue; // Skip censored trade entirely
+                // SHORT Counterfactual
+                if (!sResolved) {
+                    if (fOpen >= sStop) { sExitPrice = fOpen; sOutcome = 'hard_stop'; sResolved = true; }
+                    else if (fOpen <= sTarget) { sExitPrice = fOpen; sOutcome = 'full_target'; sResolved = true; }
+                    else {
+                        const hitSL = fHigh >= sStop;
+                        const hitTP = fLow <= sTarget;
+                        if (hitSL && hitTP) { sExitPrice = sStop; sOutcome = 'hard_stop'; sResolved = true; } // Collision handling
+                        else if (hitSL) { sExitPrice = sStop; sOutcome = 'hard_stop'; sResolved = true; }
+                        else if (hitTP) { sExitPrice = sTarget; sOutcome = 'full_target'; sResolved = true; }
+                    }
+                    if (!sResolved && f === horizonEnd) {
+                        sExitPrice = fClose; 
+                        sOutcome = sExitPrice < entryOpen ? 'timeout_gain' : 'timeout_loss';
+                        sResolved = true;
+                    }
                 }
-                exitPrice = dataStore.data[lookAheadLimit * 6 + 4];
-                resolutionBarIndex = lookAheadLimit;
+                if (lResolved && sResolved) break;
             }
 
-            // Continuous R Accounting
-            let gross_R = isLong ? (exitPrice - closePrice) / rawRisk : (closePrice - exitPrice) / rawRisk;
-            gross_R = Math.min(targetRR, gross_R);
+            const lGrossR = (lExitPrice - entryOpen) / lRisk;
+            const lNetR = Math.min(TARGET_R_MULT, lGrossR) - TRADE_COST_R;
 
-            if (!resolved) {
-                outcomeClass = gross_R >= 0 ? 'timeout_gain' : 'timeout_loss';
-            }
+            const sGrossR = (entryOpen - sExitPrice) / sRisk;
+            const sNetR = Math.min(TARGET_R_MULT, sGrossR) - TRADE_COST_R;
 
-            const realized_net_R = gross_R - TRADE_COST_R;
+            // --- 3. ROW ASSEMBLY ---
+            events.push({
+                event_id: `MLR1_${symbol}_${timeframe}_v1_${dataStore.data[confBar * 6]}_${pivot.time}_${pivot.type}`,
+                symbol, timeframe,
+                pivot_type: pivot.type,
+                pivot_label: pivot.label,
+                pivot_price: parseFloat(pivot.price.toFixed(4)),
+                pivot_bar_index: pivot.barIndex,
+                confirmed_bar_index: confBar,
+                confirmation_time_ms: dataStore.data[confBar * 6],
+                
+                leg_direction: pivot.type === 'high' ? 'down' : 'up',
+                bars_since_last_pivot: tokenFeatures.bars_since_last_pivot,
+                leg_distance_atr: parseFloat(tokenFeatures.leg_distance_atr.toFixed(4)),
+                
+                context_net_return_atr: parseFloat(tokenFeatures.context_net_return_atr.toFixed(4)),
+                context_max_excursion_atr: parseFloat(tokenFeatures.context_max_excursion_atr.toFixed(4)),
+                context_candle_count: tokenFeatures.context_candle_count,
+                context_avg_vol_sma: parseFloat(tokenFeatures.context_avg_vol_sma.toFixed(2)),
 
-            trades.push({
-                trade_id: `TRD_${tradeSequenceId.toString().padStart(6, '0')}`,
-                signal_type: signalType,
-                signal_bar_index: i,
-                resolution_bar_index: resolutionBarIndex,
-                signal_timestamp: timestamp,
-                signal_direction: signalDir,
-                entry_price: parseFloat(closePrice.toFixed(4)),
-                stop_price: parseFloat(stopPrice.toFixed(4)),
-                target_price: parseFloat(targetPrice.toFixed(4)),
-                gross_R: parseFloat(gross_R.toFixed(4)),
-                trading_cost_R: TRADE_COST_R,
-                realized_net_R: parseFloat(realized_net_R.toFixed(4)),
-                outcome_class: outcomeClass,
-                session_id: sessionInfo.sessionId,
-                session_elapsed_minutes: sessionInfo.elapsedMinutes,
-                session_trade_number: currentSessionCount,
-                bars_between_crosses: barsBetweenCrossesArr[i],
-                crosses_in_last_30_bars: crossesInLast30BarsArr[i],
-                direction_reversals_in_last_30_bars: reversalsInLast30BarsArr[i]
+                entry_bar_index: entryBar,
+                entry_time: entryTime,
+                entry_price: entryOpen,
+                atr_at_confirmation: parseFloat(currentAtr.toFixed(4)),
+                
+                long_stop_price: parseFloat(lStop.toFixed(4)),
+                long_target_price: parseFloat(lTarget.toFixed(4)),
+                long_exit_price: parseFloat(lExitPrice.toFixed(4)),
+                long_net_r: parseFloat(lNetR.toFixed(4)),
+                long_outcome: lOutcome,
+
+                short_stop_price: parseFloat(sStop.toFixed(4)),
+                short_target_price: parseFloat(sTarget.toFixed(4)),
+                short_exit_price: parseFloat(sExitPrice.toFixed(4)),
+                short_net_r: parseFloat(sNetR.toFixed(4)),
+                short_outcome: sOutcome
             });
-
-            // Lock out subsequent entries until after this trade's resolution candle
-            activePositionEndBar = resolutionBarIndex;
-            tradeSequenceId++;
         }
-
-        return { bars, trades };
+        return events;
     }
 
-    /**
-     * Converts records to CSV strings and triggers browser downloads for both files.
-     */
-    public static exportDualCSV(
-        bars: ContinuousBarRow[],
-        trades: TradeManifestRow[],
-        symbol: string,
-        interval: string
-    ): boolean {
-        if (typeof document === 'undefined') return false;
+    public static exportMLR1CSV(events: MLR1EventRow[], symbol: string, timeframe: string): boolean {
+        if (typeof document === 'undefined' || events.length === 0) return false;
 
-        // 1. Build bars.csv
-        const barHeader = 'bar_index,timestamp,open,high,low,close,volume,atr,volume_sma_20,ema_10,sma_30,macro_top,macro_bottom,cbc_top,cbc_bottom,cbc_flip,bars_between_crosses,crosses_in_last_30_bars,direction_reversals_in_last_30_bars';
-        const barLines = bars.map(b => `${b.bar_index},${b.timestamp},${b.open},${b.high},${b.low},${b.close},${b.volume},${b.atr},${b.volume_sma_20},${b.ema_10},${b.sma_30},${b.macro_top},${b.macro_bottom},${b.cbc_top},${b.cbc_bottom},${b.cbc_flip},${b.bars_between_crosses},${b.crosses_in_last_30_bars},${b.direction_reversals_in_last_30_bars}`);
-        const barsCsv = `${barHeader}\n${barLines.join('\n')}`;
+        const headers = Object.keys(events[0]).join(',');
+        const lines = events.map(e => Object.values(e).join(','));
+        const csv = `${headers}\n${lines.join('\n')}`;
 
-        // 2. Build trades.csv
-        const tradeHeader = 'trade_id,signal_type,signal_bar_index,resolution_bar_index,signal_timestamp,signal_direction,entry_price,stop_price,target_price,gross_R,trading_cost_R,realized_net_R,outcome_class,session_id,session_elapsed_minutes,session_trade_number,bars_between_crosses,crosses_in_last_30_bars,direction_reversals_in_last_30_bars';
-        const tradeLines = trades.map(t => `${t.trade_id},${t.signal_type},${t.signal_bar_index},${t.resolution_bar_index},${t.signal_timestamp},${t.signal_direction},${t.entry_price},${t.stop_price},${t.target_price},${t.gross_R},${t.trading_cost_R},${t.realized_net_R},${t.outcome_class},${t.session_id},${t.session_elapsed_minutes},${t.session_trade_number},${t.bars_between_crosses},${t.crosses_in_last_30_bars},${t.direction_reversals_in_last_30_bars}`);
-        const tradesCsv = `${tradeHeader}\n${tradeLines.join('\n')}`;
-
-        const baseFilename = `RAD04_${symbol.toUpperCase()}_${interval}`;
-
-        const downloadFile = (content: string, filename: string) => {
-            const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        };
-
-        downloadFile(barsCsv, `${baseFilename}_bars.csv`);
-        setTimeout(() => downloadFile(tradesCsv, `${baseFilename}_trades.csv`), 250);
-
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `MLR1_${symbol}_${timeframe}_Events.csv`;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
         return true;
     }
 }
 
-/**
- * Phase 4: Pre-Flight Audit Function
- * Scans generated dataset in memory before download to verify chronological timeline,
- * math health (detecting NaNs, Infinities), and class balance.
- */
-export function runPreFlightAudit(csvRows: string[]): boolean {
-    console.log('🛡️ Running Pre-Flight Data Audit...');
+export class DatasetAuditor {
+    public static runCausalityAudit(events: MLR1EventRow[]): boolean {
+        console.log('🛡️ Running ML-R1 Causality Audit...');
+        let timeFailures = 0;
+        let indexFailures = 0;
+        let mathFailures = 0;
 
-    let timeFailures = 0;
-    let mathFailures = 0;
-    let winCount = 0;
-    let totalSignals = csvRows.length;
-    let lastTimestamp = -1;
+        for (let i = 0; i < events.length; i++) {
+            const ev = events[i];
 
-    for (let i = 0; i < csvRows.length; i++) {
-        const cols = csvRows[i].split(',');
-
-        // 1. TIMELINE GATE (Assumes Timestamp is the 1st column: cols[0])
-        const ts = parseFloat(cols[0]);
-        if (lastTimestamp !== -1 && ts <= lastTimestamp) {
-            timeFailures++;
-        }
-        lastTimestamp = ts;
-
-        // 2. MATH GATE: Catch NaN, Infinity, -Infinity
-        for (let j = 0; j < cols.length; j++) {
-            const strVal = cols[j].trim();
-            // Skip non-numeric string columns (like 'BULL_CROSS')
-            if (strVal !== '' && !isNaN(Number(strVal))) {
-                const numVal = parseFloat(strVal);
-                if (!isFinite(numVal)) {
-                    mathFailures++;
-                }
+            // 1. Chronology Check
+            if (i > 0) {
+                if (ev.confirmation_time_ms < events[i - 1].confirmation_time_ms) timeFailures++;
             }
+
+            // 2. Causality Check (Entry MUST be strictly after confirmation)
+            if (ev.entry_bar_index <= ev.confirmed_bar_index) indexFailures++;
+
+            // 3. Math Health (No NaNs/Infinities from ATR bugs)
+            if (!isFinite(ev.atr_at_confirmation) || ev.atr_at_confirmation <= 0) mathFailures++;
+            if (!isFinite(ev.leg_distance_atr)) mathFailures++;
         }
 
-        // 3. CLASS IMBALANCE GATE (Assumes 'realized_net_R' is the 7th column: cols[6])
-        // Positive net R indicates a profitable trade after fees/slippage
-        if (parseFloat(cols[6]) > 0) {
-            winCount++;
+        console.log(`=======================================`);
+        console.log(`📊 PRE-FLIGHT AUDIT: ${events.length} Events Evaluated`);
+        console.log(`   ↳ Timeline (Chronological):  ${timeFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Causality (Next Open):     ${indexFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Math Health (Valid ATR):   ${mathFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`=======================================`);
+
+        if (timeFailures > 0 || indexFailures > 0 || mathFailures > 0) {
+            if (typeof alert !== 'undefined') alert(`⚠️ ML-R1 Audit Failed!\nCausality broken. Check console.`);
+            return false;
         }
+        return true;
     }
-
-    const winRate = totalSignals > 0 ? (winCount / totalSignals) * 100 : 0;
-
-    // Print Report to Console
-    console.log(`=======================================`);
-    console.log(`📊 PRE-FLIGHT AUDIT: ${totalSignals} Signals Processed`);
-    console.log(`   ↳ Timeline (Lookahead Bias): ${timeFailures === 0 ? '✅ PASSED' : `❌ FAILED (${timeFailures} errors)`}`);
-    console.log(`   ↳ Math Health (NaN/Inf):     ${mathFailures === 0 ? '✅ PASSED' : `❌ FAILED (${mathFailures} errors)`}`);
-    console.log(`   ↳ Class Balance (Win Rate):  ${winRate.toFixed(2)}% ${winRate < 5 ? '⚠️ WARNING: Severe Imbalance' : '✅ PASSED'}`);
-    console.log(`=======================================`);
-
-    // If critical errors exist, trigger browser alert and block download
-    if (timeFailures > 0 || mathFailures > 0) {
-        if (typeof alert !== 'undefined') {
-            alert(`⚠️ Dataset Audit Failed!\n\nTimeline Errors: ${timeFailures}\nMath Errors (NaN/Inf): ${mathFailures}\n\nCheck console for details. Download aborted.`);
-        }
-        return false;
-    }
-
-    return true; // Dataset is pure, allow download
 }
