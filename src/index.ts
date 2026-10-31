@@ -4755,7 +4755,7 @@ export class WorkspaceManager {
                     return;
                 }
 
-                // Step C: Run Pre-Flight Causality & Candle-Level Execution Audit
+                // Step C: Run Pre-Flight Master Audit with Candle-Level Execution Replay
                 const auditPassed = DatasetAuditor.runCausalityAudit(events, headlessDs);
                 if (!auditPassed) {
                     if (loadingOverlay) loadingOverlay.style.display = 'none';

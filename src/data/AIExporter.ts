@@ -280,6 +280,7 @@ export class AIExporter {
 
         const indVersion = `v2_ATR${ATR_PERIOD}_SL${STOP_ATR_MULT}_TP${TARGET_R_MULT}_HZ${MAX_HORIZON_BARS}`;
         
+        const excludedIndexZero = cachedPivots.length > 0 ? 1 : 0;
         let excludedMissingNextOpen = 0;
         let excludedUnwarmedAtr = 0;
         let excludedIncompleteHorizon = 0;
@@ -431,17 +432,27 @@ export class AIExporter {
             });
         }
 
-        // Telemetry reconciliation report
+        // Strict Mathematical Reconciliation: Candidates = Excluded + Final
+        const totalExcluded = excludedIndexZero + excludedMissingNextOpen + excludedUnwarmedAtr + excludedIncompleteHorizon;
+        const totalAccounted = totalExcluded + events.length;
+        const isReconciled = totalAccounted === cachedPivots.length;
+
+        const datasetStartMs = len > 0 ? dataStore.data[0] : 0;
+        const datasetEndMs = len > 0 ? dataStore.data[(len - 1) * 6] : 0;
+
         console.log(`=======================================`);
-        console.log(`📊 ML-R1 DATASET GENERATION TELEMETRY:`);
+        console.log(`📊 ML-R1 DATASET GENERATION & ACCOUNTING RECONCILIATION:`);
+        console.log(`   ↳ Source Candle Range:        ${new Date(datasetStartMs).toISOString()} → ${new Date(datasetEndMs).toISOString()}`);
         console.log(`   ↳ Total Candidate Pivots:     ${cachedPivots.length}`);
-        console.log(`   ↳ Excluded (Index 0):         1`);
+        console.log(`   ↳ Excluded (Index 0 / Unbnd): ${excludedIndexZero}`);
         console.log(`   ↳ Excluded (ATR Warm-up):     ${excludedUnwarmedAtr}`);
         console.log(`   ↳ Excluded (Missing Open):    ${excludedMissingNextOpen}`);
         console.log(`   ↳ Excluded (Incomplete HZ):   ${excludedIncompleteHorizon}`);
+        console.log(`   ↳ Total Excluded:             ${totalExcluded}`);
         console.log(`   ↳ Final Eligible Events:      ${events.length}`);
+        console.log(`   ↳ Reconciliation Check:       ${isReconciled ? '✅ 100% RECONCILED' : '❌ DISCREPANCY DETECTED'}`);
         if (events.length > 0) {
-            console.log(`   ↳ Dataset Coverage Range:     ${new Date(events[0].confirmation_time_ms).toISOString()} → ${new Date(events[events.length - 1].confirmation_time_ms).toISOString()}`);
+            console.log(`   ↳ Event Coverage Range:       ${new Date(events[0].confirmation_time_ms).toISOString()} → ${new Date(events[events.length - 1].confirmation_time_ms).toISOString()}`);
         }
         console.log(`=======================================`);
 
@@ -460,25 +471,55 @@ export class AIExporter {
     public static exportMLR1CSV(events: MLR1EventRow[], symbol: string, timeframe: string): boolean {
         if (typeof document === 'undefined' || events.length === 0) return false;
 
-        // RFC-4180 compliant header escaping
-        const headers = Object.keys(events[0]).map(this.csvEscape).join(',');
-        
-        // Full JavaScript float precision preserved: No rounding loss for training scripts
+        // RFC-4180 Key-driven serialization: Never rely on Object.values() property order
+        const keys = Object.keys(events[0]) as (keyof MLR1EventRow)[];
+        const headers = keys.map(k => this.csvEscape(k)).join(',');
+
         const lines = events.map(e =>
-            Object.values(e).map(val => {
+            keys.map(key => {
+                const val = e[key];
                 if (typeof val === 'number') {
-                    return String(val);
+                    return String(val); // Preserve full 64-bit float precision
                 }
                 return this.csvEscape(val);
             }).join(',')
         );
-        const csv = `${headers}\n${lines.join('\n')}`;
+
+        // Standard RFC-4180 CRLF record separators
+        const csv = [headers, ...lines].join('\r\n');
 
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         a.download = `MLR1_${symbol}_${timeframe}_Events.csv`;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        return true;
+    }
+
+    /**
+     * Physical File Segregation: Exports ONLY the 12 representation features for Transformer input.
+     * Guarantees zero outcome or execution metadata exists in the training file.
+     */
+    public static exportMLR1RepresentationCSV(events: MLR1EventRow[], symbol: string, timeframe: string): boolean {
+        if (typeof document === 'undefined' || events.length === 0) return false;
+
+        const headers = MLR1_REPRESENTATION_FEATURE_ALLOWLIST.map(this.csvEscape).join(',');
+        const lines = events.map(e => {
+            const input = buildRepresentationInput(e);
+            return MLR1_REPRESENTATION_FEATURE_ALLOWLIST.map(key => this.csvEscape(input[key])).join(',');
+        });
+
+        const csv = [headers, ...lines].join('\r\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `MLR1_${symbol}_${timeframe}_Representation_Features.csv`;
         a.style.display = 'none';
         document.body.appendChild(a);
         a.click();
@@ -493,10 +534,16 @@ export class DatasetAuditor {
      * Master Verification Suite:
      * 1. Row-level Contract & Numerical Integrity Audit
      * 2. Training Allowlist Leakage Audit
-     * 3. Independent Candle-Level Execution Audit (verifying entry/exit against DataStore candles)
+     * 3. Independent Candle-Level Execution Replay Audit (verifying entry/exit/outcomes against DataStore candles)
      */
-    public static runCausalityAudit(events: MLR1EventRow[], dataStore?: any): boolean {
+    public static runCausalityAudit(events: MLR1EventRow[], dataStore: any): boolean {
         console.log('🛡️ Running ML-R1 Comprehensive Contract & Integrity Audit...');
+
+        if (!dataStore || !dataStore.data || dataStore.length === 0) {
+            console.error("❌ DatasetAuditor Error: dataStore is mandatory for the 3-way verification pass.");
+            return false;
+        }
+
         let timeFailures = 0;
         let indexFailures = 0;
         let mathFailures = 0;
@@ -531,7 +578,7 @@ export class DatasetAuditor {
             if (ev.entry_bar_index !== ev.confirmed_bar_index + 1) indexFailures++;
             if (ev.entry_time <= ev.confirmation_time_ms) indexFailures++;
 
-            // 4. Exhaustive Anti-NaN Gate on all 24 numeric fields
+            // 4. Exhaustive Anti-NaN Gate on all 25 numeric fields
             const requiredFiniteNumbers = [
                 ev.pivot_price, ev.previous_pivot_price, ev.pivot_bar_index,
                 ev.confirmed_bar_index, ev.confirmation_time_ms, ev.bars_since_last_pivot,
@@ -630,23 +677,118 @@ export class DatasetAuditor {
                 if (!ALLOWLIST_SET.has(inputKeys[k])) allowlistFailures++;
             }
 
-            // 12. Independent Candle-Level Execution Audit (if DataStore is supplied)
-            if (dataStore && dataStore.length > 0) {
-                const base = ev.entry_bar_index * 6;
-                const candleOpen = dataStore.data[base + 1];
-                if (Math.abs(ev.entry_price - candleOpen) > 0.0001) candleExecutionFailures++;
+            // 12. Independent Candle-Level Execution Replay (Tracking LONG and SHORT trajectories)
+            const entryBar = ev.entry_bar_index;
+            const horizonEnd = entryBar + 60 - 1;
 
-                // Verify timeout exit price exactly equals the close of bar entry_bar_index + 60 - 1
-                const horizonBar = ev.entry_bar_index + 60 - 1;
-                if (horizonBar < dataStore.length) {
-                    const horizonClose = dataStore.data[horizonBar * 6 + 4];
-                    if (ev.long_outcome.startsWith('timeout') && Math.abs(ev.long_exit_price - horizonClose) > 0.0001) {
-                        candleExecutionFailures++;
+            if (horizonEnd >= dataStore.length) {
+                candleExecutionFailures++;
+            } else {
+                const entryBase = entryBar * 6;
+                const actualOpen = dataStore.data[entryBase + 1];
+                const actualEntryTime = dataStore.data[entryBase];
+                const actualConfTime = dataStore.data[ev.confirmed_bar_index * 6];
+
+                if (Math.abs(ev.entry_price - actualOpen) > 0.0001) candleExecutionFailures++;
+                if (ev.entry_time !== actualEntryTime) candleExecutionFailures++;
+                if (ev.confirmation_time_ms !== actualConfTime) candleExecutionFailures++;
+
+                // Independent replay of LONG and SHORT forward paths
+                let replayLResolved = false;
+                let replayLExit = 0;
+                let replayLOutcome: 'full_target' | 'hard_stop' | 'timeout_net_gain' | 'timeout_net_loss' = 'hard_stop';
+
+                let replaySResolved = false;
+                let replaySExit = 0;
+                let replaySOutcome: 'full_target' | 'hard_stop' | 'timeout_net_gain' | 'timeout_net_loss' = 'hard_stop';
+
+                for (let f = entryBar; f <= horizonEnd; f++) {
+                    const bF = f * 6;
+                    const fOpen = dataStore.data[bF + 1];
+                    const fHigh = dataStore.data[bF + 2];
+                    const fLow = dataStore.data[bF + 3];
+                    const fClose = dataStore.data[bF + 4];
+
+                    // LONG Replay
+                    if (!replayLResolved) {
+                        if (fOpen <= ev.long_stop_price) {
+                            replayLExit = fOpen;
+                            replayLOutcome = 'hard_stop';
+                            replayLResolved = true;
+                        } else if (fOpen >= ev.long_target_price) {
+                            replayLExit = fOpen;
+                            replayLOutcome = 'full_target';
+                            replayLResolved = true;
+                        } else {
+                            const hitSL = fLow <= ev.long_stop_price;
+                            const hitTP = fHigh >= ev.long_target_price;
+                            if (hitSL && hitTP) {
+                                replayLExit = ev.long_stop_price;
+                                replayLOutcome = 'hard_stop';
+                                replayLResolved = true;
+                            } else if (hitSL) {
+                                replayLExit = ev.long_stop_price;
+                                replayLOutcome = 'hard_stop';
+                                replayLResolved = true;
+                            } else if (hitTP) {
+                                replayLExit = ev.long_target_price;
+                                replayLOutcome = 'full_target';
+                                replayLResolved = true;
+                            }
+                        }
+                        if (!replayLResolved && f === horizonEnd) {
+                            replayLExit = fClose;
+                            const grossR = (replayLExit - ev.entry_price) / lRisk;
+                            const netR = Math.min(2.0, grossR) - 0.05;
+                            replayLOutcome = netR > 0 ? 'timeout_net_gain' : 'timeout_net_loss';
+                            replayLResolved = true;
+                        }
                     }
-                    if (ev.short_outcome.startsWith('timeout') && Math.abs(ev.short_exit_price - horizonClose) > 0.0001) {
-                        candleExecutionFailures++;
+
+                    // SHORT Replay
+                    if (!replaySResolved) {
+                        if (fOpen >= ev.short_stop_price) {
+                            replaySExit = fOpen;
+                            replaySOutcome = 'hard_stop';
+                            replaySResolved = true;
+                        } else if (fOpen <= ev.short_target_price) {
+                            replaySExit = fOpen;
+                            replaySOutcome = 'full_target';
+                            replaySResolved = true;
+                        } else {
+                            const hitSL = fHigh >= ev.short_stop_price;
+                            const hitTP = fLow <= ev.short_target_price;
+                            if (hitSL && hitTP) {
+                                replaySExit = ev.short_stop_price;
+                                replaySOutcome = 'hard_stop';
+                                replaySResolved = true;
+                            } else if (hitSL) {
+                                replaySExit = ev.short_stop_price;
+                                replaySOutcome = 'hard_stop';
+                                replaySResolved = true;
+                            } else if (hitTP) {
+                                replaySExit = ev.short_target_price;
+                                replaySOutcome = 'full_target';
+                                replaySResolved = true;
+                            }
+                        }
+                        if (!replaySResolved && f === horizonEnd) {
+                            replaySExit = fClose;
+                            const grossR = (ev.entry_price - replaySExit) / sRisk;
+                            const netR = Math.min(2.0, grossR) - 0.05;
+                            replaySOutcome = netR > 0 ? 'timeout_net_gain' : 'timeout_net_loss';
+                            replaySResolved = true;
+                        }
                     }
+
+                    if (replayLResolved && replaySResolved) break;
                 }
+
+                // Verify replay outcomes match recorded row data
+                if (Math.abs(replayLExit - ev.long_exit_price) > 0.0001) candleExecutionFailures++;
+                if (replayLOutcome !== ev.long_outcome) candleExecutionFailures++;
+                if (Math.abs(replaySExit - ev.short_exit_price) > 0.0001) candleExecutionFailures++;
+                if (replaySOutcome !== ev.short_outcome) candleExecutionFailures++;
             }
         }
 
@@ -663,9 +805,7 @@ export class DatasetAuditor {
         console.log(`   ↳ Outcome Net R & Risk:  ${outcomeMathFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`   ↳ Timeout Net Classes:   ${timeoutClassFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`   ↳ Allowlist Enforcement: ${allowlistFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
-        if (dataStore && dataStore.length > 0) {
-            console.log(`   ↳ Candle Execution Truth:${candleExecutionFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
-        }
+        console.log(`   ↳ Candle Execution Replay:${candleExecutionFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`=======================================`);
 
         if (timeFailures > 0 || indexFailures > 0 || mathFailures > 0 || duplicateFailures > 0 || 
