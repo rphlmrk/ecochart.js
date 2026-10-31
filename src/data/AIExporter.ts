@@ -1,3 +1,52 @@
+// =========================================================================
+// 🔒 FROZEN RESEARCH CONTRACT: EXPLICIT FEATURE / OUTCOME SEPARATION
+// =========================================================================
+export const MLR1_REPRESENTATION_FEATURE_ALLOWLIST = [
+    'pivot_type',
+    'pivot_label',
+    'completed_leg_direction',
+    'zigzag_next_leg_orientation',
+    'bars_since_last_pivot',
+    'leg_distance_atr',
+    'context_net_return_atr',
+    'context_max_favorable_atr',
+    'context_max_adverse_atr',
+    'context_candle_count',
+    'context_relative_volume',
+    'context_relative_volume_valid_fraction'
+] as const;
+
+export type MLR1RepresentationFeature = typeof MLR1_REPRESENTATION_FEATURE_ALLOWLIST[number];
+
+/**
+ * 🔒 STRICT PROJECTION: Constructs Transformer input strictly from the allowlist.
+ * Ensures future outcome fields can NEVER enter the model.
+ */
+export function buildRepresentationInput(ev: MLR1EventRow): Record<MLR1RepresentationFeature, string | number> {
+    const input = {} as Record<MLR1RepresentationFeature, string | number>;
+    for (const key of MLR1_REPRESENTATION_FEATURE_ALLOWLIST) {
+        input[key] = ev[key];
+    }
+    return input;
+}
+
+export const MLR1_OUTCOME_LABEL_ALLOWLIST = [
+    'entry_bar_index',
+    'entry_time',
+    'entry_price',
+    'atr_at_confirmation',
+    'long_stop_price',
+    'long_target_price',
+    'long_exit_price',
+    'long_net_r',
+    'long_outcome',
+    'short_stop_price',
+    'short_target_price',
+    'short_exit_price',
+    'short_net_r',
+    'short_outcome'
+] as const;
+
 export interface MLR1EventRow {
     event_id: string;
     symbol: string;
@@ -5,6 +54,7 @@ export interface MLR1EventRow {
     pivot_type: 'high' | 'low';
     pivot_label: string;
     pivot_price: number;
+    previous_pivot_price: number;                          // Retained for independent leg verification
     pivot_bar_index: number;
     confirmed_bar_index: number;
     confirmation_time_ms: number;
@@ -127,13 +177,20 @@ export class CandleContextAggregator {
             if (dataStore.data[base + 2] > maxH) maxH = dataStore.data[base + 2];
             if (dataStore.data[base + 3] < minL) minL = dataStore.data[base + 3];
             
-            // Issue B Fix: Measure maturity using explicit mask, not volSma[i] > 0
-            if (volValidMask[i] === 1) {
+            // Safeguard: Ensure volume is non-negative and finite, and SMA denominator is positive and finite
+            const vol = dataStore.data[base + 5];
+            const sma = volSma[i];
+
+            if (
+                volValidMask[i] === 1 &&
+                Number.isFinite(vol) &&
+                vol >= 0 &&
+                Number.isFinite(sma) &&
+                sma > 0
+            ) {
                 matureCount++;
-                if (volSma[i] > 0) {
-                    volSum += dataStore.data[base + 5];
-                    volSmaSum += volSma[i];
-                }
+                volSum += vol;
+                volSmaSum += sma;
             }
         }
 
@@ -322,12 +379,14 @@ export class AIExporter {
                 ? sOutcomeBarrier 
                 : (sNetR > 0 ? 'timeout_net_gain' : 'timeout_net_loss');
 
+            // --- 3. ROW ASSEMBLY (Full Numerical Precision) ---
             events.push({
                 event_id: `MLR1_${symbol}_${timeframe}_${indVersion}_${dataStore.data[confBar * 6]}_${pivot.time}_${pivot.type}`,
                 symbol, timeframe,
                 pivot_type: pivot.type,
                 pivot_label: pivot.label,
-                pivot_price: parseFloat(pivot.price.toFixed(4)),
+                pivot_price: pivot.price,
+                previous_pivot_price: prevPivot.price, // Exact unrounded reference for mathematical audit
                 pivot_bar_index: pivot.barIndex,
                 confirmed_bar_index: confBar,
                 confirmation_time_ms: dataStore.data[confBar * 6],
@@ -335,14 +394,14 @@ export class AIExporter {
                 completed_leg_direction: tokenFeatures.completed_leg_direction,
                 zigzag_next_leg_orientation: tokenFeatures.zigzag_next_leg_orientation,
                 bars_since_last_pivot: tokenFeatures.bars_since_last_pivot,
-                leg_distance_atr: parseFloat(tokenFeatures.leg_distance_atr.toFixed(4)),
+                leg_distance_atr: tokenFeatures.leg_distance_atr,
                 
-                context_net_return_atr: parseFloat(tokenFeatures.context_net_return_atr.toFixed(4)),
-                context_max_favorable_atr: parseFloat(tokenFeatures.context_max_favorable_atr.toFixed(4)),
-                context_max_adverse_atr: parseFloat(tokenFeatures.context_max_adverse_atr.toFixed(4)),
+                context_net_return_atr: tokenFeatures.context_net_return_atr,
+                context_max_favorable_atr: tokenFeatures.context_max_favorable_atr,
+                context_max_adverse_atr: tokenFeatures.context_max_adverse_atr,
                 context_candle_count: tokenFeatures.context_candle_count,
-                context_relative_volume: parseFloat(tokenFeatures.context_relative_volume.toFixed(4)),
-                context_relative_volume_valid_fraction: parseFloat(tokenFeatures.context_relative_volume_valid_fraction.toFixed(4)),
+                context_relative_volume: tokenFeatures.context_relative_volume,
+                context_relative_volume_valid_fraction: tokenFeatures.context_relative_volume_valid_fraction,
 
                 entry_bar_index: entryBar,
                 entry_time: entryTime,
@@ -388,16 +447,20 @@ export class AIExporter {
 
 export class DatasetAuditor {
     public static runCausalityAudit(events: MLR1EventRow[]): boolean {
-        console.log('🛡️ Running ML-R1 Comprehensive Dataset Audit...');
+        console.log('🛡️ Running ML-R1 Contract & Numerical Integrity Audit...');
         let timeFailures = 0;
         let indexFailures = 0;
         let mathFailures = 0;
         let duplicateFailures = 0;
         let directionFailures = 0;
         let volumeFractionFailures = 0;
+        let barrierGeometryFailures = 0;
+        let exitIntegrityFailures = 0;
         let outcomeMathFailures = 0;
         let timeoutClassFailures = 0;
         const idSet = new Set<string>();
+
+        const VALID_OUTCOMES = new Set(['full_target', 'hard_stop', 'timeout_net_gain', 'timeout_net_loss']);
 
         for (let i = 0; i < events.length; i++) {
             const ev = events[i];
@@ -406,51 +469,101 @@ export class DatasetAuditor {
             if (idSet.has(ev.event_id)) duplicateFailures++;
             idSet.add(ev.event_id);
 
-            // 2. Strict Chronology
-            if (i > 0 && ev.confirmation_time_ms < events[i - 1].confirmation_time_ms) {
+            // 2. Strict Chronology & Integer Timestamps
+            if (!Number.isInteger(ev.confirmation_time_ms) || !Number.isInteger(ev.confirmed_bar_index)) {
                 timeFailures++;
             }
-
-            // 3. Execution Causality (next_open strictly after confirmation)
-            if (ev.entry_bar_index <= ev.confirmed_bar_index) indexFailures++;
-            if (ev.entry_time <= ev.confirmation_time_ms) indexFailures++;
-
-            // 4. Completed-Leg Mathematical Verification (Issue C)
             if (i > 0) {
-                const prevPivotPrice = events[i - 1].pivot_price;
-                const expectedDir = ev.pivot_price > prevPivotPrice ? 'up' : (ev.pivot_price < prevPivotPrice ? 'down' : 'flat');
-                if (ev.completed_leg_direction !== expectedDir) directionFailures++;
+                if (ev.confirmation_time_ms <= events[i - 1].confirmation_time_ms) timeFailures++;
+                if (ev.confirmed_bar_index <= events[i - 1].confirmed_bar_index) timeFailures++;
             }
 
-            // 5. Orientation Integrity
+            // 3. Exact next_open Causality Contract
+            if (!Number.isInteger(ev.entry_bar_index) || !Number.isInteger(ev.entry_time)) {
+                indexFailures++;
+            }
+            if (ev.entry_bar_index !== ev.confirmed_bar_index + 1) indexFailures++;
+            if (ev.entry_time <= ev.confirmation_time_ms) indexFailures++;
+
+            // 4. Finite Value Validation (Anti-NaN Gate: Must pass before checking mathematical deltas)
+            const requiredFiniteNumbers = [
+                ev.pivot_price, ev.previous_pivot_price, ev.entry_price,
+                ev.atr_at_confirmation, ev.leg_distance_atr, ev.context_net_return_atr,
+                ev.context_max_favorable_atr, ev.context_max_adverse_atr,
+                ev.context_relative_volume, ev.context_relative_volume_valid_fraction,
+                ev.long_stop_price, ev.long_target_price, ev.long_exit_price, ev.long_net_r,
+                ev.short_stop_price, ev.short_target_price, ev.short_exit_price, ev.short_net_r
+            ];
+
+            for (let v = 0; v < requiredFiniteNumbers.length; v++) {
+                if (!Number.isFinite(requiredFiniteNumbers[v])) {
+                    mathFailures++;
+                }
+            }
+
+            if (ev.atr_at_confirmation <= 0 || ev.context_max_favorable_atr < 0 || ev.context_max_adverse_atr < 0) {
+                mathFailures++;
+            }
+
+            // 5. Completed-Leg Direction Verification (Independent check on exact previous pivot)
+            const expectedDir = ev.pivot_price > ev.previous_pivot_price ? 'up' : 
+                               (ev.pivot_price < ev.previous_pivot_price ? 'down' : 'flat');
+            if (ev.completed_leg_direction !== expectedDir) directionFailures++;
+
+            // 6. Orientation Integrity
             if (ev.pivot_type === 'high' && ev.zigzag_next_leg_orientation !== 'down') directionFailures++;
             if (ev.pivot_type === 'low' && ev.zigzag_next_leg_orientation !== 'up') directionFailures++;
 
-            // 6. Volume Valid Fraction [0.0, 1.0] and Sentinel Agreement
+            // 7. Volume Two-Way Sentinel Checks
             if (ev.context_relative_volume_valid_fraction < 0 || ev.context_relative_volume_valid_fraction > 1.0) {
                 volumeFractionFailures++;
             }
             if (ev.context_relative_volume_valid_fraction === 0 && ev.context_relative_volume !== -1.0) {
                 volumeFractionFailures++;
             }
+            if (ev.context_relative_volume_valid_fraction > 0 && (ev.context_relative_volume < 0 || !Number.isFinite(ev.context_relative_volume))) {
+                volumeFractionFailures++;
+            }
 
-            // 7. Math Sanity on Input Features
-            if (!Number.isFinite(ev.atr_at_confirmation) || ev.atr_at_confirmation <= 0) mathFailures++;
-            if (!Number.isFinite(ev.leg_distance_atr)) mathFailures++;
-            if (!Number.isFinite(ev.context_net_return_atr)) mathFailures++;
-            if (!Number.isFinite(ev.context_max_favorable_atr) || ev.context_max_favorable_atr < 0) mathFailures++;
-            if (!Number.isFinite(ev.context_max_adverse_atr) || ev.context_max_adverse_atr < 0) mathFailures++;
+            // 8. Barrier Geometry Verification (Stop = 1.5 ATR, Target = 3.0 ATR)
+            const expectedLongStop = ev.entry_price - (ev.atr_at_confirmation * 1.5);
+            const expectedLongTarget = ev.entry_price + (ev.atr_at_confirmation * 3.0);
+            const expectedShortStop = ev.entry_price + (ev.atr_at_confirmation * 1.5);
+            const expectedShortTarget = ev.entry_price - (ev.atr_at_confirmation * 3.0);
 
-            // 8. Outcome Math Agreement (Issue E)
+            if (Math.abs(ev.long_stop_price - expectedLongStop) > 0.001) barrierGeometryFailures++;
+            if (Math.abs(ev.long_target_price - expectedLongTarget) > 0.001) barrierGeometryFailures++;
+            if (Math.abs(ev.short_stop_price - expectedShortStop) > 0.001) barrierGeometryFailures++;
+            if (Math.abs(ev.short_target_price - expectedShortTarget) > 0.001) barrierGeometryFailures++;
+
+            // 9. Exit & Permitted Outcome Enumeration Verification (Including Gaps)
+            if (!VALID_OUTCOMES.has(ev.long_outcome) || !VALID_OUTCOMES.has(ev.short_outcome)) {
+                exitIntegrityFailures++;
+            }
+
+            // For full_target: exit price must be at least target price (accommodating positive gap opens)
+            if (ev.long_outcome === 'full_target' && ev.long_exit_price < ev.long_target_price - 0.001) exitIntegrityFailures++;
+            // For hard_stop: exit price must be at or below stop price (accommodating slippage gap opens)
+            if (ev.long_outcome === 'hard_stop' && ev.long_exit_price > ev.long_stop_price + 0.001) exitIntegrityFailures++;
+
+            if (ev.short_outcome === 'full_target' && ev.short_exit_price > ev.short_target_price + 0.001) exitIntegrityFailures++;
+            if (ev.short_outcome === 'hard_stop' && ev.short_exit_price < ev.short_stop_price - 0.001) exitIntegrityFailures++;
+
+            // 10. Positive Risk Check & Net R Math Agreement
             const lRisk = ev.entry_price - ev.long_stop_price;
-            const expectedLongNetR = Math.min(2.0, (ev.long_exit_price - ev.entry_price) / lRisk) - 0.05;
-            if (Math.abs(expectedLongNetR - ev.long_net_r) > 0.01) outcomeMathFailures++;
-
             const sRisk = ev.short_stop_price - ev.entry_price;
-            const expectedShortNetR = Math.min(2.0, (ev.entry_price - ev.short_exit_price) / sRisk) - 0.05;
-            if (Math.abs(expectedShortNetR - ev.short_net_r) > 0.01) outcomeMathFailures++;
 
-            // 9. Timeout Classification Check (Issue D)
+            if (!Number.isFinite(lRisk) || lRisk <= 0 || !Number.isFinite(sRisk) || sRisk <= 0) {
+                outcomeMathFailures++;
+            } else {
+                const expectedLongNetR = Math.min(2.0, (ev.long_exit_price - ev.entry_price) / lRisk) - 0.05;
+                if (Math.abs(expectedLongNetR - ev.long_net_r) > 0.001) outcomeMathFailures++;
+
+                const expectedShortNetR = Math.min(2.0, (ev.entry_price - ev.short_exit_price) / sRisk) - 0.05;
+                if (Math.abs(expectedShortNetR - ev.short_net_r) > 0.001) outcomeMathFailures++;
+            }
+
+            // 11. Timeout Net Classification Check
             if (ev.long_outcome === 'timeout_net_gain' && ev.long_net_r <= 0) timeoutClassFailures++;
             if (ev.long_outcome === 'timeout_net_loss' && ev.long_net_r > 0) timeoutClassFailures++;
             if (ev.short_outcome === 'timeout_net_gain' && ev.short_net_r <= 0) timeoutClassFailures++;
@@ -458,19 +571,22 @@ export class DatasetAuditor {
         }
 
         console.log(`=======================================`);
-        console.log(`📊 ML-R1 AUDIT PASS: ${events.length} Events Checked`);
-        console.log(`   ↳ Chronology:          ${timeFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
-        console.log(`   ↳ Causality:           ${indexFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
-        console.log(`   ↳ Event Uniqueness:    ${duplicateFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
-        console.log(`   ↳ Direction Math:      ${directionFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
-        console.log(`   ↳ Volume Fractions:    ${volumeFractionFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
-        console.log(`   ↳ Feature Math Health: ${mathFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
-        console.log(`   ↳ Outcome Net R Math:  ${outcomeMathFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
-        console.log(`   ↳ Timeout Net Classes: ${timeoutClassFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`📊 ML-R1 FULL REINFORCED AUDIT: ${events.length} Events Checked`);
+        console.log(`   ↳ Chronology & Time Int: ${timeFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ next_open Causality:   ${indexFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Finite Anti-NaN Gate:  ${mathFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Event Uniqueness:      ${duplicateFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Completed Leg Math:    ${directionFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Two-Way Volume Check:  ${volumeFractionFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Barrier Geometry (ATR):${barrierGeometryFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Exit & Gap Integrity:  ${exitIntegrityFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Outcome Net R & Risk:  ${outcomeMathFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Timeout Net Classes:   ${timeoutClassFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`=======================================`);
 
         if (timeFailures > 0 || indexFailures > 0 || mathFailures > 0 || duplicateFailures > 0 || 
-            directionFailures > 0 || volumeFractionFailures > 0 || outcomeMathFailures > 0 || timeoutClassFailures > 0) {
+            directionFailures > 0 || volumeFractionFailures > 0 || barrierGeometryFailures > 0 ||
+            exitIntegrityFailures > 0 || outcomeMathFailures > 0 || timeoutClassFailures > 0) {
             if (typeof alert !== 'undefined') alert(`⚠️ ML-R1 Audit Failed!\nCheck developer console.`);
             return false;
         }

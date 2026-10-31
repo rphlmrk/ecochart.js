@@ -33,11 +33,10 @@ import { favoritesManager } from './data/FavoritesManager';
 import { DataWorkerClient } from './workers/DataWorkerClient';
 import { TimeframeResampler } from './data/TimeframeResampler';
 export { alertManager } from './alerts/AlertManager';
-import { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregator, HybridTokenBuilder, type MLR1EventRow } from './data/AIExporter';
-export { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregator, HybridTokenBuilder, type MLR1EventRow };
+import { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregator, HybridTokenBuilder, MLR1_REPRESENTATION_FEATURE_ALLOWLIST, MLR1_OUTCOME_LABEL_ALLOWLIST, buildRepresentationInput, type MLR1RepresentationFeature, type MLR1EventRow } from './data/AIExporter';
+export { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregator, HybridTokenBuilder, MLR1_REPRESENTATION_FEATURE_ALLOWLIST, MLR1_OUTCOME_LABEL_ALLOWLIST, buildRepresentationInput, type MLR1RepresentationFeature, type MLR1EventRow };
 import { BackgroundDataMiner } from './data/BackgroundDataMiner';
 import { AlertUI } from './alerts/AlertUI';
-import { AiExportModal } from './ui/AiExportModal';
 
 export interface SavedPaneState {
     symbol: string;
@@ -3571,14 +3570,6 @@ export class WorkspaceManager {
             });
         });
 
-        // (Note: Per-pane Nav Bars and Auto buttons are bound directly inside each EcoChart instance)
-        const btnAiExport = document.getElementById('btn-ai-export');
-        btnAiExport?.addEventListener('click', () => {
-            const chart = this.getActiveChart();
-            if (chart) {
-                AiExportModal.open(chart.currentSymbol, chart.currentInterval, chart.dataStore);
-            }
-        });
 
         // --- Settings Modal & Theme Customization ---
         const btnSettings = document.getElementById('btn-settings');
