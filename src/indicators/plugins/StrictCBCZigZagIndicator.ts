@@ -4,6 +4,20 @@ import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { TimeframeResampler } from '../../data/TimeframeResampler';
 import { Graphics } from 'pixi.js';
 
+export interface ConfirmedCBCEvent {
+    eventId: string;
+    symbol: string;
+    timeframe: string;
+    pivotBarIndex: number;
+    confirmedBarIndex: number;
+    pivotPrice: number;
+    pivotType: 'high' | 'low';
+    pivotLabel: 'HH' | 'LH' | 'HL' | 'LL';
+    legDirection: 'up' | 'down';
+    confirmationTimeMs: number;
+    pivotTimeMs: number;
+}
+
 export interface StrictZigZagPivot {
     id: number;
     barIndex: number;
@@ -125,7 +139,7 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
     }
 
     public calculate(ds: DataStore): void {
-        this.buildCachedPivots(ds);
+        this.buildCachedPivots(ds, false); // Historical reconstruction: NO events emitted
     }
 
     public override update(ds: DataStore, isClosedTick: boolean): void {
@@ -144,22 +158,32 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
             this.trends = newTrends;
         }
 
-        this.buildCachedPivots(ds);
+        this.buildCachedPivots(ds, isClosedTick); // Pass closed tick status
         super.update(ds, isClosedTick);
     }
 
-    private dispatchPivotAlert(pivot: StrictZigZagPivot): void {
-        const sym = this.currentSymbol || 'BTCUSDT';
-        const key = `${sym}_${pivot.type}_${pivot.barIndex}_${pivot.price}`;
-        if (this.notifiedPivots.has(key)) return;
+    private emitMLR1Event(pivot: StrictZigZagPivot, isClosedTick: boolean, confirmationTimeMs: number): void {
+        // 🛑 STRICT RULE 1: Never emit events from unclosed intra-bar ghost pivots
+        if (!isClosedTick) return;
 
-        this.notifiedPivots.add(key);
+        const sym = this.currentSymbol || 'BTCUSDT';
+        const tf = this.getParam<string>('timeframe', 'Current');
+        const indVersion = 'v1';
+        
+        // 🛑 STRICT RULE 2: Idempotent Event Identity (No duplicates ever)
+        const eventId = `MLR1_${sym}_${tf}_${indVersion}_${confirmationTimeMs}_${pivot.time}_${pivot.type}`;
+
+        if (this.notifiedPivots.has(eventId)) return;
+
+        this.notifiedPivots.add(eventId);
         if (this.notifiedPivots.size > 200) {
             const firstKey = this.notifiedPivots.values().next().value;
             if (firstKey) this.notifiedPivots.delete(firstKey);
         }
 
         const isHigh = pivot.type === 'high';
+        
+        // 1. Standard UI Alert
         window.dispatchEvent(new CustomEvent('ecochart-alert', {
             detail: {
                 id: this.id,
@@ -168,13 +192,30 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
             }
         }));
 
-        // alertManager.triggerPriceTouch(sym, pivot.price, isHigh ? 'above' : 'below');
+        // 2. Immutable ML-R1 Event Dispatch
+        const mlEvent: ConfirmedCBCEvent = {
+            eventId: eventId,
+            symbol: sym,
+            timeframe: tf,
+            pivotBarIndex: pivot.barIndex,
+            confirmedBarIndex: pivot.confirmedBarIndex,
+            pivotPrice: pivot.price,
+            pivotType: pivot.type,
+            pivotLabel: pivot.label,
+            legDirection: isHigh ? 'down' : 'up', // If High confirmed, developing leg is now down
+            confirmationTimeMs: confirmationTimeMs,
+            pivotTimeMs: pivot.time
+        };
+
+        window.dispatchEvent(new CustomEvent('ecochart-ml-r1-event', {
+            detail: mlEvent
+        }));
     }
 
     /**
      * Builds and caches Strict CBC ZigZag Pivots and Legs
      */
-    private buildCachedPivots(ds: DataStore): void {
+    private buildCachedPivots(ds: DataStore, isClosedTick: boolean = false): void {
         const len = ds.length;
         if (len === 0) {
             this.cachedPivots = [];
@@ -272,8 +313,8 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
                     phaseLow = l;
                     phaseLowIdx = i;
 
-                    if (i === len - 1) {
-                        this.dispatchPivotAlert(highPivot);
+                    if (i >= len - 2) {
+                        this.emitMLR1Event(highPivot, isClosedTick, data[i * 6]);
                     }
                 }
 
@@ -300,8 +341,8 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
                     phaseHigh = h;
                     phaseHighIdx = i;
 
-                    if (i === len - 1) {
-                        this.dispatchPivotAlert(lowPivot);
+                    if (i >= len - 2) {
+                        this.emitMLR1Event(lowPivot, isClosedTick, data[i * 6]);
                     }
                 }
 
@@ -466,8 +507,8 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
                 phaseLow = l;
                 phaseLowChartIdx = bar.troughChartBar;
 
-                if (b === htfLen - 1) {
-                    this.dispatchPivotAlert(highPivot);
+                if (b >= htfLen - 2) {
+                    this.emitMLR1Event(highPivot, isClosedTick, data[bar.lastChartBar * 6]);
                 }
             }
 
@@ -493,8 +534,8 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
                 phaseHigh = h;
                 phaseHighChartIdx = bar.peakChartBar;
 
-                if (b === htfLen - 1) {
-                    this.dispatchPivotAlert(lowPivot);
+                if (b >= htfLen - 2) {
+                    this.emitMLR1Event(lowPivot, isClosedTick, data[bar.lastChartBar * 6]);
                 }
             }
 
