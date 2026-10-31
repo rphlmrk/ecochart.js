@@ -37,6 +37,8 @@ import { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregato
 export { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregator, HybridTokenBuilder, MLR1_REPRESENTATION_FEATURE_ALLOWLIST, MLR1_OUTCOME_LABEL_ALLOWLIST, buildRepresentationInput, type MLR1RepresentationFeature, type MLR1EventRow };
 import { BackgroundDataMiner } from './data/BackgroundDataMiner';
 import { AlertUI } from './alerts/AlertUI';
+import { runMilestone1AcceptanceSuite } from './test/milestone1-acceptance';
+export { runMilestone1AcceptanceSuite };
 
 export interface SavedPaneState {
     symbol: string;
@@ -5717,5 +5719,6 @@ export class WorkspaceManager {
         });
 
         window.addEventListener('online', triggerAggressiveWakeup);
+        (window as any).runMilestone1AcceptanceSuite = runMilestone1AcceptanceSuite;
     }
 }

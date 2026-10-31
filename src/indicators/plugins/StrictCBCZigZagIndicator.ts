@@ -35,6 +35,274 @@ export interface StrictZigZagLeg {
 }
 
 /**
+ * Lightweight candle interface for the pure state machine
+ */
+export interface StrictCBCCandle {
+    time: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+}
+
+/**
+ * Full internal state required to causally step the Strict CBC state machine
+ */
+export interface StrictCBCState {
+    anchorHigh: number;
+    anchorLow: number;
+    isBullish: boolean;
+    phaseHigh: number;
+    phaseHighIdx: number;
+    phaseHighTime: number;
+    phaseLow: number;
+    phaseLowIdx: number;
+    phaseLowTime: number;
+    lastHighPrice: number | null;
+    lastLowPrice: number | null;
+    nextPivotId: number;
+}
+
+/**
+ * Milestone 1: Point-in-Time Teacher Snapshot per candle.
+ * Guaranteed zero forward lookahead or historical backfilling.
+ */
+export interface StrictCBCCandleTeacher {
+    barIndex: number;
+    timestamp: number;
+    trend: 1 | -1;
+
+    anchorHigh: number;
+    anchorLow: number;
+
+    candidateType: 'high' | 'low';
+    candidatePrice: number;
+    candidateBarIndex: number;
+    candidateAgeBars: number;
+
+    confirmedPivotEvent: 1 | -1 | 0;
+    confirmedPivotId: number;                           // 0 if none
+    confirmedPivotPrice: number;                        // 0 if none
+    confirmedPivotBarIndex: number;                     // -1 if none
+    confirmedPivotConfirmedBarIndex: number;            // -1 if none
+    confirmedPivotLabel: 'HH' | 'LH' | 'HL' | 'LL' | 'NONE';
+    confirmedPivotLagBars: number;                      // 0 if none
+}
+
+/**
+ * Factory for initial state on bar 0
+ */
+export function createInitialStrictCBCState(candle0: StrictCBCCandle): StrictCBCState {
+    return {
+        anchorHigh: candle0.high,
+        anchorLow: candle0.low,
+        isBullish: true,
+        phaseHigh: candle0.high,
+        phaseHighIdx: 0,
+        phaseHighTime: candle0.time,
+        phaseLow: candle0.low,
+        phaseLowIdx: 0,
+        phaseLowTime: candle0.time,
+        lastHighPrice: null,
+        lastLowPrice: null,
+        nextPivotId: 1
+    };
+}
+
+/**
+ * Pure Single-Bar Transition Function (Issue 2 Fix):
+ * Preserves the exact order of operations:
+ * 1. Checks flip condition against existing anchors.
+ * 2. Updates phase extreme (allowing flip candle's own extreme to be confirmed).
+ * 3. Confirms pivot and resets opposite phase on flip.
+ * 4. Advances anchors on continuation or flip.
+ * 5. Returns post-transition point-in-time candidate snapshot.
+ */
+export function stepStrictCBC(
+    candle: StrictCBCCandle,
+    barIndex: number,
+    state: StrictCBCState
+): {
+    nextState: StrictCBCState;
+    teacher: StrictCBCCandleTeacher;
+    confirmedPivot: StrictZigZagPivot | null;
+} {
+    if (barIndex === 0) {
+        const initialState = createInitialStrictCBCState(candle);
+        return {
+            nextState: initialState,
+            teacher: {
+                barIndex: 0,
+                timestamp: candle.time,
+                trend: 1,
+                anchorHigh: candle.high,
+                anchorLow: candle.low,
+                candidateType: 'high',
+                candidatePrice: candle.high,
+                candidateBarIndex: 0,
+                candidateAgeBars: 0,
+                confirmedPivotEvent: 0,
+                confirmedPivotId: 0,
+                confirmedPivotPrice: 0,
+                confirmedPivotBarIndex: -1,
+                confirmedPivotConfirmedBarIndex: -1,
+                confirmedPivotLabel: 'NONE',
+                confirmedPivotLagBars: 0
+            },
+            confirmedPivot: null
+        };
+    }
+
+    const isBuy = candle.close > candle.open;
+    const isSell = candle.close < candle.open;
+
+    const bearishFlip = state.isBullish && isSell && (candle.close < state.anchorLow);
+    const bullishFlip = !state.isBullish && isBuy && (candle.close > state.anchorHigh);
+
+    let phaseHigh = state.phaseHigh;
+    let phaseHighIdx = state.phaseHighIdx;
+    let phaseHighTime = state.phaseHighTime;
+
+    let phaseLow = state.phaseLow;
+    let phaseLowIdx = state.phaseLowIdx;
+    let phaseLowTime = state.phaseLowTime;
+
+    // Preserved sequence: update active extreme prior to processing flip
+    if (state.isBullish) {
+        if (candle.high > phaseHigh) {
+            phaseHigh = candle.high;
+            phaseHighIdx = barIndex;
+            phaseHighTime = candle.time;
+        }
+    } else {
+        if (candle.low < phaseLow) {
+            phaseLow = candle.low;
+            phaseLowIdx = barIndex;
+            phaseLowTime = candle.time;
+        }
+    }
+
+    let isBullish = state.isBullish;
+    let lastHighPrice = state.lastHighPrice;
+    let lastLowPrice = state.lastLowPrice;
+    let nextPivotId = state.nextPivotId;
+
+    let confirmedPivot: StrictZigZagPivot | null = null;
+    let confirmedPivotEvent: 1 | -1 | 0 = 0;
+    let confirmedPivotId = 0;
+    let confirmedPivotPrice = 0;
+    let confirmedPivotBarIndex = -1;
+    let confirmedPivotConfirmedBarIndex = -1;
+    let confirmedPivotLabel: 'HH' | 'LH' | 'HL' | 'LL' | 'NONE' = 'NONE';
+    let confirmedPivotLagBars = 0;
+
+    if (bearishFlip) {
+        isBullish = false;
+        const label: 'HH' | 'LH' = (lastHighPrice === null || phaseHigh >= lastHighPrice) ? 'HH' : 'LH';
+        lastHighPrice = phaseHigh;
+
+        confirmedPivot = {
+            id: nextPivotId++,
+            barIndex: phaseHighIdx,
+            time: phaseHighTime,
+            price: phaseHigh,
+            type: 'high',
+            label,
+            confirmedBarIndex: barIndex
+        };
+
+        confirmedPivotEvent = 1;
+        confirmedPivotId = confirmedPivot.id;
+        confirmedPivotPrice = phaseHigh;
+        confirmedPivotBarIndex = phaseHighIdx;
+        confirmedPivotConfirmedBarIndex = barIndex;
+        confirmedPivotLabel = label;
+        confirmedPivotLagBars = barIndex - phaseHighIdx;
+
+        // Post-transition contraction phase begins immediately on this candle's low
+        phaseLow = candle.low;
+        phaseLowIdx = barIndex;
+        phaseLowTime = candle.time;
+    } else if (bullishFlip) {
+        isBullish = true;
+        const label: 'LL' | 'HL' = (lastLowPrice === null || phaseLow <= lastLowPrice) ? 'LL' : 'HL';
+        lastLowPrice = phaseLow;
+
+        confirmedPivot = {
+            id: nextPivotId++,
+            barIndex: phaseLowIdx,
+            time: phaseLowTime,
+            price: phaseLow,
+            type: 'low',
+            label,
+            confirmedBarIndex: barIndex
+        };
+
+        confirmedPivotEvent = -1;
+        confirmedPivotId = confirmedPivot.id;
+        confirmedPivotPrice = phaseLow;
+        confirmedPivotBarIndex = phaseLowIdx;
+        confirmedPivotConfirmedBarIndex = barIndex;
+        confirmedPivotLabel = label;
+        confirmedPivotLagBars = barIndex - phaseLowIdx;
+
+        // Post-transition expansion phase begins immediately on this candle's high
+        phaseHigh = candle.high;
+        phaseHighIdx = barIndex;
+        phaseHighTime = candle.time;
+    }
+
+    let anchorHigh = state.anchorHigh;
+    let anchorLow = state.anchorLow;
+    const validContinuation = (isBullish && candle.close > anchorHigh) || (!isBullish && candle.close < anchorLow);
+    if (validContinuation || bearishFlip || bullishFlip) {
+        anchorHigh = candle.high;
+        anchorLow = candle.low;
+    }
+
+    const candidateType: 'high' | 'low' = isBullish ? 'high' : 'low';
+    const candidatePrice = isBullish ? phaseHigh : phaseLow;
+    const candidateBarIndex = isBullish ? phaseHighIdx : phaseLowIdx;
+    const candidateAgeBars = barIndex - candidateBarIndex;
+
+    const nextState: StrictCBCState = {
+        anchorHigh,
+        anchorLow,
+        isBullish,
+        phaseHigh,
+        phaseHighIdx,
+        phaseHighTime,
+        phaseLow,
+        phaseLowIdx,
+        phaseLowTime,
+        lastHighPrice,
+        lastLowPrice,
+        nextPivotId
+    };
+
+    const teacher: StrictCBCCandleTeacher = {
+        barIndex,
+        timestamp: candle.time,
+        trend: isBullish ? 1 : -1,
+        anchorHigh,
+        anchorLow,
+        candidateType,
+        candidatePrice,
+        candidateBarIndex,
+        candidateAgeBars,
+        confirmedPivotEvent,
+        confirmedPivotId,
+        confirmedPivotPrice,
+        confirmedPivotBarIndex,
+        confirmedPivotConfirmedBarIndex,
+        confirmedPivotLabel,
+        confirmedPivotLagBars
+    };
+
+    return { nextState, teacher, confirmedPivot };
+}
+
+/**
  * Strict CBC ZigZag Indicator
  * 
  * High-performance, hardware-accelerated structural ZigZag:
@@ -63,6 +331,17 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
     public pivotTypes: Int8Array = new Int8Array(20000);  // 1 = High, -1 = Low, 0 = None
     public pivotPrices: Float64Array = new Float64Array(20000);
     public trends: Int8Array = new Int8Array(20000);       // 1 = Bullish Push, -1 = Bearish Pullback
+
+    // Milestone 1: Point-in-Time Causal Candidate & Anchor Tracking (Zero Backfill)
+    public candidateTypes: Int8Array = new Int8Array(20000);       // 1 = High, -1 = Low
+    public candidatePrices: Float64Array = new Float64Array(20000);
+    public candidateBarIndices: Int32Array = new Int32Array(20000);
+    public candidateAges: Int32Array = new Int32Array(20000);
+    public anchorHighs: Float64Array = new Float64Array(20000);
+    public anchorLows: Float64Array = new Float64Array(20000);
+    public confirmedEvents: Int8Array = new Int8Array(20000);      // 1 = High, -1 = Low, 0 = None
+    public confirmedPrices: Float64Array = new Float64Array(20000);
+    public confirmedLags: Int32Array = new Int32Array(20000);
 
     constructor() {
         super('STRICT_CBC_ZIGZAG', 'Strict CBC ZigZag');
@@ -126,6 +405,34 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
         this.name = tf === 'Current' ? 'Strict CBC ZigZag' : `Strict CBC ZigZag [${tf}]`;
     }
 
+    /**
+     * Issue 3 Fix: Unified telemetry array resizer called by both calculate() and update().
+     * Guarantees 50,000+ candle buffers never suffer out-of-bounds silent truncation.
+     */
+    private ensureTelemetryCapacity(requiredLength: number): void {
+        if (requiredLength <= this.pivotTypes.length) return;
+
+        const cap = Math.max(requiredLength * 2, 20000);
+        const resize = <T extends ArrayBufferView>(arr: any, TypedArray: new (len: number) => T): T => {
+            const next = new TypedArray(cap);
+            (next as any).set(arr);
+            return next;
+        };
+
+        this.pivotTypes = resize(this.pivotTypes, Int8Array);
+        this.pivotPrices = resize(this.pivotPrices, Float64Array);
+        this.trends = resize(this.trends, Int8Array);
+        this.candidateTypes = resize(this.candidateTypes, Int8Array);
+        this.candidatePrices = resize(this.candidatePrices, Float64Array);
+        this.candidateBarIndices = resize(this.candidateBarIndices, Int32Array);
+        this.candidateAges = resize(this.candidateAges, Int32Array);
+        this.anchorHighs = resize(this.anchorHighs, Float64Array);
+        this.anchorLows = resize(this.anchorLows, Float64Array);
+        this.confirmedEvents = resize(this.confirmedEvents, Int8Array);
+        this.confirmedPrices = resize(this.confirmedPrices, Float64Array);
+        this.confirmedLags = resize(this.confirmedLags, Int32Array);
+    }
+
     public override reset(): void {
         this.cachedPivots = [];
         this.cachedLegs = [];
@@ -135,30 +442,26 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
         this.pivotTypes.fill(0);
         this.pivotPrices.fill(0);
         this.trends.fill(0);
+        this.candidateTypes.fill(0);
+        this.candidatePrices.fill(0);
+        this.candidateBarIndices.fill(0);
+        this.candidateAges.fill(0);
+        this.anchorHighs.fill(0);
+        this.anchorLows.fill(0);
+        this.confirmedEvents.fill(0);
+        this.confirmedPrices.fill(0);
+        this.confirmedLags.fill(0);
         super.reset();
     }
 
     public calculate(ds: DataStore): void {
-        this.buildCachedPivots(ds, false); // Historical reconstruction: NO events emitted
+        this.ensureTelemetryCapacity(ds.length);
+        this.buildCachedPivots(ds, false); // Historical reconstruction: NO live alert events emitted
     }
 
     public override update(ds: DataStore, isClosedTick: boolean): void {
-        if (ds.length > this.pivotTypes.length) {
-            const cap = Math.max(ds.length * 2, 20000);
-            const newTypes = new Int8Array(cap);
-            newTypes.set(this.pivotTypes);
-            this.pivotTypes = newTypes;
-
-            const newPrices = new Float64Array(cap);
-            newPrices.set(this.pivotPrices);
-            this.pivotPrices = newPrices;
-
-            const newTrends = new Int8Array(cap);
-            newTrends.set(this.trends);
-            this.trends = newTrends;
-        }
-
-        this.buildCachedPivots(ds, isClosedTick); // Pass closed tick status
+        this.ensureTelemetryCapacity(ds.length);
+        this.buildCachedPivots(ds, isClosedTick);
         super.update(ds, isClosedTick);
     }
 
@@ -232,11 +535,15 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
 
         const lastIdx = len - 1;
         const baseLast = lastIdx * 6;
+        const firstT = ds.data[0];             // Detects historical prepends/origin shifts
+        const lastT = ds.data[baseLast];        // Detects timestamp advances
+        const lastO = ds.data[baseLast + 1];    // Detects open-price revisions
         const lastH = ds.data[baseLast + 2];
         const lastL = ds.data[baseLast + 3];
         const lastC = ds.data[baseLast + 4];
 
-        const stateHash = `${tfMs}:${isHTF}:${len}:${lastH}:${lastL}:${lastC}`;
+        // Comprehensive Cache Identity: includes origin, timing, OHLC, and close state
+        const stateHash = `${tfMs}:${isHTF}:${len}:${firstT}:${lastT}:${lastO}:${lastH}:${lastL}:${lastC}:closed=${isClosedTick ? 1 : 0}`;
         if (this.lastStateHash === stateHash && this.lastCalculatedLength === len) {
             return;
         }
@@ -246,113 +553,60 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
         this.trends.fill(0);
 
         // =========================================================================
-        // MODE 1: Native Chart Timeframe
+        // MODE 1: Native Chart Timeframe (Uses Pure stepStrictCBC)
         // =========================================================================
         if (!isHTF) {
             const data = ds.data;
             const pivots: StrictZigZagPivot[] = [];
-            let nextPivotId = 1;
 
-            let anchorHigh = data[2];
-            let anchorLow = data[3];
-            let isBullish = true;
-
-            let phaseHigh = data[2];
-            let phaseHighIdx = 0;
-            let phaseLow = data[3];
-            let phaseLowIdx = 0;
-
-            let lastHighPrice: number | null = null;
-            let lastLowPrice: number | null = null;
+            const candle0: StrictCBCCandle = {
+                time: data[0],
+                open: data[1],
+                high: data[2],
+                low: data[3],
+                close: data[4]
+            };
+            let state = createInitialStrictCBCState(candle0);
 
             for (let i = 0; i < len; i++) {
                 const base = i * 6;
-                const o = data[base + 1];
-                const h = data[base + 2];
-                const l = data[base + 3];
-                const c = data[base + 4];
+                const candle: StrictCBCCandle = {
+                    time: data[base],
+                    open: data[base + 1],
+                    high: data[base + 2],
+                    low: data[base + 3],
+                    close: data[base + 4]
+                };
 
-                const isBuy = c > o;
-                const isSell = c < o;
+                // Issue 2 Fix: Call the single shared transition step
+                const stepResult = stepStrictCBC(candle, i, state);
+                state = stepResult.nextState;
 
-                const bearishFlip = isBullish && isSell && (c < anchorLow);
-                const bullishFlip = !isBullish && isBuy && (c > anchorHigh);
+                const teacher = stepResult.teacher;
+                const confirmedPivot = stepResult.confirmedPivot;
 
-                if (isBullish) {
-                    if (h > phaseHigh) {
-                        phaseHigh = h;
-                        phaseHighIdx = i;
-                    }
-                } else {
-                    if (l < phaseLow) {
-                        phaseLow = l;
-                        phaseLowIdx = i;
-                    }
-                }
+                // Sync Class Telemetry Arrays
+                this.trends[i] = teacher.trend;
+                this.anchorHighs[i] = teacher.anchorHigh;
+                this.anchorLows[i] = teacher.anchorLow;
+                this.candidateTypes[i] = teacher.candidateType === 'high' ? 1 : -1;
+                this.candidatePrices[i] = teacher.candidatePrice;
+                this.candidateBarIndices[i] = teacher.candidateBarIndex;
+                this.candidateAges[i] = teacher.candidateAgeBars;
+                this.confirmedEvents[i] = teacher.confirmedPivotEvent;
+                this.confirmedPrices[i] = teacher.confirmedPivotPrice;
+                this.confirmedLags[i] = teacher.confirmedPivotLagBars;
 
-                // Bearish Flip -> Confirms phaseHigh as a Swing High Pivot
-                if (bearishFlip) {
-                    isBullish = false;
+                if (confirmedPivot) {
+                    pivots.push(confirmedPivot);
+                    this.pivotTypes[confirmedPivot.barIndex] = confirmedPivot.type === 'high' ? 1 : -1;
+                    this.pivotPrices[confirmedPivot.barIndex] = confirmedPivot.price;
 
-                    const label: 'HH' | 'LH' = (lastHighPrice === null || phaseHigh >= lastHighPrice) ? 'HH' : 'LH';
-                    lastHighPrice = phaseHigh;
-
-                    const highPivot: StrictZigZagPivot = {
-                        id: nextPivotId++,
-                        barIndex: phaseHighIdx,
-                        time: data[phaseHighIdx * 6],
-                        price: phaseHigh,
-                        type: 'high',
-                        label,
-                        confirmedBarIndex: i
-                    };
-                    pivots.push(highPivot);
-                    this.pivotTypes[phaseHighIdx] = 1;
-                    this.pivotPrices[phaseHighIdx] = phaseHigh;
-
-                    phaseLow = l;
-                    phaseLowIdx = i;
-
+                    // Issue 1 Fix: Fire event on latest bar only if officially confirmed closed
                     if (i >= len - 2) {
-                        this.emitMLR1Event(highPivot, isClosedTick, data[i * 6]);
+                        this.emitMLR1Event(confirmedPivot, isClosedTick, candle.time);
                     }
                 }
-
-                // Bullish Flip -> Confirms phaseLow as a Swing Low Pivot
-                if (bullishFlip) {
-                    isBullish = true;
-
-                    const label: 'LL' | 'HL' = (lastLowPrice === null || phaseLow <= lastLowPrice) ? 'LL' : 'HL';
-                    lastLowPrice = phaseLow;
-
-                    const lowPivot: StrictZigZagPivot = {
-                        id: nextPivotId++,
-                        barIndex: phaseLowIdx,
-                        time: data[phaseLowIdx * 6],
-                        price: phaseLow,
-                        type: 'low',
-                        label,
-                        confirmedBarIndex: i
-                    };
-                    pivots.push(lowPivot);
-                    this.pivotTypes[phaseLowIdx] = -1;
-                    this.pivotPrices[phaseLowIdx] = phaseLow;
-
-                    phaseHigh = h;
-                    phaseHighIdx = i;
-
-                    if (i >= len - 2) {
-                        this.emitMLR1Event(lowPivot, isClosedTick, data[i * 6]);
-                    }
-                }
-
-                const validContinuation = (isBullish && c > anchorHigh) || (!isBullish && c < anchorLow);
-                if (validContinuation || bearishFlip || bullishFlip) {
-                    anchorHigh = h;
-                    anchorLow = l;
-                }
-
-                this.trends[i] = isBullish ? 1 : -1;
             }
 
             // Assemble confirmed legs
@@ -369,14 +623,29 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
 
             this.cachedPivots = pivots;
             this.cachedLegs = legs;
-            this.activePivot = isBullish
-                ? { barIndex: phaseHighIdx, price: phaseHigh, type: 'high' }
-                : { barIndex: phaseLowIdx, price: phaseLow, type: 'low' };
+            this.activePivot = state.isBullish
+                ? { barIndex: state.phaseHighIdx, price: state.phaseHigh, type: 'high' }
+                : { barIndex: state.phaseLowIdx, price: state.phaseLow, type: 'low' };
 
             this.lastCalculatedLength = len;
             this.lastStateHash = stateHash;
             return;
         }
+
+        // =========================================================================
+        // MODE 2: Higher Timeframe (Issue 4 Scope Boundary)
+        // Note: Milestone 1 Teacher telemetry is frozen as Native-Timeframe only.
+        // Teacher arrays are safely zeroed out when HTF mode is active.
+        // =========================================================================
+        this.candidateTypes.fill(0);
+        this.candidatePrices.fill(0);
+        this.candidateBarIndices.fill(0);
+        this.candidateAges.fill(0);
+        this.anchorHighs.fill(0);
+        this.anchorLows.fill(0);
+        this.confirmedEvents.fill(0);
+        this.confirmedPrices.fill(0);
+        this.confirmedLags.fill(0);
 
         // =========================================================================
         // MODE 2: Higher Timeframe (HTF Resampled Strict CBC)
@@ -757,5 +1026,52 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
         this.cachedPivots = [];
         this.cachedLegs = [];
         this.activePivot = null;
+    }
+
+    /**
+     * Milestone 1 Headless Teacher Engine (Issue 2 Fix):
+     * Directly delegates every candle to stepStrictCBC().
+     * Produces identical pivot IDs, bar indices, confirmation indices, and teacher snapshots.
+     */
+    public static extractPointInTimeTeacher(ds: { data: Float64Array; length: number }): {
+        teachers: StrictCBCCandleTeacher[];
+        pivots: StrictZigZagPivot[];
+    } {
+        const len = ds.length;
+        const data = ds.data;
+        const teachers: StrictCBCCandleTeacher[] = new Array(len);
+        const pivots: StrictZigZagPivot[] = [];
+
+        if (len === 0) return { teachers, pivots };
+
+        const candle0: StrictCBCCandle = {
+            time: data[0],
+            open: data[1],
+            high: data[2],
+            low: data[3],
+            close: data[4]
+        };
+        let state = createInitialStrictCBCState(candle0);
+
+        for (let i = 0; i < len; i++) {
+            const base = i * 6;
+            const candle: StrictCBCCandle = {
+                time: data[base],
+                open: data[base + 1],
+                high: data[base + 2],
+                low: data[base + 3],
+                close: data[base + 4]
+            };
+
+            const stepResult = stepStrictCBC(candle, i, state);
+            state = stepResult.nextState;
+
+            teachers[i] = stepResult.teacher;
+            if (stepResult.confirmedPivot) {
+                pivots.push(stepResult.confirmedPivot);
+            }
+        }
+
+        return { teachers, pivots };
     }
 }
