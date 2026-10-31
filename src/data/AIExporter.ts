@@ -279,26 +279,35 @@ export class AIExporter {
         const events: MLR1EventRow[] = [];
 
         const indVersion = `v2_ATR${ATR_PERIOD}_SL${STOP_ATR_MULT}_TP${TARGET_R_MULT}_HZ${MAX_HORIZON_BARS}`;
+        
+        let excludedMissingNextOpen = 0;
+        let excludedUnwarmedAtr = 0;
+        let excludedIncompleteHorizon = 0;
 
-        // Issues A & E Fix: Exclude index 0 (no completed leg, unbounded context)
+        // Exclude index 0 (no completed leg, unbounded context)
         for (let i = 1; i < cachedPivots.length; i++) {
             const pivot = cachedPivots[i];
             const prevPivot = cachedPivots[i - 1];
             const confBar = pivot.confirmedBarIndex;
             const entryBar = confBar + 1; // Strict rule: next_open
 
-            if (entryBar >= len) continue;
+            if (entryBar >= len) {
+                excludedMissingNextOpen++;
+                continue;
+            }
 
-            // Issue D Fix: Enforce validated confirmation ATR; zero fallback permitted
+            // Enforce validated confirmation ATR; zero fallback permitted
             const currentAtr = atrRaw[confBar];
             if (confBar < ATR_PERIOD - 1 || !Number.isFinite(currentAtr) || currentAtr <= 0) {
+                excludedUnwarmedAtr++;
                 continue; 
             }
 
-            // Issue A Fix: Exactly 60 bars inclusive [entryBar .. entryBar + 59]
+            // Exactly 60 bars inclusive [entryBar .. entryBar + 59]
             const horizonEnd = entryBar + MAX_HORIZON_BARS - 1;
             if (horizonEnd >= len) {
-                continue; // Censor incomplete horizons
+                excludedIncompleteHorizon++;
+                continue; 
             }
 
             const entryTime = dataStore.data[entryBar * 6];
@@ -421,24 +430,48 @@ export class AIExporter {
                 short_outcome
             });
         }
+
+        // Telemetry reconciliation report
+        console.log(`=======================================`);
+        console.log(`📊 ML-R1 DATASET GENERATION TELEMETRY:`);
+        console.log(`   ↳ Total Candidate Pivots:     ${cachedPivots.length}`);
+        console.log(`   ↳ Excluded (Index 0):         1`);
+        console.log(`   ↳ Excluded (ATR Warm-up):     ${excludedUnwarmedAtr}`);
+        console.log(`   ↳ Excluded (Missing Open):    ${excludedMissingNextOpen}`);
+        console.log(`   ↳ Excluded (Incomplete HZ):   ${excludedIncompleteHorizon}`);
+        console.log(`   ↳ Final Eligible Events:      ${events.length}`);
+        if (events.length > 0) {
+            console.log(`   ↳ Dataset Coverage Range:     ${new Date(events[0].confirmation_time_ms).toISOString()} → ${new Date(events[events.length - 1].confirmation_time_ms).toISOString()}`);
+        }
+        console.log(`=======================================`);
+
         return events;
+    }
+
+    private static csvEscape(value: unknown): string {
+        if (value == null) return '';
+        const raw = String(value);
+        if (/[",\r\n]/.test(raw)) {
+            return `"${raw.replace(/"/g, '""')}"`;
+        }
+        return raw;
     }
 
     public static exportMLR1CSV(events: MLR1EventRow[], symbol: string, timeframe: string): boolean {
         if (typeof document === 'undefined' || events.length === 0) return false;
 
-        const headers = Object.keys(events[0]).join(',');
-        const lines = events.map(e => {
-            return Object.entries(e).map(([_key, val]) => {
+        // RFC-4180 compliant header escaping
+        const headers = Object.keys(events[0]).map(this.csvEscape).join(',');
+        
+        // Full JavaScript float precision preserved: No rounding loss for training scripts
+        const lines = events.map(e =>
+            Object.values(e).map(val => {
                 if (typeof val === 'number') {
-                    // Integers (timestamps, counts, bar indices) stay integers
-                    if (Number.isInteger(val)) return val;
-                    // Format floats to 4 decimals for clean CSV output
-                    return val.toFixed(4);
+                    return String(val);
                 }
-                return val;
-            }).join(',');
-        });
+                return this.csvEscape(val);
+            }).join(',')
+        );
         const csv = `${headers}\n${lines.join('\n')}`;
 
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -456,7 +489,13 @@ export class AIExporter {
 }
 
 export class DatasetAuditor {
-    public static runCausalityAudit(events: MLR1EventRow[]): boolean {
+    /**
+     * Master Verification Suite:
+     * 1. Row-level Contract & Numerical Integrity Audit
+     * 2. Training Allowlist Leakage Audit
+     * 3. Independent Candle-Level Execution Audit (verifying entry/exit against DataStore candles)
+     */
+    public static runCausalityAudit(events: MLR1EventRow[], dataStore?: any): boolean {
         console.log('🛡️ Running ML-R1 Comprehensive Contract & Integrity Audit...');
         let timeFailures = 0;
         let indexFailures = 0;
@@ -468,9 +507,12 @@ export class DatasetAuditor {
         let exitIntegrityFailures = 0;
         let outcomeMathFailures = 0;
         let timeoutClassFailures = 0;
-        const idSet = new Set<string>();
+        let allowlistFailures = 0;
+        let candleExecutionFailures = 0;
 
+        const idSet = new Set<string>();
         const VALID_OUTCOMES = new Set(['full_target', 'hard_stop', 'timeout_net_gain', 'timeout_net_loss']);
+        const ALLOWLIST_SET = new Set<string>(MLR1_REPRESENTATION_FEATURE_ALLOWLIST);
 
         for (let i = 0; i < events.length; i++) {
             const ev = events[i];
@@ -489,7 +531,7 @@ export class DatasetAuditor {
             if (ev.entry_bar_index !== ev.confirmed_bar_index + 1) indexFailures++;
             if (ev.entry_time <= ev.confirmation_time_ms) indexFailures++;
 
-            // 4. Exhaustive Anti-NaN Gate: Validate all 24 numeric fields
+            // 4. Exhaustive Anti-NaN Gate on all 24 numeric fields
             const requiredFiniteNumbers = [
                 ev.pivot_price, ev.previous_pivot_price, ev.pivot_bar_index,
                 ev.confirmed_bar_index, ev.confirmation_time_ms, ev.bars_since_last_pivot,
@@ -505,7 +547,7 @@ export class DatasetAuditor {
                 if (!Number.isFinite(requiredFiniteNumbers[v])) mathFailures++;
             }
 
-            // 5. Strict Integer Fields
+            // Strict Integer Fields
             const requiredIntegerFields = [
                 ev.pivot_bar_index, ev.confirmed_bar_index, ev.confirmation_time_ms,
                 ev.bars_since_last_pivot, ev.context_candle_count, ev.entry_bar_index, ev.entry_time
@@ -518,7 +560,7 @@ export class DatasetAuditor {
                 mathFailures++;
             }
 
-            // 6. Completed-Leg Direction Verification (Independent check on exact previous pivot)
+            // 5. Completed-Leg Direction Verification
             const expectedDir = ev.pivot_price > ev.previous_pivot_price ? 'up' : 
                                (ev.pivot_price < ev.previous_pivot_price ? 'down' : 'flat');
             if (ev.completed_leg_direction !== expectedDir) directionFailures++;
@@ -528,7 +570,7 @@ export class DatasetAuditor {
             if (!['up', 'down', 'flat'].includes(ev.completed_leg_direction)) directionFailures++;
             if (!['up', 'down'].includes(ev.zigzag_next_leg_orientation)) directionFailures++;
 
-            // 7. Volume Two-Way Sentinel Checks
+            // 6. Volume Two-Way Sentinel Checks
             if (ev.context_relative_volume_valid_fraction < 0 || ev.context_relative_volume_valid_fraction > 1.0) {
                 volumeFractionFailures++;
             }
@@ -539,7 +581,7 @@ export class DatasetAuditor {
                 volumeFractionFailures++;
             }
 
-            // 8. Barrier Geometry Verification (Stop = 1.5 ATR, Target = 3.0 ATR)
+            // 7. Barrier Geometry Verification (Stop = 1.5 ATR, Target = 3.0 ATR)
             const expectedLongStop = ev.entry_price - (ev.atr_at_confirmation * 1.5);
             const expectedLongTarget = ev.entry_price + (ev.atr_at_confirmation * 3.0);
             const expectedShortStop = ev.entry_price + (ev.atr_at_confirmation * 1.5);
@@ -550,7 +592,7 @@ export class DatasetAuditor {
             if (Math.abs(ev.short_stop_price - expectedShortStop) > 0.001) barrierGeometryFailures++;
             if (Math.abs(ev.short_target_price - expectedShortTarget) > 0.001) barrierGeometryFailures++;
 
-            // 9. Exit & Permitted Outcome Enumeration Verification (Including Gaps)
+            // 8. Exit & Permitted Outcome Enumeration Verification
             if (!VALID_OUTCOMES.has(ev.long_outcome) || !VALID_OUTCOMES.has(ev.short_outcome)) {
                 exitIntegrityFailures++;
             }
@@ -560,7 +602,7 @@ export class DatasetAuditor {
             if (ev.short_outcome === 'full_target' && ev.short_exit_price > ev.short_target_price + 0.001) exitIntegrityFailures++;
             if (ev.short_outcome === 'hard_stop' && ev.short_exit_price < ev.short_stop_price - 0.001) exitIntegrityFailures++;
 
-            // 10. Positive Risk Check & Net R Math Agreement (Calibrated to 0.01 tolerance for precision consistency)
+            // 9. Positive Risk Check & Net R Math Agreement
             const lRisk = ev.entry_price - ev.long_stop_price;
             const sRisk = ev.short_stop_price - ev.entry_price;
 
@@ -574,11 +616,38 @@ export class DatasetAuditor {
                 if (Math.abs(expectedShortNetR - ev.short_net_r) > 0.01) outcomeMathFailures++;
             }
 
-            // 11. Timeout Net Classification Check
+            // 10. Timeout Net Classification Check
             if (ev.long_outcome === 'timeout_net_gain' && ev.long_net_r <= 0) timeoutClassFailures++;
             if (ev.long_outcome === 'timeout_net_loss' && ev.long_net_r > 0) timeoutClassFailures++;
             if (ev.short_outcome === 'timeout_net_gain' && ev.short_net_r <= 0) timeoutClassFailures++;
             if (ev.short_outcome === 'timeout_net_loss' && ev.short_net_r > 0) timeoutClassFailures++;
+
+            // 11. Training Feature Allowlist Projection Check
+            const repInput = buildRepresentationInput(ev);
+            const inputKeys = Object.keys(repInput);
+            if (inputKeys.length !== MLR1_REPRESENTATION_FEATURE_ALLOWLIST.length) allowlistFailures++;
+            for (let k = 0; k < inputKeys.length; k++) {
+                if (!ALLOWLIST_SET.has(inputKeys[k])) allowlistFailures++;
+            }
+
+            // 12. Independent Candle-Level Execution Audit (if DataStore is supplied)
+            if (dataStore && dataStore.length > 0) {
+                const base = ev.entry_bar_index * 6;
+                const candleOpen = dataStore.data[base + 1];
+                if (Math.abs(ev.entry_price - candleOpen) > 0.0001) candleExecutionFailures++;
+
+                // Verify timeout exit price exactly equals the close of bar entry_bar_index + 60 - 1
+                const horizonBar = ev.entry_bar_index + 60 - 1;
+                if (horizonBar < dataStore.length) {
+                    const horizonClose = dataStore.data[horizonBar * 6 + 4];
+                    if (ev.long_outcome.startsWith('timeout') && Math.abs(ev.long_exit_price - horizonClose) > 0.0001) {
+                        candleExecutionFailures++;
+                    }
+                    if (ev.short_outcome.startsWith('timeout') && Math.abs(ev.short_exit_price - horizonClose) > 0.0001) {
+                        candleExecutionFailures++;
+                    }
+                }
+            }
         }
 
         console.log(`=======================================`);
@@ -593,11 +662,16 @@ export class DatasetAuditor {
         console.log(`   ↳ Exit & Gap Integrity:  ${exitIntegrityFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`   ↳ Outcome Net R & Risk:  ${outcomeMathFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`   ↳ Timeout Net Classes:   ${timeoutClassFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Allowlist Enforcement: ${allowlistFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        if (dataStore && dataStore.length > 0) {
+            console.log(`   ↳ Candle Execution Truth:${candleExecutionFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        }
         console.log(`=======================================`);
 
         if (timeFailures > 0 || indexFailures > 0 || mathFailures > 0 || duplicateFailures > 0 || 
             directionFailures > 0 || volumeFractionFailures > 0 || barrierGeometryFailures > 0 ||
-            exitIntegrityFailures > 0 || outcomeMathFailures > 0 || timeoutClassFailures > 0) {
+            exitIntegrityFailures > 0 || outcomeMathFailures > 0 || timeoutClassFailures > 0 ||
+            allowlistFailures > 0 || candleExecutionFailures > 0) {
             if (typeof alert !== 'undefined') alert(`⚠️ ML-R1 Audit Failed!\nCheck developer console.`);
             return false;
         }
