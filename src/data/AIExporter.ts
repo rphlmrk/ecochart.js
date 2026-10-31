@@ -9,17 +9,19 @@ export interface MLR1EventRow {
     confirmed_bar_index: number;
     confirmation_time_ms: number;
 
-    // Structural Features
-    leg_direction: 'up' | 'down';
+    // Structural Features (Disambiguated Legs)
+    completed_leg_direction: 'up' | 'down';        // Previous pivot -> Current pivot
+    zigzag_next_leg_orientation: 'up' | 'down';    // Structural orientation originating from current pivot
     bars_since_last_pivot: number;
     leg_distance_atr: number;
 
     // Causal Candle Context
     context_net_return_atr: number;
-    context_max_favorable_atr: number; // Replaced single excursion
-    context_max_adverse_atr: number;   // Replaced single excursion
+    context_max_favorable_atr: number;
+    context_max_adverse_atr: number;
     context_candle_count: number;
-    context_relative_volume: number;   // Replaced raw SMA avg
+    context_relative_volume: number;               // -1.0 if volume SMA unavailable
+    context_relative_volume_valid_fraction: number;// Fraction of context bars with mature volume SMA (0.0 to 1.0)
     
     // Execution (Frozen next_open)
     entry_bar_index: number;
@@ -70,7 +72,6 @@ export class MarketFeatureEngine {
             atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period;
         }
 
-        // NO BACKFILLING: Keep warm-up period as 0 to prevent lookahead bias.
         for (let i = 0; i < period - 1 && i < len; i++) {
             atr[i] = 0; 
         }
@@ -105,7 +106,14 @@ export class CandleContextAggregator {
         volSma: Float64Array
     ) {
         if (startBar > endBar || currentAtr <= 0) {
-            return { netReturnAtr: 0, maxFavorableAtr: 0, maxAdverseAtr: 0, count: 0, relativeVolume: 1.0 };
+            return { 
+                netReturnAtr: 0, 
+                maxFavorableAtr: 0, 
+                maxAdverseAtr: 0, 
+                count: 0, 
+                relativeVolume: -1.0,
+                validFraction: 0.0 
+            };
         }
 
         const startOpen = dataStore.data[startBar * 6 + 1];
@@ -132,15 +140,18 @@ export class CandleContextAggregator {
         const count = endBar - startBar + 1;
         const netReturnAtr = (endClose - startOpen) / currentAtr;
         const maxFavorableAtr = (maxH - startOpen) / currentAtr;
-        const maxAdverseAtr = (startOpen - minL) / currentAtr; // Kept as positive distance for adverse scale
-        const relativeVolume = (validVolCount > 0 && volSmaSum > 0) ? (volSum / volSmaSum) : 1.0;
+        const maxAdverseAtr = (startOpen - minL) / currentAtr;
+        
+        const validFraction = count > 0 ? (validVolCount / count) : 0.0;
+        const relativeVolume = (validVolCount > 0 && volSmaSum > 0) ? (volSum / volSmaSum) : -1.0;
 
         return {
             netReturnAtr,
             maxFavorableAtr,
             maxAdverseAtr,
             count,
-            relativeVolume
+            relativeVolume,
+            validFraction
         };
     }
 }
@@ -150,29 +161,36 @@ export class HybridTokenBuilder {
         event: any, 
         prevEvent: any, 
         dataStore: any, 
-        atrRaw: Float64Array, 
+        currentAtr: number,
         volSmaRaw: Float64Array
     ) {
         const confBar = event.confirmedBarIndex;
-        const prevConfBar = prevEvent ? prevEvent.confirmedBarIndex : 0;
-        const currentAtr = atrRaw[confBar] || 0.0001;
+        const prevConfBar = prevEvent.confirmedBarIndex;
         
         const barsSinceLast = confBar - prevConfBar;
-        const legDistAtr = prevEvent ? (event.price - prevEvent.price) / currentAtr : 0;
+        const legDistAtr = (event.price - prevEvent.price) / currentAtr;
 
-        const contextStart = prevEvent ? prevEvent.confirmedBarIndex + 1 : 0;
+        // Ground-truth leg verification:
+        const completed_leg_direction: 'up' | 'down' = event.price > prevEvent.price ? 'up' : 'down';
+        const zigzag_next_leg_orientation: 'up' | 'down' = event.type === 'high' ? 'down' : 'up';
+
+        // Context is strictly closed candles between prior confirmation and current confirmation
+        const contextStart = prevConfBar + 1;
         const contextEnd = confBar; 
         
         const ctx = CandleContextAggregator.summarize(dataStore, contextStart, contextEnd, currentAtr, volSmaRaw);
 
         return {
+            completed_leg_direction,
+            zigzag_next_leg_orientation,
             bars_since_last_pivot: barsSinceLast,
             leg_distance_atr: legDistAtr,
             context_net_return_atr: ctx.netReturnAtr,
             context_max_favorable_atr: ctx.maxFavorableAtr,
             context_max_adverse_atr: ctx.maxAdverseAtr,
             context_candle_count: ctx.count,
-            context_relative_volume: ctx.relativeVolume
+            context_relative_volume: ctx.relativeVolume,
+            context_relative_volume_valid_fraction: ctx.validFraction
         };
     }
 }
@@ -202,24 +220,25 @@ export class AIExporter {
         // Stable Indentity Prefix capturing the frozen config
         const indVersion = `v2_ATR${ATR_PERIOD}_SL${STOP_ATR_MULT}_TP${TARGET_R_MULT}_HZ${MAX_HORIZON_BARS}`;
 
-        for (let i = 0; i < cachedPivots.length; i++) {
+        // Exclude pivot 0: It has no completed leg and no prior confirmation boundary.
+        for (let i = 1; i < cachedPivots.length; i++) {
             const pivot = cachedPivots[i];
+            const prevPivot = cachedPivots[i - 1];
             const confBar = pivot.confirmedBarIndex;
             const entryBar = confBar + 1; // Strict rule: next_open
 
-            // 🛑 EXCLUSION 1: Cannot evaluate if the entry candle doesn't exist yet
+            // 🛑 EXCLUSION 1: Cannot evaluate if the entry candle doesn't exist
             if (entryBar >= len) continue;
 
-            // 🛑 EXCLUSION 2: ATR Warm-up filter. 
+            // 🛑 EXCLUSION 2: ATR Warm-up filter. Zero fallback permitted.
             const currentAtr = atrRaw[confBar];
             if (confBar < ATR_PERIOD - 1 || !Number.isFinite(currentAtr) || currentAtr <= 0) {
-                continue; // Exclude event completely; never fabricate features.
+                continue; 
             }
 
-            // 🛑 EXCLUSION 3: Incomplete Outcome Censorship
+            // 🛑 EXCLUSION 3: Incomplete Horizon Censorship
             const horizonEnd = entryBar + MAX_HORIZON_BARS;
             if (horizonEnd >= len) {
-                // Dataset ends before the 60-bar horizon fully matures. Skip to prevent bias.
                 continue; 
             }
 
@@ -227,8 +246,7 @@ export class AIExporter {
             const entryOpen = dataStore.data[entryBar * 6 + 1];
 
             // --- 1. HYBRID TOKEN BUILDING ---
-            const prevPivot = i > 0 ? cachedPivots[i - 1] : null;
-            const tokenFeatures = HybridTokenBuilder.build(pivot, prevPivot, dataStore, atrRaw, volSmaRaw);
+            const tokenFeatures = HybridTokenBuilder.build(pivot, prevPivot, dataStore, currentAtr, volSmaRaw);
 
             // --- 2. OUTCOME ENGINE (Frozen Counterfactuals) ---
             const lStop = entryOpen - (currentAtr * STOP_ATR_MULT);
@@ -304,7 +322,8 @@ export class AIExporter {
                 confirmed_bar_index: confBar,
                 confirmation_time_ms: dataStore.data[confBar * 6],
                 
-                leg_direction: pivot.type === 'high' ? 'down' : 'up',
+                completed_leg_direction: tokenFeatures.completed_leg_direction,
+                zigzag_next_leg_orientation: tokenFeatures.zigzag_next_leg_orientation,
                 bars_since_last_pivot: tokenFeatures.bars_since_last_pivot,
                 leg_distance_atr: parseFloat(tokenFeatures.leg_distance_atr.toFixed(4)),
                 
@@ -313,6 +332,7 @@ export class AIExporter {
                 context_max_adverse_atr: parseFloat(tokenFeatures.context_max_adverse_atr.toFixed(4)),
                 context_candle_count: tokenFeatures.context_candle_count,
                 context_relative_volume: parseFloat(tokenFeatures.context_relative_volume.toFixed(4)),
+                context_relative_volume_valid_fraction: parseFloat(tokenFeatures.context_relative_volume_valid_fraction.toFixed(4)),
 
                 entry_bar_index: entryBar,
                 entry_time: entryTime,
@@ -358,37 +378,41 @@ export class AIExporter {
 
 export class DatasetAuditor {
     public static runCausalityAudit(events: MLR1EventRow[]): boolean {
-        console.log('🛡️ Running ML-R1 Causality Audit...');
+        console.log('🛡️ Running ML-R1 Comprehensive Dataset Audit...');
         let timeFailures = 0;
         let indexFailures = 0;
         let mathFailures = 0;
         let duplicateFailures = 0;
-        let leakFailures = 0;
+        let directionFailures = 0;
+        let volumeFractionFailures = 0;
         const idSet = new Set<string>();
 
         for (let i = 0; i < events.length; i++) {
             const ev = events[i];
 
-            // 1. Uniqueness Check
+            // 1. Uniqueness
             if (idSet.has(ev.event_id)) duplicateFailures++;
             idSet.add(ev.event_id);
 
-            // 2. Chronology Check
+            // 2. Strict Chronology
             if (i > 0 && ev.confirmation_time_ms < events[i - 1].confirmation_time_ms) {
                 timeFailures++;
             }
 
-            // 3. Causality Check (Entry MUST be strictly after confirmation)
+            // 3. Execution Causality (next_open strictly after confirmation)
             if (ev.entry_bar_index <= ev.confirmed_bar_index) indexFailures++;
+            if (ev.entry_time <= ev.confirmation_time_ms) indexFailures++;
 
-            // 4. Leakage Check (No outcome metadata slipping into input features)
-            // (Enforced implicitly via typing, but double checking entry dependencies)
-            if (ev.entry_time <= ev.confirmation_time_ms) {
-                leakFailures++;
-                indexFailures++;
+            // 4. Orientation Integrity
+            if (ev.pivot_type === 'high' && ev.zigzag_next_leg_orientation !== 'down') directionFailures++;
+            if (ev.pivot_type === 'low' && ev.zigzag_next_leg_orientation !== 'up') directionFailures++;
+
+            // 5. Volume Valid Fraction [0.0, 1.0]
+            if (ev.context_relative_volume_valid_fraction < 0 || ev.context_relative_volume_valid_fraction > 1.0) {
+                volumeFractionFailures++;
             }
 
-            // 5. Math Health (No NaNs/Infinities from ATR bugs or div/0)
+            // 6. Math Sanity
             if (!Number.isFinite(ev.atr_at_confirmation) || ev.atr_at_confirmation <= 0) mathFailures++;
             if (!Number.isFinite(ev.leg_distance_atr)) mathFailures++;
             if (!Number.isFinite(ev.context_relative_volume)) mathFailures++;
@@ -396,14 +420,16 @@ export class DatasetAuditor {
 
         console.log(`=======================================`);
         console.log(`📊 PRE-FLIGHT AUDIT: ${events.length} Events Evaluated`);
-        console.log(`   ↳ Timeline (Chronological):  ${timeFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
-        console.log(`   ↳ Causality (Next Open):     ${indexFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
-        console.log(`   ↳ Identity (No Duplicates):  ${duplicateFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
-        console.log(`   ↳ Math Health (Valid Feat.): ${mathFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Chronology:          ${timeFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Causality (next_open): ${indexFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Event Uniqueness:    ${duplicateFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Structural Direction:${directionFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Coverage Fraction:   ${volumeFractionFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Mathematical Health: ${mathFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`=======================================`);
 
-        if (timeFailures > 0 || indexFailures > 0 || mathFailures > 0 || duplicateFailures > 0 || leakFailures > 0) {
-            if (typeof alert !== 'undefined') alert(`⚠️ ML-R1 Audit Failed!\nCheck developer console for causality/math errors.`);
+        if (timeFailures > 0 || indexFailures > 0 || mathFailures > 0 || duplicateFailures > 0 || directionFailures > 0 || volumeFractionFailures > 0) {
+            if (typeof alert !== 'undefined') alert(`⚠️ ML-R1 Audit Failed!\nCheck developer console.`);
             return false;
         }
         return true;
