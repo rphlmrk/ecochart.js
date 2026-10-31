@@ -500,13 +500,15 @@ export class EcoChart {
             console.warn('Network disconnect warning:', err);
         }
 
+        // STOP HTF OVERLAY BEFORE DESTROYING THE RENDERER
+        this.stopHtfOverlay(false);
+
         try {
             this.renderer.destroy();
         } catch (err) {
             console.warn('Renderer destroy warning:', err);
         }
 
-        this.stopHtfOverlay(false);
         this.htfOverlayControl?.remove();
         this.autoBtn?.remove();
         this.navBar?.remove();

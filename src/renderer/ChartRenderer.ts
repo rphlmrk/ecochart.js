@@ -2173,6 +2173,8 @@ export class ChartRenderer {
     }
 
     public clearHtfOverlay(): void {
-        this.htfOverlayGraphics.clear();
+        if (!this.isDestroyed && this.htfOverlayGraphics) {
+            this.htfOverlayGraphics.clear();
+        }
     }
 }
