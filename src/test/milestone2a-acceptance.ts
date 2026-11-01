@@ -1509,27 +1509,33 @@ export function runPhase2ATests(): boolean {
         }
     };
 
-    // 1. Chaotic Sequence Rejection & Global Immutability
-    run2HTest('Unified Chaos Rejection & Immutability', () => {
+    // 1. Deep Immutability & Chaotic Sequence Rejection
+    run2HTest('Deep Immutability & Chaotic Sequence Rejection', () => {
         let testState = createInitialML1FeatureState();
         testState = stepML1Features(validCandle(100000), 0, testState, config).nextState;
         testState = stepML1Features(validCandle(160000), 1, testState, config).nextState;
         
         const validStateSnapshot = testState;
+        const deepSnapshotStr = JSON.stringify(validStateSnapshot);
         
         // Feed Chaos
         const resNaN = stepML1Features({ ...validCandle(220000), close: NaN }, 2, validStateSnapshot, config);
         const resOoo = stepML1Features(validCandle(150000), 2, resNaN.nextState, config); // Time travel
         const resDup = stepML1Features(validCandle(160000), 3, resOoo.nextState, config); // Duplicate
         
-        // Assert strict identity to prove ZERO state mutation occurred during chaotic rejection
-        assert(resNaN.nextState === validStateSnapshot, 'State mutated on NaN rejection');
-        assert(resOoo.nextState === validStateSnapshot, 'State mutated on Out-Of-Order rejection');
-        assert(resDup.nextState === validStateSnapshot, 'State mutated on Duplicate rejection');
+        // Assert strict identity (no new object allocated)
+        assert(resNaN.nextState === validStateSnapshot, 'State reference mutated on NaN rejection');
+        assert(resOoo.nextState === validStateSnapshot, 'State reference mutated on Out-Of-Order rejection');
+        assert(resDup.nextState === validStateSnapshot, 'State reference mutated on Duplicate rejection');
+
+        // Assert deep structural equality (no internal object mutation escaped the freeze)
+        assert(JSON.stringify(resNaN.nextState) === deepSnapshotStr, 'Deep internal mutation detected on NaN rejection');
+        assert(JSON.stringify(resOoo.nextState) === deepSnapshotStr, 'Deep internal mutation detected on OOO rejection');
+        assert(JSON.stringify(resDup.nextState) === deepSnapshotStr, 'Deep internal mutation detected on Duplicate rejection');
     });
 
-    // 2. Universal Discontinuity Routing
-    run2HTest('Universal Discontinuity Reset Routing', () => {
+    // 2. Universal Discontinuity Reset Routing & Post-Gap Recovery
+    run2HTest('Universal Discontinuity Reset Routing & Post-Gap Recovery', () => {
         let testState = createInitialML1FeatureState();
         
         // Warmup past longest period (EMA 200)
@@ -1537,27 +1543,39 @@ export function runPhase2ATests(): boolean {
             testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
         }
         
-        // Ensure all modules are warmed up
-        assert(testState.emaState[200].isSeeded === true, 'EMA200 must be seeded');
-        assert(testState.atrState[20].isSeeded === true, 'ATR20 must be seeded');
-        assert(testState.volumeState.unbrokenRun === 205, 'Volume run must be 205');
-        assert(testState.momentumState.unbrokenRun === 205, 'Momentum run must be 205');
+        // Ensure all modules are fully warmed up and populated
+        assert(testState.emaState[200].history.length > 0, 'EMA200 history should be populated');
+        assert(testState.atrState[20].count > 20, 'ATR20 count should be past seeding threshold');
+        assert(testState.volumeState.volumeHistory.length === 50, 'Volume history should be full (50)');
+        assert(testState.momentumState.closeHistory.length === 21, 'Momentum history should be full (21)');
         
-        // Inject Major Discontinuity (10 minutes)
+        // Inject Major Discontinuity (10 minutes) at index 205
         const resDisc = stepML1Features(validCandle(100000 + 204 * 60000 + 600000), 205, testState, config);
         
-        // Assert EVERY unified module honored the discontinuity signal
+        // Assert EVERY unified module rigorously cleared its history arrays
         assert(resDisc.observation.features['IsDiscontinuity'] === 1, 'Failed to flag discontinuity');
-        assert(resDisc.nextState.emaState[200].isSeeded === false, 'EMA failed to reset on discontinuity');
-        assert(resDisc.nextState.atrState[20].isSeeded === false, 'ATR failed to reset on discontinuity');
-        assert(resDisc.nextState.rollingRangeState[50].highs.length === 1, 'Rolling Range failed to reset on discontinuity');
-        assert(resDisc.nextState.momentumState.unbrokenRun === 1, 'Momentum failed to reset on discontinuity');
-        assert(resDisc.nextState.volumeState.unbrokenRun === 1, 'Volume failed to reset on discontinuity');
+        assert(resDisc.nextState.emaState[200].history.length === 0, 'EMA history leaked across discontinuity');
+        assert(resDisc.nextState.emaState[200].isSeeded === false, 'EMA seed leaked across discontinuity');
+        assert(resDisc.nextState.atrState[20].count === 1, 'ATR count failed to reset on discontinuity');
+        assert(resDisc.nextState.rollingRangeState[50].highs.length === 1, 'Rolling Range highs leaked across discontinuity');
+        assert(resDisc.nextState.rollingRangeState[50].lows.length === 1, 'Rolling Range lows leaked across discontinuity');
+        assert(resDisc.nextState.momentumState.closeHistory.length === 1, 'Momentum history leaked across discontinuity');
+        assert(resDisc.nextState.volumeState.volumeHistory.length === 1, 'Volume history leaked across discontinuity');
         assert(resDisc.observation.features['IsWarmupComplete'] === 0, 'Global warmup flag failed to reset');
+
+        // Post-Gap Recovery: Feed the very next valid chronological candle (60s later)
+        const nextTime = resDisc.observation.timestamp + 60000;
+        const resRecovery = stepML1Features(validCandle(nextTime), 206, resDisc.nextState, config);
+
+        assert(resRecovery.observation.features['IsSourceValid'] === 1, 'Post-gap recovery candle rejected improperly');
+        assert(resRecovery.nextState.momentumState.unbrokenRun === 2, 'Momentum failed to resume accumulation from new baseline');
+        assert(resRecovery.nextState.volumeState.unbrokenRun === 2, 'Volume failed to resume accumulation from new baseline');
+        assert(resRecovery.nextState.atrState[20].count === 2, 'ATR failed to resume accumulation from new baseline');
+        assert(resRecovery.nextState.rollingRangeState[50].highs.length === 2, 'Rolling Range failed to resume accumulation from new baseline');
     });
 
-    // 3. Ultimate Deterministic Replay (The Phase 2H Proof)
-    run2HTest('Full Engine Deterministic Replay (100 Mixed Bars)', () => {
+    // 3. Ultimate Deterministic Replay, Midpoint Restoration & Finite Validation
+    run2HTest('Full Engine Deterministic Replay, Midpoint Restoration & Finite Validation', () => {
         // Create a dirty feed containing valid bars, gaps, NaNs, and out-of-order data
         const dirtyFeed = Array.from({ length: 100 }, (_, i) => {
             if (i === 45) return { ...validCandle(100000 + i * 60000), close: NaN }; // Corrupted
@@ -1566,7 +1584,7 @@ export function runPhase2ATests(): boolean {
             return validCandle(100000 + i * 60000); // Valid
         });
 
-        // Run A
+        // Run A: Uninterrupted processing
         let stateA = createInitialML1FeatureState();
         const obsA: any[] = [];
         for (let i = 0; i < dirtyFeed.length; i++) {
@@ -1575,17 +1593,42 @@ export function runPhase2ATests(): boolean {
             stateA = res.nextState;
         }
 
-        // Run B (Independent)
+        // Run B: Process up to index 50, serialize, restore, and resume
         let stateB = createInitialML1FeatureState();
         const obsB: any[] = [];
-        for (let i = 0; i < dirtyFeed.length; i++) {
+        
+        // Part 1: Process 0-49
+        for (let i = 0; i < 50; i++) {
             const res = stepML1Features(dirtyFeed[i], i, stateB, config);
             obsB.push(res.observation);
             stateB = res.nextState;
         }
 
-        assert(JSON.stringify(obsA) === JSON.stringify(obsB), 'Unified engine failed deterministic observation replay');
-        assert(JSON.stringify(stateA) === JSON.stringify(stateB), 'Unified engine failed deterministic state replay');
+        // Midpoint Serialization / Restoration
+        const serializedState = JSON.stringify(stateB);
+        let restoredStateB = JSON.parse(serializedState);
+
+        // Part 2: Process 50-99 from the restored object
+        for (let i = 50; i < dirtyFeed.length; i++) {
+            const res = stepML1Features(dirtyFeed[i], i, restoredStateB, config);
+            obsB.push(res.observation);
+            restoredStateB = res.nextState;
+        }
+
+        // Validate complete sequence matches perfectly
+        assert(JSON.stringify(obsA) === JSON.stringify(obsB), 'Midpoint restored engine diverged in observations');
+        assert(JSON.stringify(stateA) === JSON.stringify(restoredStateB), 'Midpoint restored engine diverged in final state');
+
+        // Finite Check: Iteratively ensure every single numeric feature value emitted is explicitly finite
+        // (JSON.stringify converts NaN/Infinity to null, which can hide calculation failures)
+        for (let i = 0; i < obsB.length; i++) {
+            const features = obsB[i].features;
+            for (const [key, value] of Object.entries(features)) {
+                if (typeof value === 'number') {
+                    assert(Number.isFinite(value), `Observation ${i}: Feature ${key} emitted non-finite value ${value}`);
+                }
+            }
+        }
     });
 
     console.log(`\n=======================================`);
@@ -1596,7 +1639,7 @@ export function runPhase2ATests(): boolean {
     console.log(`=======================================\n`);
 
     if (failed2H === 0) {
-        console.log('✅ ALL PHASE 2H TESTS PASSED. The Unified Feature Engine is mathematically secure and chaos-tolerant.\n🔒 Phase 2H FROZEN.\n🏆 MILESTONE 2 CORE DEVELOPMENT COMPLETE.');
+        console.log('✅ ALL PHASE 2H TESTS PASSED. The Unified Feature Engine is mathematically secure, chaos-tolerant, and perfectly serializable.\n🔒 Phase 2H FROZEN.\n🏆 MILESTONE 2 CORE DEVELOPMENT COMPLETE.');
         return true;
     } else {
         console.error('❌ PHASE 2H TESTS FAILED.');
