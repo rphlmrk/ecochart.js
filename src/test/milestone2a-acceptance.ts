@@ -1286,9 +1286,184 @@ export function runPhase2ATests(): boolean {
 
     if (failed2F === 0) {
         console.log('✅ ALL PHASE 2F TESTS PASSED. Volume Feature Engine is verified.\n🔒 Phase 2F FROZEN.');
-        return true;
     } else {
         console.error('❌ PHASE 2F TESTS FAILED. DO NOT PROCEED TO PHASE 2G.');
+        return false;
+    }
+
+    // ====================================================================
+    // Phase 2G: Temporal & Data Quality Acceptance Suite
+    // ====================================================================
+    console.log('\n🧪 Starting Phase 2G Acceptance Tests...');
+    let passed2G = 0;
+    let failed2G = 0;
+
+    const run2GTest = (name: string, testFn: () => void) => {
+        try {
+            testFn();
+            passed2G++;
+            console.log(`  ✅ Passed: ${name}`);
+        } catch (e: any) {
+            failed2G++;
+            console.error(`  ❌ Failed: ${name} - ${e.message}`);
+        }
+    };
+
+    const state0 = createInitialML1FeatureState();
+
+    // 1. UTC Temporal Extraction Parity (Known Date: 2024-01-15 14:45:00 UTC, Monday)
+    run2GTest('UTC Temporal Features Extraction Parity', () => {
+        const utcTime = Date.UTC(2024, 0, 15, 14, 45, 0); // Monday: getUTCDay() = 1
+        const res = stepML1Features(validCandle(utcTime), 0, state0, config);
+        
+        assert(res.observation.features['MinuteOfHour'] === 45, 'MinuteOfHour failed');
+        assert(res.observation.features['HourOfDay'] === 14, 'HourOfDay failed');
+        assert(res.observation.features['DayOfWeek'] === 1, 'DayOfWeek failed');
+        assert(res.observation.validity['MinuteOfHour'] === true, 'Minute validity failed');
+        assert(res.observation.validity['HourOfDay'] === true, 'Hour validity failed');
+        assert(res.observation.validity['DayOfWeek'] === true, 'Day validity failed');
+    });
+
+    // 2. Cyclic Trigonometric Periodic Encodings
+    run2GTest('Cyclic Sine/Cosine Trigonometric Encodings (sin^2 + cos^2 = 1)', () => {
+        const utcTime = Date.UTC(2024, 5, 20, 9, 30, 0);
+        const res = stepML1Features(validCandle(utcTime), 0, state0, config);
+
+        const sinMin = res.observation.features['SinMinuteOfHour'];
+        const cosMin = res.observation.features['CosMinuteOfHour'];
+        assert(Math.abs(sinMin * sinMin + cosMin * cosMin - 1.0) < 1e-6, 'Minute trig identity failed');
+
+        const sinHour = res.observation.features['SinHourOfDay'];
+        const cosHour = res.observation.features['CosHourOfDay'];
+        assert(Math.abs(sinHour * sinHour + cosHour * cosHour - 1.0) < 1e-6, 'Hour trig identity failed');
+
+        const sinDay = res.observation.features['SinDayOfWeek'];
+        const cosDay = res.observation.features['CosDayOfWeek'];
+        assert(Math.abs(sinDay * sinDay + cosDay * cosDay - 1.0) < 1e-6, 'Day trig identity failed');
+    });
+
+    // 3. Temporal Invalidity Safeguard (Negative, NaN, and Out-of-Range Timestamps)
+    run2GTest('Temporal Invalidity Safeguard (Negative, NaN, & Out-of-Range Timestamps)', () => {
+        const resNeg = stepML1Features(validCandle(-100), 0, state0, config);
+        assert(resNeg.observation.validity['MinuteOfHour'] === false, 'Negative time must be invalid');
+        assert(resNeg.observation.features['MinuteOfHour'] === 0, 'Negative time must fallback to 0');
+
+        const resNan = stepML1Features(validCandle(NaN), 0, state0, config);
+        assert(resNan.observation.validity['MinuteOfHour'] === false, 'NaN time must be invalid');
+        assert(resNan.observation.features['HourOfDay'] === 0, 'NaN time must fallback to 0');
+
+        // Finite timestamp beyond JavaScript Date limit (1e20)
+        const resOutOfRange = stepML1Features(validCandle(1e20), 0, state0, config);
+        assert(resOutOfRange.observation.validity['MinuteOfHour'] === false, '1e20 time must be invalid');
+        assert(resOutOfRange.observation.features['MinuteOfHour'] === 0, '1e20 time must fallback to 0');
+    });
+
+    // 4. Data Quality & Continuity Flags
+    run2GTest('Data Quality & Continuity Flags', () => {
+        // Bar 0: No previous candle
+        const res0 = stepML1Features(validCandle(100000), 0, state0, config);
+        assert(res0.observation.features['HasPreviousCandle'] === 0, 'Bar 0 should not have previous candle');
+        assert(res0.observation.validity['HasExpectedPreviousTimestamp'] === false, 'Expected timestamp validity false on bar 0');
+        assert(res0.observation.validity['TimeDeltaSeconds'] === false, 'TimeDelta validity false on bar 0');
+
+        // Bar 1: Normal 60s continuation
+        const res1 = stepML1Features(validCandle(160000), 1, res0.nextState, config);
+        assert(res1.observation.features['HasPreviousCandle'] === 1, 'Bar 1 must have previous candle');
+        assert(res1.observation.features['HasExpectedPreviousTimestamp'] === 1, 'Bar 1 must have expected timestamp');
+        assert(res1.observation.features['TimeDeltaSeconds'] === 60, 'TimeDeltaSeconds must be 60');
+        assert(res1.observation.validity['TimeDeltaSeconds'] === true, 'TimeDeltaSeconds must be valid');
+
+        // Bar 2: 120s gap -> HasPreviousCandle=1, but HasExpectedPreviousTimestamp=0
+        const res2 = stepML1Features(validCandle(280000), 2, res1.nextState, config);
+        assert(res2.observation.features['HasPreviousCandle'] === 1, 'Bar 2 has previous candle');
+        assert(res2.observation.features['HasExpectedPreviousTimestamp'] === 0, 'Bar 2 should NOT have expected timestamp across gap');
+        assert(res2.observation.features['TimeDeltaSeconds'] === 120, 'TimeDeltaSeconds must be 120');
+    });
+
+    // 5. Source Validity Flag (IsSourceValid)
+    run2GTest('Source Validity Flag (IsSourceValid)', () => {
+        const resValid = stepML1Features(validCandle(100000), 0, state0, config);
+        assert(resValid.observation.features['IsSourceValid'] === 1, 'Valid candle must have IsSourceValid = 1');
+
+        // Invalid OHLCV
+        const resInvalidOhlc = stepML1Features({ ...validCandle(100000), high: 50, low: 200 }, 0, state0, config);
+        assert(resInvalidOhlc.observation.features['IsSourceValid'] === 0, 'Invalid OHLC must have IsSourceValid = 0');
+
+        // Duplicate
+        const resDup = stepML1Features(validCandle(100000), 0, resValid.nextState, config);
+        assert(resDup.observation.features['IsSourceValid'] === 0, 'Duplicate timestamp must have IsSourceValid = 0');
+
+        // NaN Timestamp
+        const resNanTime = stepML1Features(validCandle(NaN), 0, state0, config);
+        assert(resNanTime.observation.features['IsSourceValid'] === 0, 'NaN time must have IsSourceValid = 0');
+
+        // Negative Timestamp
+        const resNegTime = stepML1Features(validCandle(-500), 0, state0, config);
+        assert(resNegTime.observation.features['IsSourceValid'] === 0, 'Negative time must have IsSourceValid = 0');
+
+        // Invalid Bar Index
+        const resInvalidIdx = stepML1Features(validCandle(100000), -5, state0, config);
+        assert(resInvalidIdx.observation.features['IsSourceValid'] === 0, 'Invalid index must have IsSourceValid = 0');
+    });
+
+    // 6. Dynamic State-Aware Warmup Completion
+    run2GTest('Dynamic State-Aware Warmup Completion', () => {
+        // Fresh state with arbitrary high bar index (200): must remain incomplete because sub-states are empty!
+        const resArbitrary = stepML1Features(validCandle(100000), 200, state0, config);
+        assert(resArbitrary.observation.features['IsWarmupComplete'] === 0, 'Fresh state with high index must NOT be complete');
+
+        // Sequential run: Feed 200 consecutive valid candles
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 199; i++) {
+            const res = stepML1Features(validCandle(100000 + i * 60000), i, testState, config);
+            assert(res.observation.features['IsWarmupComplete'] === 0, `Warmup should remain 0 before bar 199 (bar ${i})`);
+            testState = res.nextState;
+        }
+
+        // 200th candle (index 199): EMA 200 seeds, fulfilling the last requirement
+        const resComplete = stepML1Features(validCandle(100000 + 199 * 60000), 199, testState, config);
+        assert(resComplete.observation.features['IsWarmupComplete'] === 1, 'Warmup must complete on bar index 199');
+        testState = resComplete.nextState;
+
+        // Discontinuity reset: inject 10-minute gap -> sub-states reset, so warmup drops back to 0!
+        const resDisc = stepML1Features(validCandle(100000 + 199 * 60000 + 600000), 200, testState, config);
+        assert(resDisc.observation.features['IsWarmupComplete'] === 0, 'Warmup must reset to 0 after discontinuity');
+    });
+
+    // 7. Deterministic Replay and Prefix Invariance for Phase 2G
+    run2GTest('Prefix Invariance for Phase 2G Temporal Engine', () => {
+        const stream = Array.from({ length: 40 }, (_, i) => validCandle(1700000000000 + i * 60000));
+        
+        let fullState = createInitialML1FeatureState();
+        const fullObservations: any[] = [];
+        for (let i = 0; i < stream.length; i++) {
+            const res = stepML1Features(stream[i], i, fullState, config);
+            fullObservations.push(res.observation);
+            fullState = res.nextState;
+        }
+
+        let prefixState = createInitialML1FeatureState();
+        for (let i = 0; i < 20; i++) {
+            const res = stepML1Features(stream[i], i, prefixState, config);
+            assert(res.observation.features['MinuteOfHour'] === fullObservations[i].features['MinuteOfHour'], 'Minute prefix mismatch');
+            assert(res.observation.features['TimeDeltaSeconds'] === fullObservations[i].features['TimeDeltaSeconds'], 'Delta prefix mismatch');
+            assert(JSON.stringify(res.observation.validity) === JSON.stringify(fullObservations[i].validity), 'Validity prefix mismatch');
+            prefixState = res.nextState;
+        }
+    });
+
+    console.log(`\n=======================================`);
+    console.log(`📊 ML-R1 PHASE 2G FINAL AUDIT:`);
+    console.log(`   ↳ Tests Executed:  ${passed2G + failed2G}`);
+    console.log(`   ↳ Tests Passed:    ${passed2G}`);
+    console.log(`   ↳ Tests Failed:    ${failed2G}`);
+    console.log(`=======================================\n`);
+
+    if (failed2G === 0) {
+        console.log('✅ ALL PHASE 2G TESTS PASSED. Temporal & Data Quality Engine is verified.\n🔒 Phase 2G FROZEN.');
+        return true;
+    } else {
+        console.error('❌ PHASE 2G TESTS FAILED. DO NOT PROCEED TO PHASE 2H.');
         return false;
     }
 }

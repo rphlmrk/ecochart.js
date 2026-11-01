@@ -25,6 +25,7 @@ import {
     calculateRelativeVolume, 
     calculateVolumeZScore 
 } from './volume/VolumeFeatures';
+import { calculateTemporalFeatures } from './temporal/TimeFeatures';
 import type { EMAPeriodState, MomentumState, VolumeState } from './ML1FeatureTypes';
 
 /**
@@ -335,6 +336,11 @@ export function stepML1Features(
     features['IsValidOHLCV'] = isValidOhlcv ? 1 : 0;
     validity['IsValidOHLCV'] = true;
 
+    // Explicit timestamp validity check (finite, non-negative, and within valid JS Date range)
+    const isValidTimestamp = Number.isFinite(candle.time) && 
+        candle.time >= 0 && 
+        Number.isFinite(new Date(candle.time).getTime());
+
     const hasSyntheticMetadata = typeof candle.isSynthetic === 'boolean';
     features['IsSynthetic'] = candle.isSynthetic === true ? 1 : 0;
     validity['IsSynthetic'] = hasSyntheticMetadata;
@@ -353,6 +359,11 @@ export function stepML1Features(
         Object.assign(features, anatomy.features);
         Object.assign(validity, anatomy.validity);
     }
+
+    // Phase 2G: Temporal Features (Calculated causally from UTC timestamp)
+    const temporal = calculateTemporalFeatures(candle.time);
+    Object.assign(features, temporal.features);
+    Object.assign(validity, temporal.validity);
 
     // 4. Independent Index Validation
     const isSafeIndex = Number.isSafeInteger(barIndex) && barIndex >= 0;
@@ -377,7 +388,7 @@ export function stepML1Features(
     if (previousState.lastTimestamp !== null) {
         const timeDelta = candle.time - previousState.lastTimestamp;
         
-        if (Number.isNaN(timeDelta) || !Number.isFinite(timeDelta)) {
+        if (!isValidTimestamp || Number.isNaN(timeDelta) || !Number.isFinite(timeDelta)) {
             isOutOfOrder = true;
         } else if (timeDelta === 0) {
             isDuplicate = true;
@@ -411,8 +422,29 @@ export function stepML1Features(
     features['IsOutOfOrder'] = isOutOfOrder ? 1 : 0;
     validity['IsOutOfOrder'] = previousState.lastTimestamp !== null;
 
+    features['IsInvalidIndex'] = isInvalidIndex ? 1 : 0;
+    validity['IsInvalidIndex'] = true;
+
+    // Phase 2G: Data Quality & Continuity Context
+    const hasPrev = previousState.lastTimestamp !== null;
+    features['HasPreviousCandle'] = hasPrev ? 1 : 0;
+    validity['HasPreviousCandle'] = true;
+
+    const hasExpectedPrev = hasPrev && isValidTimestamp && !hasDataGap && !isUnexpectedInterval && !isDiscontinuity && !isDuplicate && !isOutOfOrder;
+    features['HasExpectedPreviousTimestamp'] = hasExpectedPrev ? 1 : 0;
+    validity['HasExpectedPreviousTimestamp'] = hasPrev && isValidTimestamp;
+
+    const timeDeltaSec = (hasPrev && isValidTimestamp && !isOutOfOrder && !isDuplicate) ? (candle.time - previousState.lastTimestamp!) / 1000 : 0;
+    const isDeltaValid = hasPrev && isValidTimestamp && !isOutOfOrder && !isDuplicate && Number.isFinite(timeDeltaSec) && timeDeltaSec >= 0;
+    features['TimeDeltaSeconds'] = isDeltaValid ? timeDeltaSec : 0;
+    validity['TimeDeltaSeconds'] = isDeltaValid;
+
+    const isSourceValid = isValidOhlcv && isValidTimestamp && !isDuplicate && !isOutOfOrder && !isInvalidIndex;
+    features['IsSourceValid'] = isSourceValid ? 1 : 0;
+    validity['IsSourceValid'] = true;
+
     // 6. State Rejection Gate
-    const isRejected = !isValidOhlcv || isDuplicate || isOutOfOrder || isInvalidIndex || isUnexpectedInterval;
+    const isRejected = !isValidOhlcv || !isValidTimestamp || isDuplicate || isOutOfOrder || isInvalidIndex || isUnexpectedInterval;
 
     const nextAtrState: Record<number, ATRPeriodState> = { ...previousState.atrState };
     const nextRollingRangeState: Record<number, RollingRangePeriodState> = { ...previousState.rollingRangeState };
@@ -702,6 +734,19 @@ export function stepML1Features(
         features['SignedVolume_20'] = isSignedValid ? signedVol : 0;
         validity['SignedVolume_20'] = isSignedValid;
     }
+
+    // Dynamic State-Aware Warmup Completion (requires every configured sub-state to be warmed up)
+    let isWarmupComplete = false;
+    if (!isRejected) {
+        const emaReady = config.emaPeriods.every(p => nextEmaState[p]?.isSeeded === true);
+        const atrReady = config.atrPeriods.every(p => nextAtrState[p]?.isSeeded === true);
+        const rrReady = config.rollingRangePeriods.every(p => nextRollingRangeState[p]?.highs.length >= p);
+        const momReady = config.momentumPeriods.every(p => nextMomentumState.unbrokenRun >= p + 1);
+        const volReady = config.volumeSmaPeriods.every(p => nextVolumeState.unbrokenRun >= p);
+        isWarmupComplete = emaReady && atrReady && rrReady && momReady && volReady;
+    }
+    features['IsWarmupComplete'] = isWarmupComplete ? 1 : 0;
+    validity['IsWarmupComplete'] = isSafeIndex && isValidTimestamp;
 
     // 6. Assemble final observation
     const observation: ML1Observation = {
