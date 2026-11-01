@@ -1,21 +1,24 @@
 import type { 
     ML1Candle, 
-    ML1FeatureConfig, 
     ValidatedML1FeatureConfig,
     ML1FeatureState, 
     ML1Observation, 
     ML1FeatureValues, 
     ML1FeatureValidity 
 } from './ML1FeatureTypes';
+import { calculateCandleAnatomy } from './candle/CandleAnatomy';
 
 /**
  * Validates the global configuration and returns a frozen, immutable defensive copy.
  */
-export function validateML1Config(config: ML1FeatureConfig): ValidatedML1FeatureConfig {
-    if (!config.symbol || config.symbol.trim() === '') {
+export function validateML1Config(config: any): ValidatedML1FeatureConfig {
+    if (!config || typeof config !== 'object') {
+        throw new Error("Configuration Error: config must be a valid object.");
+    }
+    if (typeof config.symbol !== 'string' || config.symbol.trim() === '') {
         throw new Error("Configuration Error: symbol must be a non-empty string.");
     }
-    if (!config.timeframe || config.timeframe.trim() === '') {
+    if (typeof config.timeframe !== 'string' || config.timeframe.trim() === '') {
         throw new Error("Configuration Error: timeframe must be a non-empty string.");
     }
     if (!Number.isFinite(config.expectedIntervalMs) || config.expectedIntervalMs <= 0) {
@@ -25,11 +28,10 @@ export function validateML1Config(config: ML1FeatureConfig): ValidatedML1Feature
         throw new Error("Configuration Error: gapDiscontinuityThresholdMs must be >= expectedIntervalMs.");
     }
 
-    const validateAndFreezePeriods = (arr: number[] | undefined, name: string): readonly number[] => {
+    const validateAndFreezePeriods = (arr: any, name: string): readonly number[] => {
         if (!Array.isArray(arr)) {
             throw new Error(`Configuration Error: ${name} must be an array.`);
         }
-        // Allow empty arrays (e.g., for disabled EMA ablation)
         const seen = new Set<number>();
         for (const p of arr) {
             if (!Number.isSafeInteger(p) || p <= 0) {
@@ -40,7 +42,7 @@ export function validateML1Config(config: ML1FeatureConfig): ValidatedML1Feature
             }
             seen.add(p);
         }
-        return Object.freeze([...arr]); // Defensive copy & freeze
+        return Object.freeze([...arr]);
     };
 
     const validatedCopy = {
@@ -48,11 +50,11 @@ export function validateML1Config(config: ML1FeatureConfig): ValidatedML1Feature
         timeframe: config.timeframe,
         expectedIntervalMs: config.expectedIntervalMs,
         gapDiscontinuityThresholdMs: config.gapDiscontinuityThresholdMs,
-        emaPeriods: validateAndFreezePeriods(config.emaPeriods, 'emaPeriods') as number[],
-        atrPeriods: validateAndFreezePeriods(config.atrPeriods, 'atrPeriods') as number[],
-        rollingRangePeriods: validateAndFreezePeriods(config.rollingRangePeriods, 'rollingRangePeriods') as number[],
-        momentumPeriods: validateAndFreezePeriods(config.momentumPeriods, 'momentumPeriods') as number[],
-        volumeSmaPeriods: validateAndFreezePeriods(config.volumeSmaPeriods, 'volumeSmaPeriods') as number[]
+        emaPeriods: validateAndFreezePeriods(config.emaPeriods, 'emaPeriods'),
+        atrPeriods: validateAndFreezePeriods(config.atrPeriods, 'atrPeriods'),
+        rollingRangePeriods: validateAndFreezePeriods(config.rollingRangePeriods, 'rollingRangePeriods'),
+        momentumPeriods: validateAndFreezePeriods(config.momentumPeriods, 'momentumPeriods'),
+        volumeSmaPeriods: validateAndFreezePeriods(config.volumeSmaPeriods, 'volumeSmaPeriods')
     };
 
     return Object.freeze(validatedCopy) as ValidatedML1FeatureConfig;
@@ -102,11 +104,23 @@ export function stepML1Features(
     if (!previousState || previousState.stateVersion !== 1) {
         throw new Error(`State Integrity Error: Incompatible state version or malformed state.`);
     }
-    if (previousState.lastBarIndex !== null && !Number.isSafeInteger(previousState.lastBarIndex)) {
+    
+    const hasIdx = previousState.lastBarIndex !== null;
+    const hasTs = previousState.lastTimestamp !== null;
+    const hasClose = previousState.lastClose !== null;
+    
+    if ((hasIdx || hasTs || hasClose) && !(hasIdx && hasTs && hasClose)) {
+        throw new Error(`State Integrity Error: Partial state detected. Index, Timestamp, and Close must all be null or all be populated.`);
+    }
+
+    if (hasIdx && !Number.isSafeInteger(previousState.lastBarIndex)) {
         throw new Error(`State Integrity Error: Corrupted lastBarIndex in restored state.`);
     }
-    if (previousState.lastTimestamp !== null && !Number.isFinite(previousState.lastTimestamp)) {
+    if (hasTs && !Number.isFinite(previousState.lastTimestamp)) {
         throw new Error(`State Integrity Error: Corrupted lastTimestamp in restored state.`);
+    }
+    if (hasClose && !Number.isFinite(previousState.lastClose)) {
+        throw new Error(`State Integrity Error: Corrupted lastClose in restored state.`);
     }
 
     const features: ML1FeatureValues = {};
@@ -170,7 +184,6 @@ export function stepML1Features(
         features['HasDataGap'] = hasDataGap ? 1 : 0;
         validity['HasDataGap'] = true;
     } else {
-        // First observation: gap status is strictly unobservable
         features['HasDataGap'] = 0;
         validity['HasDataGap'] = false;
     }
@@ -192,13 +205,16 @@ export function stepML1Features(
 
     if (!isRejected) {
         // -------------------------------------------------------------
-        // Future phases (2B-2F) will calculate indicators and mutate 
-        // `features`, `validity`, and build sub-state replacements here.
-        // Nested states must be explicitly shallow/deep copied.
+        // Phase 2B: Candle Anatomy
         // -------------------------------------------------------------
+        const anatomy = calculateCandleAnatomy(candle);
+        Object.assign(features, anatomy.features);
+        Object.assign(validity, anatomy.validity);
+
+        // Future phases (2C-2F) integrations will go here...
     }
 
-    // 5. Assemble final observation
+    // 6. Assemble final observation
     const observation: ML1Observation = {
         timestamp: candle.time,
         symbol: config.symbol,
@@ -213,15 +229,15 @@ export function stepML1Features(
         validity
     };
 
-    // 6. Immutably advance state (or return existing if rejected)
-    const nextState: ML1FeatureState = isRejected ? previousState : {
-        ...previousState,
-        lastBarIndex: barIndex,
-        lastTimestamp: candle.time,
-        lastClose: candle.close
-        // Future: spread nested objects explicitly to enforce immutability:
-        // emaState: { ...previousState.emaState } 
-    };
+    // 7. Immutably advance state (or return exact reference if rejected)
+    const nextState: ML1FeatureState = isRejected 
+        ? previousState 
+        : {
+            ...previousState,
+            lastBarIndex: barIndex,
+            lastTimestamp: candle.time,
+            lastClose: candle.close
+        };
 
     return { observation, nextState };
 }

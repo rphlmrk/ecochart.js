@@ -25,11 +25,24 @@ export interface ML1FeatureConfig {
     volumeSmaPeriods: number[];          
 }
 
+declare const validatedConfigBrand: unique symbol;
+
 /**
  * Branded type enforcing that configuration has passed the engine's validation gate.
- * The engine MUST require this type to run.
+ * The engine MUST require this type to run. Features immutable period arrays.
  */
-export type ValidatedML1FeatureConfig = ML1FeatureConfig & { readonly __validated: unique symbol };
+export type ValidatedML1FeatureConfig = {
+    readonly symbol: string;
+    readonly timeframe: string;
+    readonly expectedIntervalMs: number;
+    readonly gapDiscontinuityThresholdMs: number;
+    readonly emaPeriods: readonly number[];
+    readonly atrPeriods: readonly number[];
+    readonly rollingRangePeriods: readonly number[];
+    readonly momentumPeriods: readonly number[];
+    readonly volumeSmaPeriods: readonly number[];
+    readonly [validatedConfigBrand]: true;
+};
 
 export type ML1FeatureValidity = Record<string, boolean>;
 export type ML1FeatureValues = Record<string, number>;

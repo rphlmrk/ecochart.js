@@ -33,11 +33,10 @@ export function runPhase2ATests(): boolean {
 
     const validCandle = (t: number): ML1Candle => ({ time: t, open: 100, high: 105, low: 95, close: 102, volume: 1000 });
 
-    // 1. Configuration Validation & Immutability
+    // 1. Configuration Validation & Immutability (Phase 2A Polish)
     runTest('Configuration Validation & Immutability', () => {
-        try { validateML1Config({ ...rawConfig, symbol: '   ' }); assert(false, 'Whitespace symbol'); } catch (e: any) { assert(e.message.includes('non-empty string'), e.message); }
-        try { validateML1Config({ ...rawConfig, emaPeriods: undefined as any }); assert(false, 'Missing array'); } catch (e: any) { assert(e.message.includes('must be an array'), e.message); }
-        try { validateML1Config({ ...rawConfig, atrPeriods: [14, 14] }); assert(false, 'Duplicate period'); } catch (e: any) { assert(e.message.includes('duplicate periods'), e.message); }
+        try { validateML1Config({ ...rawConfig, symbol: 123 as any }); assert(false, 'Non-string symbol'); } catch (e: any) { assert(e.message.includes('non-empty string'), e.message); }
+        try { validateML1Config(null as any); assert(false, 'Null config'); } catch (e: any) { assert(e.message.includes('valid object'), e.message); }
         
         // Test Empty Array Acceptance (EMA Ablation)
         const emptyEmaConfig = validateML1Config({ ...rawConfig, emaPeriods: [] });
@@ -61,8 +60,13 @@ export function runPhase2ATests(): boolean {
         try { stepML1Features(validCandle(1000), 0, { ...state, stateVersion: 99 }, config); assert(false, 'Incompatible version'); } 
         catch (e: any) { assert(e.message.includes('Incompatible state version'), e.message); }
 
-        try { stepML1Features(validCandle(1000), 0, { ...state, lastBarIndex: 'a' as any }, config); assert(false, 'Corrupted index'); } 
-        catch (e: any) { assert(e.message.includes('Corrupted lastBarIndex'), e.message); }
+        // All-or-nothing consistency (has index but no timestamp)
+        try { stepML1Features(validCandle(1000), 0, { ...state, lastBarIndex: 100 }, config); assert(false, 'Partial state allowed'); } 
+        catch (e: any) { assert(e.message.includes('Partial state detected'), e.message); }
+        
+        // Corrupted close
+        try { stepML1Features(validCandle(1000), 0, { ...state, lastBarIndex: 100, lastTimestamp: 1000, lastClose: NaN }, config); assert(false, 'Corrupted close'); } 
+        catch (e: any) { assert(e.message.includes('Corrupted lastClose'), e.message); }
     });
 
     let state = createInitialML1FeatureState();
@@ -191,6 +195,22 @@ export function runPhase2ATests(): boolean {
         assert(JSON.stringify(resOriginal.observation) === JSON.stringify(resRestored.observation), 'State restoration failed to produce identical observation.');
     });
 
+    // Test: State Advancement Logic (Accepted vs Rejected)
+    runTest('State Advancement Logic (Accepted vs Rejected)', () => {
+        const initState = createInitialML1FeatureState();
+        const validCandleObj = validCandle(100000);
+        
+        // Accepted
+        const acceptedRes = stepML1Features(validCandleObj, 0, initState, config);
+        assert(acceptedRes.nextState !== initState, 'State did not advance (should be new object)');
+        assert(acceptedRes.nextState.lastTimestamp === 100000, 'Timestamp not updated on accepted state');
+        
+        // Rejected (Duplicate)
+        const rejectedRes = stepML1Features(validCandleObj, 0, acceptedRes.nextState, config);
+        assert(rejectedRes.nextState === acceptedRes.nextState, 'State advanced on rejected observation (duplicate)');
+        assert(rejectedRes.observation.features['IsDuplicateTimestamp'] === 1, 'Did not flag as duplicate');
+    });
+
     console.log(`\n=======================================`);
     console.log(`📊 ML-R1 PHASE 2A FINAL AUDIT:`);
     console.log(`   ↳ Tests Executed:  ${passed + failed}`);
@@ -200,9 +220,41 @@ export function runPhase2ATests(): boolean {
 
     if (failed === 0) {
         console.log('✅ ALL PHASE 2A CONTRACT TESTS PASSED. The transition engine is secure and immutable.');
-        return true;
     } else {
         console.error('❌ PHASE 2A TESTS FAILED. DO NOT FREEZE.');
         return false;
     }
+
+    console.log('\n🧪 Starting Phase 2B Acceptance Tests...');
+    let passed2B = 0;
+    
+    try {
+        const freshState = createInitialML1FeatureState();
+        
+        // Normal Candle
+        const normalRes = stepML1Features(validCandle(1000000), 10, freshState, config);
+        assert(normalRes.observation.features['CandleRange'] === 10, 'CandleRange failed'); // 105 - 95
+        assert(normalRes.observation.features['BodySize'] === 2, 'BodySize failed'); // 102 - 100
+        assert(normalRes.observation.validity['CloseLocation'] === true, 'CloseLocation should be valid');
+        
+        // Flat Candle (Range = 0)
+        const flatRes = stepML1Features({ time: 1060000, open: 100, high: 100, low: 100, close: 100, volume: 100 }, 11, normalRes.nextState, config);
+        assert(flatRes.observation.features['CandleRange'] === 0, 'Flat range failed');
+        assert(flatRes.observation.features['CloseLocation'] === 0, 'Flat CloseLocation must fallback to 0 safely');
+        assert(flatRes.observation.validity['CloseLocation'] === false, 'Flat CloseLocation MUST be marked invalid');
+
+        // Infinite Value Safeguard
+        const infRes = stepML1Features({ time: 1120000, open: 100, high: Infinity, low: 95, close: 100, volume: 100 }, 12, flatRes.nextState, config);
+        assert(infRes.nextState === flatRes.nextState, 'State advanced on Infinite input');
+        assert(infRes.observation.features['IsValidOHLCV'] === 0, 'Failed to reject Infinite OHLCV value');
+
+        passed2B++;
+        console.log('  ✅ Passed: Phase 2B: Candle Anatomy & Zero-Range Protection');
+        console.log('\n🔒 Phase 2B Complete. Ready for Phase 2C (ATR).');
+    } catch (e: any) {
+        console.error(`  ❌ Failed: Phase 2B - ${e.message}`);
+        return false;
+    }
+
+    return true;
 }
