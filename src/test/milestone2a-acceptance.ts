@@ -440,15 +440,15 @@ export function runPhase2ATests(): boolean {
             testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
         }
 
-        // Test numerically stable recurrence with large finite numbers near 1e300
+        // Test numerically stable recurrence with large finite numbers near 1e308 (breaks naive multiplication: 1e308 * 13 overflows IEEE-754)
         const largeAtrState = {
             ...testState,
             atrState: {
                 ...testState.atrState,
-                14: { count: 14, seedMean: 1e300, atr: 1e300, isSeeded: true }
+                14: { count: 14, seedMean: 1e308, atr: 1e308, isSeeded: true }
             }
         };
-        const largeCandle: ML1Candle = { time: 100000 + 14 * 60000, open: 1e300, high: 1.05e300, low: 0.95e300, close: 1.02e300, volume: 100 };
+        const largeCandle: ML1Candle = { time: 100000 + 14 * 60000, open: 1e308, high: 1.05e308, low: 0.95e308, close: 1.02e308, volume: 100 };
         const resLarge = stepML1Features(largeCandle, 14, largeAtrState, config);
         assert(resLarge.observation.validity['ATR_14'] === true, 'Numerically stable recurrence failed on large numbers');
         assert(Number.isFinite(resLarge.observation.features['ATR_14']), 'Large ATR result must remain finite');
