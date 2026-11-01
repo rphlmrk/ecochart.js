@@ -9,8 +9,7 @@ import type {
 } from './ML1FeatureTypes';
 
 /**
- * Validates the global configuration to prevent silent mathematical corruption.
- * Returns a branded ValidatedML1FeatureConfig type required by the transition engine.
+ * Validates the global configuration and returns a frozen, immutable defensive copy.
  */
 export function validateML1Config(config: ML1FeatureConfig): ValidatedML1FeatureConfig {
     if (!config.symbol || config.symbol.trim() === '') {
@@ -26,10 +25,11 @@ export function validateML1Config(config: ML1FeatureConfig): ValidatedML1Feature
         throw new Error("Configuration Error: gapDiscontinuityThresholdMs must be >= expectedIntervalMs.");
     }
 
-    const validatePeriods = (arr: number[], name: string) => {
-        if (!Array.isArray(arr) || arr.length === 0) {
-            throw new Error(`Configuration Error: ${name} must be a non-empty array.`);
+    const validateAndFreezePeriods = (arr: number[] | undefined, name: string): readonly number[] => {
+        if (!Array.isArray(arr)) {
+            throw new Error(`Configuration Error: ${name} must be an array.`);
         }
+        // Allow empty arrays (e.g., for disabled EMA ablation)
         const seen = new Set<number>();
         for (const p of arr) {
             if (!Number.isSafeInteger(p) || p <= 0) {
@@ -40,15 +40,22 @@ export function validateML1Config(config: ML1FeatureConfig): ValidatedML1Feature
             }
             seen.add(p);
         }
+        return Object.freeze([...arr]); // Defensive copy & freeze
     };
 
-    validatePeriods(config.emaPeriods, 'emaPeriods');
-    validatePeriods(config.atrPeriods, 'atrPeriods');
-    validatePeriods(config.rollingRangePeriods, 'rollingRangePeriods');
-    validatePeriods(config.momentumPeriods, 'momentumPeriods');
-    validatePeriods(config.volumeSmaPeriods, 'volumeSmaPeriods');
+    const validatedCopy = {
+        symbol: config.symbol,
+        timeframe: config.timeframe,
+        expectedIntervalMs: config.expectedIntervalMs,
+        gapDiscontinuityThresholdMs: config.gapDiscontinuityThresholdMs,
+        emaPeriods: validateAndFreezePeriods(config.emaPeriods, 'emaPeriods') as number[],
+        atrPeriods: validateAndFreezePeriods(config.atrPeriods, 'atrPeriods') as number[],
+        rollingRangePeriods: validateAndFreezePeriods(config.rollingRangePeriods, 'rollingRangePeriods') as number[],
+        momentumPeriods: validateAndFreezePeriods(config.momentumPeriods, 'momentumPeriods') as number[],
+        volumeSmaPeriods: validateAndFreezePeriods(config.volumeSmaPeriods, 'volumeSmaPeriods') as number[]
+    };
 
-    return config as ValidatedML1FeatureConfig;
+    return Object.freeze(validatedCopy) as ValidatedML1FeatureConfig;
 }
 
 /**
@@ -91,9 +98,15 @@ export function stepML1Features(
     observation: ML1Observation;
     nextState: ML1FeatureState;
 } {
-    // 1. Strict Contract Enforcements
-    if (previousState.stateVersion !== 1) {
-        throw new Error(`State Integrity Error: Incompatible state version. Expected 1, got ${previousState.stateVersion}.`);
+    // 1. Strict Contract Enforcements & Restored State Consistency
+    if (!previousState || previousState.stateVersion !== 1) {
+        throw new Error(`State Integrity Error: Incompatible state version or malformed state.`);
+    }
+    if (previousState.lastBarIndex !== null && !Number.isSafeInteger(previousState.lastBarIndex)) {
+        throw new Error(`State Integrity Error: Corrupted lastBarIndex in restored state.`);
+    }
+    if (previousState.lastTimestamp !== null && !Number.isFinite(previousState.lastTimestamp)) {
+        throw new Error(`State Integrity Error: Corrupted lastTimestamp in restored state.`);
     }
 
     const features: ML1FeatureValues = {};
@@ -104,7 +117,6 @@ export function stepML1Features(
     features['IsValidOHLCV'] = isValidOhlcv ? 1 : 0;
     validity['IsValidOHLCV'] = true;
 
-    // Explicit boolean requirement for synthetic metadata
     const hasSyntheticMetadata = typeof candle.isSynthetic === 'boolean';
     features['IsSynthetic'] = candle.isSynthetic === true ? 1 : 0;
     validity['IsSynthetic'] = hasSyntheticMetadata;
@@ -117,15 +129,25 @@ export function stepML1Features(
     features['IsZeroVolume'] = isZeroVolume ? 1 : 0;
     validity['IsZeroVolume'] = isValidOhlcv;
 
-    // 3. Chronology & Gap Detection
+    // 3. Independent Index Validation
+    const isSafeIndex = Number.isSafeInteger(barIndex) && barIndex >= 0;
+    let isInvalidIndex = !isSafeIndex;
+    
+    if (isSafeIndex && previousState.lastBarIndex !== null) {
+        if (barIndex <= previousState.lastBarIndex) {
+            isInvalidIndex = true;
+        }
+    }
+    
+    features['IsInvalidIndex'] = isInvalidIndex ? 1 : 0;
+    validity['IsInvalidIndex'] = true;
+
+    // 4. Chronology & Gap Detection
     let hasDataGap = false;
     let isDiscontinuity = false;
     let isDuplicate = false;
     let isOutOfOrder = false;
     let isUnexpectedInterval = false;
-    
-    const isSafeIndex = Number.isSafeInteger(barIndex) && barIndex >= 0;
-    let isInvalidIndex = !isSafeIndex;
 
     if (previousState.lastTimestamp !== null) {
         const timeDelta = candle.time - previousState.lastTimestamp;
@@ -147,14 +169,8 @@ export function stepML1Features(
         
         features['HasDataGap'] = hasDataGap ? 1 : 0;
         validity['HasDataGap'] = true;
-
-        if (isSafeIndex && previousState.lastBarIndex !== null) {
-            if (barIndex <= previousState.lastBarIndex) {
-                isInvalidIndex = true;
-            }
-        }
     } else {
-        // First observation: gap and sequence status are strictly unobservable
+        // First observation: gap status is strictly unobservable
         features['HasDataGap'] = 0;
         validity['HasDataGap'] = false;
     }
@@ -171,12 +187,7 @@ export function stepML1Features(
     features['IsOutOfOrder'] = isOutOfOrder ? 1 : 0;
     validity['IsOutOfOrder'] = previousState.lastTimestamp !== null;
 
-    features['IsInvalidIndex'] = isInvalidIndex ? 1 : 0;
-    validity['IsInvalidIndex'] = true;
-
-    // 4. State Rejection Gate
-    // If chronology is corrupted, OHLCV is invalid, or interval is unexpectedly short,
-    // we MUST NOT advance the accepted state.
+    // 5. State Rejection Gate
     const isRejected = !isValidOhlcv || isDuplicate || isOutOfOrder || isInvalidIndex || isUnexpectedInterval;
 
     if (!isRejected) {

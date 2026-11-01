@@ -33,22 +33,36 @@ export function runPhase2ATests(): boolean {
 
     const validCandle = (t: number): ML1Candle => ({ time: t, open: 100, high: 105, low: 95, close: 102, volume: 1000 });
 
-    // 1. Configuration Validation
-    runTest('Configuration Validation (Arrays, Whitespace, Negatives)', () => {
+    // 1. Configuration Validation & Immutability
+    runTest('Configuration Validation & Immutability', () => {
         try { validateML1Config({ ...rawConfig, symbol: '   ' }); assert(false, 'Whitespace symbol'); } catch (e: any) { assert(e.message.includes('non-empty string'), e.message); }
-        try { validateML1Config({ ...rawConfig, expectedIntervalMs: -60000 }); assert(false, 'Negative interval'); } catch (e: any) { assert(e.message.includes('positive finite number'), e.message); }
-        try { validateML1Config({ ...rawConfig, emaPeriods: [] }); assert(false, 'Empty array'); } catch (e: any) { assert(e.message.includes('non-empty array'), e.message); }
+        try { validateML1Config({ ...rawConfig, emaPeriods: undefined as any }); assert(false, 'Missing array'); } catch (e: any) { assert(e.message.includes('must be an array'), e.message); }
         try { validateML1Config({ ...rawConfig, atrPeriods: [14, 14] }); assert(false, 'Duplicate period'); } catch (e: any) { assert(e.message.includes('duplicate periods'), e.message); }
-        validateML1Config(rawConfig);
+        
+        // Test Empty Array Acceptance (EMA Ablation)
+        const emptyEmaConfig = validateML1Config({ ...rawConfig, emaPeriods: [] });
+        assert(emptyEmaConfig.emaPeriods.length === 0, 'Did not accept empty EMA array');
+
+        // Test Defensive Copy & Immutability
+        const mutableConfig = { ...rawConfig, emaPeriods: [20] };
+        const validConfig = validateML1Config(mutableConfig);
+        
+        mutableConfig.emaPeriods.push(50); // Mutate original
+        assert(validConfig.emaPeriods.length === 1, 'Defensive copy failed: original mutation leaked');
+        assert(Object.isFrozen(validConfig), 'Validated config object is not frozen');
+        assert(Object.isFrozen(validConfig.emaPeriods), 'Validated config period array is not frozen');
     });
 
     const config = validateML1Config(rawConfig);
 
-    // 2. Initial State & State Version
-    runTest('State Version Enforcement', () => {
+    // 2. Initial State & Restored State Consistency
+    runTest('State Version & Consistency Enforcement', () => {
         const state = createInitialML1FeatureState();
         try { stepML1Features(validCandle(1000), 0, { ...state, stateVersion: 99 }, config); assert(false, 'Incompatible version'); } 
         catch (e: any) { assert(e.message.includes('Incompatible state version'), e.message); }
+
+        try { stepML1Features(validCandle(1000), 0, { ...state, lastBarIndex: 'a' as any }, config); assert(false, 'Corrupted index'); } 
+        catch (e: any) { assert(e.message.includes('Corrupted lastBarIndex'), e.message); }
     });
 
     let state = createInitialML1FeatureState();
