@@ -41,6 +41,9 @@ import { runMilestone1AcceptanceSuite } from './test/milestone1-acceptance';
 export { runMilestone1AcceptanceSuite };
 import { runPhase2ATests } from './test/milestone2a-acceptance';
 export { runPhase2ATests };
+import { runPhase2JTests } from './test/milestone2j-acceptance';
+import { generatePhase2JReports } from './analysis/ML1FeatureAuditGenerator';
+export { runPhase2JTests, generatePhase2JReports };
 
 export interface SavedPaneState {
     symbol: string;
@@ -2994,11 +2997,13 @@ export class WorkspaceManager {
         this.setupGlobalControls();
         AlertUI.init();
 
-        // Run ML-R1 Phase 2A Acceptance Tests automatically
+        // Run ML-R1 Acceptance Tests & Phase 2J Audit Reports automatically
         setTimeout(() => {
-            const passed = runPhase2ATests();
-            if (passed) {
-                console.log('🔒 Phase 2A FROZEN. Proceed to Phase 2B (Candle Anatomy).');
+            const passedA = runPhase2ATests();
+            const passedJ = runPhase2JTests();
+            if (passedA && passedJ) {
+                generatePhase2JReports();
+                console.log('🏆 MILESTONE 2 COMPLETE & FROZEN.');
             }
         }, 1000);
 
@@ -5731,5 +5736,7 @@ export class WorkspaceManager {
         window.addEventListener('online', triggerAggressiveWakeup);
         (window as any).runMilestone1AcceptanceSuite = runMilestone1AcceptanceSuite;
         (window as any).runPhase2ATests = runPhase2ATests;
+        (window as any).runPhase2JTests = runPhase2JTests;
+        (window as any).generatePhase2JReports = generatePhase2JReports;
     }
 }
