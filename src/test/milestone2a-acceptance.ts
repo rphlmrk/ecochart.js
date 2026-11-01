@@ -1486,11 +1486,120 @@ export function runPhase2ATests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed2G}`);
     console.log(`=======================================\n`);
 
-    if (failed2G === 0) {
-        console.log('✅ ALL PHASE 2G TESTS PASSED. Temporal & Data Quality Engine is verified.\n🔒 Phase 2G FROZEN.');
+    if (failed2G !== 0) {
+        console.error('❌ PHASE 2G TESTS FAILED. DO NOT PROCEED TO PHASE 2H.');
+        return false;
+    }
+
+    // ====================================================================
+    // Phase 2H: Unified Feature Engine Integration & Chaos Tolerance
+    // ====================================================================
+    console.log('\n🧪 Starting Phase 2H Acceptance Tests (Integration & Chaos)...');
+    let passed2H = 0;
+    let failed2H = 0;
+
+    const run2HTest = (name: string, testFn: () => void) => {
+        try {
+            testFn();
+            passed2H++;
+            console.log(`  ✅ Passed: ${name}`);
+        } catch (e: any) {
+            failed2H++;
+            console.error(`  ❌ Failed: ${name} - ${e.message}`);
+        }
+    };
+
+    // 1. Chaotic Sequence Rejection & Global Immutability
+    run2HTest('Unified Chaos Rejection & Immutability', () => {
+        let testState = createInitialML1FeatureState();
+        testState = stepML1Features(validCandle(100000), 0, testState, config).nextState;
+        testState = stepML1Features(validCandle(160000), 1, testState, config).nextState;
+        
+        const validStateSnapshot = testState;
+        
+        // Feed Chaos
+        const resNaN = stepML1Features({ ...validCandle(220000), close: NaN }, 2, validStateSnapshot, config);
+        const resOoo = stepML1Features(validCandle(150000), 2, resNaN.nextState, config); // Time travel
+        const resDup = stepML1Features(validCandle(160000), 3, resOoo.nextState, config); // Duplicate
+        
+        // Assert strict identity to prove ZERO state mutation occurred during chaotic rejection
+        assert(resNaN.nextState === validStateSnapshot, 'State mutated on NaN rejection');
+        assert(resOoo.nextState === validStateSnapshot, 'State mutated on Out-Of-Order rejection');
+        assert(resDup.nextState === validStateSnapshot, 'State mutated on Duplicate rejection');
+    });
+
+    // 2. Universal Discontinuity Routing
+    run2HTest('Universal Discontinuity Reset Routing', () => {
+        let testState = createInitialML1FeatureState();
+        
+        // Warmup past longest period (EMA 200)
+        for (let i = 0; i < 205; i++) {
+            testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
+        }
+        
+        // Ensure all modules are warmed up
+        assert(testState.emaState[200].isSeeded === true, 'EMA200 must be seeded');
+        assert(testState.atrState[20].isSeeded === true, 'ATR20 must be seeded');
+        assert(testState.volumeState.unbrokenRun === 205, 'Volume run must be 205');
+        assert(testState.momentumState.unbrokenRun === 205, 'Momentum run must be 205');
+        
+        // Inject Major Discontinuity (10 minutes)
+        const resDisc = stepML1Features(validCandle(100000 + 204 * 60000 + 600000), 205, testState, config);
+        
+        // Assert EVERY unified module honored the discontinuity signal
+        assert(resDisc.observation.features['IsDiscontinuity'] === 1, 'Failed to flag discontinuity');
+        assert(resDisc.nextState.emaState[200].isSeeded === false, 'EMA failed to reset on discontinuity');
+        assert(resDisc.nextState.atrState[20].isSeeded === false, 'ATR failed to reset on discontinuity');
+        assert(resDisc.nextState.rollingRangeState[50].highs.length === 1, 'Rolling Range failed to reset on discontinuity');
+        assert(resDisc.nextState.momentumState.unbrokenRun === 1, 'Momentum failed to reset on discontinuity');
+        assert(resDisc.nextState.volumeState.unbrokenRun === 1, 'Volume failed to reset on discontinuity');
+        assert(resDisc.observation.features['IsWarmupComplete'] === 0, 'Global warmup flag failed to reset');
+    });
+
+    // 3. Ultimate Deterministic Replay (The Phase 2H Proof)
+    run2HTest('Full Engine Deterministic Replay (100 Mixed Bars)', () => {
+        // Create a dirty feed containing valid bars, gaps, NaNs, and out-of-order data
+        const dirtyFeed = Array.from({ length: 100 }, (_, i) => {
+            if (i === 45) return { ...validCandle(100000 + i * 60000), close: NaN }; // Corrupted
+            if (i === 60) return validCandle(100000 + 20 * 60000); // Out of order
+            if (i === 80) return validCandle(100000 + i * 60000 + 900000); // Major Gap
+            return validCandle(100000 + i * 60000); // Valid
+        });
+
+        // Run A
+        let stateA = createInitialML1FeatureState();
+        const obsA: any[] = [];
+        for (let i = 0; i < dirtyFeed.length; i++) {
+            const res = stepML1Features(dirtyFeed[i], i, stateA, config);
+            obsA.push(res.observation);
+            stateA = res.nextState;
+        }
+
+        // Run B (Independent)
+        let stateB = createInitialML1FeatureState();
+        const obsB: any[] = [];
+        for (let i = 0; i < dirtyFeed.length; i++) {
+            const res = stepML1Features(dirtyFeed[i], i, stateB, config);
+            obsB.push(res.observation);
+            stateB = res.nextState;
+        }
+
+        assert(JSON.stringify(obsA) === JSON.stringify(obsB), 'Unified engine failed deterministic observation replay');
+        assert(JSON.stringify(stateA) === JSON.stringify(stateB), 'Unified engine failed deterministic state replay');
+    });
+
+    console.log(`\n=======================================`);
+    console.log(`📊 ML-R1 PHASE 2H FINAL AUDIT:`);
+    console.log(`   ↳ Tests Executed:  ${passed2H + failed2H}`);
+    console.log(`   ↳ Tests Passed:    ${passed2H}`);
+    console.log(`   ↳ Tests Failed:    ${failed2H}`);
+    console.log(`=======================================\n`);
+
+    if (failed2H === 0) {
+        console.log('✅ ALL PHASE 2H TESTS PASSED. The Unified Feature Engine is mathematically secure and chaos-tolerant.\n🔒 Phase 2H FROZEN.\n🏆 MILESTONE 2 CORE DEVELOPMENT COMPLETE.');
         return true;
     } else {
-        console.error('❌ PHASE 2G TESTS FAILED. DO NOT PROCEED TO PHASE 2H.');
+        console.error('❌ PHASE 2H TESTS FAILED.');
         return false;
     }
 }
