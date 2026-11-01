@@ -77,6 +77,11 @@ export interface MomentumState {
     readonly unbrokenRun: number;            // Number of consecutive observations without discontinuity
 }
 
+export interface VolumeState {
+    readonly volumeHistory: readonly number[]; // Trailing volumes up to max lookback (50)
+    readonly unbrokenRun: number;             // Consecutive observations without discontinuity
+}
+
 export interface ML1FeatureState {
     readonly stateVersion: number;
     readonly lastBarIndex: number | null;
@@ -88,6 +93,7 @@ export interface ML1FeatureState {
     readonly rollingRangeState: Readonly<Record<number, RollingRangePeriodState>>;
     readonly emaState: Readonly<Record<number, EMAPeriodState>>;
     readonly momentumState: MomentumState;
+    readonly volumeState: VolumeState;
 }
 
 /**

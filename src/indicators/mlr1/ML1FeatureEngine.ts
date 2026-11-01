@@ -19,7 +19,13 @@ import {
     calculateDirectionalEfficiency, 
     calculateReturnConsistency 
 } from './momentum/Momentum';
-import type { EMAPeriodState, MomentumState } from './ML1FeatureTypes';
+import { 
+    updateVolumeState, 
+    calculateBaseVolume, 
+    calculateRelativeVolume, 
+    calculateVolumeZScore 
+} from './volume/VolumeFeatures';
+import type { EMAPeriodState, MomentumState, VolumeState } from './ML1FeatureTypes';
 
 /**
  * Validates the global configuration and returns a frozen, immutable defensive copy.
@@ -53,6 +59,9 @@ export function validateML1Config(config: any): ValidatedML1FeatureConfig {
             if (name === 'momentumPeriods' && p > 20) {
                 throw new Error(`Configuration Error: momentumPeriods cannot exceed maximum lookback of 20, got ${p}.`);
             }
+            if (name === 'volumeSmaPeriods' && p > 50) {
+                throw new Error(`Configuration Error: volumeSmaPeriods cannot exceed maximum lookback of 50, got ${p}.`);
+            }
             if (seen.has(p)) {
                 throw new Error(`Configuration Error: ${name} contains duplicate periods.`);
             }
@@ -81,14 +90,15 @@ export function validateML1Config(config: any): ValidatedML1FeatureConfig {
  */
 export function createInitialML1FeatureState(): ML1FeatureState {
     return Object.freeze({
-        stateVersion: 3, // Version 3: Enforces Phase 2E Momentum state schema
+        stateVersion: 4, // Version 4: Enforces Phase 2F Volume state schema
         lastBarIndex: null,
         lastTimestamp: null,
         lastClose: null,
         atrState: Object.freeze({}),
         rollingRangeState: Object.freeze({}),
         emaState: Object.freeze({}),
-        momentumState: Object.freeze({ closeHistory: Object.freeze([]), unbrokenRun: 0 })
+        momentumState: Object.freeze({ closeHistory: Object.freeze([]), unbrokenRun: 0 }),
+        volumeState: Object.freeze({ volumeHistory: Object.freeze([]), unbrokenRun: 0 })
     });
 }
 
@@ -121,8 +131,8 @@ export function stepML1Features(
     nextState: ML1FeatureState;
 } {
     // 1. Strict Contract Enforcements & Restored State Consistency
-    if (!previousState || previousState.stateVersion !== 3) {
-        throw new Error(`State Integrity Error: Incompatible state version. Expected 3, got ${previousState?.stateVersion}.`);
+    if (!previousState || previousState.stateVersion !== 4) {
+        throw new Error(`State Integrity Error: Incompatible state version. Expected 4, got ${previousState?.stateVersion}.`);
     }
     
     const hasIdx = previousState.lastBarIndex !== null;
@@ -291,6 +301,32 @@ export function stepML1Features(
         throw new Error(`State Integrity Error: Inconsistent momentumState history and unbrokenRun before capacity.`);
     }
 
+    // Validate restored Phase 2F Volume state
+    if (!previousState.volumeState || typeof previousState.volumeState !== 'object') {
+        throw new Error(`State Integrity Error: Missing or malformed volumeState container.`);
+    }
+    const vState = previousState.volumeState;
+    if (!Array.isArray(vState.volumeHistory) || vState.volumeHistory.length > 50) {
+        throw new Error(`State Integrity Error: Malformed volumeHistory in volumeState (must be array of length <= 50).`);
+    }
+    for (let v = 0; v < vState.volumeHistory.length; v++) {
+        if (!Number.isFinite(vState.volumeHistory[v]) || vState.volumeHistory[v] < 0) {
+            throw new Error(`State Integrity Error: Non-finite or negative value in volumeState volumeHistory.`);
+        }
+    }
+    if (!Number.isSafeInteger(vState.unbrokenRun) || vState.unbrokenRun < 0) {
+        throw new Error(`State Integrity Error: Invalid unbrokenRun in volumeState.`);
+    }
+    if (vState.volumeHistory.length === 0 && vState.unbrokenRun !== 0) {
+        throw new Error(`State Integrity Error: Empty volumeHistory requires unbrokenRun = 0.`);
+    }
+    if (vState.volumeHistory.length > 0 && vState.unbrokenRun < vState.volumeHistory.length) {
+        throw new Error(`State Integrity Error: unbrokenRun cannot be smaller than volumeHistory length.`);
+    }
+    if (vState.volumeHistory.length < 50 && vState.unbrokenRun !== vState.volumeHistory.length) {
+        throw new Error(`State Integrity Error: Inconsistent volumeState history and unbrokenRun before capacity.`);
+    }
+
     const features: ML1FeatureValues = {};
     const validity: ML1FeatureValidity = {};
 
@@ -382,6 +418,7 @@ export function stepML1Features(
     const nextRollingRangeState: Record<number, RollingRangePeriodState> = { ...previousState.rollingRangeState };
     const nextEmaState: Record<number, EMAPeriodState> = { ...previousState.emaState };
     let nextMomentumState: MomentumState = previousState.momentumState;
+    let nextVolumeState: VolumeState = previousState.volumeState;
 
     if (!isRejected) {
         // -------------------------------------------------------------
@@ -609,6 +646,61 @@ export function stepML1Features(
             features[`ReturnBalance_${p}`] = rcRes.isBalanceValid ? rcRes.balance : 0;
             validity[`ReturnBalance_${p}`] = rcRes.isBalanceValid;
         }
+
+        // -------------------------------------------------------------
+        // Phase 2F: Volume Features (Strict Historical Baseline)
+        // -------------------------------------------------------------
+        // A discontinuity starts a new independent volume-history segment.
+        // The incoming candle must not use observations from the previous segment.
+        const baselineVolState: VolumeState = isDiscontinuity
+            ? Object.freeze({
+                volumeHistory: Object.freeze([]),
+                unbrokenRun: 0
+            })
+            : previousState.volumeState;
+
+        // 1. Base Volume Transformations (changes evaluated against prior completed bars)
+        const baseVol = calculateBaseVolume(candle.volume, baselineVolState.volumeHistory, baselineVolState.unbrokenRun);
+        features['Volume'] = candle.volume;
+        validity['Volume'] = true;
+
+        features['LogVolume'] = baseVol.logVolume;
+        validity['LogVolume'] = true;
+
+        features['VolumeChange_1'] = baseVol.isChange1Valid ? baseVol.volChange1 : 0;
+        validity['VolumeChange_1'] = baseVol.isChange1Valid;
+
+        features['VolumeChange_3'] = baseVol.isChange3Valid ? baseVol.volChange3 : 0;
+        validity['VolumeChange_3'] = baseVol.isChange3Valid;
+
+        // 2. Relative Volume (strictly against preceding N completed candles, excluding current candle)
+        for (const p of config.volumeSmaPeriods) {
+            const relVol = calculateRelativeVolume(candle.volume, baselineVolState.volumeHistory, baselineVolState.unbrokenRun, p);
+            features[`RelativeVolume_${p}`] = relVol.isValid ? relVol.relativeVolume : 0;
+            validity[`RelativeVolume_${p}`] = relVol.isValid;
+        }
+
+        // 3. Volume Distribution Context (Z-Score strictly against preceding N completed candles)
+        const zScorePeriods = [20, 50];
+        for (const p of zScorePeriods) {
+            if (config.volumeSmaPeriods.includes(p)) {
+                const zRes = calculateVolumeZScore(candle.volume, baselineVolState.volumeHistory, baselineVolState.unbrokenRun, p);
+                features[`VolumeZScore_${p}`] = zRes.isValid ? zRes.zScore : 0;
+                validity[`VolumeZScore_${p}`] = zRes.isValid;
+            }
+        }
+
+        // 4. Update volume state immutably for subsequent observations
+        nextVolumeState = updateVolumeState(candle.volume, previousState.volumeState, isDiscontinuity, 50);
+
+        // 4. Directional Volume Interaction: CandleDirection * RelativeVolume_20
+        // NOTE: Descriptive interaction feature only; not inferred bid/ask delta
+        const relVol20Valid = validity['RelativeVolume_20'] === true;
+        const dirValid = validity['CandleDirection'] === true;
+        const isSignedValid = relVol20Valid && dirValid;
+        const signedVol = isSignedValid ? features['CandleDirection'] * features['RelativeVolume_20'] : 0;
+        features['SignedVolume_20'] = isSignedValid ? signedVol : 0;
+        validity['SignedVolume_20'] = isSignedValid;
     }
 
     // 6. Assemble final observation
@@ -637,7 +729,8 @@ export function stepML1Features(
             atrState: Object.freeze(nextAtrState),
             rollingRangeState: Object.freeze(nextRollingRangeState),
             emaState: Object.freeze(nextEmaState),
-            momentumState: nextMomentumState
+            momentumState: nextMomentumState,
+            volumeState: nextVolumeState
         });
 
     return { observation, nextState };

@@ -64,11 +64,11 @@ export function runPhase2ATests(): boolean {
 
     const config = validateML1Config(rawConfig);
 
-    // 2. Initial State & Restored State Consistency (Version 3)
+    // 2. Initial State & Restored State Consistency (Version 4)
     runTest('State Version & Consistency Enforcement', () => {
         const state = createInitialML1FeatureState();
-        assert(state.stateVersion === 3, 'Initial state must be version 3');
-        try { stepML1Features(validCandle(1000), 0, { ...state, stateVersion: 2 }, config); assert(false, 'Allowed outdated version 2'); } 
+        assert(state.stateVersion === 4, 'Initial state must be version 4');
+        try { stepML1Features(validCandle(1000), 0, { ...state, stateVersion: 3 }, config); assert(false, 'Allowed outdated version 3'); } 
         catch (e: any) { assert(e.message.includes('Incompatible state version'), e.message); }
 
         // All-or-nothing consistency (has index but no timestamp)
@@ -1083,9 +1083,212 @@ export function runPhase2ATests(): boolean {
 
     if (failed2E === 0) {
         console.log('✅ ALL PHASE 2E TESTS PASSED. Momentum & Directional Efficiency Engine is verified.\n🔒 Phase 2E FROZEN.');
-        return true;
     } else {
         console.error('❌ PHASE 2E TESTS FAILED. DO NOT PROCEED TO PHASE 2F.');
+        return false;
+    }
+
+    // ====================================================================
+    // Phase 2F: Volume Features Acceptance Suite
+    // ====================================================================
+    console.log('\n🧪 Starting Phase 2F Acceptance Tests...');
+    let passed2F = 0;
+    let failed2F = 0;
+
+    const run2FTest = (name: string, testFn: () => void) => {
+        try {
+            testFn();
+            passed2F++;
+            console.log(`  ✅ Passed: ${name}`);
+        } catch (e: any) {
+            failed2F++;
+            console.error(`  ❌ Failed: ${name} - ${e.message}`);
+        }
+    };
+
+    // 1. Base Volume Transformations & Log1p Parity
+    run2FTest('Base Volume Metrics & Log1p Parity', () => {
+        const state0 = createInitialML1FeatureState();
+        // Zero volume candle: log1p(0) = 0, volume changes invalid
+        const resZero = stepML1Features({ ...validCandle(100000), volume: 0 }, 0, state0, config);
+        assert(resZero.observation.features['Volume'] === 0, 'Volume must be 0');
+        assert(resZero.observation.features['LogVolume'] === 0, 'LogVolume for 0 volume must be 0');
+        assert(resZero.observation.validity['LogVolume'] === true, 'LogVolume must be valid for 0 volume');
+        assert(resZero.observation.validity['VolumeChange_1'] === false, 'VolumeChange_1 must be invalid on bar 0');
+
+        // Non-zero volume
+        const resVol = stepML1Features({ ...validCandle(160000), volume: 1000 }, 1, resZero.nextState, config);
+        assert(Math.abs(resVol.observation.features['LogVolume'] - Math.log(1001)) < 1e-6, 'LogVolume parity failed');
+        assert(resVol.observation.validity['VolumeChange_1'] === true, 'VolumeChange_1 must be valid on bar 1');
+        assert(resVol.observation.features['VolumeChange_1'] === 1000, 'VolumeChange_1 must be 1000 (1000 - 0)');
+    });
+
+    // 2. Relative Volume Warmup Boundaries (10, 20, 50) and Historical Baseline Parity
+    run2FTest('Relative Volume Warmup Boundaries and Mean Parity', () => {
+        let testState = createInitialML1FeatureState();
+        // Feed 50 completed prior bars with constant volume 100 (bars 0 to 49)
+        for (let i = 0; i < 50; i++) {
+            const res = stepML1Features({ ...validCandle(100000 + i * 60000), volume: 100 }, i, testState, config);
+            if (i < 10) assert(!res.observation.validity['RelativeVolume_10'], `RelVol_10 warmup at ${i}`);
+            if (i === 10) assert(res.observation.validity['RelativeVolume_10'], 'RelVol_10 seeded at 10');
+            if (i < 20) assert(!res.observation.validity['RelativeVolume_20'], `RelVol_20 warmup at ${i}`);
+            if (i === 20) assert(res.observation.validity['RelativeVolume_20'], 'RelVol_20 seeded at 20');
+            if (i < 50) assert(!res.observation.validity['RelativeVolume_50'], `RelVol_50 warmup at ${i}`);
+            testState = res.nextState;
+        }
+
+        // Bar index 50 (51st candle): evaluates against the 50 prior bars of volume 100.
+        // Historical Mean = 100. Current volume = 200. RelativeVolume_50 = 200 / 100 = 2.0 exactly!
+        const res50 = stepML1Features({ ...validCandle(100000 + 50 * 60000), volume: 200 }, 50, testState, config);
+        assert(res50.observation.validity['RelativeVolume_50'] === true, 'RelVol_50 must be valid on bar index 50');
+        assert(Math.abs(res50.observation.features['RelativeVolume_50'] - 2.0) < 1e-6, 'RelVol_50 historical parity failed (expected 2.0)');
+    });
+
+    // 3. Zero-Volume and Zero-Variance Baseline Protection
+    run2FTest('Zero-Volume and Zero-Variance Protection', () => {
+        let testState = createInitialML1FeatureState();
+        // 20 bars of constant zero volume
+        for (let i = 0; i < 20; i++) {
+            testState = stepML1Features({ ...validCandle(100000 + i * 60000), volume: 0 }, i, testState, config).nextState;
+        }
+        const resFlat = stepML1Features({ ...validCandle(100000 + 20 * 60000), volume: 0 }, 20, testState, config);
+        // Mean volume is 0 -> RelativeVolume must not divide by 0
+        assert(resFlat.observation.features['RelativeVolume_20'] === 0, 'RelVol_20 on zero volume must fallback to 0');
+        assert(resFlat.observation.validity['RelativeVolume_20'] === false, 'RelVol_20 on zero baseline must be invalid');
+        // Variance is 0 -> ZScore must not divide by 0
+        assert(resFlat.observation.features['VolumeZScore_20'] === 0, 'ZScore on zero variance must fallback to 0');
+        assert(resFlat.observation.validity['VolumeZScore_20'] === false, 'ZScore on zero variance must be invalid');
+    });
+
+    // 4. Volume Z-Score Distribution Numerical Parity (Historical Baseline)
+    run2FTest('Volume Z-Score Numerical Parity', () => {
+        let testState = createInitialML1FeatureState();
+        // Feed 10 bars of volume 100, then 10 bars of volume 200 (20 completed historical bars total)
+        for (let i = 0; i < 10; i++) {
+            testState = stepML1Features({ ...validCandle(100000 + i * 60000), volume: 100 }, i, testState, config).nextState;
+        }
+        for (let i = 10; i < 20; i++) {
+            testState = stepML1Features({ ...validCandle(100000 + i * 60000), volume: 200 }, i, testState, config).nextState;
+        }
+        // Historical baseline (20 bars): Mean = (10*100 + 10*200)/20 = 150.
+        // Variance = (10*(-50)^2 + 10*(50)^2)/20 = (25000 + 25000)/20 = 2500. Std = sqrt(2500) = 50.
+        // Incoming candle on bar index 20 with volume 300: Z = (300 - 150) / 50 = 3.0 exactly!
+        const res = stepML1Features({ ...validCandle(100000 + 20 * 60000), volume: 300 }, 20, testState, config);
+        assert(res.observation.validity['VolumeZScore_20'] === true, 'VolumeZScore_20 must be valid on bar index 20');
+        assert(Math.abs(res.observation.features['VolumeZScore_20'] - 3.0) < 1e-6, 'ZScore parity failed (expected exactly 3.0)');
+    });
+
+    // 5. Signed Volume Directional Interaction
+    run2FTest('Signed Volume Directional Interaction', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 20; i++) {
+            testState = stepML1Features({ ...validCandle(100000 + i * 60000), volume: 100 }, i, testState, config).nextState;
+        }
+        // Bullish candle (close > open -> Direction = 1)
+        const resBull = stepML1Features({ ...candleWithClose(100000 + 20 * 60000, 110), volume: 200 }, 20, testState, config);
+        assert(resBull.observation.validity['SignedVolume_20'] === true, 'SignedVolume must be valid');
+        assert(resBull.observation.features['SignedVolume_20'] > 0, 'SignedVolume for bullish candle must be positive');
+
+        // Bearish candle (close < open -> Direction = -1)
+        const resBear = stepML1Features({ ...candleWithClose(100000 + 20 * 60000, 90), volume: 200 }, 20, testState, config);
+        assert(resBear.observation.features['SignedVolume_20'] < 0, 'SignedVolume for bearish candle must be negative');
+        assert(Math.abs(resBear.observation.features['SignedVolume_20'] + resBull.observation.features['SignedVolume_20']) < 1e-6, 'Magnitudes must match');
+    });
+
+    // 6. Discontinuity Reset Policy on Volume History
+    run2FTest('Discontinuity Reset Policy on Volume State', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 25; i++) {
+            testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
+        }
+        assert(testState.volumeState.unbrokenRun >= 25, 'Volume run must be >= 25');
+
+        // Inject 10-minute gap (> 300s threshold)
+        const resDisc = stepML1Features(validCandle(100000 + 24 * 60000 + 600000), 25, testState, config);
+        assert(resDisc.observation.features['IsDiscontinuity'] === 1, 'Must detect discontinuity');
+
+        // Incoming candle itself remains valid for non-relative metrics
+        assert(resDisc.observation.validity['Volume'] === true, 'Volume must be valid');
+        assert(resDisc.observation.validity['LogVolume'] === true, 'LogVolume must be valid');
+
+        // All history-spanning features must immediately be invalidated
+        assert(resDisc.observation.validity['VolumeChange_1'] === false, 'VolumeChange_1 must be invalid after discontinuity');
+        assert(resDisc.observation.validity['VolumeChange_3'] === false, 'VolumeChange_3 must be invalid after discontinuity');
+        assert(resDisc.observation.validity['RelativeVolume_10'] === false, 'RelVol_10 must be invalid after discontinuity');
+        assert(resDisc.observation.validity['RelativeVolume_20'] === false, 'RelVol_20 must be invalid after discontinuity');
+        assert(resDisc.observation.validity['VolumeZScore_20'] === false, 'VolumeZScore_20 must be invalid after discontinuity');
+        assert(resDisc.observation.validity['SignedVolume_20'] === false, 'SignedVolume_20 must be invalid after discontinuity');
+
+        // Next state resets to 1 observation in the new segment
+        assert(resDisc.nextState.volumeState.unbrokenRun === 1, 'Volume run must reset to 1 on discontinuity');
+        assert(resDisc.nextState.volumeState.volumeHistory.length === 1, 'Volume history must reset to length 1');
+    });
+
+    // 7. Restored-State Integrity for Volume State
+    run2FTest('Restored-State Integrity for Volume State', () => {
+        const baseState = createInitialML1FeatureState();
+        // Missing container
+        try {
+            stepML1Features(validCandle(1000), 0, { ...baseState, volumeState: null as any }, config);
+            assert(false, 'Allowed null volumeState');
+        } catch (e: any) { assert(e.message.includes('Missing or malformed volumeState'), e.message); }
+
+        // Negative volume in history
+        try {
+            stepML1Features(validCandle(1000), 0, {
+                ...baseState,
+                volumeState: { volumeHistory: [100, -50, 200], unbrokenRun: 3 }
+            }, config);
+            assert(false, 'Allowed negative volume in history');
+        } catch (e: any) { assert(e.message.includes('Non-finite or negative value'), e.message); }
+
+        // Saturated history lower-boundary check
+        try {
+            stepML1Features(validCandle(1000), 0, {
+                ...baseState,
+                volumeState: { volumeHistory: new Array(50).fill(100), unbrokenRun: 49 }
+            }, config);
+            assert(false, 'Allowed unbrokenRun < volumeHistory.length');
+        } catch (e: any) { assert(e.message.includes('unbrokenRun cannot be smaller than volumeHistory length'), e.message); }
+    });
+
+    // 8. Prefix Invariance for Volume Feature Engine
+    run2FTest('Prefix Invariance for Volume Feature Engine', () => {
+        const candleStream = Array.from({ length: 60 }, (_, i) => ({
+            ...candleWithClose(100000 + i * 60000, 100 + (i % 5)),
+            volume: 100 + (i % 10) * 20
+        }));
+
+        // Full Run (60 bars)
+        let fullState = createInitialML1FeatureState();
+        const fullObservations: any[] = [];
+        for (let i = 0; i < candleStream.length; i++) {
+            const res = stepML1Features(candleStream[i], i, fullState, config);
+            fullObservations.push(res.observation);
+            fullState = res.nextState;
+        }
+
+        // Prefix Run (35 bars)
+        let prefixState = createInitialML1FeatureState();
+        for (let i = 0; i < 35; i++) {
+            const res = stepML1Features(candleStream[i], i, prefixState, config);
+            assert(JSON.stringify(res.observation) === JSON.stringify(fullObservations[i]), `Prefix invariance failed at bar ${i}`);
+            prefixState = res.nextState;
+        }
+    });
+
+    console.log(`\n=======================================`);
+    console.log(`📊 ML-R1 PHASE 2F FINAL AUDIT:`);
+    console.log(`   ↳ Tests Executed:  ${passed2F + failed2F}`);
+    console.log(`   ↳ Tests Passed:    ${passed2F}`);
+    console.log(`   ↳ Tests Failed:    ${failed2F}`);
+    console.log(`=======================================\n`);
+
+    if (failed2F === 0) {
+        console.log('✅ ALL PHASE 2F TESTS PASSED. Volume Feature Engine is verified.\n🔒 Phase 2F FROZEN.');
+        return true;
+    } else {
+        console.error('❌ PHASE 2F TESTS FAILED. DO NOT PROCEED TO PHASE 2G.');
         return false;
     }
 }
