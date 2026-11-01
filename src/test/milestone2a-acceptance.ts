@@ -1509,6 +1509,27 @@ export function runPhase2ATests(): boolean {
         }
     };
 
+    // Recursive deep-freeze verification
+    function assertDeepFrozen(value: any, path = 'state'): void {
+        if (value === null || typeof value !== 'object') return;
+        assert(Object.isFrozen(value), `${path} is not frozen`);
+        for (const key of Object.keys(value)) {
+            assertDeepFrozen((value as any)[key], `${path}.${key}`);
+        }
+    }
+
+    // Recursive deep-finite verification (excludes nulls)
+    function assertDeepFinite(value: any, path = 'state'): void {
+        if (value === null) return;
+        if (typeof value === 'number') {
+            assert(Number.isFinite(value), `${path} is not finite (${value})`);
+        } else if (typeof value === 'object') {
+            for (const key of Object.keys(value)) {
+                assertDeepFinite((value as any)[key], `${path}.${key}`);
+            }
+        }
+    }
+
     // 1. Deep Immutability & Chaotic Sequence Rejection
     run2HTest('Deep Immutability & Chaotic Sequence Rejection', () => {
         let testState = createInitialML1FeatureState();
@@ -1518,6 +1539,9 @@ export function runPhase2ATests(): boolean {
         const validStateSnapshot = testState;
         const deepSnapshotStr = JSON.stringify(validStateSnapshot);
         
+        // Explicitly verify the engine and its helper modules successfully deep-froze the state
+        assertDeepFrozen(validStateSnapshot);
+
         // Feed Chaos
         const resNaN = stepML1Features({ ...validCandle(220000), close: NaN }, 2, validStateSnapshot, config);
         const resOoo = stepML1Features(validCandle(150000), 2, resNaN.nextState, config); // Time travel
@@ -1528,7 +1552,7 @@ export function runPhase2ATests(): boolean {
         assert(resOoo.nextState === validStateSnapshot, 'State reference mutated on Out-Of-Order rejection');
         assert(resDup.nextState === validStateSnapshot, 'State reference mutated on Duplicate rejection');
 
-        // Assert deep structural equality (no internal object mutation escaped the freeze)
+        // Assert deep structural equality (no internal array mutation escaped the freeze)
         assert(JSON.stringify(resNaN.nextState) === deepSnapshotStr, 'Deep internal mutation detected on NaN rejection');
         assert(JSON.stringify(resOoo.nextState) === deepSnapshotStr, 'Deep internal mutation detected on OOO rejection');
         assert(JSON.stringify(resDup.nextState) === deepSnapshotStr, 'Deep internal mutation detected on Duplicate rejection');
@@ -1574,9 +1598,8 @@ export function runPhase2ATests(): boolean {
         assert(resRecovery.nextState.rollingRangeState[50].highs.length === 2, 'Rolling Range failed to resume accumulation from new baseline');
     });
 
-    // 3. Ultimate Deterministic Replay, Midpoint Restoration & Finite Validation
-    run2HTest('Full Engine Deterministic Replay, Midpoint Restoration & Finite Validation', () => {
-        // Create a dirty feed containing valid bars, gaps, NaNs, and out-of-order data
+    // 3. Ultimate Deterministic Replay, Midpoint Restoration & Schema Consistency
+    run2HTest('Full Engine Deterministic Replay, Midpoint Restoration & Schema Consistency', () => {
         const dirtyFeed = Array.from({ length: 100 }, (_, i) => {
             if (i === 45) return { ...validCandle(100000 + i * 60000), close: NaN }; // Corrupted
             if (i === 60) return validCandle(100000 + 20 * 60000); // Out of order
@@ -1597,7 +1620,6 @@ export function runPhase2ATests(): boolean {
         let stateB = createInitialML1FeatureState();
         const obsB: any[] = [];
         
-        // Part 1: Process 0-49
         for (let i = 0; i < 50; i++) {
             const res = stepML1Features(dirtyFeed[i], i, stateB, config);
             obsB.push(res.observation);
@@ -1608,7 +1630,6 @@ export function runPhase2ATests(): boolean {
         const serializedState = JSON.stringify(stateB);
         let restoredStateB = JSON.parse(serializedState);
 
-        // Part 2: Process 50-99 from the restored object
         for (let i = 50; i < dirtyFeed.length; i++) {
             const res = stepML1Features(dirtyFeed[i], i, restoredStateB, config);
             obsB.push(res.observation);
@@ -1619,16 +1640,44 @@ export function runPhase2ATests(): boolean {
         assert(JSON.stringify(obsA) === JSON.stringify(obsB), 'Midpoint restored engine diverged in observations');
         assert(JSON.stringify(stateA) === JSON.stringify(restoredStateB), 'Midpoint restored engine diverged in final state');
 
-        // Finite Check: Iteratively ensure every single numeric feature value emitted is explicitly finite
-        // (JSON.stringify converts NaN/Infinity to null, which can hide calculation failures)
+        // Finite Check: Recursively inspect the final restored state to ensure no NaN/Infinities exist
+        assertDeepFinite(restoredStateB, 'FinalRestoredState');
+
         for (let i = 0; i < obsB.length; i++) {
-            const features = obsB[i].features;
-            for (const [key, value] of Object.entries(features)) {
-                if (typeof value === 'number') {
-                    assert(Number.isFinite(value), `Observation ${i}: Feature ${key} emitted non-finite value ${value}`);
-                }
+            assertDeepFinite(obsB[i].features, `Observation[${i}].features`);
+        }
+
+        // Schema Consistency Check (Accepted observations only)
+        const acceptedObs = obsB.filter(o => o.features['IsSourceValid'] === 1);
+        if (acceptedObs.length > 0) {
+            const baseSchema = Object.keys(acceptedObs[0].features).sort().join(',');
+            for (let i = 1; i < acceptedObs.length; i++) {
+                const schema = Object.keys(acceptedObs[i].features).sort().join(',');
+                assert(schema === baseSchema, `Feature schema mismatch on accepted observation ${i}`);
             }
         }
+    });
+
+    // 4. IsWarmupComplete Validity & Rejected Observation Schema
+    run2HTest('IsWarmupComplete Validity & Rejected Observation Schema', () => {
+        let state = createInitialML1FeatureState();
+        
+        // 1. Valid accepted candle
+        const resValid = stepML1Features(validCandle(100000), 0, state, config);
+        assert(resValid.observation.validity['IsWarmupComplete'] === true, 'IsWarmupComplete validity should be true for accepted candle');
+        
+        // 2. Invalid OHLCV
+        const resInvalidOhlcv = stepML1Features({ ...validCandle(160000), close: NaN }, 1, resValid.nextState, config);
+        assert(resInvalidOhlcv.observation.validity['IsWarmupComplete'] === false, 'IsWarmupComplete validity must be false for invalid OHLCV');
+        assert(resInvalidOhlcv.observation.features['IsWarmupComplete'] === 0, 'IsWarmupComplete feature must be 0 for invalid OHLCV');
+
+        // 3. Duplicate Timestamp
+        const resDup = stepML1Features(validCandle(100000), 1, resValid.nextState, config);
+        assert(resDup.observation.validity['IsWarmupComplete'] === false, 'IsWarmupComplete validity must be false for duplicate timestamp');
+        
+        // 4. Out-of-order Timestamp
+        const resOoo = stepML1Features(validCandle(50000), 1, resValid.nextState, config);
+        assert(resOoo.observation.validity['IsWarmupComplete'] === false, 'IsWarmupComplete validity must be false for out-of-order timestamp');
     });
 
     console.log(`\n=======================================`);
@@ -1639,10 +1688,11 @@ export function runPhase2ATests(): boolean {
     console.log(`=======================================\n`);
 
     if (failed2H === 0) {
-        console.log('✅ ALL PHASE 2H TESTS PASSED. The Unified Feature Engine is mathematically secure, chaos-tolerant, and perfectly serializable.\n🔒 Phase 2H FROZEN.\n🏆 MILESTONE 2 CORE DEVELOPMENT COMPLETE.');
+        console.log('✅ ALL PHASE 2H TESTS PASSED. The Unified Feature Engine is mathematically secure, chaos-tolerant, deeply immutable, and serializable.\n🔒 Phase 2H FROZEN.\n🏆 MILESTONE 2 CORE DEVELOPMENT COMPLETE.');
         return true;
     } else {
         console.error('❌ PHASE 2H TESTS FAILED.');
         return false;
     }
 }
+

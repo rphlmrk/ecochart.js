@@ -746,7 +746,7 @@ export function stepML1Features(
         isWarmupComplete = emaReady && atrReady && rrReady && momReady && volReady;
     }
     features['IsWarmupComplete'] = isWarmupComplete ? 1 : 0;
-    validity['IsWarmupComplete'] = isSafeIndex && isValidTimestamp;
+    validity['IsWarmupComplete'] = !isRejected && isSafeIndex && isValidTimestamp;
 
     // 6. Assemble final observation
     const observation: ML1Observation = {
