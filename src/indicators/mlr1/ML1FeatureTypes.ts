@@ -72,6 +72,11 @@ export interface EMAPeriodState {
     readonly unbrokenRun: number;        // Consecutive expected-interval bars
 }
 
+export interface MomentumState {
+    readonly closeHistory: readonly number[]; // Trailing closes up to max lookback + 1
+    readonly unbrokenRun: number;            // Number of consecutive observations without discontinuity
+}
+
 export interface ML1FeatureState {
     readonly stateVersion: number;
     readonly lastBarIndex: number | null;
@@ -82,6 +87,7 @@ export interface ML1FeatureState {
     readonly atrState: Readonly<Record<number, ATRPeriodState>>;
     readonly rollingRangeState: Readonly<Record<number, RollingRangePeriodState>>;
     readonly emaState: Readonly<Record<number, EMAPeriodState>>;
+    readonly momentumState: MomentumState;
 }
 
 /**

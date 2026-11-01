@@ -64,11 +64,11 @@ export function runPhase2ATests(): boolean {
 
     const config = validateML1Config(rawConfig);
 
-    // 2. Initial State & Restored State Consistency (Version 2)
+    // 2. Initial State & Restored State Consistency (Version 3)
     runTest('State Version & Consistency Enforcement', () => {
         const state = createInitialML1FeatureState();
-        assert(state.stateVersion === 2, 'Initial state must be version 2');
-        try { stepML1Features(validCandle(1000), 0, { ...state, stateVersion: 1 }, config); assert(false, 'Allowed outdated version 1'); } 
+        assert(state.stateVersion === 3, 'Initial state must be version 3');
+        try { stepML1Features(validCandle(1000), 0, { ...state, stateVersion: 2 }, config); assert(false, 'Allowed outdated version 2'); } 
         catch (e: any) { assert(e.message.includes('Incompatible state version'), e.message); }
 
         // All-or-nothing consistency (has index but no timestamp)
@@ -851,9 +851,232 @@ export function runPhase2ATests(): boolean {
 
     if (failed2D === 0) {
         console.log('✅ ALL PHASE 2D TESTS PASSED. Causal EMA Context Engine is verified.\n🔒 Phase 2D FROZEN.');
-        return true;
     } else {
         console.error('❌ PHASE 2D TESTS FAILED. DO NOT PROCEED TO PHASE 2E.');
+        return false;
+    }
+
+    // ====================================================================
+    // Phase 2E: Momentum & Directional Efficiency Acceptance Suite
+    // ====================================================================
+    console.log('\n🧪 Starting Phase 2E Acceptance Tests...');
+    let passed2E = 0;
+    let failed2E = 0;
+
+    const run2ETest = (name: string, testFn: () => void) => {
+        try {
+            testFn();
+            passed2E++;
+            console.log(`  ✅ Passed: ${name}`);
+        } catch (e: any) {
+            failed2E++;
+            console.error(`  ❌ Failed: ${name} - ${e.message}`);
+        }
+    };
+
+    // 1. Normalized Returns Warmup & Exact Fractional Parity (1, 3, 5, 10)
+    run2ETest('Returns Warmup & Exact Fractional Parity', () => {
+        let testState = createInitialML1FeatureState();
+
+        for (let i = 0; i < 11; i++) {
+            const close = 100 + i;
+            const res = stepML1Features(candleWithClose(100000 + i * 60000, close), i, testState, config);
+
+            if (i < 1) assert(!res.observation.validity['Return_1'], 'Return_1 warmup');
+            if (i === 1) assert(res.observation.validity['Return_1'], 'Return_1 seeded');
+
+            if (i < 3) assert(!res.observation.validity['Return_3'], 'Return_3 warmup');
+            if (i === 3) assert(res.observation.validity['Return_3'], 'Return_3 seeded');
+
+            if (i < 5) assert(!res.observation.validity['Return_5'], 'Return_5 warmup');
+            if (i === 5) assert(res.observation.validity['Return_5'], 'Return_5 seeded');
+
+            if (i < 10) assert(!res.observation.validity['Return_10'], 'Return_10 warmup');
+            if (i === 10) {
+                assert(res.observation.validity['Return_10'], 'Return_10 seeded');
+                assert(Math.abs(res.observation.features['Return_10'] - (10 / 100)) < 1e-6, 'Return_10 parity failed');
+            }
+
+            if (i === 9) {
+                assert(Math.abs(res.observation.features['Return_3'] - (3 / 106)) < 1e-6, 'Return_3 parity failed');
+            }
+
+            testState = res.nextState;
+        }
+    });
+
+    // 2. Returns and Momentum Formula Parity
+    run2ETest('Returns and Momentum Numerical Parity', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 11; i++) {
+            const closeVal = 100 + i * 2; // 100, 102, 104, ..., 120
+            testState = stepML1Features(candleWithClose(100000 + i * 60000, closeVal), i, testState, config).nextState;
+        }
+        const res = stepML1Features(candleWithClose(100000 + 11 * 60000, 122), 11, testState, config);
+        // t=11 (close 122), t-1=10 (close 120) -> Return_1 = (122 - 120) / 120
+        assert(Math.abs(res.observation.features['Return_1'] - (2 / 120)) < 1e-6, 'Return_1 parity failed');
+        // Momentum_3 = close_11 - close_8 = 122 - 116 = 6
+        assert(res.observation.features['Momentum_3'] === 6, 'Momentum_3 parity failed');
+        assert(res.observation.validity['Momentum_3'] === true, 'Momentum_3 must be valid');
+    });
+
+    // 3. Directional Efficiency on Monotonic Trend (DE = 1.0)
+    run2ETest('Directional Efficiency on Monotonic Trend (DE = 1.0)', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 5; i++) {
+            testState = stepML1Features(candleWithClose(100000 + i * 60000, 100 + i * 5), i, testState, config).nextState;
+        }
+        // Closes: 100, 105, 110, 115, 120, 125. Net displacement: 25. Total path: 25. DE_5 = 1.0
+        const resNext = stepML1Features(candleWithClose(100000 + 5 * 60000, 125), 5, testState, config);
+        assert(resNext.observation.validity['DirectionalEfficiency_5'] === true, 'DE_5 must be valid');
+        assert(Math.abs(resNext.observation.features['DirectionalEfficiency_5'] - 1.0) < 1e-6, 'DE_5 on pure trend must be 1.0');
+    });
+
+    // 4. Directional Efficiency on Alternating Chop (DE = 1/21)
+    run2ETest('Directional Efficiency on Alternating Chop (Low DE)', () => {
+        let testState = createInitialML1FeatureState();
+        const chopCloses = [100, 105, 100, 105, 100, 101];
+        for (let i = 0; i < chopCloses.length - 1; i++) {
+            testState = stepML1Features(candleWithClose(100000 + i * 60000, chopCloses[i]), i, testState, config).nextState;
+        }
+        const res = stepML1Features(candleWithClose(100000 + 5 * 60000, 101), 5, testState, config);
+        // Closes: 100, 105, 100, 105, 100, 101. Net: 101 - 100 = 1. Path: 5 + 5 + 5 + 5 + 1 = 21. DE_5 = 1/21 ≈ 0.0476
+        assert(res.observation.validity['DirectionalEfficiency_5'] === true, 'DE_5 must be valid');
+        assert(Math.abs(res.observation.features['DirectionalEfficiency_5'] - (1 / 21)) < 1e-6, 'DE_5 on chop must equal exactly 1/21');
+    });
+
+    // 5. Flat Price Zero-Division Protection (DE = 0, Validity = False)
+    run2ETest('Flat Price Zero-Division Protection', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 7; i++) {
+            testState = stepML1Features(candleWithClose(100000 + i * 60000, 100), i, testState, config).nextState;
+        }
+        const res = stepML1Features(candleWithClose(100000 + 7 * 60000, 100), 7, testState, config);
+        assert(res.observation.features['DirectionalEfficiency_5'] === 0, 'DE_5 on flat price must be 0');
+        assert(res.observation.validity['DirectionalEfficiency_5'] === false, 'DE_5 on flat price must be invalid');
+        assert(res.observation.validity['ReturnBalance_5'] === false, 'ReturnBalance on flat price must be invalid');
+    });
+
+    // 6. Positive Return Fraction & Return Balance Exact Numerical Assertions
+    run2ETest('Positive Return Fraction & Return Balance Numerical Parity', () => {
+        let testState = createInitialML1FeatureState();
+        // Closes: 100, 102 (+2), 101 (-1), 104 (+3), 103 (-1), 106 (+3) -> 3 positive steps, 2 negative steps
+        const closes = [100, 102, 101, 104, 103, 106];
+        for (let i = 0; i < closes.length - 1; i++) {
+            testState = stepML1Features(candleWithClose(100000 + i * 60000, closes[i]), i, testState, config).nextState;
+        }
+        const res = stepML1Features(candleWithClose(100000 + 5 * 60000, 106), 5, testState, config);
+        assert(res.observation.validity['PositiveReturnFraction_5'] === true, 'Positive fraction must be valid');
+        assert(Math.abs(res.observation.features['PositiveReturnFraction_5'] - 0.6) < 1e-6, 'Positive fraction must be exactly 3/5 = 0.6');
+        assert(res.observation.validity['ReturnBalance_5'] === true, 'Return balance must be valid');
+        // Net: 106 - 100 = 6. Path: 2 + 1 + 3 + 1 + 3 = 10. Balance: 6 / 10 = 0.6
+        assert(Math.abs(res.observation.features['ReturnBalance_5'] - 0.6) < 1e-6, 'Return balance must be exactly 6/10 = 0.6');
+    });
+
+    // 7. Ordinary Gap Tolerance (Returns & Momentum Continue)
+    run2ETest('Ordinary Gap Tolerance (Returns & Momentum Continue)', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 6; i++) {
+            testState = stepML1Features(candleWithClose(100000 + i * 60000, 100 + i), i, testState, config).nextState;
+        }
+        // Ordinary gap of 120s (does not exceed 300s threshold)
+        const resGap = stepML1Features(candleWithClose(100000 + 5 * 60000 + 120000, 110), 6, testState, config);
+        assert(resGap.observation.features['HasDataGap'] === 1, 'Data gap must be detected');
+        assert(resGap.observation.features['IsDiscontinuity'] === 0, 'Must not be discontinuity');
+        assert(resGap.observation.validity['Return_1'] === true, 'Return_1 must remain valid across ordinary gap');
+        assert(resGap.observation.validity['Momentum_3'] === true, 'Momentum_3 must remain valid across ordinary gap');
+    });
+
+    // 8. Discontinuity Reset Policy on Momentum History
+    run2ETest('Discontinuity Reset Policy on Momentum State', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 15; i++) {
+            testState = stepML1Features(candleWithClose(100000 + i * 60000, 100 + i), i, testState, config).nextState;
+        }
+        assert(testState.momentumState.unbrokenRun >= 15, 'Run must be at least 15');
+
+        // Discontinuity gap of 10 minutes (> 300s threshold)
+        const resDisc = stepML1Features(candleWithClose(100000 + 14 * 60000 + 600000, 120), 15, testState, config);
+        assert(resDisc.observation.features['IsDiscontinuity'] === 1, 'Discontinuity must be flagged');
+        assert(resDisc.nextState.momentumState.unbrokenRun === 1, 'unbrokenRun must reset to 1 on discontinuity');
+        assert(resDisc.nextState.momentumState.closeHistory.length === 1, 'closeHistory must reset to length 1');
+        assert(resDisc.observation.validity['Return_3'] === false, 'Return_3 must be invalid immediately after discontinuity');
+        assert(resDisc.observation.validity['Momentum_3'] === false, 'Momentum_3 must be invalid immediately after discontinuity');
+    });
+
+    // 9. Restored-State Integrity for Momentum Container
+    run2ETest('Restored-State Integrity for Momentum State', () => {
+        const baseState = createInitialML1FeatureState();
+        // Missing container
+        try {
+            stepML1Features(validCandle(1000), 0, { ...baseState, momentumState: null as any }, config);
+            assert(false, 'Allowed null momentumState');
+        } catch (e: any) { assert(e.message.includes('Missing or malformed momentumState'), e.message); }
+
+        // Non-finite value in closeHistory
+        try {
+            stepML1Features(validCandle(1000), 0, {
+                ...baseState,
+                momentumState: { closeHistory: [100, NaN, 102], unbrokenRun: 3 }
+            }, config);
+            assert(false, 'Allowed NaN in closeHistory');
+        } catch (e: any) { assert(e.message.includes('Non-finite value in momentumState'), e.message); }
+
+        // Inconsistent unbrokenRun before capacity (run 10 != length 2)
+        try {
+            stepML1Features(validCandle(1000), 0, {
+                ...baseState,
+                momentumState: { closeHistory: [100, 101], unbrokenRun: 10 }
+            }, config);
+            assert(false, 'Allowed inconsistent unbrokenRun before capacity');
+        } catch (e: any) { assert(e.message.includes('Inconsistent momentumState history and unbrokenRun before capacity'), e.message); }
+
+        // Fully saturated history (21 bars) with unbrokenRun > 21 (e.g. 50 bars) MUST BE PERMITTED!
+        const saturatedState = {
+            ...baseState,
+            lastBarIndex: 49,
+            lastTimestamp: 100000 + 49 * 60000,
+            lastClose: 100,
+            momentumState: { closeHistory: new Array(21).fill(100), unbrokenRun: 50 }
+        };
+        const resSaturated = stepML1Features(validCandle(100000 + 50 * 60000), 50, saturatedState, config);
+        assert(resSaturated.nextState.momentumState.unbrokenRun === 51, 'unbrokenRun failed to increment past 21-bar capacity');
+    });
+
+    // 10. Prefix Invariance for Momentum Feature Engine
+    run2ETest('Prefix Invariance for Momentum Feature Engine', () => {
+        const candleStream = Array.from({ length: 60 }, (_, i) => candleWithClose(100000 + i * 60000, 100 + (i % 7) * 2));
+        
+        // Full Run (60 bars)
+        let fullState = createInitialML1FeatureState();
+        const fullObservations: any[] = [];
+        for (let i = 0; i < candleStream.length; i++) {
+            const res = stepML1Features(candleStream[i], i, fullState, config);
+            fullObservations.push(res.observation);
+            fullState = res.nextState;
+        }
+
+        // Prefix Run (30 bars): Every single observation in prefix must match full run bitwise
+        let prefixState = createInitialML1FeatureState();
+        for (let i = 0; i < 30; i++) {
+            const res = stepML1Features(candleStream[i], i, prefixState, config);
+            assert(JSON.stringify(res.observation) === JSON.stringify(fullObservations[i]), `Prefix invariance failed at bar ${i}`);
+            prefixState = res.nextState;
+        }
+    });
+
+    console.log(`\n=======================================`);
+    console.log(`📊 ML-R1 PHASE 2E FINAL AUDIT:`);
+    console.log(`   ↳ Tests Executed:  ${passed2E + failed2E}`);
+    console.log(`   ↳ Tests Passed:    ${passed2E}`);
+    console.log(`   ↳ Tests Failed:    ${failed2E}`);
+    console.log(`=======================================\n`);
+
+    if (failed2E === 0) {
+        console.log('✅ ALL PHASE 2E TESTS PASSED. Momentum & Directional Efficiency Engine is verified.\n🔒 Phase 2E FROZEN.');
+        return true;
+    } else {
+        console.error('❌ PHASE 2E TESTS FAILED. DO NOT PROCEED TO PHASE 2F.');
         return false;
     }
 }

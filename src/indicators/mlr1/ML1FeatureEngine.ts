@@ -12,7 +12,14 @@ import { calculateCandleAnatomy } from './candle/CandleAnatomy';
 import { updateWilderATR } from './volatility/ATR';
 import { updateRollingRange } from './volatility/RollingRange';
 import { updateEMA, calculateEMASlope } from './trend/EMA';
-import type { EMAPeriodState } from './ML1FeatureTypes';
+import { 
+    updateMomentumState, 
+    calculateReturn, 
+    calculateMomentum, 
+    calculateDirectionalEfficiency, 
+    calculateReturnConsistency 
+} from './momentum/Momentum';
+import type { EMAPeriodState, MomentumState } from './ML1FeatureTypes';
 
 /**
  * Validates the global configuration and returns a frozen, immutable defensive copy.
@@ -43,6 +50,9 @@ export function validateML1Config(config: any): ValidatedML1FeatureConfig {
             if (!Number.isSafeInteger(p) || p <= 0) {
                 throw new Error(`Configuration Error: ${name} must contain only positive safe integers.`);
             }
+            if (name === 'momentumPeriods' && p > 20) {
+                throw new Error(`Configuration Error: momentumPeriods cannot exceed maximum lookback of 20, got ${p}.`);
+            }
             if (seen.has(p)) {
                 throw new Error(`Configuration Error: ${name} contains duplicate periods.`);
             }
@@ -71,13 +81,14 @@ export function validateML1Config(config: any): ValidatedML1FeatureConfig {
  */
 export function createInitialML1FeatureState(): ML1FeatureState {
     return Object.freeze({
-        stateVersion: 2, // Version 2: Enforces Phase 2D EMA state schema
+        stateVersion: 3, // Version 3: Enforces Phase 2E Momentum state schema
         lastBarIndex: null,
         lastTimestamp: null,
         lastClose: null,
         atrState: Object.freeze({}),
         rollingRangeState: Object.freeze({}),
-        emaState: Object.freeze({})
+        emaState: Object.freeze({}),
+        momentumState: Object.freeze({ closeHistory: Object.freeze([]), unbrokenRun: 0 })
     });
 }
 
@@ -110,8 +121,8 @@ export function stepML1Features(
     nextState: ML1FeatureState;
 } {
     // 1. Strict Contract Enforcements & Restored State Consistency
-    if (!previousState || previousState.stateVersion !== 2) {
-        throw new Error(`State Integrity Error: Incompatible state version. Expected 2, got ${previousState?.stateVersion}.`);
+    if (!previousState || previousState.stateVersion !== 3) {
+        throw new Error(`State Integrity Error: Incompatible state version. Expected 3, got ${previousState?.stateVersion}.`);
     }
     
     const hasIdx = previousState.lastBarIndex !== null;
@@ -254,6 +265,32 @@ export function stepML1Features(
         }
     }
 
+    // Validate restored Phase 2E Momentum state
+    if (!previousState.momentumState || typeof previousState.momentumState !== 'object') {
+        throw new Error(`State Integrity Error: Missing or malformed momentumState container.`);
+    }
+    const mState = previousState.momentumState;
+    if (!Array.isArray(mState.closeHistory) || mState.closeHistory.length > 21) {
+        throw new Error(`State Integrity Error: Malformed closeHistory in momentumState (must be array of length <= 21).`);
+    }
+    for (let c = 0; c < mState.closeHistory.length; c++) {
+        if (!Number.isFinite(mState.closeHistory[c])) {
+            throw new Error(`State Integrity Error: Non-finite value in momentumState closeHistory.`);
+        }
+    }
+    if (!Number.isSafeInteger(mState.unbrokenRun) || mState.unbrokenRun < 0) {
+        throw new Error(`State Integrity Error: Invalid unbrokenRun in momentumState.`);
+    }
+    if (mState.closeHistory.length === 0 && mState.unbrokenRun !== 0) {
+        throw new Error(`State Integrity Error: Empty closeHistory requires unbrokenRun = 0.`);
+    }
+    if (mState.closeHistory.length > 0 && mState.unbrokenRun < mState.closeHistory.length) {
+        throw new Error(`State Integrity Error: unbrokenRun cannot be smaller than closeHistory length.`);
+    }
+    if (mState.closeHistory.length < 21 && mState.unbrokenRun !== mState.closeHistory.length) {
+        throw new Error(`State Integrity Error: Inconsistent momentumState history and unbrokenRun before capacity.`);
+    }
+
     const features: ML1FeatureValues = {};
     const validity: ML1FeatureValidity = {};
 
@@ -344,6 +381,7 @@ export function stepML1Features(
     const nextAtrState: Record<number, ATRPeriodState> = { ...previousState.atrState };
     const nextRollingRangeState: Record<number, RollingRangePeriodState> = { ...previousState.rollingRangeState };
     const nextEmaState: Record<number, EMAPeriodState> = { ...previousState.emaState };
+    let nextMomentumState: MomentumState = previousState.momentumState;
 
     if (!isRejected) {
         // -------------------------------------------------------------
@@ -536,6 +574,41 @@ export function stepML1Features(
             features[`EMA_SpreadChange_${p1}_${p2}`] = isSpreadChangeValid ? spreadChange : 0;
             validity[`EMA_SpreadChange_${p1}_${p2}`] = isSpreadChangeValid;
         }
+
+        // -------------------------------------------------------------
+        // Phase 2E: Momentum and Directional Efficiency
+        // -------------------------------------------------------------
+        nextMomentumState = updateMomentumState(candle.close, previousState.momentumState, isDiscontinuity, 20);
+
+        // 1. Normalized Returns: (Close_t - Close_{t-N}) / Close_{t-N}
+        const returnPeriods = [1, 3, 5, 10];
+        for (const p of returnPeriods) {
+            const res = calculateReturn(nextMomentumState.closeHistory, nextMomentumState.unbrokenRun, p);
+            features[`Return_${p}`] = res.isValid ? res.returnVal : 0;
+            validity[`Return_${p}`] = res.isValid;
+        }
+
+        // 2. Accumulated Momentum: Close_t - Close_{t-N}
+        for (const p of config.momentumPeriods) {
+            const res = calculateMomentum(nextMomentumState.closeHistory, nextMomentumState.unbrokenRun, p);
+            features[`Momentum_${p}`] = res.isValid ? res.momentumVal : 0;
+            validity[`Momentum_${p}`] = res.isValid;
+        }
+
+        // 3. Directional Efficiency, Positive Fraction, and Return Balance
+        const efficiencyPeriods = [5, 10, 20];
+        for (const p of efficiencyPeriods) {
+            const deRes = calculateDirectionalEfficiency(nextMomentumState.closeHistory, nextMomentumState.unbrokenRun, p);
+            features[`DirectionalEfficiency_${p}`] = deRes.isValid ? deRes.efficiency : 0;
+            validity[`DirectionalEfficiency_${p}`] = deRes.isValid;
+
+            const rcRes = calculateReturnConsistency(nextMomentumState.closeHistory, nextMomentumState.unbrokenRun, p);
+            features[`PositiveReturnFraction_${p}`] = rcRes.isFractionValid ? rcRes.positiveFraction : 0;
+            validity[`PositiveReturnFraction_${p}`] = rcRes.isFractionValid;
+
+            features[`ReturnBalance_${p}`] = rcRes.isBalanceValid ? rcRes.balance : 0;
+            validity[`ReturnBalance_${p}`] = rcRes.isBalanceValid;
+        }
     }
 
     // 6. Assemble final observation
@@ -563,7 +636,8 @@ export function stepML1Features(
             lastClose: candle.close,
             atrState: Object.freeze(nextAtrState),
             rollingRangeState: Object.freeze(nextRollingRangeState),
-            emaState: Object.freeze(nextEmaState)
+            emaState: Object.freeze(nextEmaState),
+            momentumState: nextMomentumState
         });
 
     return { observation, nextState };
