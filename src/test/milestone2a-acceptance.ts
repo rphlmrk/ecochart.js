@@ -343,8 +343,8 @@ export function runPhase2ATests(): boolean {
         }
     };
 
-    // 1. ATR14 Warmup & SMA Seed
-    run2CTest('ATR14 Warmup Boundary and SMA Seed', () => {
+    // 1. ATR14 Warmup & Incremental Mean SMA Seed
+    run2CTest('ATR14 Warmup Boundary and Incremental Mean Seed', () => {
         let testState = createInitialML1FeatureState();
         for (let i = 0; i < 13; i++) {
             const res = stepML1Features(validCandle(100000 + i * 60000), i, testState, config);
@@ -369,23 +369,37 @@ export function runPhase2ATests(): boolean {
         assert(res20.observation.features['ATR_20'] === 10, 'TR 10 SMA seed must be 10');
     });
 
-    // 3. ATR True-Range Normal Gap vs Discontinuity
+    // 3. Zero ATR Mathematical Legitimacy & Gated Normalization
+    run2CTest('Zero ATR Handling and Gated Normalization', () => {
+        let testState = createInitialML1FeatureState();
+        // 14 perfectly flat candles with zero range and zero change
+        for (let i = 0; i < 14; i++) {
+            testState = stepML1Features({ time: 100000 + i * 60000, open: 100, high: 100, low: 100, close: 100, volume: 10 }, i, testState, config).nextState;
+        }
+        assert(testState.atrState[14].isSeeded === true, 'Zero ATR must be seeded on 14th bar');
+        assert(testState.atrState[14].atr === 0, 'Zero ATR value must be exactly 0');
+        
+        // 15th flat bar
+        const res = stepML1Features({ time: 100000 + 14 * 60000, open: 100, high: 100, low: 100, close: 100, volume: 10 }, 14, testState, config);
+        assert(res.observation.validity['ATR_14'] === true, 'ATR_14 must be valid with value 0');
+        assert(res.observation.features['ATR_14'] === 0, 'ATR_14 must be 0');
+        assert(res.observation.validity['ATR_14_Normalized'] === false, 'ATR_14_Normalized must be invalid when ATR is 0');
+        assert(res.observation.validity['RangeToATR14'] === false, 'RangeToATR14 must be invalid when ATR is 0');
+    });
+
+    // 4. ATR True-Range Normal Gap vs Discontinuity
     run2CTest('ATR True-Range Normal Gap vs Discontinuity', () => {
         let testState = createInitialML1FeatureState();
-        // Feed 14 candles to seed ATR14
         for (let i = 0; i < 14; i++) {
             testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
         }
-        // Normal gap (120s): uses prevClose (102). Candle: open 115, high 120, low 110, close 115.
-        // TR = max(120-110, |120-102|=18, |110-102|=8) = 18.
         const resGap = stepML1Features({ time: 100000 + 13 * 60000 + 120000, open: 115, high: 120, low: 110, close: 115, volume: 100 }, 14, testState, config);
         assert(resGap.observation.features['HasDataGap'] === 1, 'Did not detect gap');
         assert(resGap.observation.features['IsDiscontinuity'] === 0, 'Should not be discontinuity');
-        // Smoothed ATR = (10 * 13 + 18) / 14 = 148 / 14 = 10.5714...
         assert(Math.abs(resGap.observation.features['ATR_14'] - (148 / 14)) < 1e-4, 'ATR did not use prevClose across gap');
     });
 
-    // 4. Rolling Range Multi-Periods (5, 10, 20, 50)
+    // 5. Rolling Range Multi-Periods (5, 10, 20, 50)
     run2CTest('Rolling Range Context for Periods 5, 10, 20, 50', () => {
         let testState = createInitialML1FeatureState();
         for (let i = 0; i < 50; i++) {
@@ -401,9 +415,11 @@ export function runPhase2ATests(): boolean {
         assert(res50.observation.features['RollingHighestHigh_50'] === 160, 'HH50 must be 160');
         assert(res50.observation.features['RollingLowestLow_50'] === 80, 'LL50 must be 80');
         assert(res50.observation.features['RollingRangeWidth_50'] === 80, 'Range width 50 must be 80');
+        assert(res50.observation.validity['RollingHighDistance_50'] === true, 'RollingHighDistance_50 must be valid');
+        assert(res50.observation.features['RollingHighDistance_50'] === 60, 'HH 160 - Close 100 must be 60');
     });
 
-    // 5. ATR-Normalized Candle Anatomy Gating & Finite Check
+    // 6. ATR-Normalized Candle Anatomy Gating & Finite Check
     run2CTest('ATR-Normalized Anatomy Gating & Finite Ratios', () => {
         let testState = createInitialML1FeatureState();
         for (let i = 0; i < 14; i++) {
@@ -417,33 +433,57 @@ export function runPhase2ATests(): boolean {
         assert(Number.isFinite(resMature.observation.features['RangeToATR14']), 'RangeToATR14 must be finite');
     });
 
-    // 6. Non-Finite ATR & Overflow Protection
-    run2CTest('Non-Finite ATR & Overflow Protection', () => {
+    // 7. Recursive ATR Overflow Resistance & State Reset
+    run2CTest('Recursive ATR Overflow Resistance & State Reset', () => {
         let testState = createInitialML1FeatureState();
-        for (let i = 0; i < 13; i++) {
+        for (let i = 0; i < 14; i++) {
             testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
         }
-        // Inject extreme subtraction that overflows to Infinity: MAX_VALUE - (-MAX_VALUE)
+
+        // Test numerically stable recurrence with large finite numbers near 1e300
+        const largeAtrState = {
+            ...testState,
+            atrState: {
+                ...testState.atrState,
+                14: { count: 14, seedMean: 1e300, atr: 1e300, isSeeded: true }
+            }
+        };
+        const largeCandle: ML1Candle = { time: 100000 + 14 * 60000, open: 1e300, high: 1.05e300, low: 0.95e300, close: 1.02e300, volume: 100 };
+        const resLarge = stepML1Features(largeCandle, 14, largeAtrState, config);
+        assert(resLarge.observation.validity['ATR_14'] === true, 'Numerically stable recurrence failed on large numbers');
+        assert(Number.isFinite(resLarge.observation.features['ATR_14']), 'Large ATR result must remain finite');
+
+        // Test reset on actual non-finite overflow: MAX_VALUE - (-MAX_VALUE)
         const overflowCandle: ML1Candle = {
-            time: 100000 + 13 * 60000,
+            time: 100000 + 15 * 60000,
             open: -Number.MAX_VALUE,
             high: Number.MAX_VALUE,
             low: -Number.MAX_VALUE,
             close: Number.MAX_VALUE,
             volume: 100
         };
-        const resOverflow = stepML1Features(overflowCandle, 13, testState, config);
+        const resOverflow = stepML1Features(overflowCandle, 15, resLarge.nextState, config);
         assert(resOverflow.observation.validity['ATR_14'] === false, 'ATR14 must be marked invalid on overflow');
-        assert(resOverflow.observation.features['ATR_14'] === 0, 'ATR14 fallback must be 0');
-        assert(Number.isFinite(resOverflow.observation.features['ATR_14']), 'ATR14 must be finite');
+        assert(resOverflow.nextState.atrState[14].count === 0, 'ATR count must reset to 0 after overflow');
+        assert(resOverflow.nextState.atrState[14].isSeeded === false, 'ATR must reset to unseeded after overflow');
+
+        // Test recovery: fresh candles re-seed ATR from scratch
+        let recoveryState = resOverflow.nextState;
+        for (let k = 0; k < 14; k++) {
+            recoveryState = stepML1Features(validCandle(100000 + (16 + k) * 60000), 16 + k, recoveryState, config).nextState;
+        }
+        assert(recoveryState.atrState[14].isSeeded === true, 'ATR failed to re-seed following an overflow reset');
+        assert(recoveryState.atrState[14].atr === 10, 'Re-seeded ATR must equal 10');
     });
 
-    // 7. Non-Finite Rolling Range & Overflow Protection
-    run2CTest('Non-Finite Rolling Range & Overflow Protection', () => {
+    // 8. Non-Finite Rolling Range, Combined Window Overflow & Recovery
+    run2CTest('Non-Finite Rolling Range, Combined Window Overflow & Recovery', () => {
         let testState = createInitialML1FeatureState();
         for (let i = 0; i < 4; i++) {
             testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
         }
+
+        // Test single candle range overflow
         const overflowCandle: ML1Candle = {
             time: 100000 + 4 * 60000,
             open: -Number.MAX_VALUE,
@@ -453,35 +493,63 @@ export function runPhase2ATests(): boolean {
             volume: 100
         };
         const res = stepML1Features(overflowCandle, 4, testState, config);
-        assert(res.observation.validity['RollingRangeWidth_5'] === false, 'Width must be invalid on overflow');
-        assert(res.observation.features['RollingRangeWidth_5'] === 0, 'Width must fallback to 0');
+        assert(res.observation.validity['RollingRangeWidth_5'] === false, 'Width must be invalid on single-candle overflow');
+        assert(res.nextState.rollingRangeState[5].highs.length === 0, 'Buffer must be emptied on overflow');
+
+        // Test combined window overflow: candle A has low=-1e308, candle B has high=1e308 -> subtraction overflows
+        let stateCombined = createInitialML1FeatureState();
+        stateCombined = stepML1Features({ time: 100000, open: 0, high: 10, low: -1e308, close: 0, volume: 10 }, 0, stateCombined, config).nextState;
+        const resCombined = stepML1Features({ time: 160000, open: 0, high: 1e308, low: -10, close: 0, volume: 10 }, 1, stateCombined, config);
+        assert(resCombined.nextState.rollingRangeState[5].highs.length === 0, 'Buffer must be cleansed when combined window extremes overflow');
+
+        // Test recovery: rebuilds rolling window from scratch
+        let stateRecovery = resCombined.nextState;
+        for (let k = 0; k < 5; k++) {
+            const r = stepML1Features(validCandle(220000 + k * 60000), 2 + k, stateRecovery, config);
+            stateRecovery = r.nextState;
+            if (k < 4) assert(r.observation.validity['RollingRangeWidth_5'] === false, 'Buffer must warm up from scratch');
+            else assert(r.observation.validity['RollingRangeWidth_5'] === true, 'Buffer must become valid after re-warming up');
+        }
     });
 
-    // 8. Restored-State Integrity for ATR and Rolling Ranges
-    run2CTest('Restored-State Integrity for Sub-Modules', () => {
+    // 9. Restored-State Integrity for Containers & Configured Periods
+    run2CTest('Restored-State Integrity for Containers & Configured Periods', () => {
         const baseState = createInitialML1FeatureState();
-        // Malformed count
+        // Missing container
         try {
-            stepML1Features(validCandle(1000), 0, {
-                ...baseState,
-                lastBarIndex: 0, lastTimestamp: 500, lastClose: 100,
-                atrState: { 14: { count: -1, seedSum: 10, atr: null, isSeeded: false } }
-            }, config);
-            assert(false, 'Allowed negative count in atrState');
-        } catch (e: any) { assert(e.message.includes('Corrupted count in atrState'), e.message); }
+            stepML1Features(validCandle(1000), 0, { ...baseState, atrState: null as any }, config);
+            assert(false, 'Allowed null atrState');
+        } catch (e: any) { assert(e.message.includes('Missing or malformed atrState'), e.message); }
 
-        // Inconsistent buffer length in rolling ranges
+        // Negative period key
         try {
             stepML1Features(validCandle(1000), 0, {
                 ...baseState,
-                lastBarIndex: 0, lastTimestamp: 500, lastClose: 100,
-                rollingRangeState: { 5: { highs: [10, 20], lows: [5] } as any }
+                atrState: { [-14]: { count: 0, seedMean: 0, atr: null, isSeeded: false } }
             }, config);
-            assert(false, 'Allowed inconsistent buffer length');
-        } catch (e: any) { assert(e.message.includes('Inconsistent buffer length'), e.message); }
+            assert(false, 'Allowed negative period key');
+        } catch (e: any) { assert(e.message.includes('Invalid period key'), e.message); }
+
+        // Unexpected unconfigured period key
+        try {
+            stepML1Features(validCandle(1000), 0, {
+                ...baseState,
+                atrState: { 999: { count: 0, seedMean: 0, atr: null, isSeeded: false } }
+            }, config);
+            assert(false, 'Allowed unexpected unconfigured period key');
+        } catch (e: any) { assert(e.message.includes('Unexpected period key'), e.message); }
+
+        // Unseeded state with count >= period
+        try {
+            stepML1Features(validCandle(1000), 0, {
+                ...baseState,
+                atrState: { 14: { count: 14, seedMean: 10, atr: null, isSeeded: false } }
+            }, config);
+            assert(false, 'Allowed unseeded state with count >= period');
+        } catch (e: any) { assert(e.message.includes('Unseeded state cannot have completed count'), e.message); }
     });
 
-    // 9. Discontinuity Reset Policy on ATR and Rolling Ranges
+    // 10. Discontinuity Reset Policy on ATR and Rolling Ranges
     run2CTest('Discontinuity Reset Policy on ATR and Rolling Ranges', () => {
         let testState = createInitialML1FeatureState();
         for (let i = 0; i < 15; i++) {
@@ -498,8 +566,8 @@ export function runPhase2ATests(): boolean {
         assert(resDiscontinuity.nextState.rollingRangeState[5].highs.length === 1, 'Rolling buffer must reset to length 1');
     });
 
-    // 10. Streaming vs Batch Replay Parity
-    run2CTest('Streaming vs Batch Replay Parity', () => {
+    // 11. Deterministic Replay Parity
+    run2CTest('Deterministic Replay Parity', () => {
         const streamCandles = [
             validCandle(100000),
             validCandle(160000),
@@ -508,7 +576,6 @@ export function runPhase2ATests(): boolean {
             validCandle(340000)
         ];
 
-        // Run 1: Sequential step
         let stateA = createInitialML1FeatureState();
         const obsA: any[] = [];
         for (let i = 0; i < streamCandles.length; i++) {
@@ -517,7 +584,6 @@ export function runPhase2ATests(): boolean {
             stateA = res.nextState;
         }
 
-        // Run 2: Replay step from fresh state
         let stateB = createInitialML1FeatureState();
         const obsB: any[] = [];
         for (let i = 0; i < streamCandles.length; i++) {
@@ -526,8 +592,8 @@ export function runPhase2ATests(): boolean {
             stateB = res.nextState;
         }
 
-        assert(JSON.stringify(obsA) === JSON.stringify(obsB), 'Streaming vs Batch output mismatch');
-        assert(JSON.stringify(stateA) === JSON.stringify(stateB), 'Streaming vs Batch final state mismatch');
+        assert(JSON.stringify(obsA) === JSON.stringify(obsB), 'Replay output mismatch');
+        assert(JSON.stringify(stateA) === JSON.stringify(stateB), 'Replay final state mismatch');
     });
 
     console.log(`\n=======================================`);

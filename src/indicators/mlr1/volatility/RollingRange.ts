@@ -19,9 +19,13 @@ export function updateRollingRange(
         throw new Error(`Rolling Range Error: Period must be a positive integer, got ${period}.`);
     }
 
-    if (!Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) {
+    const candleRange = high - low;
+    const isCandleFinite = Number.isFinite(high) && Number.isFinite(low) && Number.isFinite(close) && Number.isFinite(candleRange) && candleRange >= 0;
+
+    // If current candle's own range overflows or is invalid, empty the buffer to prevent contamination
+    if (!isCandleFinite) {
         return {
-            nextState: prevState || Object.freeze({ highs: Object.freeze([]), lows: Object.freeze([]) }),
+            nextState: Object.freeze({ highs: Object.freeze([]), lows: Object.freeze([]) }),
             highestHigh: 0,
             lowestLow: 0,
             rangeWidth: 0,
@@ -30,21 +34,19 @@ export function updateRollingRange(
         };
     }
 
-    if (isDiscontinuity || !prevState) {
+    if (isDiscontinuity || !prevState || prevState.highs.length === 0) {
         const nextState: RollingRangePeriodState = Object.freeze({
             highs: Object.freeze([high]),
             lows: Object.freeze([low])
         });
         const isValid = period === 1;
-        const width = high - low;
-        const isWidthFinite = Number.isFinite(width) && width >= 0;
         return {
             nextState,
             highestHigh: high,
             lowestLow: low,
-            rangeWidth: isWidthFinite ? width : 0,
-            closePosition: isWidthFinite && width > 0 ? (close - low) / width : 0.5,
-            isValid: isValid && isWidthFinite
+            rangeWidth: candleRange,
+            closePosition: candleRange > 0 ? (close - low) / candleRange : 0.5,
+            isValid
         };
     }
 
@@ -55,6 +57,29 @@ export function updateRollingRange(
         highs: nextHighs,
         lows: nextLows
     });
+
+    let highestHigh = -Infinity;
+    let lowestLow = Infinity;
+    for (let i = 0; i < nextHighs.length; i++) {
+        if (nextHighs[i] > highestHigh) highestHigh = nextHighs[i];
+        if (nextLows[i] < lowestLow) lowestLow = nextLows[i];
+    }
+
+    const rangeWidth = highestHigh - lowestLow;
+    const isExtremesFinite = Number.isFinite(highestHigh) && Number.isFinite(lowestLow);
+    const isWidthFinite = isExtremesFinite && Number.isFinite(rangeWidth) && rangeWidth >= 0;
+
+    // If window extremes overflow, empty buffers to purge extreme outliers
+    if (!isWidthFinite) {
+        return {
+            nextState: Object.freeze({ highs: Object.freeze([]), lows: Object.freeze([]) }),
+            highestHigh: 0,
+            lowestLow: 0,
+            rangeWidth: 0,
+            closePosition: 0,
+            isValid: false
+        };
+    }
 
     const isWarmedUp = nextHighs.length === period;
     if (!isWarmedUp) {
@@ -68,19 +93,8 @@ export function updateRollingRange(
         };
     }
 
-    let highestHigh = -Infinity;
-    let lowestLow = Infinity;
-    for (let i = 0; i < period; i++) {
-        if (nextHighs[i] > highestHigh) highestHigh = nextHighs[i];
-        if (nextLows[i] < lowestLow) lowestLow = nextLows[i];
-    }
-
-    const rangeWidth = highestHigh - lowestLow;
-    const isExtremesFinite = Number.isFinite(highestHigh) && Number.isFinite(lowestLow);
-    const isWidthFinite = isExtremesFinite && Number.isFinite(rangeWidth) && rangeWidth >= 0;
-    const closePosition = isWidthFinite && rangeWidth > 0 ? (close - lowestLow) / rangeWidth : 0.5;
+    const closePosition = rangeWidth > 0 ? (close - lowestLow) / rangeWidth : 0.5;
     const isPosFinite = Number.isFinite(closePosition);
-
     const isValid = isWidthFinite && isPosFinite;
 
     return {

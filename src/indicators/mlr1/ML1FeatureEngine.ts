@@ -129,48 +129,68 @@ export function stepML1Features(
         throw new Error(`State Integrity Error: Corrupted lastClose in restored state.`);
     }
 
-    // Validate restored Phase 2C sub-module state
-    if (previousState.atrState && typeof previousState.atrState === 'object') {
-        for (const [periodStr, pState] of Object.entries(previousState.atrState)) {
-            const period = Number(periodStr);
-            if (!pState || typeof pState !== 'object') {
-                throw new Error(`State Integrity Error: Malformed atrState for period ${period}.`);
+    // Enforce that both sub-state containers exist and are valid objects
+    if (!previousState.atrState || typeof previousState.atrState !== 'object') {
+        throw new Error(`State Integrity Error: Missing or malformed atrState container.`);
+    }
+    if (!previousState.rollingRangeState || typeof previousState.rollingRangeState !== 'object') {
+        throw new Error(`State Integrity Error: Missing or malformed rollingRangeState container.`);
+    }
+
+    for (const [periodStr, pState] of Object.entries(previousState.atrState)) {
+        const period = Number(periodStr);
+        if (!Number.isSafeInteger(period) || period <= 0) {
+            throw new Error(`State Integrity Error: Invalid period key '${periodStr}' in atrState.`);
+        }
+        if (!config.atrPeriods.includes(period)) {
+            throw new Error(`State Integrity Error: Unexpected period key '${periodStr}' in atrState not found in configuration.`);
+        }
+        if (!pState || typeof pState !== 'object') {
+            throw new Error(`State Integrity Error: Malformed atrState for period ${period}.`);
+        }
+        if (!Number.isSafeInteger(pState.count) || pState.count < 0) {
+            throw new Error(`State Integrity Error: Corrupted count in atrState for period ${period}.`);
+        }
+        if (!Number.isFinite(pState.seedMean) || pState.seedMean < 0) {
+            throw new Error(`State Integrity Error: Corrupted seedMean in atrState for period ${period}.`);
+        }
+        if (typeof pState.isSeeded !== 'boolean') {
+            throw new Error(`State Integrity Error: Corrupted isSeeded in atrState for period ${period}.`);
+        }
+        if (pState.isSeeded) {
+            if (pState.count < period || !Number.isFinite(pState.atr) || pState.atr! < 0) {
+                throw new Error(`State Integrity Error: Inconsistent seeded ATR in atrState for period ${period}.`);
             }
-            if (!Number.isSafeInteger(pState.count) || pState.count < 0) {
-                throw new Error(`State Integrity Error: Corrupted count in atrState for period ${period}.`);
+        } else {
+            if (pState.count >= period) {
+                throw new Error(`State Integrity Error: Unseeded state cannot have completed count ${pState.count} >= ${period}.`);
             }
-            if (!Number.isFinite(pState.seedSum) || pState.seedSum < 0) {
-                throw new Error(`State Integrity Error: Corrupted seedSum in atrState for period ${period}.`);
-            }
-            if (typeof pState.isSeeded !== 'boolean') {
-                throw new Error(`State Integrity Error: Corrupted isSeeded in atrState for period ${period}.`);
-            }
-            if (pState.isSeeded) {
-                if (pState.count < period || !Number.isFinite(pState.atr) || pState.atr! <= 0) {
-                    throw new Error(`State Integrity Error: Inconsistent seeded ATR in atrState for period ${period}.`);
-                }
-            } else if (pState.atr !== null) {
+            if (pState.atr !== null) {
                 throw new Error(`State Integrity Error: Unseeded ATR must have atr === null for period ${period}.`);
             }
         }
     }
 
-    if (previousState.rollingRangeState && typeof previousState.rollingRangeState === 'object') {
-        for (const [periodStr, rState] of Object.entries(previousState.rollingRangeState)) {
-            const period = Number(periodStr);
-            if (!rState || typeof rState !== 'object') {
-                throw new Error(`State Integrity Error: Malformed rollingRangeState for period ${period}.`);
-            }
-            if (!Array.isArray(rState.highs) || !Array.isArray(rState.lows)) {
-                throw new Error(`State Integrity Error: Rolling range buffers must be arrays for period ${period}.`);
-            }
-            if (rState.highs.length !== rState.lows.length || rState.highs.length > period) {
-                throw new Error(`State Integrity Error: Inconsistent buffer length in rollingRangeState for period ${period}.`);
-            }
-            for (let k = 0; k < rState.highs.length; k++) {
-                if (!Number.isFinite(rState.highs[k]) || !Number.isFinite(rState.lows[k])) {
-                    throw new Error(`State Integrity Error: Non-finite values in rollingRangeState for period ${period}.`);
-                }
+    for (const [periodStr, rState] of Object.entries(previousState.rollingRangeState)) {
+        const period = Number(periodStr);
+        if (!Number.isSafeInteger(period) || period <= 0) {
+            throw new Error(`State Integrity Error: Invalid period key '${periodStr}' in rollingRangeState.`);
+        }
+        if (!config.rollingRangePeriods.includes(period)) {
+            throw new Error(`State Integrity Error: Unexpected period key '${periodStr}' in rollingRangeState not found in configuration.`);
+        }
+        if (!rState || typeof rState !== 'object') {
+            throw new Error(`State Integrity Error: Malformed rollingRangeState for period ${period}.`);
+        }
+        if (!Array.isArray(rState.highs) || !Array.isArray(rState.lows)) {
+            throw new Error(`State Integrity Error: Rolling range buffers must be arrays for period ${period}.`);
+        }
+        if (rState.highs.length !== rState.lows.length || rState.highs.length > period) {
+            throw new Error(`State Integrity Error: Inconsistent buffer length in rollingRangeState for period ${period}.`);
+        }
+        for (let k = 0; k < rState.highs.length; k++) {
+            if (!Number.isFinite(rState.highs[k]) || !Number.isFinite(rState.lows[k])) {
+                throw new Error(`State Integrity Error: Non-finite values in rollingRangeState for period ${period}.`);
             }
         }
     }
@@ -283,8 +303,8 @@ export function stepML1Features(
             features[`ATR_${period}`] = res.isValid ? res.atrValue : 0;
             validity[`ATR_${period}`] = res.isValid;
 
-            // Normalized ATR relative to Close price with finite check
-            const normAtr = res.isValid && candle.close > 0 ? res.atrValue / candle.close : NaN;
+            // Normalized ATR relative to Close price with finite check (safe against zero ATR)
+            const normAtr = res.isValid && res.atrValue > 0 && candle.close > 0 ? res.atrValue / candle.close : NaN;
             const isNormValid = Number.isFinite(normAtr) && normAtr >= 0;
             features[`ATR_${period}_Normalized`] = isNormValid ? normAtr : 0;
             validity[`ATR_${period}_Normalized`] = isNormValid;
@@ -326,12 +346,16 @@ export function stepML1Features(
             features[`PositionWithinRollingRange_${period}`] = res.isValid ? res.closePosition : 0;
             validity[`PositionWithinRollingRange_${period}`] = res.isValid && res.rangeWidth > 0;
 
-            // Price distance to rolling extremes in absolute terms
-            features[`RollingHighDistance_${period}`] = res.isValid ? res.highestHigh - candle.close : 0;
-            validity[`RollingHighDistance_${period}`] = res.isValid;
+            // Price distance to rolling extremes with finite safeguards
+            const highDist = res.isValid ? res.highestHigh - candle.close : 0;
+            const isHighDistValid = res.isValid && Number.isFinite(highDist);
+            features[`RollingHighDistance_${period}`] = isHighDistValid ? highDist : 0;
+            validity[`RollingHighDistance_${period}`] = isHighDistValid;
 
-            features[`RollingLowDistance_${period}`] = res.isValid ? candle.close - res.lowestLow : 0;
-            validity[`RollingLowDistance_${period}`] = res.isValid;
+            const lowDist = res.isValid ? candle.close - res.lowestLow : 0;
+            const isLowDistValid = res.isValid && Number.isFinite(lowDist);
+            features[`RollingLowDistance_${period}`] = isLowDistValid ? lowDist : 0;
+            validity[`RollingLowDistance_${period}`] = isLowDistValid;
         }
 
         // ATR-Normalized Candle Anatomy (Valid ONLY when ATR and ratio results are finite)

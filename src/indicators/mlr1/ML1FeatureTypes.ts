@@ -53,7 +53,7 @@ export type ML1FeatureValues = Record<string, number>;
  */
 export interface ATRPeriodState {
     readonly count: number;
-    readonly seedSum: number;
+    readonly seedMean: number;
     readonly atr: number | null;
     readonly isSeeded: boolean;
 }

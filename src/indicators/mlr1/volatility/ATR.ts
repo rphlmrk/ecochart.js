@@ -26,23 +26,24 @@ export function updateWilderATR(
         throw new Error(`ATR Period Error: Period must be an integer >= 2, got ${period}.`);
     }
 
-    const tr = calculateTrueRange(high, low, isDiscontinuity ? null : prevClose);
+    const isInitialBar = isDiscontinuity || !prevState || !Number.isFinite(prevState.count) || prevState.count <= 0;
+    const tr = calculateTrueRange(high, low, isInitialBar ? null : prevClose);
 
-    // If TR is non-finite (e.g. overflow) or negative, mark invalid and do not pollute state
+    // If TR is non-finite or negative, reset to an unseeded initial state so subsequent candles restart fresh
     if (!Number.isFinite(tr) || tr < 0) {
         return {
-            nextState: prevState || Object.freeze({ count: 0, seedSum: 0, atr: null, isSeeded: false }),
+            nextState: Object.freeze({ count: 0, seedMean: 0, atr: null, isSeeded: false }),
             atrValue: 0,
             isValid: false
         };
     }
 
     // Discontinuity or initial bar reset
-    if (isDiscontinuity || !prevState || !Number.isFinite(prevState.count) || prevState.count <= 0) {
+    if (isInitialBar) {
         return {
             nextState: Object.freeze({
                 count: 1,
-                seedSum: tr,
+                seedMean: tr,
                 atr: null,
                 isSeeded: false
             }),
@@ -51,30 +52,30 @@ export function updateWilderATR(
         };
     }
 
-    // 1. Accumulating SMA seed phase
+    // 1. Accumulating SMA seed phase via numerically stable incremental mean: M_n = M_{n-1} + (TR_n - M_{n-1}) / n
     if (!prevState.isSeeded) {
         const nextCount = prevState.count + 1;
-        const nextSeedSum = prevState.seedSum + tr;
+        const nextSeedMean = prevState.seedMean + (tr - prevState.seedMean) / nextCount;
 
-        if (!Number.isFinite(nextSeedSum)) {
+        if (!Number.isFinite(nextSeedMean) || nextSeedMean < 0) {
             return {
-                nextState: prevState,
+                nextState: Object.freeze({ count: 0, seedMean: 0, atr: null, isSeeded: false }),
                 atrValue: 0,
                 isValid: false
             };
         }
 
         if (nextCount === period) {
-            const initialAtr = nextSeedSum / period;
-            const isValidAtr = Number.isFinite(initialAtr) && initialAtr > 0;
+            // Mathematically valid even if initialAtr === 0 (e.g. perfectly flat market)
+            const isValidAtr = Number.isFinite(nextSeedMean) && nextSeedMean >= 0;
             return {
                 nextState: Object.freeze({
                     count: nextCount,
-                    seedSum: nextSeedSum,
-                    atr: isValidAtr ? initialAtr : null,
+                    seedMean: nextSeedMean,
+                    atr: isValidAtr ? nextSeedMean : null,
                     isSeeded: isValidAtr
                 }),
-                atrValue: isValidAtr ? initialAtr : 0,
+                atrValue: isValidAtr ? nextSeedMean : 0,
                 isValid: isValidAtr
             };
         }
@@ -82,7 +83,7 @@ export function updateWilderATR(
         return {
             nextState: Object.freeze({
                 count: nextCount,
-                seedSum: nextSeedSum,
+                seedMean: nextSeedMean,
                 atr: null,
                 isSeeded: false
             }),
@@ -91,16 +92,16 @@ export function updateWilderATR(
         };
     }
 
-    // 2. Wilder's recursive smoothing phase
+    // 2. Wilder's recursive smoothing phase via numerically stable recurrence: ATR_t = ATR_{t-1} + (TR_t - ATR_{t-1}) / period
     const prevAtr = prevState.atr!;
-    const nextAtr = (prevAtr * (period - 1) + tr) / period;
-    const isValidAtr = Number.isFinite(nextAtr) && nextAtr > 0;
+    const nextAtr = prevAtr + (tr - prevAtr) / period;
+    const isValidAtr = Number.isFinite(nextAtr) && nextAtr >= 0;
 
     return {
         nextState: Object.freeze({
             count: prevState.count + 1,
-            seedSum: prevState.seedSum,
-            atr: isValidAtr ? nextAtr : prevAtr,
+            seedMean: prevState.seedMean,
+            atr: isValidAtr ? nextAtr : null,
             isSeeded: isValidAtr
         }),
         atrValue: isValidAtr ? nextAtr : 0,
