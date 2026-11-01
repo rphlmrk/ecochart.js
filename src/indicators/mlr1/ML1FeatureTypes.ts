@@ -51,16 +51,27 @@ export type ML1FeatureValues = Record<string, number>;
  * Encapsulates all accumulated data required to process the next candle.
  * Modifying this interface defines the exact memory boundary of the state machine.
  */
+export interface ATRPeriodState {
+    readonly count: number;
+    readonly seedSum: number;
+    readonly atr: number | null;
+    readonly isSeeded: boolean;
+}
+
+export interface RollingRangePeriodState {
+    readonly highs: readonly number[];
+    readonly lows: readonly number[];
+}
+
 export interface ML1FeatureState {
     readonly stateVersion: number;
     readonly lastBarIndex: number | null;
     readonly lastTimestamp: number | null;
     readonly lastClose: number | null;
 
-    // Sub-module rolling state placeholders (Phase 2B - 2F)
-    // readonly emaState: Record<number, { value: number; count: number }>;
-    // readonly atrState: Record<number, { value: number; count: number }>;
-    // ...
+    // Phase 2C Sub-Module State
+    readonly atrState: Readonly<Record<number, ATRPeriodState>>;
+    readonly rollingRangeState: Readonly<Record<number, RollingRangePeriodState>>;
 }
 
 /**

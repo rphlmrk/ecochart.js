@@ -320,9 +320,228 @@ export function runPhase2ATests(): boolean {
 
     if (failed2B === 0) {
         console.log('✅ ALL PHASE 2B TESTS PASSED. Candle Anatomy is secure and decoupled.\n🔒 Phase 2B FROZEN.');
-        return true;
     } else {
         console.error('❌ PHASE 2B TESTS FAILED. DO NOT PROCEED TO PHASE 2C.');
+        return false;
+    }
+
+    // ====================================================================
+    // Phase 2C: ATR & Rolling Volatility Acceptance Suite
+    // ====================================================================
+    console.log('\n🧪 Starting Phase 2C Acceptance Tests...');
+    let passed2C = 0;
+    let failed2C = 0;
+
+    const run2CTest = (name: string, testFn: () => void) => {
+        try {
+            testFn();
+            passed2C++;
+            console.log(`  ✅ Passed: ${name}`);
+        } catch (e: any) {
+            failed2C++;
+            console.error(`  ❌ Failed: ${name} - ${e.message}`);
+        }
+    };
+
+    // 1. ATR14 Warmup & SMA Seed
+    run2CTest('ATR14 Warmup Boundary and SMA Seed', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 13; i++) {
+            const res = stepML1Features(validCandle(100000 + i * 60000), i, testState, config);
+            assert(res.observation.validity['ATR_14'] === false, `Bar ${i} should be invalid`);
+            testState = res.nextState;
+        }
+        const res14 = stepML1Features(validCandle(100000 + 13 * 60000), 13, testState, config);
+        assert(res14.observation.validity['ATR_14'] === true, 'Bar 13 must be seeded ATR');
+        assert(res14.observation.features['ATR_14'] === 10, 'TR 10 SMA seed must be 10');
+    });
+
+    // 2. ATR20 Warmup & Seed
+    run2CTest('ATR20 Warmup Boundary and Seed', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 19; i++) {
+            const res = stepML1Features(validCandle(100000 + i * 60000), i, testState, config);
+            assert(res.observation.validity['ATR_20'] === false, `Bar ${i} should be invalid for ATR20`);
+            testState = res.nextState;
+        }
+        const res20 = stepML1Features(validCandle(100000 + 19 * 60000), 19, testState, config);
+        assert(res20.observation.validity['ATR_20'] === true, 'Bar 19 must be seeded ATR20');
+        assert(res20.observation.features['ATR_20'] === 10, 'TR 10 SMA seed must be 10');
+    });
+
+    // 3. ATR True-Range Normal Gap vs Discontinuity
+    run2CTest('ATR True-Range Normal Gap vs Discontinuity', () => {
+        let testState = createInitialML1FeatureState();
+        // Feed 14 candles to seed ATR14
+        for (let i = 0; i < 14; i++) {
+            testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
+        }
+        // Normal gap (120s): uses prevClose (102). Candle: open 115, high 120, low 110, close 115.
+        // TR = max(120-110, |120-102|=18, |110-102|=8) = 18.
+        const resGap = stepML1Features({ time: 100000 + 13 * 60000 + 120000, open: 115, high: 120, low: 110, close: 115, volume: 100 }, 14, testState, config);
+        assert(resGap.observation.features['HasDataGap'] === 1, 'Did not detect gap');
+        assert(resGap.observation.features['IsDiscontinuity'] === 0, 'Should not be discontinuity');
+        // Smoothed ATR = (10 * 13 + 18) / 14 = 148 / 14 = 10.5714...
+        assert(Math.abs(resGap.observation.features['ATR_14'] - (148 / 14)) < 1e-4, 'ATR did not use prevClose across gap');
+    });
+
+    // 4. Rolling Range Multi-Periods (5, 10, 20, 50)
+    run2CTest('Rolling Range Context for Periods 5, 10, 20, 50', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 50; i++) {
+            const res = stepML1Features({ time: 100000 + i * 60000, open: 100, high: 100 + i, low: 90, close: 95, volume: 10 }, i, testState, config);
+            if (i < 4) assert(res.observation.validity['RollingRangeWidth_5'] === false, 'Period 5 warmup');
+            if (i < 9) assert(res.observation.validity['RollingRangeWidth_10'] === false, 'Period 10 warmup');
+            if (i < 19) assert(res.observation.validity['RollingRangeWidth_20'] === false, 'Period 20 warmup');
+            if (i < 49) assert(res.observation.validity['RollingRangeWidth_50'] === false, 'Period 50 warmup');
+            testState = res.nextState;
+        }
+        const res50 = stepML1Features({ time: 100000 + 50 * 60000, open: 100, high: 160, low: 80, close: 100, volume: 10 }, 50, testState, config);
+        assert(res50.observation.validity['RollingRangeWidth_50'] === true, 'Period 50 must be valid');
+        assert(res50.observation.features['RollingHighestHigh_50'] === 160, 'HH50 must be 160');
+        assert(res50.observation.features['RollingLowestLow_50'] === 80, 'LL50 must be 80');
+        assert(res50.observation.features['RollingRangeWidth_50'] === 80, 'Range width 50 must be 80');
+    });
+
+    // 5. ATR-Normalized Candle Anatomy Gating & Finite Check
+    run2CTest('ATR-Normalized Anatomy Gating & Finite Ratios', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 14; i++) {
+            testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
+        }
+        const resMature = stepML1Features(validCandle(100000 + 14 * 60000), 14, testState, config);
+        assert(resMature.observation.validity['RangeToATR14'] === true, 'RangeToATR14 must be valid');
+        assert(resMature.observation.features['RangeToATR14'] === 1.0, 'RangeToATR14 must be 1.0');
+        assert(resMature.observation.validity['BodyToATR14'] === true, 'BodyToATR14 must be valid');
+        assert(resMature.observation.features['BodyToATR14'] === 0.2, 'BodyToATR14 must be 0.2');
+        assert(Number.isFinite(resMature.observation.features['RangeToATR14']), 'RangeToATR14 must be finite');
+    });
+
+    // 6. Non-Finite ATR & Overflow Protection
+    run2CTest('Non-Finite ATR & Overflow Protection', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 13; i++) {
+            testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
+        }
+        // Inject extreme subtraction that overflows to Infinity: MAX_VALUE - (-MAX_VALUE)
+        const overflowCandle: ML1Candle = {
+            time: 100000 + 13 * 60000,
+            open: -Number.MAX_VALUE,
+            high: Number.MAX_VALUE,
+            low: -Number.MAX_VALUE,
+            close: Number.MAX_VALUE,
+            volume: 100
+        };
+        const resOverflow = stepML1Features(overflowCandle, 13, testState, config);
+        assert(resOverflow.observation.validity['ATR_14'] === false, 'ATR14 must be marked invalid on overflow');
+        assert(resOverflow.observation.features['ATR_14'] === 0, 'ATR14 fallback must be 0');
+        assert(Number.isFinite(resOverflow.observation.features['ATR_14']), 'ATR14 must be finite');
+    });
+
+    // 7. Non-Finite Rolling Range & Overflow Protection
+    run2CTest('Non-Finite Rolling Range & Overflow Protection', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 4; i++) {
+            testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
+        }
+        const overflowCandle: ML1Candle = {
+            time: 100000 + 4 * 60000,
+            open: -Number.MAX_VALUE,
+            high: Number.MAX_VALUE,
+            low: -Number.MAX_VALUE,
+            close: Number.MAX_VALUE,
+            volume: 100
+        };
+        const res = stepML1Features(overflowCandle, 4, testState, config);
+        assert(res.observation.validity['RollingRangeWidth_5'] === false, 'Width must be invalid on overflow');
+        assert(res.observation.features['RollingRangeWidth_5'] === 0, 'Width must fallback to 0');
+    });
+
+    // 8. Restored-State Integrity for ATR and Rolling Ranges
+    run2CTest('Restored-State Integrity for Sub-Modules', () => {
+        const baseState = createInitialML1FeatureState();
+        // Malformed count
+        try {
+            stepML1Features(validCandle(1000), 0, {
+                ...baseState,
+                lastBarIndex: 0, lastTimestamp: 500, lastClose: 100,
+                atrState: { 14: { count: -1, seedSum: 10, atr: null, isSeeded: false } }
+            }, config);
+            assert(false, 'Allowed negative count in atrState');
+        } catch (e: any) { assert(e.message.includes('Corrupted count in atrState'), e.message); }
+
+        // Inconsistent buffer length in rolling ranges
+        try {
+            stepML1Features(validCandle(1000), 0, {
+                ...baseState,
+                lastBarIndex: 0, lastTimestamp: 500, lastClose: 100,
+                rollingRangeState: { 5: { highs: [10, 20], lows: [5] } as any }
+            }, config);
+            assert(false, 'Allowed inconsistent buffer length');
+        } catch (e: any) { assert(e.message.includes('Inconsistent buffer length'), e.message); }
+    });
+
+    // 9. Discontinuity Reset Policy on ATR and Rolling Ranges
+    run2CTest('Discontinuity Reset Policy on ATR and Rolling Ranges', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 15; i++) {
+            testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
+        }
+        assert(testState.atrState[14].isSeeded === true, 'ATR must be seeded prior to gap');
+
+        // Inject 10-minute gap (> 300,000ms threshold)
+        const resDiscontinuity = stepML1Features(validCandle(100000 + 14 * 60000 + 600000), 15, testState, config);
+        assert(resDiscontinuity.observation.features['IsDiscontinuity'] === 1, 'Must flag discontinuity');
+        assert(resDiscontinuity.observation.validity['ATR_14'] === false, 'ATR must reset to unseeded on discontinuity');
+        assert(resDiscontinuity.observation.validity['RollingRangeWidth_5'] === false, 'Rolling ranges must reset on discontinuity');
+        assert(resDiscontinuity.nextState.atrState[14].isSeeded === false, 'State must reset seed flag');
+        assert(resDiscontinuity.nextState.rollingRangeState[5].highs.length === 1, 'Rolling buffer must reset to length 1');
+    });
+
+    // 10. Streaming vs Batch Replay Parity
+    run2CTest('Streaming vs Batch Replay Parity', () => {
+        const streamCandles = [
+            validCandle(100000),
+            validCandle(160000),
+            { time: 220000, open: 102, high: 115, low: 98, close: 112, volume: 500 },
+            { time: 280000, open: 112, high: 125, low: 105, close: 120, volume: 600 },
+            validCandle(340000)
+        ];
+
+        // Run 1: Sequential step
+        let stateA = createInitialML1FeatureState();
+        const obsA: any[] = [];
+        for (let i = 0; i < streamCandles.length; i++) {
+            const res = stepML1Features(streamCandles[i], i, stateA, config);
+            obsA.push(res.observation);
+            stateA = res.nextState;
+        }
+
+        // Run 2: Replay step from fresh state
+        let stateB = createInitialML1FeatureState();
+        const obsB: any[] = [];
+        for (let i = 0; i < streamCandles.length; i++) {
+            const res = stepML1Features(streamCandles[i], i, stateB, config);
+            obsB.push(res.observation);
+            stateB = res.nextState;
+        }
+
+        assert(JSON.stringify(obsA) === JSON.stringify(obsB), 'Streaming vs Batch output mismatch');
+        assert(JSON.stringify(stateA) === JSON.stringify(stateB), 'Streaming vs Batch final state mismatch');
+    });
+
+    console.log(`\n=======================================`);
+    console.log(`📊 ML-R1 PHASE 2C FINAL AUDIT:`);
+    console.log(`   ↳ Tests Executed:  ${passed2C + failed2C}`);
+    console.log(`   ↳ Tests Passed:    ${passed2C}`);
+    console.log(`   ↳ Tests Failed:    ${failed2C}`);
+    console.log(`=======================================\n`);
+
+    if (failed2C === 0) {
+        console.log('✅ ALL PHASE 2C TESTS PASSED. Volatility & Rolling Range Engine is verified.\n🔒 Phase 2C FROZEN.');
+        return true;
+    } else {
+        console.error('❌ PHASE 2C TESTS FAILED. DO NOT PROCEED TO PHASE 2D.');
         return false;
     }
 }
