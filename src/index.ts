@@ -39,6 +39,8 @@ import { BackgroundDataMiner } from './data/BackgroundDataMiner';
 import { AlertUI } from './alerts/AlertUI';
 import { runMilestone1AcceptanceSuite } from './test/milestone1-acceptance';
 export { runMilestone1AcceptanceSuite };
+import { runPhase2ATests } from './test/milestone2a-acceptance';
+export { runPhase2ATests };
 
 export interface SavedPaneState {
     symbol: string;
@@ -2992,6 +2994,14 @@ export class WorkspaceManager {
         this.setupGlobalControls();
         AlertUI.init();
 
+        // Run ML-R1 Phase 2A Acceptance Tests automatically
+        setTimeout(() => {
+            const passed = runPhase2ATests();
+            if (passed) {
+                console.log('🔒 Phase 2A FROZEN. Proceed to Phase 2B (Candle Anatomy).');
+            }
+        }, 1000);
+
         window.addEventListener('ecochart-alerts-updated', () => {
             this.charts.forEach(c => {
                 c.renderer.forceNextRender = true;
@@ -5720,5 +5730,6 @@ export class WorkspaceManager {
 
         window.addEventListener('online', triggerAggressiveWakeup);
         (window as any).runMilestone1AcceptanceSuite = runMilestone1AcceptanceSuite;
+        (window as any).runPhase2ATests = runPhase2ATests;
     }
 }

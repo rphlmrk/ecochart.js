@@ -2432,7 +2432,14 @@
     WorkspaceManager.init();
   </script>
 
-
+  <script type="module">
+    import { runMilestone1AcceptanceSuite } from '/src/test/milestone1-acceptance.ts';
+    // Run test suite automatically on boot and expose to window
+    window.runMilestone1AcceptanceSuite = runMilestone1AcceptanceSuite;
+    setTimeout(() => {
+      runMilestone1AcceptanceSuite();
+    }, 500);
+  </script>
 
 </body>
 

@@ -535,15 +535,17 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
 
         const lastIdx = len - 1;
         const baseLast = lastIdx * 6;
-        const firstT = ds.data[0];             // Detects historical prepends/origin shifts
-        const lastT = ds.data[baseLast];        // Detects timestamp advances
-        const lastO = ds.data[baseLast + 1];    // Detects open-price revisions
+        const firstT = ds.data[0];
+        const lastT = ds.data[baseLast];
+        const lastO = ds.data[baseLast + 1];
         const lastH = ds.data[baseLast + 2];
         const lastL = ds.data[baseLast + 3];
         const lastC = ds.data[baseLast + 4];
+        const dsRevision = (ds as any).revision ?? 0;
 
-        // Comprehensive Cache Identity: includes origin, timing, OHLC, and close state
-        const stateHash = `${tfMs}:${isHTF}:${len}:${firstT}:${lastT}:${lastO}:${lastH}:${lastL}:${lastC}:closed=${isClosedTick ? 1 : 0}`;
+        // Complete Invalidation Signature:
+        // Captures boundary values, length, timeframe, close state, AND mid-series DataStore mutations
+        const stateHash = `${tfMs}:${isHTF}:${len}:${dsRevision}:${firstT}:${lastT}:${lastO}:${lastH}:${lastL}:${lastC}:closed=${isClosedTick ? 1 : 0}`;
         if (this.lastStateHash === stateHash && this.lastCalculatedLength === len) {
             return;
         }

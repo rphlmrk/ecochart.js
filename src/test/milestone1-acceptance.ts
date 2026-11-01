@@ -301,46 +301,65 @@ export function runMilestone1AcceptanceSuite(): boolean {
     console.log('  ✅ Test 5 Passed: Full 16-field teacher prefix invariance established.');
 
     // -----------------------------------------------------------------
-    // TEST 6: Deterministic Event Delivery & De-duplication (Issue 1)
+    // TEST 6: Deterministic Event Delivery, Cache Revisions & De-duplication
     // -----------------------------------------------------------------
-    console.log('  -> Running Test 6: Deterministic Event Delivery & Cache Invalidation...');
-    const deterministicDs = new DataStore(5);
+    console.log('  -> Running Test 6: Deterministic Event Delivery, Invalidation & De-duplication...');
+    const deterministicDs = new DataStore(10);
     const t0 = 1700000000000;
 
     // Bar 0: Bullish start. Anchor: [95, 105]
     deterministicDs.appendOrUpdate(t0, 100, 105, 95, 103, 10);
     // Bar 1: Continuation. Higher high. Anchor: [100, 112]. phaseHigh = 112 @ bar 1
     deterministicDs.appendOrUpdate(t0 + 60000, 103, 112, 100, 110, 10);
-    // Bar 2: Bearish flip candle! Close 94 < anchorLow 100. Confirms Swing High at bar 1!
+    // Bar 2: Bearish flip candle. Close 94 < anchorLow 100. Confirms Swing High at bar 1!
     deterministicDs.appendOrUpdate(t0 + 120000, 105, 106, 92, 94, 20);
 
-    const tracker = { count: 0, lastEmittedDetail: null as any };
+    let eventCount = 0;
+    let lastEmittedDetail: any = null;
     const alertListener = (e: any) => {
-        tracker.count++;
-        tracker.lastEmittedDetail = e.detail;
+        eventCount++;
+        lastEmittedDetail = e.detail;
     };
     window.addEventListener('ecochart-alert', alertListener);
 
     try {
         const testInd = new StrictCBCZigZagIndicator();
 
-        // 1. Unclosed tick on Bar 2
+        // 1. Unclosed tick on Bar 2: must NOT emit
         testInd.update(deterministicDs, false);
-        assert(Boolean(tracker.count === 0), `Event dispatched prematurely on unclosed bar! count=${tracker.count}`);
+        assert(Boolean(eventCount === 0), `Step 1 Failed: Event dispatched on unclosed bar (count=${eventCount})`);
 
-        // 2. Closed tick on Bar 2 with identical OHLC
+        // 2. Closed tick on Bar 2: MUST emit exactly once
         testInd.update(deterministicDs, true);
-        assert(Boolean(tracker.count === 1), `Closed tick failed to emit event! count=${tracker.count}`);
-        assert(tracker.lastEmittedDetail.title.includes('Swing High'), `Event detail title mismatch`);
+        assert(Boolean(eventCount === 1), `Step 2 Failed: Closed bar failed to emit event (count=${eventCount})`);
+        assert(lastEmittedDetail.title.includes('Swing High'), `Step 2 Failed: Event title mismatch: ${lastEmittedDetail?.title}`);
 
-        // 3. Repeated closed tick with identical OHLC (must de-duplicate via notifiedPivots)
+        // 3. Repeated closed tick (testing structural calculation cache): must NOT emit
         testInd.update(deterministicDs, true);
-        assert(Boolean(tracker.count === 1), `Duplicate event emitted on repeated closed tick! count=${tracker.count}`);
+        assert(Boolean(eventCount === 1), `Step 3 Failed: Calculation cache failed to suppress redundant closed pass (count=${eventCount})`);
+
+        // 4. FORCED RECALCULATION (Testing notifiedPivots de-duplication directly):
+        // Wipe lastStateHash to bypass calculation cache and force buildCachedPivots() to run emitMLR1Event()
+        (testInd as any).lastStateHash = '';
+        testInd.update(deterministicDs, true);
+        assert(Boolean(eventCount === 1), `Step 4 Failed: notifiedPivots failed to de-duplicate on forced recalculation (count=${eventCount})`);
+
+        // 5. MID-SERIES REVISION: Update historical Bar 1 volume in place to trigger DataStore.revision bump
+        deterministicDs.appendOrUpdate(t0 + 60000, 103, 112, 100, 110, 999);
+        testInd.update(deterministicDs, true);
+        assert(Boolean(eventCount === 1), `Step 5 Failed: Mid-series revision caused duplicate event emission (count=${eventCount})`);
+
+        // 6. NEXT CONFIRMED SWING: Append Bar 3 (continuation down) and Bar 4 (bullish flip above anchorHigh 106)
+        deterministicDs.appendOrUpdate(t0 + 180000, 94, 96, 88, 90, 10); // Bar 3: Anchor [88, 106], phaseLow = 88 @ bar 3
+        deterministicDs.appendOrUpdate(t0 + 240000, 90, 108, 90, 107, 20); // Bar 4: Bullish flip (c 107 > anchorHigh 106)
+        testInd.update(deterministicDs, true);
+        assert(Boolean(eventCount === 2), `Step 6 Failed: Next confirmed Swing Low failed to emit (expected 2, got ${eventCount})`);
+        assert(lastEmittedDetail.title.includes('Swing Low'), `Step 6 Failed: Expected Swing Low, got: ${lastEmittedDetail?.title}`);
     } finally {
         window.removeEventListener('ecochart-alert', alertListener);
     }
 
-    console.log('  ✅ Test 6 Passed: Deterministic open-to-closed transition delivers exactly 1 event with zero duplicates.');
+    console.log('  ✅ Test 6 Passed: Full event lifecycle verified (unclosed suppression, closed delivery, cache invalidation, and notifiedPivots de-duplication).');
 
     console.log('\n======================================================');
     console.log('🏆 ALL MILESTONE 1 ACCEPTANCE CRITERIA RIGOROUSLY MET');

@@ -3,6 +3,7 @@ const ITEMS_PER_CANDLE = 6; // Time, Open, High, Low, Close, Volume
 export class DataStore {
     public data: Float64Array;
     public length: number = 0;
+    public revision: number = 0; // Incremented on every data mutation to invalidate downstream caches
     private capacity: number;
 
     private createArray(capacity: number): Float64Array {
@@ -23,6 +24,7 @@ export class DataStore {
 
     public clear() {
         this.length = 0;
+        this.revision++;
     }
 
     public setAll(candles: Array<[number, number, number, number, number, number]>): number {
@@ -73,6 +75,7 @@ export class DataStore {
                 this.data[lastBase + 5] = Math.max(this.data[lastBase + 5], formingCandle[5]);
             }
         }
+        this.revision++;
         return prependedCount;
     }
 
@@ -121,6 +124,7 @@ export class DataStore {
                 this.data[lastBase + 5] = Math.max(this.data[lastBase + 5], formingCandle[5]);              // Volume
             }
         }
+        this.revision++;
         return prependedCount;
     }
 
@@ -153,6 +157,7 @@ export class DataStore {
                 isNewCandle = true;
             }
         }
+        this.revision++;
         return isNewCandle; // Tell the renderer if it needs to shift the camera
     }
 
