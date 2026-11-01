@@ -439,7 +439,7 @@ export function stepML1Features(
     features['TimeDeltaSeconds'] = isDeltaValid ? timeDeltaSec : 0;
     validity['TimeDeltaSeconds'] = isDeltaValid;
 
-    const isSourceValid = isValidOhlcv && isValidTimestamp && !isDuplicate && !isOutOfOrder && !isInvalidIndex;
+    const isSourceValid = isValidOhlcv && isValidTimestamp && !isDuplicate && !isOutOfOrder && !isInvalidIndex && !isUnexpectedInterval;
     features['IsSourceValid'] = isSourceValid ? 1 : 0;
     validity['IsSourceValid'] = true;
 
@@ -742,7 +742,7 @@ export function stepML1Features(
         const atrReady = config.atrPeriods.every(p => nextAtrState[p]?.isSeeded === true);
         const rrReady = config.rollingRangePeriods.every(p => nextRollingRangeState[p]?.highs.length >= p);
         const momReady = config.momentumPeriods.every(p => nextMomentumState.unbrokenRun >= p + 1);
-        const volReady = config.volumeSmaPeriods.every(p => nextVolumeState.unbrokenRun >= p);
+        const volReady = config.volumeSmaPeriods.every(p => nextVolumeState.unbrokenRun >= p + 1);
         isWarmupComplete = emaReady && atrReady && rrReady && momReady && volReady;
     }
     features['IsWarmupComplete'] = isWarmupComplete ? 1 : 0;

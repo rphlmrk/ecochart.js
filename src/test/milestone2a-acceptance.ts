@@ -1404,6 +1404,18 @@ export function runPhase2ATests(): boolean {
         // Invalid Bar Index
         const resInvalidIdx = stepML1Features(validCandle(100000), -5, state0, config);
         assert(resInvalidIdx.observation.features['IsSourceValid'] === 0, 'Invalid index must have IsSourceValid = 0');
+
+        // Unexpected Short Interval (Rejected -> IsSourceValid = 0)
+        const resUnexpected = stepML1Features(validCandle(130000), 1, resValid.nextState, config); // 30s delta
+        assert(resUnexpected.observation.features['IsSourceValid'] === 0, 'Unexpected short interval must have IsSourceValid = 0');
+
+        // Ordinary Accepted Gap (Accepted -> IsSourceValid = 1)
+        const resGap = stepML1Features(validCandle(220000), 1, resValid.nextState, config); // 120s delta
+        assert(resGap.observation.features['IsSourceValid'] === 1, 'Ordinary accepted gap must maintain IsSourceValid = 1');
+
+        // Major Discontinuity (Accepted -> IsSourceValid = 1)
+        const resDisc = stepML1Features(validCandle(500000), 1, resValid.nextState, config); // 400s delta
+        assert(resDisc.observation.features['IsSourceValid'] === 1, 'Major discontinuity candle must maintain IsSourceValid = 1');
     });
 
     // 6. Dynamic State-Aware Warmup Completion
@@ -1428,6 +1440,21 @@ export function runPhase2ATests(): boolean {
         // Discontinuity reset: inject 10-minute gap -> sub-states reset, so warmup drops back to 0!
         const resDisc = stepML1Features(validCandle(100000 + 199 * 60000 + 600000), 200, testState, config);
         assert(resDisc.observation.features['IsWarmupComplete'] === 0, 'Warmup must reset to 0 after discontinuity');
+
+        // Verify volume warmup readiness boundary (requires p + 1 observations for historical baseline)
+        const volOnlyConfig = validateML1Config({
+            ...rawConfig,
+            emaPeriods: [], atrPeriods: [], rollingRangePeriods: [], momentumPeriods: [], volumeSmaPeriods: [10]
+        });
+        let volState = createInitialML1FeatureState();
+        for (let i = 0; i < 10; i++) {
+            const r = stepML1Features(validCandle(100000 + i * 60000), i, volState, volOnlyConfig);
+            assert(r.observation.features['IsWarmupComplete'] === 0, `Volume warmup should be 0 at bar ${i} (needs 10 prior bars)`);
+            volState = r.nextState;
+        }
+        // 11th candle (index 10): exactly 10 preceding bars completed -> warmup completes
+        const r10 = stepML1Features(validCandle(100000 + 10 * 60000), 10, volState, volOnlyConfig);
+        assert(r10.observation.features['IsWarmupComplete'] === 1, 'Volume warmup must complete on bar index 10 (11th bar)');
     });
 
     // 7. Deterministic Replay and Prefix Invariance for Phase 2G
