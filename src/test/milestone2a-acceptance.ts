@@ -195,7 +195,7 @@ export function runPhase2ATests(): boolean {
         assert(JSON.stringify(resOriginal.observation) === JSON.stringify(resRestored.observation), 'State restoration failed to produce identical observation.');
     });
 
-    // Test: State Advancement Logic (Accepted vs Rejected)
+    // 15. Test: State Advancement Logic (Accepted vs Rejected)
     runTest('State Advancement Logic (Accepted vs Rejected)', () => {
         const initState = createInitialML1FeatureState();
         const validCandleObj = validCandle(100000);
@@ -219,42 +219,110 @@ export function runPhase2ATests(): boolean {
     console.log(`=======================================\n`);
 
     if (failed === 0) {
-        console.log('✅ ALL PHASE 2A CONTRACT TESTS PASSED. The transition engine is secure and immutable.');
+        console.log('✅ ALL PHASE 2A CONTRACT TESTS PASSED. The transition engine is secure and immutable.\n🔒 Phase 2A FROZEN.');
     } else {
         console.error('❌ PHASE 2A TESTS FAILED. DO NOT FREEZE.');
         return false;
     }
 
+    // ====================================================================
+    // Phase 2B: Candle Anatomy Tests
+    // ====================================================================
     console.log('\n🧪 Starting Phase 2B Acceptance Tests...');
     let passed2B = 0;
-    
-    try {
-        const freshState = createInitialML1FeatureState();
-        
-        // Normal Candle
-        const normalRes = stepML1Features(validCandle(1000000), 10, freshState, config);
-        assert(normalRes.observation.features['CandleRange'] === 10, 'CandleRange failed'); // 105 - 95
-        assert(normalRes.observation.features['BodySize'] === 2, 'BodySize failed'); // 102 - 100
-        assert(normalRes.observation.validity['CloseLocation'] === true, 'CloseLocation should be valid');
-        
-        // Flat Candle (Range = 0)
-        const flatRes = stepML1Features({ time: 1060000, open: 100, high: 100, low: 100, close: 100, volume: 100 }, 11, normalRes.nextState, config);
-        assert(flatRes.observation.features['CandleRange'] === 0, 'Flat range failed');
-        assert(flatRes.observation.features['CloseLocation'] === 0, 'Flat CloseLocation must fallback to 0 safely');
-        assert(flatRes.observation.validity['CloseLocation'] === false, 'Flat CloseLocation MUST be marked invalid');
+    let failed2B = 0;
 
-        // Infinite Value Safeguard
-        const infRes = stepML1Features({ time: 1120000, open: 100, high: Infinity, low: 95, close: 100, volume: 100 }, 12, flatRes.nextState, config);
-        assert(infRes.nextState === flatRes.nextState, 'State advanced on Infinite input');
-        assert(infRes.observation.features['IsValidOHLCV'] === 0, 'Failed to reject Infinite OHLCV value');
+    const run2BTest = (name: string, testFn: () => void) => {
+        try {
+            testFn();
+            passed2B++;
+            console.log(`  ✅ Passed: ${name}`);
+        } catch (e: any) {
+            failed2B++;
+            console.error(`  ❌ Failed: ${name} - ${e.message}`);
+        }
+    };
 
-        passed2B++;
-        console.log('  ✅ Passed: Phase 2B: Candle Anatomy & Zero-Range Protection');
-        console.log('\n🔒 Phase 2B Complete. Ready for Phase 2C (ATR).');
-    } catch (e: any) {
-        console.error(`  ❌ Failed: Phase 2B - ${e.message}`);
+    const freshState = createInitialML1FeatureState();
+
+    run2BTest('Bullish, Bearish, and Doji Detection', () => {
+        // Bullish
+        const bull = stepML1Features({ time: 1000, open: 100, high: 110, low: 90, close: 105, volume: 10 }, 0, freshState, config);
+        assert(bull.observation.features['CandleDirection'] === 1, 'Bullish direction failed');
+        assert(bull.observation.features['CandleRange'] === 20, 'Bullish range failed');
+        assert(bull.observation.features['BodySize'] === 5, 'Bullish body size failed');
+        
+        // Bearish
+        const bear = stepML1Features({ time: 1000, open: 105, high: 110, low: 90, close: 100, volume: 10 }, 0, freshState, config);
+        assert(bear.observation.features['CandleDirection'] === -1, 'Bearish direction failed');
+        
+        // Doji
+        const doji = stepML1Features({ time: 1000, open: 100, high: 110, low: 90, close: 100, volume: 10 }, 0, freshState, config);
+        assert(doji.observation.features['CandleDirection'] === 0, 'Doji direction failed');
+        assert(doji.observation.validity['CloseLocation'] === true, 'Doji CloseLocation should be valid (range > 0)');
+    });
+
+    run2BTest('Wicks and Anatomy Ratios', () => {
+        const res = stepML1Features({ time: 1000, open: 10, high: 20, low: 0, close: 15, volume: 10 }, 0, freshState, config);
+        // Range = 20, Body = 5. UpperWick = 20 - 15 = 5. LowerWick = 10 - 0 = 10.
+        assert(res.observation.features['UpperWick'] === 5, 'UpperWick failed');
+        assert(res.observation.features['LowerWick'] === 10, 'LowerWick failed');
+        assert(res.observation.features['CloseLocation'] === 0.75, 'CloseLocation failed (15-0)/20');
+        assert(res.observation.features['BodyToRange'] === 0.25, 'BodyToRange failed (5/20)');
+        assert(res.observation.features['UpperWickRatio'] === 0.25, 'UpperWickRatio failed (5/20)');
+        assert(res.observation.features['LowerWickRatio'] === 0.50, 'LowerWickRatio failed (10/20)');
+    });
+
+    run2BTest('Flat Candle Zero-Division Protection', () => {
+        const flat = stepML1Features({ time: 1000, open: 100, high: 100, low: 100, close: 100, volume: 10 }, 0, freshState, config);
+        assert(flat.observation.features['CandleRange'] === 0, 'Flat range failed');
+        assert(flat.observation.features['CloseLocation'] === 0, 'Flat CloseLocation must safely return 0');
+        assert(flat.observation.validity['CloseLocation'] === false, 'Flat CloseLocation MUST be marked invalid');
+    });
+
+    run2BTest('Extreme Finite Value Safeguard', () => {
+        // Produces Infinity on subtraction: MAX_VALUE - (-MAX_VALUE)
+        const extreme = stepML1Features({ 
+            time: 1000, 
+            open: -Number.MAX_VALUE, 
+            high: Number.MAX_VALUE, 
+            low: -Number.MAX_VALUE, 
+            close: Number.MAX_VALUE, 
+            volume: 10 
+        }, 0, freshState, config);
+        
+        assert(extreme.observation.features['CandleRange'] === 0, 'Infinite range must fallback to 0');
+        assert(extreme.observation.validity['CandleRange'] === false, 'Infinite range MUST be invalid');
+        assert(extreme.observation.features['CloseLocation'] === 0, 'Derived ratio from Infinity must fallback to 0');
+    });
+
+    run2BTest('Duplicate Timestamp Anatomy Decoupling', () => {
+        // First accepted candle
+        const state1 = stepML1Features(validCandle(100000), 0, freshState, config).nextState;
+        
+        // Duplicate timestamp candle, but with different valid OHLC
+        const dupCandle = { time: 100000, open: 200, high: 220, low: 180, close: 210, volume: 50 };
+        const dupRes = stepML1Features(dupCandle, 0, state1, config);
+        
+        // Assert state was rejected (did not advance)
+        assert(dupRes.nextState === state1, 'Duplicate timestamp advanced state incorrectly');
+        // Assert anatomy was STILL calculated successfully
+        assert(dupRes.observation.features['CandleRange'] === 40, 'Anatomy not calculated for duplicate candle');
+        assert(dupRes.observation.validity['CandleRange'] === true, 'Anatomy validity incorrect for duplicate candle');
+    });
+
+    console.log(`\n=======================================`);
+    console.log(`📊 ML-R1 PHASE 2B FINAL AUDIT:`);
+    console.log(`   ↳ Tests Executed:  ${passed2B + failed2B}`);
+    console.log(`   ↳ Tests Passed:    ${passed2B}`);
+    console.log(`   ↳ Tests Failed:    ${failed2B}`);
+    console.log(`=======================================\n`);
+
+    if (failed2B === 0) {
+        console.log('✅ ALL PHASE 2B TESTS PASSED. Candle Anatomy is secure and decoupled.\n🔒 Phase 2B FROZEN.');
+        return true;
+    } else {
+        console.error('❌ PHASE 2B TESTS FAILED. DO NOT PROCEED TO PHASE 2C.');
         return false;
     }
-
-    return true;
 }

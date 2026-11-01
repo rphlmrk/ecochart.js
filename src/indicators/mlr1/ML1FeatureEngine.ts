@@ -113,7 +113,7 @@ export function stepML1Features(
         throw new Error(`State Integrity Error: Partial state detected. Index, Timestamp, and Close must all be null or all be populated.`);
     }
 
-    if (hasIdx && !Number.isSafeInteger(previousState.lastBarIndex)) {
+    if (hasIdx && (!Number.isSafeInteger(previousState.lastBarIndex) || previousState.lastBarIndex! < 0)) {
         throw new Error(`State Integrity Error: Corrupted lastBarIndex in restored state.`);
     }
     if (hasTs && !Number.isFinite(previousState.lastTimestamp)) {
@@ -143,7 +143,14 @@ export function stepML1Features(
     features['IsZeroVolume'] = isZeroVolume ? 1 : 0;
     validity['IsZeroVolume'] = isValidOhlcv;
 
-    // 3. Independent Index Validation
+    // 3. Phase 2B: Candle Anatomy (Calculated independently of state acceptance)
+    if (isValidOhlcv) {
+        const anatomy = calculateCandleAnatomy(candle);
+        Object.assign(features, anatomy.features);
+        Object.assign(validity, anatomy.validity);
+    }
+
+    // 4. Independent Index Validation
     const isSafeIndex = Number.isSafeInteger(barIndex) && barIndex >= 0;
     let isInvalidIndex = !isSafeIndex;
     
@@ -156,7 +163,7 @@ export function stepML1Features(
     features['IsInvalidIndex'] = isInvalidIndex ? 1 : 0;
     validity['IsInvalidIndex'] = true;
 
-    // 4. Chronology & Gap Detection
+    // 5. Chronology & Gap Detection
     let hasDataGap = false;
     let isDiscontinuity = false;
     let isDuplicate = false;
@@ -200,18 +207,14 @@ export function stepML1Features(
     features['IsOutOfOrder'] = isOutOfOrder ? 1 : 0;
     validity['IsOutOfOrder'] = previousState.lastTimestamp !== null;
 
-    // 5. State Rejection Gate
+    // 6. State Rejection Gate
     const isRejected = !isValidOhlcv || isDuplicate || isOutOfOrder || isInvalidIndex || isUnexpectedInterval;
 
     if (!isRejected) {
         // -------------------------------------------------------------
-        // Phase 2B: Candle Anatomy
+        // Future phases (2C-2F) will calculate rolling indicators and mutate 
+        // `features`, `validity`, and build sub-state replacements here.
         // -------------------------------------------------------------
-        const anatomy = calculateCandleAnatomy(candle);
-        Object.assign(features, anatomy.features);
-        Object.assign(validity, anatomy.validity);
-
-        // Future phases (2C-2F) integrations will go here...
     }
 
     // 6. Assemble final observation
