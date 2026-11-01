@@ -71,7 +71,7 @@ export function validateML1Config(config: any): ValidatedML1FeatureConfig {
  */
 export function createInitialML1FeatureState(): ML1FeatureState {
     return Object.freeze({
-        stateVersion: 1,
+        stateVersion: 2, // Version 2: Enforces Phase 2D EMA state schema
         lastBarIndex: null,
         lastTimestamp: null,
         lastClose: null,
@@ -110,8 +110,8 @@ export function stepML1Features(
     nextState: ML1FeatureState;
 } {
     // 1. Strict Contract Enforcements & Restored State Consistency
-    if (!previousState || previousState.stateVersion !== 1) {
-        throw new Error(`State Integrity Error: Incompatible state version or malformed state.`);
+    if (!previousState || previousState.stateVersion !== 2) {
+        throw new Error(`State Integrity Error: Incompatible state version. Expected 2, got ${previousState?.stateVersion}.`);
     }
     
     const hasIdx = previousState.lastBarIndex !== null;
@@ -224,8 +224,8 @@ export function stepML1Features(
             throw new Error(`State Integrity Error: Corrupted isSeeded in emaState for period ${period}.`);
         }
         if (eState.isSeeded) {
-            if (eState.count < period || !Number.isFinite(eState.ema)) {
-                throw new Error(`State Integrity Error: Inconsistent seeded EMA in emaState for period ${period}.`);
+            if (eState.count < period || eState.ema === null || !Number.isFinite(eState.ema)) {
+                throw new Error(`State Integrity Error: Seeded EMA must have count >= ${period} and finite non-null ema for period ${period}.`);
             }
         } else {
             if (eState.count >= period) {
@@ -235,11 +235,16 @@ export function stepML1Features(
                 throw new Error(`State Integrity Error: Unseeded EMA must have ema === null for period ${period}.`);
             }
         }
-        if (!Array.isArray(eState.history)) {
-            throw new Error(`State Integrity Error: Malformed history in emaState for period ${period}.`);
+        if (!Array.isArray(eState.history) || eState.history.length > 11) {
+            throw new Error(`State Integrity Error: History in emaState must be an array of length <= 11 for period ${period}.`);
         }
-        if (!Number.isSafeInteger(eState.unbrokenRun) || eState.unbrokenRun < 0) {
-            throw new Error(`State Integrity Error: Corrupted unbrokenRun in emaState for period ${period}.`);
+        for (let h = 0; h < eState.history.length; h++) {
+            if (!Number.isFinite(eState.history[h])) {
+                throw new Error(`State Integrity Error: Non-finite value in emaState history for period ${period}.`);
+            }
+        }
+        if (!Number.isSafeInteger(eState.unbrokenRun) || eState.unbrokenRun < 0 || eState.unbrokenRun > eState.count) {
+            throw new Error(`State Integrity Error: Corrupted unbrokenRun (${eState.unbrokenRun} > count ${eState.count}) in emaState for period ${period}.`);
         }
     }
 

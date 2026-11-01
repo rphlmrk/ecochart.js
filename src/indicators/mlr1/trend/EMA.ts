@@ -80,27 +80,42 @@ export function updateEMA(
         };
     }
 
-    // 2. Wilder/EMA recursive update: EMA_t = EMA_{t-1} + alpha * (Close_t - EMA_{t-1})
+    // 2. Convex combination recurrence: EMA_t = prevEma * (1 - alpha) + close * alpha
+    // Numerically superior to prevEma + alpha * (close - prevEma) by avoiding intermediate subtraction overflow
     const alpha = 2 / (period + 1);
     const prevEma = prevState.ema!;
-    const nextEma = prevEma + alpha * (close - prevEma);
+    const nextEma = prevEma * (1 - alpha) + close * alpha;
     const isValidEma = Number.isFinite(nextEma);
 
-    const nextHistory = isValidEma
-        ? Object.freeze([...prevState.history, nextEma].slice(-11)) // Retain 11 entries for up to 10-period lookback
-        : prevState.history;
+    if (!isValidEma) {
+        // Calculation overflow/failure: reset to a consistent unseeded state to avoid corrupting the state machine
+        return {
+            nextState: Object.freeze({
+                count: 0,
+                seedMean: 0,
+                ema: null,
+                isSeeded: false,
+                history: Object.freeze([]),
+                unbrokenRun: 0
+            }),
+            emaValue: 0,
+            isValid: false
+        };
+    }
+
+    const nextHistory = Object.freeze([...prevState.history, nextEma].slice(-11));
 
     return {
         nextState: Object.freeze({
             count: prevState.count + 1,
             seedMean: prevState.seedMean,
-            ema: isValidEma ? nextEma : prevEma,
-            isSeeded: isValidEma,
+            ema: nextEma,
+            isSeeded: true,
             history: nextHistory,
             unbrokenRun: nextUnbrokenRun
         }),
-        emaValue: isValidEma ? nextEma : 0,
-        isValid: isValidEma
+        emaValue: nextEma,
+        isValid: true
     };
 }
 
