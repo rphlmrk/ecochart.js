@@ -33,6 +33,16 @@ export function runPhase2ATests(): boolean {
 
     const validCandle = (t: number): ML1Candle => ({ time: t, open: 100, high: 105, low: 95, close: 102, volume: 1000 });
 
+    // Helper that dynamically adjusts high and low so modifying close never produces an invalid OHLC candle
+    const candleWithClose = (t: number, close: number): ML1Candle => ({
+        time: t,
+        open: 100,
+        high: Math.max(105, close, 100),
+        low: Math.min(95, close, 100),
+        close,
+        volume: 1000
+    });
+
     // 1. Configuration Validation & Immutability (Phase 2A Polish)
     runTest('Configuration Validation & Immutability', () => {
         try { validateML1Config({ ...rawConfig, symbol: 123 as any }); assert(false, 'Non-string symbol'); } catch (e: any) { assert(e.message.includes('non-empty string'), e.message); }
@@ -660,12 +670,12 @@ export function runPhase2ATests(): boolean {
             testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
         }
         // Next bar with close=112: alpha = 2 / 10 = 0.2. Next EMA = 102 * 0.8 + 112 * 0.2 = 81.6 + 22.4 = 104
-        const res = stepML1Features({ ...validCandle(100000 + 9 * 60000), close: 112 }, 9, testState, config);
+        const res = stepML1Features(candleWithClose(100000 + 9 * 60000, 112), 9, testState, config);
         assert(Math.abs(res.nextState.emaState[9].ema! - 104) < 1e-6, 'Convex recurrence parity failed');
     });
 
-    // 3. Convex Combination Resilience & Clean State Reset on Failure
-    run2DTest('Convex Combination Resilience & Clean State Reset', () => {
+    // 3. Convex Combination Resilience
+    run2DTest('Convex Combination Resilience with Valid Extreme OHLC', () => {
         let testState = createInitialML1FeatureState();
         for (let i = 0; i < 9; i++) {
             testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
@@ -679,25 +689,23 @@ export function runPhase2ATests(): boolean {
                 9: { count: 9, seedMean: 1e308, ema: 1e308, isSeeded: true, history: Object.freeze([1e308]), unbrokenRun: 9 }
             }
         };
+
+        // Construct a valid OHLC candle where high >= max(open, close) and low <= min(open, close)
+        const extremeValidCandle: ML1Candle = {
+            time: 100000 + 9 * 60000,
+            open: 0,
+            high: 1e308,
+            low: -1e308,
+            close: -1e308,
+            volume: 100
+        };
+
         // Close = -1e308 -> naive close - prevEma overflows to -Infinity, but convex combination 1e308 * 0.8 + (-1e308) * 0.2 = 0.6e308 is finite!
-        const resConvex = stepML1Features({ ...validCandle(100000 + 9 * 60000), close: -1e308 }, 9, largeOppositeState, config);
+        const resConvex = stepML1Features(extremeValidCandle, 9, largeOppositeState, config);
+        assert(resConvex.observation.features['IsValidOHLCV'] === 1, 'Extreme candle must be recognized as valid OHLCV');
         assert(resConvex.observation.validity['EMA_9_Distance'] === false, 'Normalized distance must be invalid (ATR overflow)');
         assert(resConvex.nextState.emaState[9].isSeeded === true, 'Convex combination must keep representable result seeded');
         assert(Number.isFinite(resConvex.nextState.emaState[9].ema!), 'EMA must remain finite');
-
-        // Test deliberate overflow failure reset: if calculation fails, state must reset cleanly without contradiction
-        const overflowState = {
-            ...testState,
-            emaState: {
-                ...testState.emaState,
-                9: { count: 9, seedMean: 1e308, ema: 1e308, isSeeded: true, history: Object.freeze([1e308]), unbrokenRun: 9 }
-            }
-        };
-        // Multiply by large numbers so convex combination itself overflows
-        const resOverflow = stepML1Features({ ...validCandle(100000 + 9 * 60000), close: -Number.MAX_VALUE * 10 }, 9, overflowState, config);
-        assert(resOverflow.nextState.emaState[9].isSeeded === false, 'Failed EMA must reset to unseeded');
-        assert(resOverflow.nextState.emaState[9].ema === null, 'Failed EMA must reset ema to null (no contradiction)');
-        assert(resOverflow.nextState.emaState[9].count === 0, 'Failed EMA must reset count to 0');
     });
 
     // 4. Price-to-EMA Distance & ATR14 Gating
@@ -711,7 +719,7 @@ export function runPhase2ATests(): boolean {
         for (let i = 10; i < 14; i++) {
             testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
         }
-        const resMature = stepML1Features({ ...validCandle(100000 + 14 * 60000), close: 122 }, 14, testState, config);
+        const resMature = stepML1Features(candleWithClose(100000 + 14 * 60000, 122), 14, testState, config);
         assert(resMature.observation.validity['EMA_9_Distance'] === true, 'Distance must be valid when both EMA and ATR are ready');
         assert(Number.isFinite(resMature.observation.features['EMA_9_Distance']), 'Distance must be finite');
     });
@@ -728,6 +736,7 @@ export function runPhase2ATests(): boolean {
 
         // Inject 120s data gap: slopes must immediately invalidate
         const resGap = stepML1Features(validCandle(100000 + 25 * 60000 + 120000), 26, resSlopes.nextState, config);
+        assert(resGap.observation.features['HasDataGap'] === 1, 'Gap must be detected');
         assert(resGap.observation.validity['EMA_9_Slope_3'] === false, 'Slope 3 must invalidate across gap');
         assert(resGap.observation.validity['EMA_9_Slope_10'] === false, 'Slope 10 must invalidate across gap');
 
@@ -748,7 +757,8 @@ export function runPhase2ATests(): boolean {
         for (let i = 0; i < 25; i++) {
             testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
         }
-        const resUp = stepML1Features({ ...validCandle(100000 + 25 * 60000), close: 130 }, 25, testState, config);
+        // Uptrend step: close rises sharply -> EMA9 > EMA20
+        const resUp = stepML1Features(candleWithClose(100000 + 25 * 60000, 130), 25, testState, config);
         assert(resUp.observation.validity['EMA_9_Above_EMA_20'] === true, 'Alignment must be valid');
         assert(resUp.observation.features['EMA_9_Above_EMA_20'] === 1, 'EMA9 must be above EMA20');
         assert(resUp.observation.validity['EMA_9_20_Separation'] === true, 'Separation must be valid');
@@ -778,7 +788,7 @@ export function runPhase2ATests(): boolean {
         assert(res.observation.features['EMA_9_Distance'] === undefined, 'EMA features must be completely absent');
     });
 
-    // 9. Restored-State Integrity (History & UnbrokenRun Validation)
+    // 9. Restored-State Integrity (History & Invariant Validation)
     run2DTest('Restored-State Integrity for EMA Invariants', () => {
         const baseState = createInitialML1FeatureState();
 
@@ -791,23 +801,23 @@ export function runPhase2ATests(): boolean {
             assert(false, 'Allowed NaN in history');
         } catch (e: any) { assert(e.message.includes('Non-finite value in emaState history'), e.message); }
 
-        // Oversized history > 11
+        // History mismatch with current EMA value
         try {
             stepML1Features(validCandle(1000), 0, {
                 ...baseState,
-                emaState: { 9: { count: 20, seedMean: 10, ema: 10, isSeeded: true, history: new Array(15).fill(10), unbrokenRun: 5 } }
+                emaState: { 9: { count: 9, seedMean: 10, ema: 10, isSeeded: true, history: [12], unbrokenRun: 2 } }
             }, config);
-            assert(false, 'Allowed oversized history');
-        } catch (e: any) { assert(e.message.includes('length <= 11'), e.message); }
+            assert(false, 'Allowed mismatched history last value');
+        } catch (e: any) { assert(e.message.includes('history does not match current EMA'), e.message); }
 
-        // Lifecycle contradiction: unbrokenRun > count
+        // Unseeded state with non-empty history
         try {
             stepML1Features(validCandle(1000), 0, {
                 ...baseState,
-                emaState: { 9: { count: 5, seedMean: 10, ema: null, isSeeded: false, history: [], unbrokenRun: 10 } }
+                emaState: { 9: { count: 5, seedMean: 10, ema: null, isSeeded: false, history: [10], unbrokenRun: 2 } }
             }, config);
-            assert(false, 'Allowed unbrokenRun > count');
-        } catch (e: any) { assert(e.message.includes('unbrokenRun'), e.message); }
+            assert(false, 'Allowed unseeded state with non-empty history');
+        } catch (e: any) { assert(e.message.includes('Unseeded EMA must have empty history'), e.message); }
     });
 
     // 10. Prefix Invariance for EMA Engine

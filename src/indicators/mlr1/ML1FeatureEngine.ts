@@ -223,9 +223,20 @@ export function stepML1Features(
         if (typeof eState.isSeeded !== 'boolean') {
             throw new Error(`State Integrity Error: Corrupted isSeeded in emaState for period ${period}.`);
         }
+        if (!Array.isArray(eState.history) || eState.history.length > 11) {
+            throw new Error(`State Integrity Error: History in emaState must be an array of length <= 11 for period ${period}.`);
+        }
+        for (let h = 0; h < eState.history.length; h++) {
+            if (!Number.isFinite(eState.history[h])) {
+                throw new Error(`State Integrity Error: Non-finite value in emaState history for period ${period}.`);
+            }
+        }
         if (eState.isSeeded) {
             if (eState.count < period || eState.ema === null || !Number.isFinite(eState.ema)) {
                 throw new Error(`State Integrity Error: Seeded EMA must have count >= ${period} and finite non-null ema for period ${period}.`);
+            }
+            if (eState.history.length === 0 || eState.history[eState.history.length - 1] !== eState.ema) {
+                throw new Error(`State Integrity Error: EMA history does not match current EMA for period ${period}.`);
             }
         } else {
             if (eState.count >= period) {
@@ -234,13 +245,8 @@ export function stepML1Features(
             if (eState.ema !== null) {
                 throw new Error(`State Integrity Error: Unseeded EMA must have ema === null for period ${period}.`);
             }
-        }
-        if (!Array.isArray(eState.history) || eState.history.length > 11) {
-            throw new Error(`State Integrity Error: History in emaState must be an array of length <= 11 for period ${period}.`);
-        }
-        for (let h = 0; h < eState.history.length; h++) {
-            if (!Number.isFinite(eState.history[h])) {
-                throw new Error(`State Integrity Error: Non-finite value in emaState history for period ${period}.`);
+            if (eState.history.length !== 0) {
+                throw new Error(`State Integrity Error: Unseeded EMA must have empty history for period ${period}.`);
             }
         }
         if (!Number.isSafeInteger(eState.unbrokenRun) || eState.unbrokenRun < 0 || eState.unbrokenRun > eState.count) {
