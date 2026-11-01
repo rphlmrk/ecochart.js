@@ -1031,6 +1031,15 @@ export function runPhase2ATests(): boolean {
             assert(false, 'Allowed inconsistent unbrokenRun before capacity');
         } catch (e: any) { assert(e.message.includes('Inconsistent momentumState history and unbrokenRun before capacity'), e.message); }
 
+        // Saturated history with run shorter than history length (run 20 < length 21)
+        try {
+            stepML1Features(validCandle(1000), 0, {
+                ...baseState,
+                momentumState: { closeHistory: new Array(21).fill(100), unbrokenRun: 20 }
+            }, config);
+            assert(false, 'Allowed saturated history with run shorter than history');
+        } catch (e: any) { assert(e.message.includes('unbrokenRun cannot be smaller than closeHistory length'), e.message); }
+
         // Fully saturated history (21 bars) with unbrokenRun > 21 (e.g. 50 bars) MUST BE PERMITTED!
         const saturatedState = {
             ...baseState,
