@@ -11,6 +11,8 @@ import type {
 import { calculateCandleAnatomy } from './candle/CandleAnatomy';
 import { updateWilderATR } from './volatility/ATR';
 import { updateRollingRange } from './volatility/RollingRange';
+import { updateEMA, calculateEMASlope } from './trend/EMA';
+import type { EMAPeriodState } from './ML1FeatureTypes';
 
 /**
  * Validates the global configuration and returns a frozen, immutable defensive copy.
@@ -74,7 +76,8 @@ export function createInitialML1FeatureState(): ML1FeatureState {
         lastTimestamp: null,
         lastClose: null,
         atrState: Object.freeze({}),
-        rollingRangeState: Object.freeze({})
+        rollingRangeState: Object.freeze({}),
+        emaState: Object.freeze({})
     });
 }
 
@@ -195,6 +198,51 @@ export function stepML1Features(
         }
     }
 
+    // Validate restored Phase 2D EMA state
+    if (!previousState.emaState || typeof previousState.emaState !== 'object') {
+        throw new Error(`State Integrity Error: Missing or malformed emaState container.`);
+    }
+
+    for (const [periodStr, eState] of Object.entries(previousState.emaState)) {
+        const period = Number(periodStr);
+        if (!Number.isSafeInteger(period) || period <= 0) {
+            throw new Error(`State Integrity Error: Invalid period key '${periodStr}' in emaState.`);
+        }
+        if (!config.emaPeriods.includes(period)) {
+            throw new Error(`State Integrity Error: Unexpected period key '${periodStr}' in emaState not found in configuration.`);
+        }
+        if (!eState || typeof eState !== 'object') {
+            throw new Error(`State Integrity Error: Malformed emaState for period ${period}.`);
+        }
+        if (!Number.isSafeInteger(eState.count) || eState.count < 0) {
+            throw new Error(`State Integrity Error: Corrupted count in emaState for period ${period}.`);
+        }
+        if (!Number.isFinite(eState.seedMean)) {
+            throw new Error(`State Integrity Error: Corrupted seedMean in emaState for period ${period}.`);
+        }
+        if (typeof eState.isSeeded !== 'boolean') {
+            throw new Error(`State Integrity Error: Corrupted isSeeded in emaState for period ${period}.`);
+        }
+        if (eState.isSeeded) {
+            if (eState.count < period || !Number.isFinite(eState.ema)) {
+                throw new Error(`State Integrity Error: Inconsistent seeded EMA in emaState for period ${period}.`);
+            }
+        } else {
+            if (eState.count >= period) {
+                throw new Error(`State Integrity Error: Unseeded state cannot have completed count ${eState.count} >= ${period}.`);
+            }
+            if (eState.ema !== null) {
+                throw new Error(`State Integrity Error: Unseeded EMA must have ema === null for period ${period}.`);
+            }
+        }
+        if (!Array.isArray(eState.history)) {
+            throw new Error(`State Integrity Error: Malformed history in emaState for period ${period}.`);
+        }
+        if (!Number.isSafeInteger(eState.unbrokenRun) || eState.unbrokenRun < 0) {
+            throw new Error(`State Integrity Error: Corrupted unbrokenRun in emaState for period ${period}.`);
+        }
+    }
+
     const features: ML1FeatureValues = {};
     const validity: ML1FeatureValidity = {};
 
@@ -284,6 +332,7 @@ export function stepML1Features(
 
     const nextAtrState: Record<number, ATRPeriodState> = { ...previousState.atrState };
     const nextRollingRangeState: Record<number, RollingRangePeriodState> = { ...previousState.rollingRangeState };
+    const nextEmaState: Record<number, EMAPeriodState> = { ...previousState.emaState };
 
     if (!isRejected) {
         // -------------------------------------------------------------
@@ -396,6 +445,86 @@ export function stepML1Features(
             features['BodyToATR20'] = 0;
             validity['BodyToATR20'] = false;
         }
+
+        // -------------------------------------------------------------
+        // Phase 2D: Causal EMA Context Engine
+        // -------------------------------------------------------------
+        const atr14Val = features['ATR_14'];
+        const isAtr14Usable = validity['ATR_14'] === true && Number.isFinite(atr14Val) && atr14Val > 0;
+
+        for (const period of config.emaPeriods) {
+            const res = updateEMA(
+                candle.close,
+                period,
+                previousState.emaState[period],
+                isDiscontinuity,
+                hasDataGap
+            );
+
+            nextEmaState[period] = res.nextState;
+
+            // Normalized Price-to-EMA Distance: (Close - EMA) / ATR14
+            const dist = (res.isValid && isAtr14Usable) ? (candle.close - res.emaValue) / atr14Val : NaN;
+            const isDistValid = Number.isFinite(dist);
+            features[`EMA_${period}_Distance`] = isDistValid ? dist : 0;
+            validity[`EMA_${period}_Distance`] = isDistValid;
+
+            // EMA Slopes (Horizons k=3 and k=10)
+            const slope3 = calculateEMASlope(res.nextState.history, 3, atr14Val, res.nextState.unbrokenRun);
+            features[`EMA_${period}_Slope_3`] = slope3.isValid ? slope3.slope : 0;
+            validity[`EMA_${period}_Slope_3`] = slope3.isValid;
+
+            const slope10 = calculateEMASlope(res.nextState.history, 10, atr14Val, res.nextState.unbrokenRun);
+            features[`EMA_${period}_Slope_10`] = slope10.isValid ? slope10.slope : 0;
+            validity[`EMA_${period}_Slope_10`] = slope10.isValid;
+        }
+
+        // Pairwise EMA Relationships (Sorted adjacent pairs, e.g., 9-20, 20-50, etc.)
+        const sortedPeriods = [...config.emaPeriods].sort((a, b) => a - b);
+        for (let p = 0; p < sortedPeriods.length - 1; p++) {
+            const p1 = sortedPeriods[p];
+            const p2 = sortedPeriods[p + 1];
+
+            const ema1 = nextEmaState[p1]?.ema;
+            const ema2 = nextEmaState[p2]?.ema;
+            const bothValid = nextEmaState[p1]?.isSeeded && nextEmaState[p2]?.isSeeded && Number.isFinite(ema1) && Number.isFinite(ema2);
+
+            // 1. Directional Alignment: +1 if Fast > Slow, -1 if Fast < Slow, 0 if equal
+            let alignment = 0;
+            if (bothValid) {
+                alignment = ema1! > ema2! ? 1 : (ema1! < ema2! ? -1 : 0);
+            }
+            features[`EMA_${p1}_Above_EMA_${p2}`] = alignment;
+            validity[`EMA_${p1}_Above_EMA_${p2}`] = bothValid;
+
+            // 2. Normalized Separation: (EMA_Fast - EMA_Slow) / ATR14
+            const sep = (bothValid && isAtr14Usable) ? (ema1! - ema2!) / atr14Val : NaN;
+            const isSepValid = Number.isFinite(sep);
+            features[`EMA_${p1}_${p2}_Separation`] = isSepValid ? sep : 0;
+            validity[`EMA_${p1}_${p2}_Separation`] = isSepValid;
+
+            // 3. Spread Change: Current Separation - Previous Separation
+            const prevEma1 = previousState.emaState[p1]?.ema;
+            const prevEma2 = previousState.emaState[p2]?.ema;
+            const prevAtr14 = previousState.atrState[14]?.atr;
+            const prevAtrUsable = previousState.atrState[14]?.isSeeded && Number.isFinite(prevAtr14) && prevAtr14! > 0;
+            const prevBothValid = previousState.emaState[p1]?.isSeeded && previousState.emaState[p2]?.isSeeded && Number.isFinite(prevEma1) && Number.isFinite(prevEma2);
+
+            let spreadChange = 0;
+            let isSpreadChangeValid = false;
+
+            if (isSepValid && prevBothValid && prevAtrUsable && !hasDataGap && !isDiscontinuity) {
+                const prevSep = (prevEma1! - prevEma2!) / prevAtr14!;
+                const diff = sep - prevSep;
+                if (Number.isFinite(diff)) {
+                    spreadChange = diff;
+                    isSpreadChangeValid = true;
+                }
+            }
+
+            features[`EMA_SpreadChange_${p1}_${p2}`] = isSpreadChangeValid ? spreadChange : 0;
+            validity[`EMA_SpreadChange_${p1}_${p2}`] = isSpreadChangeValid;
+        }
     }
 
     // 6. Assemble final observation
@@ -422,7 +551,8 @@ export function stepML1Features(
             lastTimestamp: candle.time,
             lastClose: candle.close,
             atrState: Object.freeze(nextAtrState),
-            rollingRangeState: Object.freeze(nextRollingRangeState)
+            rollingRangeState: Object.freeze(nextRollingRangeState),
+            emaState: Object.freeze(nextEmaState)
         });
 
     return { observation, nextState };

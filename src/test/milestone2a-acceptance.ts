@@ -605,9 +605,180 @@ export function runPhase2ATests(): boolean {
 
     if (failed2C === 0) {
         console.log('✅ ALL PHASE 2C TESTS PASSED. Volatility & Rolling Range Engine is verified.\n🔒 Phase 2C FROZEN.');
-        return true;
     } else {
         console.error('❌ PHASE 2C TESTS FAILED. DO NOT PROCEED TO PHASE 2D.');
+        return false;
+    }
+
+    // ====================================================================
+    // Phase 2D: Causal EMA Context Acceptance Suite
+    // ====================================================================
+    console.log('\n🧪 Starting Phase 2D Acceptance Tests...');
+    let passed2D = 0;
+    let failed2D = 0;
+
+    const run2DTest = (name: string, testFn: () => void) => {
+        try {
+            testFn();
+            passed2D++;
+            console.log(`  ✅ Passed: ${name}`);
+        } catch (e: any) {
+            failed2D++;
+            console.error(`  ❌ Failed: ${name} - ${e.message}`);
+        }
+    };
+
+    // 1. EMA Warmup Boundary & Incremental Mean Seed
+    run2DTest('EMA Warmup Boundary & Incremental Mean Seed (Periods 9 and 20)', () => {
+        let testState = createInitialML1FeatureState();
+
+        // Feed 8 bars: EMA 9 must be unseeded
+        for (let i = 0; i < 8; i++) {
+            const res = stepML1Features(validCandle(100000 + i * 60000), i, testState, config);
+            assert(res.nextState.emaState[9].isSeeded === false, `EMA 9 should be unseeded at bar ${i}`);
+            testState = res.nextState;
+        }
+
+        // 9th bar (index 8): EMA 9 seeds
+        const res9 = stepML1Features(validCandle(100000 + 8 * 60000), 8, testState, config);
+        assert(res9.nextState.emaState[9].isSeeded === true, 'EMA 9 must be seeded on bar 8');
+        assert(res9.nextState.emaState[20].isSeeded === false, 'EMA 20 must remain unseeded on bar 8');
+        testState = res9.nextState;
+
+        // Feed until bar index 19: EMA 20 seeds
+        for (let i = 9; i < 19; i++) {
+            testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
+        }
+        const res20 = stepML1Features(validCandle(100000 + 19 * 60000), 19, testState, config);
+        assert(res20.nextState.emaState[20].isSeeded === true, 'EMA 20 must be seeded on bar 19');
+    });
+
+    // 2. Numerically Stable Recursive Smoothing Formula
+    run2DTest('Recursive EMA Smoothing Calculation Parity', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 9; i++) {
+            testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
+        }
+        const initialEma9 = testState.emaState[9].ema!;
+        assert(initialEma9 === 102, 'Initial SMA seed for close=102 must be 102');
+
+        // Next bar with close=112: alpha = 2 / (9 + 1) = 0.2
+        // Next EMA = 102 + 0.2 * (112 - 102) = 104
+        const res = stepML1Features({ ...validCandle(100000 + 9 * 60000), high: 115, close: 112 }, 9, testState, config);
+        assert(Math.abs(res.nextState.emaState[9].ema! - 104) < 1e-6, 'EMA recursive update failed parity check');
+    });
+
+    // 3. Price-to-EMA Distance & ATR Gating
+    run2DTest('Price-to-EMA Distance & ATR14 Gating', () => {
+        let testState = createInitialML1FeatureState();
+
+        // Feed 10 bars: EMA 9 is seeded, but ATR 14 is NOT yet seeded
+        for (let i = 0; i < 10; i++) {
+            const res = stepML1Features(validCandle(100000 + i * 60000), i, testState, config);
+            assert(res.observation.validity['EMA_9_Distance'] === false, 'EMA_9_Distance must be invalid before ATR14 seeds');
+            assert(res.observation.features['EMA_9_Distance'] === 0, 'Distance must fallback to 0');
+            testState = res.nextState;
+        }
+
+        // Advance past ATR14 warmup (bar 13)
+        for (let i = 10; i < 14; i++) {
+            testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
+        }
+        const resMature = stepML1Features({ ...validCandle(100000 + 14 * 60000), high: 125, close: 122 }, 14, testState, config);
+        // Distance: (122 - EMA9) / ATR14. Must be valid and finite.
+        assert(resMature.observation.validity['EMA_9_Distance'] === true, 'Distance must be valid when both EMA and ATR are ready');
+        assert(Number.isFinite(resMature.observation.features['EMA_9_Distance']), 'Distance must be finite');
+    });
+
+    // 4. EMA Slopes (k=3, k=10) & Gap Invalidation
+    run2DTest('EMA Slopes (k=3, k=10) & Gap Invalidation Policy', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 25; i++) {
+            testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
+        }
+        const resSlopes = stepML1Features(validCandle(100000 + 25 * 60000), 25, testState, config);
+        assert(resSlopes.observation.validity['EMA_9_Slope_3'] === true, 'Slope 3 must be valid after 25 consecutive bars');
+        assert(resSlopes.observation.validity['EMA_9_Slope_10'] === true, 'Slope 10 must be valid after 25 consecutive bars');
+
+        // Inject 120s data gap: EMA levels continue, but slope horizon is broken -> slopes invalid!
+        const resGap = stepML1Features(validCandle(100000 + 25 * 60000 + 120000), 26, resSlopes.nextState, config);
+        assert(resGap.observation.features['HasDataGap'] === 1, 'Gap must be detected');
+        assert(resGap.observation.validity['EMA_9_Slope_3'] === false, 'Slope 3 must be invalid across gap');
+        assert(resGap.observation.validity['EMA_9_Slope_10'] === false, 'Slope 10 must be invalid across gap');
+    });
+
+    // 5. Pairwise Separation, Alignment & Spread Change
+    run2DTest('Pairwise Relationships, Alignment & Spread Change', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 25; i++) {
+            testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
+        }
+        // Uptrend step: close rises sharply -> EMA9 > EMA20
+        const resUp = stepML1Features({ ...validCandle(100000 + 25 * 60000), high: 135, close: 130 }, 25, testState, config);
+        assert(resUp.observation.validity['EMA_9_Above_EMA_20'] === true, 'Alignment must be valid');
+        assert(resUp.observation.features['EMA_9_Above_EMA_20'] === 1, 'EMA9 must be above EMA20');
+        assert(resUp.observation.validity['EMA_9_20_Separation'] === true, 'Separation must be valid');
+        assert(resUp.observation.features['EMA_9_20_Separation'] > 0, 'Separation must be positive');
+        assert(resUp.observation.validity['EMA_SpreadChange_9_20'] === true, 'SpreadChange must be valid');
+    });
+
+    // 6. Major Discontinuity Reset Policy on EMA
+    run2DTest('Discontinuity Reset Policy on EMA Context', () => {
+        let testState = createInitialML1FeatureState();
+        for (let i = 0; i < 25; i++) {
+            testState = stepML1Features(validCandle(100000 + i * 60000), i, testState, config).nextState;
+        }
+        assert(testState.emaState[9].isSeeded === true, 'EMA9 must be seeded');
+
+        // Inject 10-minute gap (> 300,000ms threshold)
+        const resDisc = stepML1Features(validCandle(100000 + 24 * 60000 + 600000), 25, testState, config);
+        assert(resDisc.observation.features['IsDiscontinuity'] === 1, 'Discontinuity must be flagged');
+        assert(resDisc.nextState.emaState[9].isSeeded === false, 'EMA must reset to unseeded on discontinuity');
+        assert(resDisc.nextState.emaState[9].count === 1, 'EMA count must reset to 1');
+    });
+
+    // 7. Empty EMA Period Array (Ablation Configuration A)
+    run2DTest('Empty EMA Periods Array Ablation Compatibility', () => {
+        const ablationConfig = validateML1Config({ ...rawConfig, emaPeriods: [] });
+        const res = stepML1Features(validCandle(100000), 0, createInitialML1FeatureState(), ablationConfig);
+        assert(Object.keys(res.nextState.emaState).length === 0, 'No EMA sub-states should exist');
+        assert(res.observation.features['EMA_9_Distance'] === undefined, 'EMA features must be completely absent');
+    });
+
+    // 8. Restored-State Integrity for EMA
+    run2DTest('Restored-State Integrity for EMA Container', () => {
+        const baseState = createInitialML1FeatureState();
+        // Unconfigured period key in emaState
+        try {
+            stepML1Features(validCandle(1000), 0, {
+                ...baseState,
+                emaState: { 777: { count: 0, seedMean: 0, ema: null, isSeeded: false, history: [], unbrokenRun: 0 } }
+            }, config);
+            assert(false, 'Allowed unconfigured period key in emaState');
+        } catch (e: any) { assert(e.message.includes('Unexpected period key'), e.message); }
+
+        // Corrupted negative count in emaState
+        try {
+            stepML1Features(validCandle(1000), 0, {
+                ...baseState,
+                emaState: { 9: { count: -5, seedMean: 0, ema: null, isSeeded: false, history: [], unbrokenRun: 0 } }
+            }, config);
+            assert(false, 'Allowed negative count in emaState');
+        } catch (e: any) { assert(e.message.includes('Corrupted count in emaState'), e.message); }
+    });
+
+    console.log(`\n=======================================`);
+    console.log(`📊 ML-R1 PHASE 2D FINAL AUDIT:`);
+    console.log(`   ↳ Tests Executed:  ${passed2D + failed2D}`);
+    console.log(`   ↳ Tests Passed:    ${passed2D}`);
+    console.log(`   ↳ Tests Failed:    ${failed2D}`);
+    console.log(`=======================================\n`);
+
+    if (failed2D === 0) {
+        console.log('✅ ALL PHASE 2D TESTS PASSED. Causal EMA Context Engine is verified.\n🔒 Phase 2D FROZEN.');
+        return true;
+    } else {
+        console.error('❌ PHASE 2D TESTS FAILED. DO NOT PROCEED TO PHASE 2E.');
         return false;
     }
 }

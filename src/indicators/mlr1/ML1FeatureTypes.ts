@@ -63,15 +63,25 @@ export interface RollingRangePeriodState {
     readonly lows: readonly number[];
 }
 
+export interface EMAPeriodState {
+    readonly count: number;
+    readonly seedMean: number;
+    readonly ema: number | null;
+    readonly isSeeded: boolean;
+    readonly history: readonly number[]; // Trailing EMA values for slope calculations
+    readonly unbrokenRun: number;        // Consecutive expected-interval bars
+}
+
 export interface ML1FeatureState {
     readonly stateVersion: number;
     readonly lastBarIndex: number | null;
     readonly lastTimestamp: number | null;
     readonly lastClose: number | null;
 
-    // Phase 2C Sub-Module State
+    // Sub-Module States
     readonly atrState: Readonly<Record<number, ATRPeriodState>>;
     readonly rollingRangeState: Readonly<Record<number, RollingRangePeriodState>>;
+    readonly emaState: Readonly<Record<number, EMAPeriodState>>;
 }
 
 /**
