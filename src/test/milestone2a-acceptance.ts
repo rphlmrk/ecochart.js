@@ -657,10 +657,10 @@ export function runPhase2ATests(): boolean {
             if (i === 99) assert(res.nextState.emaState[100].isSeeded === true, 'EMA 100 seeded on bar 99');
             
             if (i < 199) assert(res.nextState.emaState[200].isSeeded === false, `EMA 200 unseeded at ${i}`);
+            if (i === 199) assert(res.nextState.emaState[200].isSeeded === true, 'EMA 200 must be seeded on bar 199');
+            
             testState = res.nextState;
         }
-        const res200 = stepML1Features(validCandle(100000 + 199 * 60000), 199, testState, config);
-        assert(res200.nextState.emaState[200].isSeeded === true, 'EMA 200 must be seeded on bar 199');
     });
 
     // 2. Numerically Stable Recursive Smoothing Formula Parity
