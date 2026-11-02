@@ -43,6 +43,7 @@ import { runPhase2ATests } from './test/milestone2a-acceptance';
 export { runPhase2ATests };
 import { runPhase2JTests } from './test/milestone2j-acceptance';
 import { generatePhase2JReports } from './analysis/ML1FeatureAuditGenerator';
+import type { ML1Candle } from './indicators/mlr1/ML1FeatureTypes';
 export { runPhase2JTests, generatePhase2JReports };
 
 export interface SavedPaneState {
@@ -2997,12 +2998,34 @@ export class WorkspaceManager {
         this.setupGlobalControls();
         AlertUI.init();
 
-        // Run ML-R1 Acceptance Tests & Phase 2J Audit Reports automatically
+        // Run ML-R1 Acceptance Tests & Phase 2J Audit Reports
         setTimeout(() => {
             const passedA = runPhase2ATests();
             const passedJ = runPhase2JTests();
+
             if (passedA && passedJ) {
-                generatePhase2JReports();
+                // Extract real historical candles from active chart if available
+                const activeChart = WorkspaceManager.getActiveChart();
+                let historicalCandles: ML1Candle[] | undefined = undefined;
+
+                if (activeChart && activeChart.dataStore.length > 50) {
+                    const ds = activeChart.dataStore;
+                    historicalCandles = [];
+                    for (let i = 0; i < ds.length; i++) {
+                        const b = i * 6;
+                        historicalCandles.push({
+                            time: ds.data[b],
+                            open: ds.data[b + 1],
+                            high: ds.data[b + 2],
+                            low: ds.data[b + 3],
+                            close: ds.data[b + 4],
+                            volume: ds.data[b + 5]
+                        });
+                    }
+                }
+
+                // Generates audit report on real historical feed if present; otherwise uses synthetic benchmark
+                generatePhase2JReports(historicalCandles);
                 console.log('🏆 MILESTONE 2 COMPLETE & FROZEN.');
             }
         }, 1000);

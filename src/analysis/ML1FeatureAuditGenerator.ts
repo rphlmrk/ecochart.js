@@ -1,68 +1,6 @@
 import { createInitialML1FeatureState, stepML1Features } from '../indicators/mlr1/ML1FeatureEngine';
 import { ML1_CONFIG_A, ML1_CONFIG_B } from '../indicators/mlr1/ML1FeatureConfigs';
-import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
-
-/**
- * Generates a deterministic sequence of candles for reproducible audit reports.
- * Prices trend up and down with some noise, volumes fluctuate.
- */
-function generateDeterministicDataset(count: number, seed = 42): ML1Candle[] {
-    const rng = new SeededRNG(seed);
-    let price = 1000;
-    let time = 1700000000000; // Jan 1, 2024 UTC
-
-    const candles: ML1Candle[] = [];
-
-    for (let i = 0; i < count; i++) {
-        // Introduce some price volatility and direction changes
-        const priceChange = Math.sin(i / 10) * 0.5 + (rng.next() - 0.5) * 0.2;
-        const open = price;
-        const close = open + priceChange;
-        const high = Math.max(open, close) + rng.next() * 0.5;
-        const low = Math.min(open, close) - rng.next() * 0.5;
-        
-        // Introduce some volume variability, including occasional zero volume
-        let volume = 100 + Math.abs(Math.sin(i / 5)) * 50 + (rng.next() - 0.5) * 20;
-        if (rng.next() < 0.005) volume = 0; // 0.5% chance of zero volume
-        if (rng.next() < 0.002) price = open; // 0.2% chance of flat candle
-
-        candles.push({ time, open, high, low, close, volume: Math.max(0, volume) });
-        price = close;
-        time += 60000; // 1-minute interval
-
-        // Introduce a major gap and then resume normal sequence
-        if (i === Math.floor(count / 2) && count > 50) {
-            time += ML1_CONFIG_A.gapDiscontinuityThresholdMs * 2; // Simulate a 10-minute gap (twice the threshold)
-        }
-        // Introduce an out-of-order candle
-        if (i === Math.floor(count / 4) && count > 50) {
-            candles.push({ ...candles[i], time: candles[i].time - 120000 }); // Out-of-order
-        }
-        // Introduce a duplicate candle
-        if (i === Math.floor(count / 3) && count > 50) {
-            candles.push({ ...candles[i], volume: candles[i].volume + 100 }); // Duplicate timestamp, different volume
-        }
-        // Introduce NaN close
-        if (i === Math.floor(count / 1.5) && count > 50) {
-            candles.push({ ...candles[i], close: NaN }); // Corrupted close
-        }
-    }
-    return candles.sort((a, b) => a.time - b.time); // Ensure final sorted chronology
-}
-
-// Fast, seedable Mulberry32 PRNG for reproducible test datasets
-class SeededRNG {
-    private s: number;
-    constructor(seed = 42) {
-        this.s = seed;
-    }
-    next(): number {
-        let t = (this.s += 0x6d2b79f5);
-        t = Math.imul(t ^ (t >>> 15), t | 1);
-        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    }
-}
+import type { ML1Candle, ValidatedML1FeatureConfig } from '../indicators/mlr1/ML1FeatureTypes';
 
 interface FeatureReport {
     featureName: string;
@@ -79,286 +17,333 @@ interface CorrelationReport {
     jointlyValidCount: number;
 }
 
-export function generatePhase2JReports(): void {
-    console.log(`\n=======================================`);
-    console.log(`📊 ML-R1 PHASE 2J AUDIT REPORTS`);
-    console.log(`=======================================\n`);
-
-    const DATASET_SIZE = 50_000; // Use a large dataset for meaningful statistics
-    const simulatedCandles = generateDeterministicDataset(DATASET_SIZE);
-
-    console.log(`Dataset: ${ML1_CONFIG_A.symbol} ${ML1_CONFIG_A.timeframe}`);
-    console.log(`Simulated Observations: ${simulatedCandles.length.toLocaleString()}`);
-    console.log(`\n--- Running Configuration A (EMA Ablated) ---`);
-    const resultsA = runConfigAndCollectMetrics(simulatedCandles, ML1_CONFIG_A, 'A');
-
-    console.log(`\n--- Running Configuration B (EMA Included) ---`);
-    const resultsB = runConfigAndCollectMetrics(simulatedCandles, ML1_CONFIG_B, 'B');
-
-    // --- REPORTING ---
-
-    // 1. Feature Coverage Report
-    console.log(`\n### 1. Feature Coverage Report`);
-    console.log(`\n#### Configuration A: Baseline`);
-    printFeatureCoverage(resultsA.featureReports);
-    console.log(`\n#### Configuration B: Full Context`);
-    printFeatureCoverage(resultsB.featureReports);
-
-    // 2. Warm-up Coverage Report
-    console.log(`\n### 2. Warm-up Coverage Report`);
-    console.log(`\n#### Configuration A: Baseline`);
-    printWarmupCoverage(resultsA.allObservations, resultsA.warmupInfo, resultsA.featureReports, ML1_CONFIG_A);
-    console.log(`\n#### Configuration B: Full Context`);
-    printWarmupCoverage(resultsB.allObservations, resultsB.warmupInfo, resultsB.featureReports, ML1_CONFIG_B);
-
-    // 3. Invalid-Value and Validity-Mask Audit
-    console.log(`\n### 3. Invalid-Value and Validity-Mask Audit`);
-    printInvalidValueAudit(resultsA.auditInfo, resultsB.auditInfo);
-
-    // 4. Correlation/Redundancy Report (Sample)
-    console.log(`\n### 4. Correlation/Redundancy Report (Sample)`);
-    printCorrelationReport(resultsB.allObservations, ML1_CONFIG_B);
+class SeededRNG {
+    private s: number;
+    constructor(seed = 42) {
+        this.s = seed;
+    }
+    next(): number {
+        let t = (this.s += 0x6d2b79f5);
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    }
 }
 
-function runConfigAndCollectMetrics(candles: ML1Candle[], config: typeof ML1_CONFIG_A, _configId: string) {
-    let state = createInitialML1FeatureState();
-    const allObservations: any[] = [];
-    let rejectedCount = 0;
-    let globalWarmupCompleteCount = 0;
-    const firstValidBar: Record<string, number> = {};
-    const invalidValueCounts: Record<string, number> = {};
+/**
+ * Creates a deterministic synthetic sequence preserving chronological flaws
+ * (out-of-order, duplicates, gaps, flat candles) without sorting them away.
+ */
+function generateDeterministicDataset(count: number, seed = 42): ML1Candle[] {
+    const rng = new SeededRNG(seed);
+    let price = 100.0;
+    let time = 1700000000000;
 
-    // Collect all possible feature keys to ensure consistent schema
-    let allFeatureKeys: Set<string> = new Set();
+    const candles: ML1Candle[] = [];
 
-    for (let i = 0; i < candles.length; i++) {
-        const res = stepML1Features(candles[i], i, state, config);
-        allObservations.push(res.observation);
-        state = res.nextState;
+    for (let i = 0; i < count; i++) {
+        const delta = Math.sin(i / 15) * 1.5 + (rng.next() - 0.49) * 0.8;
+        let open = price;
+        let close = open + delta;
+        let high = Math.max(open, close) + rng.next() * 0.6;
+        let low = Math.min(open, close) - rng.next() * 0.6;
+        let volume = 100 + Math.abs(Math.sin(i / 8)) * 80 + (rng.next() - 0.5) * 40;
 
-        if (res.observation.features['IsSourceValid'] === 0) {
-            rejectedCount++;
+        // 1. Inject true flat candle (High === Low === Open === Close)
+        if (i % 250 === 0 && i > 0) {
+            high = open;
+            low = open;
+            close = open;
+            volume = 0;
         }
 
-        if (res.observation.features['IsWarmupComplete'] === 1) {
-            globalWarmupCompleteCount++;
-        }
-        
-        // Collect schema dynamically from accepted observations
-        if (res.observation.features['IsSourceValid'] === 1) {
-             Object.keys(res.observation.features).forEach(key => allFeatureKeys.add(key));
+        // 2. Inject zero volume
+        if (i % 180 === 0 && i > 0) {
+            volume = 0;
         }
 
-        // Audit invalid values for features
-        for (const key in res.observation.features) {
-            const val = res.observation.features[key];
-            if (!Number.isFinite(val)) {
-                invalidValueCounts[key] = (invalidValueCounts[key] || 0) + 1;
-            }
+        candles.push({ time, open, high, low, close, volume: Math.max(0, volume) });
+        price = close;
+        time += 60000;
+
+        // 3. Inject major discontinuity gap (10 minutes)
+        if (i === Math.floor(count / 2)) {
+            time += 600000;
+        }
+        // 4. Inject out-of-order candle (DO NOT SORT AWAY)
+        else if (i === Math.floor(count / 3)) {
+            candles.push({ time: time - 120000, open, high, low, close, volume: 50 });
+        }
+        // 5. Inject duplicate timestamp
+        else if (i === Math.floor(count / 4)) {
+            candles.push({ time: time - 60000, open, high, low, close, volume: 50 });
+        }
+        // 6. Inject corrupted NaN
+        else if (i === Math.floor(count / 5)) {
+            candles.push({ time, open, high: NaN, low, close, volume: 50 });
+            time += 60000;
         }
     }
 
-    const featureReports: FeatureReport[] = [];
-    const sortedFeatureKeys = Array.from(allFeatureKeys).sort();
+    return candles; // Chronological anomalies intentionally preserved
+}
 
-    for (const key of sortedFeatureKeys) {
+/**
+ * Numerically stable two-pass Pearson correlation.
+ * Prevents catastrophic floating-point cancellation.
+ */
+function calculatePearson(x: number[], y: number[]): number {
+    const n = x.length;
+    if (n < 2 || n !== y.length) return NaN;
+
+    let meanX = 0;
+    let meanY = 0;
+    for (let i = 0; i < n; i++) {
+        meanX += x[i];
+        meanY += y[i];
+    }
+    meanX /= n;
+    meanY /= n;
+
+    let sumDxDy = 0;
+    let sumDx2 = 0;
+    let sumDy2 = 0;
+
+    for (let i = 0; i < n; i++) {
+        const dx = x[i] - meanX;
+        const dy = y[i] - meanY;
+        sumDxDy += dx * dy;
+        sumDx2 += dx * dx;
+        sumDy2 += dy * dy;
+    }
+
+    const denom = Math.sqrt(sumDx2 * sumDy2);
+    if (denom === 0 || !Number.isFinite(denom)) return 0;
+    const r = sumDxDy / denom;
+    return Number.isFinite(r) ? r : 0;
+}
+
+export function generatePhase2JReports(sourceCandles?: ML1Candle[]): void {
+    const isHistorical = Array.isArray(sourceCandles) && sourceCandles.length > 0;
+    const candles = isHistorical ? sourceCandles! : generateDeterministicDataset(50000);
+    const provenance = isHistorical
+        ? `REAL HISTORICAL FEED (${ML1_CONFIG_B.symbol} ${ML1_CONFIG_B.timeframe})`
+        : `SYNTHETIC DATASET (Deterministic PRNG with injected anomalies)`;
+
+    console.log(`\n======================================================`);
+    console.log(`📊 ML-R1 PHASE 2J QUANTITATIVE AUDIT REPORT`);
+    console.log(`   ↳ Provenance: ${provenance}`);
+    console.log(`   ↳ Observations: ${candles.length.toLocaleString()}`);
+    console.log(`======================================================\n`);
+
+    const resultsA = runConfigAudit(candles, ML1_CONFIG_A);
+    const resultsB = runConfigAudit(candles, ML1_CONFIG_B);
+
+    // --- 1. FEATURE COVERAGE REPORT ---
+    console.log(`### 1. Feature Coverage Report`);
+    console.log(`\n#### Configuration A (EMA Ablated)`);
+    printFeatureCoverage(resultsA.featureReports);
+    console.log(`\n#### Configuration B (Full Context)`);
+    printFeatureCoverage(resultsB.featureReports);
+
+    // --- 2. MEASURED WARM-UP REPORT ---
+    console.log(`\n### 2. Measured Warm-up Report`);
+    console.log(`\n#### Configuration A`);
+    printWarmupCoverage(resultsA, ML1_CONFIG_A);
+    console.log(`\n#### Configuration B`);
+    printWarmupCoverage(resultsB, ML1_CONFIG_B);
+
+    // --- 3. INVALID VALUE & VALIDITY-MASK AUDIT ---
+    console.log(`\n### 3. Invalid-Value & Validity-Mask Invariant Audit`);
+    printValidityAudit('Configuration A', resultsA);
+    printValidityAudit('Configuration B', resultsB);
+
+    // --- 4. NUMERICALLY STABLE CORRELATION REPORT ---
+    console.log(`\n### 4. Correlation & Redundancy Matrix (Two-Pass Welford/Centered)`);
+    printCorrelationMatrix(resultsB.observations, ML1_CONFIG_B);
+}
+
+function runConfigAudit(candles: ML1Candle[], config: ValidatedML1FeatureConfig) {
+    let state = createInitialML1FeatureState();
+    const observations = [];
+    let rejectedCount = 0;
+    let acceptedCount = 0;
+    let maskMismatchCount = 0;
+    let fallbackViolations = 0;
+    let nonFiniteAcceptedValues = 0;
+
+    for (let i = 0; i < candles.length; i++) {
+        const res = stepML1Features(candles[i], i, state, config);
+        observations.push(res.observation);
+        state = res.nextState;
+
+        const isAccepted = res.observation.features['IsSourceValid'] === 1;
+        if (isAccepted) {
+            acceptedCount++;
+
+            // Strict Contract Audit 1: Key parity between features and validity
+            const fKeys = Object.keys(res.observation.features);
+            const vKeys = Object.keys(res.observation.validity);
+            if (fKeys.length !== vKeys.length) maskMismatchCount++;
+
+            // Strict Contract Audit 2: Validity === false MUST mean numeric fallback === 0
+            for (let k = 0; k < fKeys.length; k++) {
+                const key = fKeys[k];
+                const val = res.observation.features[key];
+                const valid = res.observation.validity[key];
+
+                if (!Number.isFinite(val)) {
+                    nonFiniteAcceptedValues++;
+                }
+
+                if (valid === false && val !== 0) {
+                    fallbackViolations++;
+                }
+            }
+        } else {
+            rejectedCount++;
+        }
+    }
+
+    // Measure actual observed first-valid bar indices from output rows
+    const featureReports: FeatureReport[] = [];
+    const allFeatureKeys = Object.keys(observations[0]?.features || {}).sort();
+
+    for (const key of allFeatureKeys) {
         let validCount = 0;
         let invalidCount = 0;
-        let firstBar = -1;
+        let firstValidBar = -1;
 
-        for (let i = 0; i < allObservations.length; i++) {
-            const obs = allObservations[i];
-            // Only count against accepted observations for coverage
+        for (let i = 0; i < observations.length; i++) {
+            const obs = observations[i];
             if (obs.features['IsSourceValid'] === 0) continue;
 
             if (obs.validity[key] === true) {
                 validCount++;
-                if (firstBar === -1) firstBar = i;
-            } else if (Object.prototype.hasOwnProperty.call(obs.validity, key)) { // Only count if the validity is explicitly present
+                if (firstValidBar === -1) firstValidBar = i;
+            } else {
                 invalidCount++;
             }
         }
-        const totalObservationsForCoverage = allObservations.filter(o => o.features['IsSourceValid'] === 1).length;
-        const coveragePct = totalObservationsForCoverage > 0 ? (validCount / totalObservationsForCoverage) * 100 : 0;
 
+        const coveragePct = acceptedCount > 0 ? (validCount / acceptedCount) * 100 : 0;
         featureReports.push({
             featureName: key,
             validCount,
             invalidCount,
             coveragePct: parseFloat(coveragePct.toFixed(2)),
-            firstValidBar: firstBar
+            firstValidBar
         });
     }
 
     return {
-        allObservations,
+        observations,
         featureReports,
-        warmupInfo: { rejectedCount, globalWarmupCompleteCount, firstValidBar },
-        auditInfo: { invalidValueCounts, rejectedCount }
+        acceptedCount,
+        rejectedCount,
+        maskMismatchCount,
+        fallbackViolations,
+        nonFiniteAcceptedValues
     };
 }
 
 function printFeatureCoverage(reports: FeatureReport[]) {
-    console.log(`| Feature Name                   | Valid  | Invalid | Coverage % | First Valid Bar |`);
-    console.log(`| :----------------------------- | :----- | :------ | :--------- | :-------------- |`);
+    console.log(`| Feature Name                   | Valid  | Invalid | Coverage % | Measured First Valid Bar |`);
+    console.log(`| :----------------------------- | :----- | :------ | :--------- | :----------------------- |`);
     reports.forEach(r => {
-        if (!r.featureName.startsWith('source') && !r.featureName.startsWith('Is')) { // Exclude raw sources and simple flags for main report
-            console.log(`| ${r.featureName.padEnd(30)} | ${String(r.validCount).padEnd(6)} | ${String(r.invalidCount).padEnd(7)} | ${String(r.coveragePct).padEnd(10)} | ${String(r.firstValidBar).padEnd(15)} |`);
+        if (!r.featureName.startsWith('source') && !r.featureName.startsWith('Is')) {
+            console.log(
+                `| ${r.featureName.padEnd(30)} | ${String(r.validCount).padEnd(6)} | ${String(r.invalidCount).padEnd(7)} | ${String(r.coveragePct).padEnd(10)} | ${String(r.firstValidBar).padEnd(24)} |`
+            );
         }
     });
 }
 
-function printWarmupCoverage(
-    observations: any[],
-    warmupInfo: any,
-    featureReports: FeatureReport[],
-    config: typeof ML1_CONFIG_A
-) {
-    const totalAccepted = observations.filter(o => o.features['IsSourceValid'] === 1).length;
+function printWarmupCoverage(results: any, config: ValidatedML1FeatureConfig) {
+    const readyObservations = results.observations.filter(
+        (o: any) => o.features['IsSourceValid'] === 1 && o.features['IsWarmupComplete'] === 1
+    ).length;
 
-    console.log(`Total Accepted Observations: ${totalAccepted.toLocaleString()}`);
-    console.log(`Observations in Global Warmup State (IsWarmupComplete = 0): ${totalAccepted - warmupInfo.globalWarmupCompleteCount}`);
-    console.log(`Observations in Global Ready State (IsWarmupComplete = 1): ${warmupInfo.globalWarmupCompleteCount}`);
+    console.log(`Accepted Observations: ${results.acceptedCount.toLocaleString()}`);
+    console.log(`In Warmup State (IsWarmupComplete = 0): ${(results.acceptedCount - readyObservations).toLocaleString()}`);
+    console.log(`In Fully Ready State (IsWarmupComplete = 1): ${readyObservations.toLocaleString()}`);
 
-    console.log(`\nIndividual Feature Warmup (First bar index where 'isValid' becomes true):`);
-    const maxGlobalWarmup = config.emaPeriods.length > 0 ? 200 : 51; // 200 for EMA200, 51 for Volume50 (N+1 rule)
-    console.log(`| Feature Name               | Warmup Start (Bar Index) | Threshold (Bars) |`);
-    console.log(`| :------------------------- | :----------------------- | :--------------- |`);
+    const measuredGlobalBar = results.observations.findIndex(
+        (o: any) => o.features['IsSourceValid'] === 1 && o.features['IsWarmupComplete'] === 1
+    );
 
-    for (const period of config.emaPeriods) {
-        const keyDistance = `EMA_${period}_Distance`;
-        const keySlope3 = `EMA_${period}_Slope_3`;
-        const keySlope10 = `EMA_${period}_Slope_10`;
-        console.log(`| EMA_${period}_Distance       | ${String(featureReports.find(r => r.featureName === keyDistance)?.firstValidBar || -1).padEnd(24)} | ${String(Math.max(period, 14)).padEnd(16)} |`);
-        console.log(`| EMA_${period}_Slope_3        | ${String(featureReports.find(r => r.featureName === keySlope3)?.firstValidBar || -1).padEnd(24)} | ${String(Math.max(period, 14) + 3).padEnd(16)} |`);
-        console.log(`| EMA_${period}_Slope_10       | ${String(featureReports.find(r => r.featureName === keySlope10)?.firstValidBar || -1).padEnd(24)} | ${String(Math.max(period, 14) + 10).padEnd(16)} |`);
-    }
+    console.log(`Measured Global Warm-up Activation: Bar Index ${measuredGlobalBar}`);
 
-    for (const period of config.atrPeriods) {
-        const key = `ATR_${period}`;
-        console.log(`| ${key.padEnd(26)} | ${String(featureReports.find(r => r.featureName === key)?.firstValidBar || -1).padEnd(24)} | ${String(period).padEnd(16)} |`);
-    }
-
-    for (const period of config.rollingRangePeriods) {
-        const key = `RollingRangeWidth_${period}`;
-        console.log(`| ${key.padEnd(26)} | ${String(featureReports.find(r => r.featureName === key)?.firstValidBar || -1).padEnd(24)} | ${String(period).padEnd(16)} |`);
-    }
-    
-    for (const period of config.momentumPeriods) {
-        const key = `Momentum_${period}`;
-        console.log(`| ${key.padEnd(26)} | ${String(featureReports.find(r => r.featureName === key)?.firstValidBar || -1).padEnd(24)} | ${String(period + 1).padEnd(16)} |`);
-    }
-
-    for (const period of config.volumeSmaPeriods) {
-        const key = `RelativeVolume_${period}`;
-        console.log(`| ${key.padEnd(26)} | ${String(featureReports.find(r => r.featureName === key)?.firstValidBar || -1).padEnd(24)} | ${String(period + 1).padEnd(16)} |`);
-    }
-    
-    console.log(`\nMax Global Warm-up for current config: ${maxGlobalWarmup} bars`);
-}
-
-function printInvalidValueAudit(auditA: any, auditB: any) {
-    console.log(`#### Configuration A: Baseline`);
-    console.log(`Rejected Observations (IsSourceValid=0): ${auditA.rejectedCount}`);
-    if (Object.keys(auditA.invalidValueCounts).length > 0) {
-        console.log(`Non-Finite Feature Values Detected:`);
-        for (const key in auditA.invalidValueCounts) {
-            console.log(`  - ${key}: ${auditA.invalidValueCounts[key]} occurrences`);
-        }
-    } else {
-        console.log(`No non-finite feature values detected in accepted observations.`);
-    }
-
-    console.log(`\n#### Configuration B: Full Context`);
-    console.log(`Rejected Observations (IsSourceValid=0): ${auditB.rejectedCount}`);
-    if (Object.keys(auditB.invalidValueCounts).length > 0) {
-        console.log(`Non-Finite Feature Values Detected:`);
-        for (const key in auditB.invalidValueCounts) {
-            console.log(`  - ${key}: ${auditB.invalidValueCounts[key]} occurrences`);
-        }
-    } else {
-        console.log(`No non-finite feature values detected in accepted observations.`);
+    // If Config B, explicitly document the slope 10 offset discrepancy
+    if (config.emaPeriods.includes(200)) {
+        const slope10Report = results.featureReports.find((r: any) => r.featureName === 'EMA_200_Slope_10');
+        console.log(`  ↳ Special Note: EMA_200_Slope_10 became valid at Bar Index ${slope10Report?.firstValidBar} (Evaluates independently of global 200-bar flag)`);
     }
 }
 
-function printCorrelationReport(observations: any[], config: typeof ML1_CONFIG_B) {
-    const activeObservations = observations.filter(o => o.features['IsSourceValid'] === 1);
-    if (activeObservations.length < 2) {
-        console.log('Insufficient accepted observations for correlation analysis.');
-        return;
-    }
+function printValidityAudit(label: string, results: any) {
+    console.log(`\n--- ${label} ---`);
+    console.log(`Total Accepted Observations: ${results.acceptedCount}`);
+    console.log(`Total Rejected Observations: ${results.rejectedCount}`);
+    console.log(`Feature/Validity Mask Length Mismatches: ${results.maskMismatchCount}`);
+    console.log(`Invalid-Flag Non-Zero Fallback Violations: ${results.fallbackViolations}`);
+    console.log(`Non-Finite Values in Accepted Features: ${results.nonFiniteAcceptedValues}`);
+}
 
-    const calculatePearson = (x: number[], y: number[]): number => {
-        if (x.length < 2 || x.length !== y.length) return NaN;
-        const n = x.length;
-        let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
-        for (let i = 0; i < n; i++) {
-            sumX += x[i];
-            sumY += y[i];
-            sumXY += x[i] * y[i];
-            sumX2 += x[i] * x[i];
-            sumY2 += y[i] * y[i];
-        }
-        const numerator = n * sumXY - sumX * sumY;
-        const denominator = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
-        return denominator === 0 ? 0 : numerator / denominator;
-    };
+function printCorrelationMatrix(observations: any[], config: ValidatedML1FeatureConfig) {
+    const accepted = observations.filter((o: any) => o.features['IsSourceValid'] === 1);
+    if (accepted.length < 2) return;
 
-    const coreFeatures = [
-        'CandleRange', 'BodySize', 'UpperWick', 'LowerWick',
-        'ATR_14', 'ATR_20', 'RollingRangeWidth_5', 'RollingRangeWidth_50',
+    const targetFeatures = [
+        'CandleRange', 'BodySize', 'ATR_14', 'ATR_20',
+        'RollingRangeWidth_5', 'RollingRangeWidth_50',
         'Momentum_5', 'Return_5', 'DirectionalEfficiency_5',
         'Volume', 'RelativeVolume_10', 'VolumeZScore_20'
     ];
 
-    const emaFeatures = config.emaPeriods.length > 0 ? [
-        'EMA_9_Distance', 'EMA_20_Distance', 'EMA_50_Distance',
-        'EMA_9_Slope_3', 'EMA_20_Slope_10',
-        'EMA_9_Above_EMA_20', 'EMA_9_20_Separation', 'EMA_SpreadChange_9_20'
-    ] : [];
+    if (config.emaPeriods.length > 0) {
+        targetFeatures.push('EMA_9_Distance', 'EMA_9_Slope_3', 'EMA_9_Slope_10', 'EMA_9_20_Separation');
+    }
 
-    const allFeatures = [...coreFeatures, ...emaFeatures];
     const correlations: CorrelationReport[] = [];
 
-    for (let i = 0; i < allFeatures.length; i++) {
-        for (let j = i + 1; j < allFeatures.length; j++) {
-            const f1 = allFeatures[i];
-            const f2 = allFeatures[j];
-            
-            // Only consider jointly valid rows
-            const commonValues: { x: number, y: number }[] = [];
-            for (const obs of activeObservations) {
-                if (obs.validity[f1] && obs.validity[f2] && 
-                    Number.isFinite(obs.features[f1]) && Number.isFinite(obs.features[f2])) {
-                    commonValues.push({ x: obs.features[f1], y: obs.features[f2] });
+    for (let i = 0; i < targetFeatures.length; i++) {
+        for (let j = i + 1; j < targetFeatures.length; j++) {
+            const f1 = targetFeatures[i];
+            const f2 = targetFeatures[j];
+
+            const x: number[] = [];
+            const y: number[] = [];
+
+            for (let k = 0; k < accepted.length; k++) {
+                const obs = accepted[k];
+                if (obs.validity[f1] && obs.validity[f2]) {
+                    x.push(obs.features[f1]);
+                    y.push(obs.features[f2]);
                 }
             }
 
-            if (commonValues.length >= 2) { // Need at least 2 points for correlation
-                const xVals = commonValues.map(v => v.x);
-                const yVals = commonValues.map(v => v.y);
-                const corr = calculatePearson(xVals, yVals);
-                if (!isNaN(corr) && Math.abs(corr) > 0.1) { // Only report significant correlations
+            if (x.length >= 30) {
+                const r = calculatePearson(x, y);
+                if (Number.isFinite(r) && Math.abs(r) >= 0.70) {
                     correlations.push({
                         feature1: f1,
                         feature2: f2,
-                        correlation: parseFloat(corr.toFixed(4)),
-                        jointlyValidCount: commonValues.length
+                        correlation: parseFloat(r.toFixed(4)),
+                        jointlyValidCount: x.length
                     });
                 }
             }
         }
     }
 
-    correlations.sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation)); // Sort by absolute correlation
+    correlations.sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation));
 
-    console.log(`| Feature 1                  | Feature 2                  | Corr. Value | Jointly Valid Samples |`);
+    console.log(`| Feature 1                  | Feature 2                  | Pearson r   | Jointly Valid Samples |`);
     console.log(`| :------------------------- | :------------------------- | :---------- | :-------------------- |`);
-    correlations.slice(0, 20).forEach(r => { // Print top 20 correlations
-        console.log(`| ${r.feature1.padEnd(26)} | ${r.feature2.padEnd(26)} | ${String(r.correlation).padEnd(11)} | ${String(r.jointlyValidCount).padEnd(21)} |`);
+    correlations.slice(0, 15).forEach(c => {
+        console.log(
+            `| ${c.feature1.padEnd(26)} | ${c.feature2.padEnd(26)} | ${String(c.correlation).padEnd(11)} | ${String(c.jointlyValidCount).padEnd(21)} |`
+        );
     });
-
-    if (correlations.length === 0) {
-        console.log('No significant correlations found among selected features.');
-    }
 }
