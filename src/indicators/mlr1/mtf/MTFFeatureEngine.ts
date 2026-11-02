@@ -46,6 +46,16 @@ function processCompletedCandle(
         throw new Error(`MTF Feature Engine Error: Rejected candle with non-COMPLETE status '${completedCandle.completeness}'`);
     }
 
+    if (
+        !Number.isSafeInteger(completedCandle.openTimestamp) ||
+        !Number.isSafeInteger(completedCandle.closeTimestamp) ||
+        completedCandle.closeTimestamp <= completedCandle.openTimestamp
+    ) {
+        throw new Error(
+            `MTF Feature Engine Error: Invalid completed candle interval [${completedCandle.openTimestamp}, ${completedCandle.closeTimestamp})`
+        );
+    }
+
     if (completedCandle.timeframe !== config.timeframe) {
         throw new Error(`MTF Feature Engine Error: Candle timeframe '${completedCandle.timeframe}' does not match config '${config.timeframe}'`);
     }
@@ -101,10 +111,21 @@ export function stepTimeframeFeatureEngine(
     diagnostic: HTFIncompleteDiagnostic | null,
     config: MTFTimeframeConfig
 ): HTFFeatureStepResult {
-    if (diagnostic !== null && diagnostic.timeframe !== config.timeframe) {
-        throw new Error(
-            `MTF Feature Engine Error: Diagnostic timeframe '${diagnostic.timeframe}' does not match config '${config.timeframe}'`
-        );
+    if (diagnostic !== null) {
+        if (diagnostic.timeframe !== config.timeframe) {
+            throw new Error(
+                `MTF Feature Engine Error: Diagnostic timeframe '${diagnostic.timeframe}' does not match config '${config.timeframe}'`
+            );
+        }
+        if (
+            !Number.isSafeInteger(diagnostic.openTimestamp) ||
+            !Number.isSafeInteger(diagnostic.closeTimestamp) ||
+            diagnostic.closeTimestamp <= diagnostic.openTimestamp
+        ) {
+            throw new Error(
+                `MTF Feature Engine Error: Invalid diagnostic interval [${diagnostic.openTimestamp}, ${diagnostic.closeTimestamp})`
+            );
+        }
     }
 
     if (completedCandle !== null && diagnostic !== null) {

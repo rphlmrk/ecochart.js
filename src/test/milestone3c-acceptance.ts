@@ -569,6 +569,73 @@ export function runPhase3CTests(): boolean {
         assert(mismatchRejected, '1h diagnostic passed to 15m engine must be rejected');
     });
 
+    // 19. Malformed Completed Candle Interval Rejected
+    runTest('19. Malformed Completed Candle Interval Rejected', () => {
+        const state = createInitialMTFState().state15m;
+        const invertedCandle = Object.freeze({
+            ...makeCompletedCandle('15m', baseTime, 900_000),
+            openTimestamp: baseTime + 900_000,
+            closeTimestamp: baseTime
+        });
+
+        let rejected = false;
+        try {
+            stepTimeframeFeatureEngine(state, invertedCandle, null, MTF_CONFIG_A.config15m);
+        } catch (error) {
+            rejected = error instanceof Error && error.message.includes('Invalid completed candle interval');
+        }
+        assert(rejected, 'Inverted completed candle interval must be rejected');
+
+        const unsafeCandle = Object.freeze({
+            ...makeCompletedCandle('15m', baseTime, 900_000),
+            openTimestamp: Number.MAX_SAFE_INTEGER + 1
+        });
+        rejected = false;
+        try {
+            stepTimeframeFeatureEngine(state, unsafeCandle, null, MTF_CONFIG_A.config15m);
+        } catch (error) {
+            rejected = error instanceof Error && error.message.includes('Invalid completed candle interval');
+        }
+        assert(rejected, 'Unsafe completed candle timestamp must be rejected');
+    });
+
+    // 20. Malformed Diagnostic Interval Rejected
+    runTest('20. Malformed Diagnostic Interval Rejected', () => {
+        const state = createInitialMTFState().state15m;
+        const badDiagnostic: HTFIncompleteDiagnostic = Object.freeze({
+            timeframe: '15m',
+            openTimestamp: baseTime,
+            closeTimestamp: baseTime,
+            expectedSourceCount: 15,
+            actualSourceCount: 0,
+            missingTimestamps: Object.freeze([]),
+            duplicateCount: 0,
+            invalidSourceCount: 0,
+            completeness: 'INCOMPLETE_MISSING'
+        });
+
+        let rejected = false;
+        try {
+            stepTimeframeFeatureEngine(state, null, badDiagnostic, MTF_CONFIG_A.config15m);
+        } catch (error) {
+            rejected = error instanceof Error && error.message.includes('Invalid diagnostic interval');
+        }
+        assert(rejected, 'Zero-duration diagnostic interval must be rejected');
+
+        const unsafeDiagnostic: HTFIncompleteDiagnostic = Object.freeze({
+            ...badDiagnostic,
+            openTimestamp: Number.MAX_SAFE_INTEGER + 1,
+            closeTimestamp: Number.MAX_SAFE_INTEGER + 2
+        });
+        rejected = false;
+        try {
+            stepTimeframeFeatureEngine(state, null, unsafeDiagnostic, MTF_CONFIG_A.config15m);
+        } catch (error) {
+            rejected = error instanceof Error && error.message.includes('Invalid diagnostic interval');
+        }
+        assert(rejected, 'Unsafe diagnostic timestamps must be rejected');
+    });
+
     console.log(`\n=======================================`);
     console.log(`📊 ML-R1 PHASE 3C ACCEPTANCE AUDIT:`);
     console.log(`   ↳ Tests Executed:  ${passed + failed}`);
@@ -576,8 +643,8 @@ export function runPhase3CTests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log(`=======================================\n`);
 
-    if (failed === 0 && passed === 18) {
-        console.log('✅ ALL 18 PHASE 3C FEATURE ENGINE CRITERIA RIGOROUSLY MET.');
+    if (failed === 0 && passed === 20) {
+        console.log('✅ ALL 20 PHASE 3C FEATURE ENGINE CRITERIA RIGOROUSLY MET.');
         console.log('🔒 Phase 3C Independent HTF Feature Engines FULLY FROZEN.');
         return true;
     } else {
