@@ -48,7 +48,6 @@ export * from './indicators/mlr1/mtf/MTFConfig';
 export * from './indicators/mlr1/mtf/MTFState';
 import { runPhase2JTests } from './test/milestone2j-acceptance';
 import { generatePhase2JReports } from './analysis/ML1FeatureAuditGenerator';
-import type { ML1Candle } from './indicators/mlr1/ML1FeatureTypes';
 import { runMilestone2AcceptanceSuite } from './test/run-milestone2';
 export { runMilestone2AcceptanceSuite };
 export { runPhase2JTests, generatePhase2JReports };
@@ -3005,8 +3004,7 @@ export class WorkspaceManager {
         this.setupGlobalControls();
         AlertUI.init();
 
-        // Auto-run on boot disabled: Tests and historical audit reports are now executed on-demand
-        // via the "Run ML-R1 Audit (Real Data)" button inside the AI Export modal.
+        // Auto-run on boot disabled: Tests and historical audit reports are executed on demand.
 
         window.addEventListener('ecochart-alerts-updated', () => {
             this.charts.forEach(c => {
@@ -4650,98 +4648,30 @@ export class WorkspaceManager {
             if (loadingOverlay) loadingOverlay.style.display = 'none';
         });
 
-        // Wire up on-demand ML-R1 Audit on actual downloaded historical data
+        // Wire up on-demand Milestone 3 Phase 3A contract tests
         const btnAiExportAudit = document.getElementById('btn-ai-export-audit');
         btnAiExportAudit?.addEventListener('click', async () => {
-            const chart = WorkspaceManager.activeChart || WorkspaceManager.charts[0];
-            if (!chart) return;
-
-            const activeRange = document.querySelector('.ai-range-btn.active') as HTMLElement;
-            const rangeKey = activeRange?.dataset.val || '1m';
-
-            let durationMs = BackgroundDataMiner.rangeToMs(rangeKey);
-            let customStartMs: number | undefined;
-            let customEndMs: number | undefined;
-
-            if (rangeKey === 'custom') {
-                if (!customStartDate?.value || !customEndDate?.value) {
-                    alert('Please select both a Start Date and an End Date.');
-                    return;
-                }
-                customStartMs = new Date(`${customStartDate.value}T00:00:00Z`).getTime();
-                customEndMs = new Date(`${customEndDate.value}T23:59:59Z`).getTime();
-                if (isNaN(customStartMs) || isNaN(customEndMs) || customStartMs >= customEndMs) {
-                    alert('Invalid custom date range.');
-                    return;
-                }
-                durationMs = customEndMs - customStartMs;
-            }
-
             if (loadingOverlay) loadingOverlay.style.display = 'flex';
-            if (loadingTitle) loadingTitle.textContent = `Downloading ${chart.currentSymbol} 1m data for ML-R1 Audit...`;
-
+            if (loadingTitle) loadingTitle.textContent = 'Running Milestone 3 Phase 3A Tests...';
+            if (loadingDetail) loadingDetail.textContent = 'Verifying MTF contracts, UTC boundaries, immutability, and availability rules...';
+            await new Promise(resolve => setTimeout(resolve, 50));
             try {
-                const rawCandleBuffer = await BackgroundDataMiner.mineHistoricalCandles(
-                    chart.currentSymbol,
-                    '1m',
-                    durationMs,
-                    (p) => {
-                        if (progressFill) progressFill.style.width = `${p.percent}%`;
-                        if (progressPct) progressPct.textContent = `${p.percent}%`;
-                        if (progressCount) progressCount.textContent = `Batch ${p.currentBatch} / ${p.totalBatches}`;
-                        if (progressEta) progressEta.textContent = `ETA: ${p.etaSeconds}s`;
-                        if (loadingDetail) loadingDetail.textContent = `${p.candlesFetched.toLocaleString()} actual candles downloaded (${p.statusText})`;
-                    },
-                    customStartMs,
-                    customEndMs
-                );
+                const passed = runPhase3ATests();
 
-                if (rawCandleBuffer.length === 0) {
-                    alert('No historical candle data returned from Binance.');
-                    if (loadingOverlay) loadingOverlay.style.display = 'none';
-                    return;
+                if (loadingDetail) {
+                    loadingDetail.textContent = passed
+                        ? '✅ All Phase 3A Contract Tests Passed! Check DevTools console.'
+                        : '❌ Phase 3A Tests Failed. Check DevTools console.';
                 }
 
-                if (loadingTitle) loadingTitle.textContent = 'Running ML-R1 Acceptance & Phase 2J Audit...';
-                if (loadingDetail) loadingDetail.textContent = 'Executing full pipeline across downloaded historical market data...';
-                await new Promise(resolve => setTimeout(resolve, 50));
-
-                const candleCount = Math.floor(rawCandleBuffer.length / 6);
-                const actualHistoricalCandles: ML1Candle[] = [];
-                for (let i = 0; i < candleCount; i++) {
-                    const b = i * 6;
-                    actualHistoricalCandles.push({
-                        time: rawCandleBuffer[b],
-                        open: rawCandleBuffer[b + 1],
-                        high: rawCandleBuffer[b + 2],
-                        low: rawCandleBuffer[b + 3],
-                        close: rawCandleBuffer[b + 4],
-                        volume: rawCandleBuffer[b + 5]
-                    });
-                }
-
-                const suitePassed = runMilestone2AcceptanceSuite(
-                    actualHistoricalCandles,
-                    chart.currentSymbol,
-                    chart.currentInterval
-                );
-
-                if (!suitePassed) {
-                    alert('Milestone 2 Acceptance Suite failed. Check console for details.');
-                }
-
-                if (loadingDetail) loadingDetail.textContent = `Audit complete across ${candleCount.toLocaleString()} real candles! Check DevTools console.`;
                 setTimeout(() => {
                     if (loadingOverlay) loadingOverlay.style.display = 'none';
                     modalAiExport?.close();
                 }, 1200);
-
-            } catch (err: any) {
-                console.error('[ML-R1 Audit] Error during audit run:', err);
+            } catch (error) {
+                console.error('[Phase 3A Tests] Execution error:', error);
                 if (loadingOverlay) loadingOverlay.style.display = 'none';
-                if (err.message !== 'Mining cancelled by user.') {
-                    alert(`Audit failed: ${err.message}`);
-                }
+                alert(`Phase 3A Tests failed with error: ${error instanceof Error ? error.message : String(error)}`);
             }
         });
 
@@ -5832,6 +5762,7 @@ export class WorkspaceManager {
         window.addEventListener('online', triggerAggressiveWakeup);
         (window as any).runMilestone1AcceptanceSuite = runMilestone1AcceptanceSuite;
         (window as any).runPhase2ATests = runPhase2ATests;
+        (window as any).runPhase3ATests = runPhase3ATests;
         (window as any).runPhase2JTests = runPhase2JTests;
         (window as any).generatePhase2JReports = generatePhase2JReports;
     }
