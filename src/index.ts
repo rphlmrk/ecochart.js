@@ -42,19 +42,18 @@ export { runMilestone1AcceptanceSuite };
 import { runPhase2ATests } from './test/milestone2a-acceptance';
 export { runPhase2ATests };
 import { runPhase3ATests } from './test/milestone3a-acceptance';
-export { runPhase3ATests };
 import { runPhase3BTests } from './test/milestone3b-acceptance';
-export { runPhase3BTests };
 import { runPhase3CTests } from './test/milestone3c-acceptance';
-export { runPhase3CTests };
 import { runPhase3DTests } from './test/milestone3d-acceptance';
-export { runPhase3DTests };
+import { runPhase3ETests } from './test/milestone3e-acceptance';
+export { runPhase3ATests, runPhase3BTests, runPhase3CTests, runPhase3DTests, runPhase3ETests };
 export * from './indicators/mlr1/mtf/MTFTypes';
 export * from './indicators/mlr1/mtf/MTFConfig';
 export * from './indicators/mlr1/mtf/MTFState';
 export * from './indicators/mlr1/mtf/MTFAggregator';
 export * from './indicators/mlr1/mtf/MTFFeatureEngine';
 export * from './indicators/mlr1/mtf/MTFAligner';
+export * from './indicators/mlr1/mtf/MTFEngine';
 import { runPhase2JTests } from './test/milestone2j-acceptance';
 import { generatePhase2JReports } from './analysis/ML1FeatureAuditGenerator';
 import { runMilestone2AcceptanceSuite } from './test/run-milestone2';
@@ -4657,34 +4656,36 @@ export class WorkspaceManager {
             if (loadingOverlay) loadingOverlay.style.display = 'none';
         });
 
-        // Wire up on-demand Milestone 3 Phase 3A to 3D test orchestrator
+        // Wire up on-demand Milestone 3 Phase 3A to 3E test orchestrator
         const btnAiExportAudit = document.getElementById('btn-ai-export-audit');
         btnAiExportAudit?.addEventListener('click', async () => {
             if (loadingOverlay) loadingOverlay.style.display = 'flex';
-            if (loadingTitle) loadingTitle.textContent = 'Running Milestone 3 Tests (Phases 3A to 3D)...';
-            if (loadingDetail) loadingDetail.textContent = 'Executing 3A Contracts, 3B Aggregation, 3C Feature Engines, and 3D Causal Alignment...';
+            if (loadingTitle) loadingTitle.textContent = 'Running Milestone 3 Tests (Phases 3A to 3E)...';
+            if (loadingDetail) loadingDetail.textContent = 'Executing full 3A–3E pipeline: contracts, aggregation, features, alignment, and recovery...';
             await new Promise(resolve => setTimeout(resolve, 50));
 
             try {
                 console.log('\n======================================================');
-                console.log('RUNNING MILESTONE 3 SUITE (PHASES 3A TO 3D)');
+                console.log('RUNNING MILESTONE 3 COMPLETE SUITE (PHASES 3A TO 3E)');
                 console.log('======================================================');
 
                 if (!runPhase3ATests()) throw new Error('Phase 3A Contract suite failed');
                 if (!runPhase3BTests()) throw new Error('Phase 3B Aggregation suite failed');
                 if (!runPhase3CTests()) throw new Error('Phase 3C Feature Engine suite failed');
                 if (!runPhase3DTests()) throw new Error('Phase 3D Causal Alignment suite failed');
+                if (!runPhase3ETests()) throw new Error('Phase 3E Pipeline Integration suite failed');
 
                 console.log('\n======================================================');
-                console.log('ALL PHASES 3A TO 3D GATES PASSED (68/68 TESTS)');
-                console.log('   Phase 3A (Contracts):         9/9 PASSED');
-                console.log('   Phase 3B (Aggregation):      25/25 PASSED');
-                console.log('   Phase 3C (Feature Engines):  20/20 PASSED');
-                console.log('   Phase 3D (Causal Alignment): 14/14 PASSED');
+                console.log('ALL PHASES 3A TO 3E GATES PASSED (77/77 TESTS)');
+                console.log('   Phase 3A (Contracts):             9/9 PASSED');
+                console.log('   Phase 3B (Aggregation):          25/25 PASSED');
+                console.log('   Phase 3C (Feature Engines):      20/20 PASSED');
+                console.log('   Phase 3D (Causal Alignment):     14/14 PASSED');
+                console.log('   Phase 3E (Pipeline Integration):  9/9 PASSED');
                 console.log('======================================================\n');
 
                 if (loadingDetail) {
-                    loadingDetail.textContent = '✅ All Phases 3A to 3D Passed (68/68 Tests)! Check DevTools console.';
+                    loadingDetail.textContent = '✅ All Phases 3A to 3E Passed (77/77 Tests)! Check DevTools console.';
                 }
 
                 setTimeout(() => {
@@ -5793,6 +5794,7 @@ export class WorkspaceManager {
         (window as any).runPhase3BTests = runPhase3BTests;
         (window as any).runPhase3CTests = runPhase3CTests;
         (window as any).runPhase3DTests = runPhase3DTests;
+        (window as any).runPhase3ETests = runPhase3ETests;
         (window as any).runPhase2JTests = runPhase2JTests;
         (window as any).generatePhase2JReports = generatePhase2JReports;
     }

@@ -151,9 +151,9 @@ export function createMTFTimeframeContext(
         );
     }
 
-    const candleSnapshot = lastCompletedCandle === null
-        ? null
-        : Object.freeze({ ...lastCompletedCandle });
+    const candleSnapshot = lastCompletedCandle && isCandleAvailable
+        ? Object.freeze({ ...lastCompletedCandle })
+        : null;
     const closeTimestamp = candleSnapshot?.closeTimestamp ?? null;
     const contextAgeMs = closeTimestamp !== null &&
         Number.isSafeInteger(observationTimestamp) &&

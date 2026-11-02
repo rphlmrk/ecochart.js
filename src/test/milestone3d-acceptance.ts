@@ -278,6 +278,9 @@ export function runPhase3DTests(): boolean {
             assert(testCase.context.isWarmupComplete === testCase.isWarmupComplete, `${testCase.name}: warm-up mismatch`);
             assert(testCase.context.availabilityStatus === testCase.status, `${testCase.name}: status mismatch`);
         }
+        const notYetAvailable = contextCases[5].context;
+        assert(notYetAvailable.lastCompletedCandle === null, 'Future candle must not be exposed');
+        assert(notYetAvailable.lastCompletedCloseTimestamp === null, 'Future candle close timestamp must not be exposed');
 
         const initialState = createInitialMTFState();
         const mockState: MTFTimeframeState = Object.freeze({
