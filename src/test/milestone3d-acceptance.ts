@@ -1,6 +1,6 @@
 import { alignMTFContext, alignTimeframeContext } from '../indicators/mlr1/mtf/MTFAligner';
 import { MTF_CONFIG_A, validateMTFConfig } from '../indicators/mlr1/mtf/MTFConfig';
-import { createInitialMTFState } from '../indicators/mlr1/mtf/MTFState';
+import { createInitialMTFState, createMTFTimeframeContext } from '../indicators/mlr1/mtf/MTFState';
 import { stepMTFCombined } from '../indicators/mlr1/mtf/MTFFeatureEngine';
 import type { MTFContext, MTFCandle, MTFState, MTFTimeframeState } from '../indicators/mlr1/mtf/MTFTypes';
 import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
@@ -139,6 +139,7 @@ export function runPhase3DTests(): boolean {
         assert(!aligned.context15m.isAvailable, 'Reset 15m context must be unavailable');
         assert(aligned.context15m.availabilityStatus === 'UNAVAILABLE', 'Reset status must be UNAVAILABLE');
         assert(Object.keys(aligned.context15m.features).length === 0, 'No features may be exposed after reset');
+        // The completed 1h candle is [10:00, 11:00); at 11:30 it remains the latest completed candle.
         assert(aligned.context1h.isAvailable, '1h context must remain available despite the 15m reset');
         assert(
             aligned.context1h.lastCompletedCloseTimestamp === baseTime + 3_600_000,
@@ -162,6 +163,7 @@ export function runPhase3DTests(): boolean {
         });
         const mockState = Object.freeze({
             ...initialState.state15m,
+            lastCompletedCandleOpenTimestamp: baseTime,
             aggregation: Object.freeze({
                 ...initialState.state15m.aggregation,
                 lastCompletedCandle: mockCandle
@@ -201,7 +203,7 @@ export function runPhase3DTests(): boolean {
 
     runTest('10. Observation timestamp validation', () => {
         const state = createInitialMTFState();
-        for (const timestamp of [Number.NaN, -100, Infinity, -Infinity, 1000.5, Number.MAX_SAFE_INTEGER + 1]) {
+        for (const timestamp of [Number.NaN, -100, Infinity, -Infinity, 1000.5, Number.MAX_SAFE_INTEGER + 1, 1e25]) {
             try {
                 alignMTFContext(timestamp, 'SOLUSDT', state, MTF_CONFIG_A);
                 assert(false, `Accepted invalid timestamp ${timestamp}`);
@@ -211,7 +213,7 @@ export function runPhase3DTests(): boolean {
         }
     });
 
-    runTest('11. Warm-up and availability separation', () => {
+    runTest('11. Warm-up and availability separation through factory and aligner', () => {
         const candle: MTFCandle = Object.freeze({
             timeframe: '15m',
             openTimestamp: baseTime,
@@ -224,6 +226,59 @@ export function runPhase3DTests(): boolean {
             sourceObservationCount: 15,
             completeness: 'COMPLETE'
         });
+        const freshTimestamp = baseTime + 900_000;
+        const staleTimestamp = baseTime + 1_500_000;
+        const contextCases = [
+            {
+                name: 'fresh, warming',
+                context: createMTFTimeframeContext('15m', candle, freshTimestamp, true, false, Object.freeze({}), Object.freeze({}), 300_000),
+                isAvailable: true,
+                isWarmupComplete: false,
+                status: 'WARMING_UP'
+            },
+            {
+                name: 'fresh, warm-up complete',
+                context: createMTFTimeframeContext('15m', candle, freshTimestamp, true, true, Object.freeze({}), Object.freeze({}), 300_000),
+                isAvailable: true,
+                isWarmupComplete: true,
+                status: 'AVAILABLE_VALID'
+            },
+            {
+                name: 'stale, warming',
+                context: createMTFTimeframeContext('15m', candle, staleTimestamp, true, false, Object.freeze({}), Object.freeze({}), 300_000),
+                isAvailable: false,
+                isWarmupComplete: false,
+                status: 'STALE'
+            },
+            {
+                name: 'stale, warm-up complete',
+                context: createMTFTimeframeContext('15m', candle, staleTimestamp, true, true, Object.freeze({}), Object.freeze({}), 300_000),
+                isAvailable: false,
+                isWarmupComplete: true,
+                status: 'STALE'
+            },
+            {
+                name: 'no completed candle',
+                context: createMTFTimeframeContext('15m', null, freshTimestamp, false, false),
+                isAvailable: false,
+                isWarmupComplete: false,
+                status: 'UNAVAILABLE'
+            },
+            {
+                name: 'candle not causally available',
+                context: createMTFTimeframeContext('15m', candle, baseTime + 600_000, false, true),
+                isAvailable: false,
+                isWarmupComplete: false,
+                status: 'UNAVAILABLE'
+            }
+        ] as const;
+
+        for (const testCase of contextCases) {
+            assert(testCase.context.isAvailable === testCase.isAvailable, `${testCase.name}: isAvailable mismatch`);
+            assert(testCase.context.isWarmupComplete === testCase.isWarmupComplete, `${testCase.name}: warm-up mismatch`);
+            assert(testCase.context.availabilityStatus === testCase.status, `${testCase.name}: status mismatch`);
+        }
+
         const initialState = createInitialMTFState();
         const mockState: MTFTimeframeState = Object.freeze({
             ...initialState.state15m,
@@ -235,13 +290,12 @@ export function runPhase3DTests(): boolean {
             latestFeatures: Object.freeze({ CandleRange: 10, IsWarmupComplete: 0 }),
             latestValidity: Object.freeze({ CandleRange: true, ATR_14: false })
         });
-
-        const context = alignTimeframeContext(baseTime + 900_000, mockState, MTF_CONFIG_A.config15m);
-        assert(context.isAvailable, 'Context must be available when feature warm-up is incomplete');
-        assert(!context.isWarmupComplete, 'Warm-up must remain incomplete');
-        assert(context.availabilityStatus === 'WARMING_UP', 'Status must be WARMING_UP');
-        assert(context.validity['CandleRange'] === true, 'CandleRange must remain valid');
-        assert(context.validity['ATR_14'] === false, 'ATR_14 must remain invalid');
+        const aligned = alignTimeframeContext(freshTimestamp, mockState, MTF_CONFIG_A.config15m);
+        assert(aligned.isAvailable, 'Aligner context must be available');
+        assert(!aligned.isWarmupComplete, 'Aligner warm-up must be incomplete');
+        assert(aligned.availabilityStatus === 'WARMING_UP', 'Aligner status must be WARMING_UP');
+        assert(aligned.validity['CandleRange'] === true, 'CandleRange must be valid');
+        assert(aligned.validity['ATR_14'] === false, 'ATR_14 must remain invalid');
     });
 
     runTest('12. Staleness gating is independent across timeframes', () => {
@@ -330,6 +384,32 @@ export function runPhase3DTests(): boolean {
             assert(errorMessage(error).includes('Invalid completed HTF candle'), errorMessage(error));
         }
 
+        const nullWatermarkState: MTFTimeframeState = {
+            ...initialState.state15m,
+            aggregation: {
+                ...initialState.state15m.aggregation,
+                lastCompletedCandle: {
+                    timeframe: '15m',
+                    openTimestamp: baseTime,
+                    closeTimestamp: baseTime + 900_000,
+                    open: 100,
+                    high: 105,
+                    low: 95,
+                    close: 102,
+                    volume: 1000,
+                    sourceObservationCount: 15,
+                    completeness: 'COMPLETE'
+                }
+            },
+            lastCompletedCandleOpenTimestamp: null
+        };
+        try {
+            alignTimeframeContext(baseTime + 900_000, nullWatermarkState, MTF_CONFIG_A.config15m);
+            assert(false, 'Accepted a null watermark for a completed candle');
+        } catch (error) {
+            assert(errorMessage(error).includes('State inconsistency'), errorMessage(error));
+        }
+
         const mismatchedWatermarkState: MTFTimeframeState = {
             ...initialState.state15m,
             aggregation: {
@@ -360,7 +440,7 @@ export function runPhase3DTests(): boolean {
 
     runTest('14. Direct timeframe alignment timestamp validation', () => {
         const state = createInitialMTFState();
-        for (const timestamp of [Number.NaN, -50, Infinity, -Infinity, 1234.5]) {
+        for (const timestamp of [Number.NaN, -50, Infinity, -Infinity, 1234.5, Number.MAX_SAFE_INTEGER + 1, 1e20]) {
             try {
                 alignTimeframeContext(timestamp, state.state15m, MTF_CONFIG_A.config15m);
                 assert(false, `Accepted invalid timestamp ${timestamp}`);

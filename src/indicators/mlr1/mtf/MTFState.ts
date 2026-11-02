@@ -92,12 +92,13 @@ export function calculateContextAgeMs(
 }
 
 /**
- * Resolves whether completed HTF context is eligible for consumption.
- * The last candle and its age remain available to diagnostics when stale.
+ * Resolves HTF context availability and consumption eligibility independently
+ * from feature warm-up readiness.
  */
 export function resolveHTFAvailability(
     lastCompletedCandle: MTFCandle | null,
     contextAgeMs: number | null,
+    isCandleAvailable: boolean,
     isWarmupComplete: boolean,
     maxStalenessMs?: number
 ): {
@@ -112,7 +113,7 @@ export function resolveHTFAvailability(
         }
     }
 
-    if (!lastCompletedCandle || lastCompletedCandle.completeness !== 'COMPLETE') {
+    if (!lastCompletedCandle || lastCompletedCandle.completeness !== 'COMPLETE' || !isCandleAvailable) {
         return { isAvailable: false, availabilityStatus: 'UNAVAILABLE' };
     }
 
@@ -131,13 +132,14 @@ export function resolveHTFAvailability(
 }
 
 /**
- * Builds an immutable timeframe context, retaining stale candle data for diagnostics
- * while preventing stale context from being consumed.
+ * Builds an immutable timeframe context with separate candle-availability and
+ * feature warm-up dimensions.
  */
 export function createMTFTimeframeContext(
     timeframe: SupportedMTFTimeframe,
     lastCompletedCandle: MTFCandle | null,
     observationTimestamp: number,
+    isCandleAvailable: boolean,
     isWarmupComplete: boolean,
     features: ML1FeatureValues = {},
     validity: ML1FeatureValidity = {},
@@ -153,15 +155,21 @@ export function createMTFTimeframeContext(
         ? null
         : Object.freeze({ ...lastCompletedCandle });
     const closeTimestamp = candleSnapshot?.closeTimestamp ?? null;
-    const contextAgeMs = closeTimestamp !== null && Number.isSafeInteger(observationTimestamp)
+    const contextAgeMs = closeTimestamp !== null &&
+        Number.isSafeInteger(observationTimestamp) &&
+        isCandleAvailable
         ? calculateContextAgeMs(observationTimestamp, closeTimestamp)
         : null;
     const { isAvailable, availabilityStatus } = resolveHTFAvailability(
         candleSnapshot,
         contextAgeMs,
+        isCandleAvailable,
         isWarmupComplete,
         maxStalenessMs
     );
+    const effectiveWarmup = candleSnapshot !== null && isCandleAvailable
+        ? isWarmupComplete
+        : false;
 
     return Object.freeze({
         timeframe,
@@ -171,7 +179,7 @@ export function createMTFTimeframeContext(
         contextAgeMs,
         isAvailable,
         availabilityStatus,
-        isWarmupComplete,
+        isWarmupComplete: effectiveWarmup,
         features: Object.isFrozen(features) ? features : Object.freeze({ ...features }),
         validity: Object.isFrozen(validity) ? validity : Object.freeze({ ...validity })
     });

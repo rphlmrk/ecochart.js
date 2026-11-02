@@ -242,52 +242,52 @@ export function runPhase3ATests(): boolean {
     });
 
     runTest('8. Context availability, input hardening, and stale-context semantics', () => {
-        const unavailable = resolveHTFAvailability(null, null, false);
+        const unavailable = resolveHTFAvailability(null, null, false, false);
         assert(unavailable.availabilityStatus === 'UNAVAILABLE', 'Expected UNAVAILABLE');
         assert(!unavailable.isAvailable, 'Unavailable context must not be consumed');
 
         for (const badStaleness of [0, -500, 15.5, Number.NaN, Number.POSITIVE_INFINITY]) {
             assertThrows(
-                () => resolveHTFAvailability(null, null, false, badStaleness),
+                () => resolveHTFAvailability(null, null, false, false, badStaleness),
                 'positive safe integer'
             );
         }
 
         for (const invalidAge of [-100, 50.5, Number.NaN, Number.POSITIVE_INFINITY]) {
             assert(
-                resolveHTFAvailability(completeCandle, invalidAge, true).availabilityStatus === 'UNAVAILABLE',
+                resolveHTFAvailability(completeCandle, invalidAge, true, true).availabilityStatus === 'UNAVAILABLE',
                 `Invalid context age ${invalidAge} must resolve to UNAVAILABLE`
             );
         }
         assertThrows(
-            () => resolveHTFAvailability(completeCandle, 1_000, true, -500),
+            () => resolveHTFAvailability(completeCandle, 1_000, true, true, -500),
             'positive safe integer'
         );
         assertThrows(
-            () => resolveHTFAvailability(completeCandle, 1_000, true, Number.NaN),
+            () => resolveHTFAvailability(completeCandle, 1_000, true, true, Number.NaN),
             'positive safe integer'
         );
 
-        const warming = resolveHTFAvailability(completeCandle, 60_000, false);
+        const warming = resolveHTFAvailability(completeCandle, 60_000, true, false);
         assert(warming.availabilityStatus === 'WARMING_UP', 'Expected WARMING_UP');
         assert(warming.isAvailable, 'Warm-up context remains available');
 
-        const valid = resolveHTFAvailability(completeCandle, 60_000, true);
+        const valid = resolveHTFAvailability(completeCandle, 60_000, true, true);
         assert(valid.availabilityStatus === 'AVAILABLE_VALID', 'Expected AVAILABLE_VALID');
         assert(valid.isAvailable, 'Valid context must be available');
 
         const staleThreshold = 300_000;
-        const exactlyAtThreshold = resolveHTFAvailability(completeCandle, staleThreshold, true, staleThreshold);
+        const exactlyAtThreshold = resolveHTFAvailability(completeCandle, staleThreshold, true, true, staleThreshold);
         assert(exactlyAtThreshold.availabilityStatus === 'AVAILABLE_VALID', 'Context at the threshold is not stale');
         assert(exactlyAtThreshold.isAvailable, 'Context at threshold must remain available');
 
-        const beyondThreshold = resolveHTFAvailability(completeCandle, staleThreshold + 1, true, staleThreshold);
+        const beyondThreshold = resolveHTFAvailability(completeCandle, staleThreshold + 1, true, true, staleThreshold);
         assert(beyondThreshold.availabilityStatus === 'STALE', '1ms beyond threshold must be stale');
         assert(!beyondThreshold.isAvailable, 'Stale context must not be consumed');
 
         const mismatchedCandle: MTFCandle = { ...completeCandle, timeframe: '15m' };
         assertThrows(
-            () => createMTFTimeframeContext('1h', mismatchedCandle, 1_000_000, false),
+            () => createMTFTimeframeContext('1h', mismatchedCandle, 1_000_000, true, false),
             'does not match requested context timeframe'
         );
 
@@ -302,6 +302,7 @@ export function runPhase3ATests(): boolean {
             '15m',
             mutableCandle,
             observationTimestamp,
+            true,
             true,
             Object.freeze({ ATR_14: 2.5 }),
             Object.freeze({ ATR_14: true }),
@@ -331,6 +332,7 @@ export function runPhase3ATests(): boolean {
             candle1h,
             observationTimestamp,
             true,
+            true,
             Object.freeze({ ATR_14: 5 }),
             Object.freeze({ ATR_14: true }),
             7_200_000
@@ -350,20 +352,20 @@ export function runPhase3ATests(): boolean {
 
         const features15m: ML1FeatureValues = Object.freeze({ ATR_14: 2.5, EMA_200_Slope_10: 0 });
         const validity15m: ML1FeatureValidity = Object.freeze({ ATR_14: true, EMA_200_Slope_10: false });
-        const context15m = createMTFTimeframeContext('15m', null, 1_000, false, features15m, validity15m);
+        const context15m = createMTFTimeframeContext('15m', null, 1_000, false, false, features15m, validity15m);
         assert(context15m.validity.ATR_14 === true, 'Valid feature must remain valid');
         assert(context15m.validity.EMA_200_Slope_10 === false, 'Invalid feature must remain independently invalid');
 
         const features1h: ML1FeatureValues = Object.freeze({ ATR_14: 5, EMA_200_Slope_10: 0.12 });
         const validity1h: ML1FeatureValidity = Object.freeze({ ATR_14: true, EMA_200_Slope_10: true });
-        const context1h = createMTFTimeframeContext('1h', null, 1_000, false, features1h, validity1h);
+        const context1h = createMTFTimeframeContext('1h', null, 1_000, false, false, features1h, validity1h);
         assert(context1h.validity.EMA_200_Slope_10 === true, '1h validity must not inherit 15m invalidity');
         assert(context15m.validity !== context1h.validity, 'Feature validity maps must not be shared');
         assert(context15m.features !== context1h.features, 'Feature values must not be shared');
 
         const mutableFeatures: ML1FeatureValues = { ATR_14: 2 };
         const mutableValidity: ML1FeatureValidity = { ATR_14: true };
-        const frozenContext = createMTFTimeframeContext('15m', null, 1_000, false, mutableFeatures, mutableValidity);
+        const frozenContext = createMTFTimeframeContext('15m', null, 1_000, false, false, mutableFeatures, mutableValidity);
         mutableFeatures.ATR_14 = 99;
         mutableValidity.ATR_14 = false;
         assert(frozenContext.features.ATR_14 === 2, 'Context must defensively copy feature values');

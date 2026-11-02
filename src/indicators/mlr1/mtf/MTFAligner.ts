@@ -35,6 +35,7 @@ export function alignTimeframeContext(
             null,
             observationTimestamp,
             false,
+            false,
             Object.freeze({}),
             Object.freeze({}),
             config.maxStalenessMs
@@ -51,10 +52,7 @@ export function alignTimeframeContext(
         throw new Error('MTF Alignment Error: Invalid completed HTF candle in timeframe state');
     }
 
-    if (
-        timeframeState.lastCompletedCandleOpenTimestamp !== null &&
-        timeframeState.lastCompletedCandleOpenTimestamp !== candle.openTimestamp
-    ) {
+    if (timeframeState.lastCompletedCandleOpenTimestamp !== candle.openTimestamp) {
         throw new Error(
             `MTF Alignment Error: State inconsistency. Aggregation candle open (${candle.openTimestamp}) does not match feature engine watermark (${timeframeState.lastCompletedCandleOpenTimestamp})`
         );
@@ -65,6 +63,7 @@ export function alignTimeframeContext(
             config.timeframe,
             null,
             observationTimestamp,
+            false,
             false,
             Object.freeze({}),
             Object.freeze({}),
@@ -77,6 +76,7 @@ export function alignTimeframeContext(
         config.timeframe,
         candle,
         observationTimestamp,
+        true,
         isWarmupComplete,
         timeframeState.latestFeatures,
         timeframeState.latestValidity,
