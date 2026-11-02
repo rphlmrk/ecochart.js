@@ -317,6 +317,12 @@ export function runSyntheticRejectionAudit(): {
         breakdown.duplicate >= 1 &&
         breakdown.nonFiniteOhlcv >= 1 &&
         breakdown.structuralOhlc >= 1;
+    const classifiedRejections =
+        breakdown.outOfOrder +
+        breakdown.duplicate +
+        breakdown.nonFiniteOhlcv +
+        breakdown.structuralOhlc;
+    const allRejectionsClassified = classifiedRejections === result.rejectedCount;
     const invariantChecksPassed =
         result.maskMismatchCount === 0 &&
         result.missingKeysCount === 0 &&
@@ -325,13 +331,14 @@ export function runSyntheticRejectionAudit(): {
         result.fallbackViolations === 0 &&
         result.nonFiniteAcceptedValues === 0 &&
         result.rejectedStateMutations === 0;
-    const passed = hasAllClasses && result.rejectedCount >= 4 && invariantChecksPassed;
+    const passed = hasAllClasses && result.rejectedCount >= 4 && allRejectionsClassified && invariantChecksPassed;
 
     console.log(`Deliberately Rejected Observations Tested: ${result.rejectedCount} (Expected >= 4)`);
     console.log(`  ↳ Out-Of-Order Timestamps:      ${breakdown.outOfOrder >= 1 ? '✅' : '❌'} (${breakdown.outOfOrder} rejected)`);
     console.log(`  ↳ Duplicate Timestamps:         ${breakdown.duplicate >= 1 ? '✅' : '❌'} (${breakdown.duplicate} rejected)`);
     console.log(`  ↳ Non-Finite OHLCV Values:      ${breakdown.nonFiniteOhlcv >= 1 ? '✅' : '❌'} (${breakdown.nonFiniteOhlcv} rejected)`);
     console.log(`  ↳ Structurally Invalid OHLC:    ${breakdown.structuralOhlc >= 1 ? '✅' : '❌'} (${breakdown.structuralOhlc} rejected)`);
+    console.log(`Rejection Accounting Parity:              ${allRejectionsClassified ? '✅ 100% CLASSIFIED' : '❌ UNCLASSIFIED LEAK DETECTED'}`);
     console.log(`Rejected Observations Causing Mutation:   ${result.rejectedStateMutations === 0 ? '✅ 0' : `❌ ${result.rejectedStateMutations}`}`);
     console.log(`Synthetic Validity-Mask Invariants:       ${invariantChecksPassed ? '✅ PASSED' : '❌ FAILED'}`);
     console.log(`Synthetic Rejection Verification:         ${passed ? '✅ PASSED' : '❌ FAILED'}`);

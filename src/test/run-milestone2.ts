@@ -5,7 +5,10 @@ import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
 
 /**
  * Complete Milestone 2 Acceptance Orchestrator.
- * Explicitly gates on core engine, schema, and quantitative audit invariants.
+ * Explicitly gates on:
+ *   Gate 1: Phase 2A-2H Core Engine Suites
+ *   Gate 2: Phase 2J Schema & Immutability Suite
+ *   Gate 3: Phase 2J-B Quantitative Invariant, Provenance & Synthetic Rejection Audit
  */
 export function runMilestone2AcceptanceSuite(
     sourceCandles?: ML1Candle[],
@@ -40,13 +43,27 @@ export function runMilestone2AcceptanceSuite(
     }
     console.log('✅ Gate 3 Passed: Quantitative Invariants & Rejection Handling Verified.');
 
+    if (!auditResult.provenanceValidated) {
+        console.log('\n======================================================');
+        console.log('⚠️ SYNTHETIC ACCEPTANCE PASSED — HISTORICAL PROVENANCE NOT VALIDATED');
+        console.log('   ↳ Core Engine (2A-2H):       PASSED');
+        console.log('   ↳ Schema Immutability (2J):   PASSED');
+        console.log('   ↳ Synthetic Rejections:       4/4 CLASSES VERIFIED (100% ACCOUNTED)');
+        console.log('   ↳ Historical Provenance:      NOT RUN (Synthetic fallback used)');
+        console.log('   ↳ Status:                     NOT YET READY FOR FORMAL FREEZE');
+        console.log('   ↳ Action Required:            Run via UI with active SOLUSDT 1m feed to finalize.');
+        console.log('======================================================\n');
+        return true;
+    }
+
     console.log('\n======================================================');
     console.log('🏆 ALL MILESTONE 2 ACCEPTANCE GATES & AUDIT CRITERIA PASSED');
-    console.log('   ↳ Core Engine (2A-2H):      PASSED');
-    console.log('   ↳ Schema Immutability (2J): PASSED');
-    console.log('   ↳ Quantitative Audit (2J-B): PASSED');
-    console.log('   ↳ Synthetic Rejections:     4/4 CLASSES VERIFIED');
-    console.log('   ↳ Status:                   READY FOR FORMAL FREEZE');
+    console.log('   ↳ Core Engine (2A-2H):       PASSED');
+    console.log('   ↳ Schema Immutability (2J):   PASSED');
+    console.log('   ↳ Quantitative Audit (2J-B):  PASSED');
+    console.log('   ↳ Synthetic Rejections:       4/4 CLASSES VERIFIED (100% ACCOUNTED)');
+    console.log(`   ↳ Historical Provenance:      ${symbol} ${timeframe} VERIFIED`);
+    console.log('   ↳ Status:                     READY FOR FORMAL FREEZE');
     console.log('======================================================\n');
     return true;
 }
