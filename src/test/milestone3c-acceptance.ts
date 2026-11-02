@@ -2,8 +2,9 @@ import {
     stepTimeframeFeatureEngine, 
     stepMTFFeatureEngine
 } from '../indicators/mlr1/mtf/MTFFeatureEngine';
-import { MTF_CONFIG_A, MTF_CONFIG_B } from '../indicators/mlr1/mtf/MTFConfig';
+import { MTF_CONFIG_A, MTF_CONFIG_B, validateMTFConfig } from '../indicators/mlr1/mtf/MTFConfig';
 import { createInitialMTFState } from '../indicators/mlr1/mtf/MTFState';
+import { ML1_CONFIG_A } from '../indicators/mlr1/ML1FeatureConfigs';
 import { stepML1Features, createInitialML1FeatureState } from '../indicators/mlr1/ML1FeatureEngine';
 import type { MTFCandle, HTFIncompleteDiagnostic } from '../indicators/mlr1/mtf/MTFTypes';
 import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
@@ -83,6 +84,10 @@ export function runPhase3CTests(): boolean {
         assert(
             JSON.stringify(htfRes.observation.features) === JSON.stringify(m2Res.observation.features),
             '1h feature values diverged from Milestone 2 formulas'
+        );
+        assert(
+            JSON.stringify(htfRes.observation.validity) === JSON.stringify(m2Res.observation.validity),
+            '1h feature validity diverged from Milestone 2 formulas'
         );
     });
 
@@ -253,28 +258,39 @@ export function runPhase3CTests(): boolean {
         assert(JSON.stringify(state.featureEngineState) === snapshot, 'Original featureEngineState was mutated in place');
         assert(Object.isFrozen(res2.nextTimeframeState), 'nextTimeframeState must be frozen');
         assert(Object.isFrozen(res2.nextTimeframeState.featureEngineState), 'Next featureEngineState must be frozen');
+        assert(Object.isFrozen(res2.nextTimeframeState.latestFeatures), 'latestFeatures must be frozen');
+        assert(Object.isFrozen(res2.nextTimeframeState.latestValidity), 'latestValidity must be frozen');
     });
 
-    // 11. Repeated Completed-Candle Processing Rejected by Chronology
-    runTest('11. Repeated Completed-Candle Processing Rejected by Chronology', () => {
+    // 11. Repeated and Out-of-Order Completed Candles Rejected by the Wrapper
+    runTest('11. Repeated and Out-of-Order Completed Candles Rejected by the Wrapper', () => {
         let state = createInitialMTFState().state15m;
         const c1 = makeCompletedCandle('15m', baseTime, 900_000);
-        const res1 = stepTimeframeFeatureEngine(state, c1, null, MTF_CONFIG_A.config15m);
-        state = res1.nextTimeframeState;
+        state = stepTimeframeFeatureEngine(state, c1, null, MTF_CONFIG_A.config15m).nextTimeframeState;
+        assert(state.lastCompletedCandleOpenTimestamp === baseTime, 'Last completed timestamp must be recorded');
+        assert(state.lastCompletedBarIndex === 0, 'Bar index must be 0 after first candle');
 
-        // Try to feed the exact same completed candle again with same bar index
-        const badRepeatCandle: ML1Candle = {
-            time: c1.openTimestamp,
-            open: c1.open,
-            high: c1.high,
-            low: c1.low,
-            close: c1.close,
-            volume: c1.volume
-        };
+        let duplicateRejected = false;
+        try {
+            stepTimeframeFeatureEngine(state, c1, null, MTF_CONFIG_A.config15m);
+        } catch (error) {
+            duplicateRejected = error instanceof Error && error.message.includes('Duplicate or out-of-order completed candle');
+        }
+        assert(duplicateRejected, 'Repeated completed candle must be rejected by wrapper');
+        assert(state.lastCompletedBarIndex === 0, 'Bar index must not advance after duplicate rejection');
+        assert(state.lastCompletedCandleOpenTimestamp === baseTime, 'Last completed timestamp must remain unchanged');
 
-        const m2RepeatRes = stepML1Features(badRepeatCandle, 0, state.featureEngineState, MTF_CONFIG_A.config15m.featureConfig);
-        assert(m2RepeatRes.observation.features['IsDuplicateTimestamp'] === 1, 'Milestone 2 must reject duplicate completed candle');
-        assert(m2RepeatRes.nextState === state.featureEngineState, 'State must not advance on duplicate completed candle');
+        const c2 = makeCompletedCandle('15m', baseTime + 900_000, 900_000);
+        state = stepTimeframeFeatureEngine(state, c2, null, MTF_CONFIG_A.config15m).nextTimeframeState;
+        assert(state.lastCompletedCandleOpenTimestamp === baseTime + 900_000, 'Timestamp advances to the next candle');
+
+        let outOfOrderRejected = false;
+        try {
+            stepTimeframeFeatureEngine(state, c1, null, MTF_CONFIG_A.config15m);
+        } catch (error) {
+            outOfOrderRejected = error instanceof Error && error.message.includes('Duplicate or out-of-order completed candle');
+        }
+        assert(outOfOrderRejected, 'Older completed candle must be rejected by wrapper');
     });
 
     // 12. Recovery After HTF Aggregation Gap Restarts Warm-up
@@ -311,6 +327,136 @@ export function runPhase3CTests(): boolean {
         assert(postGapRes.observation !== null, 'Post-gap candle processed');
         assert(postGapRes.observation!.features['IsWarmupComplete'] === 0, 'Warmup must restart from 0 after gap reset');
         assert(postGapRes.nextTimeframeState.lastCompletedBarIndex === 0, 'Bar index must restart from 0');
+        assert(postGapRes.nextTimeframeState.lastCompletedCandleOpenTimestamp === postGapCandle.openTimestamp, 'Chronology must restart after reset');
+    });
+
+    // 13. Configuration Interval and Gap-Threshold Validation
+    runTest('13. Configuration Interval and Gap-Threshold Validation', () => {
+        assert(MTF_CONFIG_A.config15m.featureConfig.expectedIntervalMs === 900_000, '15m expected interval must be 900,000ms');
+        assert(MTF_CONFIG_A.config1h.featureConfig.expectedIntervalMs === 3_600_000, '1h expected interval must be 3,600,000ms');
+
+        const customConfig = validateMTFConfig({
+            symbol: 'SOLUSDT',
+            baseTimeframe: '1m',
+            config15m: {
+                timeframe: '15m',
+                durationMs: 900_000,
+                alignment: 'UTC_HALF_OPEN',
+                expectedSourceIntervalMs: 60_000,
+                gapPolicy: 'REJECT_AND_RESET',
+                featureConfig: { ...ML1_CONFIG_A, gapDiscontinuityThresholdMs: 2_000_000 }
+            },
+            config1h: {
+                timeframe: '1h',
+                durationMs: 3_600_000,
+                alignment: 'UTC_HALF_OPEN',
+                expectedSourceIntervalMs: 60_000,
+                gapPolicy: 'REJECT_AND_RESET',
+                featureConfig: { ...ML1_CONFIG_A, gapDiscontinuityThresholdMs: 5_000_000 }
+            }
+        });
+        assert(customConfig.config15m.featureConfig.gapDiscontinuityThresholdMs === 2_000_000, '15m custom threshold must be preserved');
+        assert(customConfig.config1h.featureConfig.gapDiscontinuityThresholdMs === 5_000_000, '1h custom threshold must be preserved');
+
+        const fallbackConfig = validateMTFConfig({
+            symbol: 'SOLUSDT',
+            baseTimeframe: '1m',
+            config15m: {
+                timeframe: '15m',
+                durationMs: 900_000,
+                alignment: 'UTC_HALF_OPEN',
+                expectedSourceIntervalMs: 60_000,
+                gapPolicy: 'REJECT_AND_RESET',
+                featureConfig: { ...ML1_CONFIG_A, gapDiscontinuityThresholdMs: 100_000 }
+            },
+            config1h: {
+                timeframe: '1h',
+                durationMs: 3_600_000,
+                alignment: 'UTC_HALF_OPEN',
+                expectedSourceIntervalMs: 60_000,
+                gapPolicy: 'REJECT_AND_RESET',
+                featureConfig: { ...ML1_CONFIG_A, gapDiscontinuityThresholdMs: 100_000 }
+            }
+        });
+        assert(fallbackConfig.config15m.featureConfig.gapDiscontinuityThresholdMs === 4_500_000, '15m fallback threshold must be five times the duration');
+        assert(fallbackConfig.config1h.featureConfig.gapDiscontinuityThresholdMs === 18_000_000, '1h fallback threshold must be five times the duration');
+    });
+
+    // 14. Completed-Candle Timeframe Mismatch Rejected
+    runTest('14. Completed-Candle Timeframe Mismatch Rejected', () => {
+        let rejected = false;
+        try {
+            stepTimeframeFeatureEngine(
+                createInitialMTFState().state1h,
+                makeCompletedCandle('15m', baseTime, 900_000),
+                null,
+                MTF_CONFIG_A.config1h
+            );
+        } catch (error) {
+            rejected = error instanceof Error && error.message.includes("does not match config '1h'");
+        }
+        assert(rejected, '15m candle passed to 1h engine must throw timeframe mismatch error');
+
+        rejected = false;
+        try {
+            stepTimeframeFeatureEngine(
+                createInitialMTFState().state15m,
+                makeCompletedCandle('1h', baseTime, 3_600_000),
+                null,
+                MTF_CONFIG_A.config15m
+            );
+        } catch (error) {
+            rejected = error instanceof Error && error.message.includes("does not match config '15m'");
+        }
+        assert(rejected, '1h candle passed to 15m engine must throw timeframe mismatch error');
+    });
+
+    // 15. Completed Candle and Diagnostic Ordering
+    runTest('15. Completed Candle and Diagnostic Ordering', () => {
+        const initialState = createInitialMTFState().state15m;
+        const candleBeforeGap = makeCompletedCandle('15m', baseTime, 900_000);
+        const diagnosticAfter: HTFIncompleteDiagnostic = Object.freeze({
+            timeframe: '15m',
+            openTimestamp: baseTime + 900_000,
+            closeTimestamp: baseTime + 1_800_000,
+            expectedSourceCount: 15,
+            actualSourceCount: 0,
+            missingTimestamps: Object.freeze([]),
+            duplicateCount: 0,
+            invalidSourceCount: 0,
+            completeness: 'INCOMPLETE_MISSING'
+        });
+        const beforeGapResult = stepTimeframeFeatureEngine(
+            initialState,
+            candleBeforeGap,
+            diagnosticAfter,
+            MTF_CONFIG_A.config15m
+        );
+        assert(beforeGapResult.observation !== null, 'Completed candle before diagnostic must produce observation');
+        assert(beforeGapResult.nextTimeframeState.lastCompletedBarIndex === null, 'Later diagnostic must reset feature index');
+        assert(beforeGapResult.nextTimeframeState.lastCompletedCandleOpenTimestamp === null, 'Later diagnostic must reset chronology');
+
+        const diagnosticBefore: HTFIncompleteDiagnostic = Object.freeze({
+            timeframe: '15m',
+            openTimestamp: baseTime,
+            closeTimestamp: baseTime + 900_000,
+            expectedSourceCount: 15,
+            actualSourceCount: 10,
+            missingTimestamps: Object.freeze([baseTime]),
+            duplicateCount: 0,
+            invalidSourceCount: 0,
+            completeness: 'INCOMPLETE_MISSING'
+        });
+        const candleAfterGap = makeCompletedCandle('15m', baseTime + 900_000, 900_000);
+        const afterGapResult = stepTimeframeFeatureEngine(
+            initialState,
+            candleAfterGap,
+            diagnosticBefore,
+            MTF_CONFIG_A.config15m
+        );
+        assert(afterGapResult.observation !== null, 'Completed candle after diagnostic must produce observation');
+        assert(afterGapResult.nextTimeframeState.lastCompletedBarIndex === 0, 'Feature index must restart after diagnostic');
+        assert(afterGapResult.nextTimeframeState.lastCompletedCandleOpenTimestamp === candleAfterGap.openTimestamp, 'Chronology must track post-diagnostic candle');
     });
 
     console.log(`\n=======================================`);
@@ -320,8 +466,8 @@ export function runPhase3CTests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log(`=======================================\n`);
 
-    if (failed === 0 && passed === 12) {
-        console.log('✅ ALL 12 PHASE 3C FEATURE ENGINE CRITERIA RIGOROUSLY MET.');
+    if (failed === 0 && passed === 15) {
+        console.log('✅ ALL 15 PHASE 3C FEATURE ENGINE CRITERIA RIGOROUSLY MET.');
         console.log('🔒 Phase 3C Independent HTF Feature Engines FULLY FROZEN.');
         return true;
     } else {

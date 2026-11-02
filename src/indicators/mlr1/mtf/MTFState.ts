@@ -205,6 +205,7 @@ export function createInitialMTFTimeframeState(timeframe: SupportedMTFTimeframe)
         aggregation: createInitialHTFAggregationState(),
         featureEngineState: createInitialML1FeatureState(),
         lastCompletedBarIndex: null,
+        lastCompletedCandleOpenTimestamp: null,
         latestFeatures: Object.freeze({}),
         latestValidity: Object.freeze({})
     });

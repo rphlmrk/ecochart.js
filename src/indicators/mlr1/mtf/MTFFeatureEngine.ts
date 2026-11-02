@@ -21,44 +21,44 @@ export interface MTFFeatureEngineStepResult {
 }
 
 /**
- * Pure Single-Timeframe Feature Step.
- * Consumes completed MTFCandles only.
- * Resets featureEngineState on diagnostics (REJECT_AND_RESET).
+ * Resets the feature stream after an incomplete or skipped aggregation window.
  */
-export function stepTimeframeFeatureEngine(
-    previousState: MTFTimeframeState,
-    completedCandle: MTFCandle | null,
-    diagnostic: HTFIncompleteDiagnostic | null,
+function resetFeatureState(state: MTFTimeframeState): MTFTimeframeState {
+    return Object.freeze({
+        ...state,
+        featureEngineState: createInitialML1FeatureState(),
+        lastCompletedBarIndex: null,
+        lastCompletedCandleOpenTimestamp: null,
+        latestFeatures: Object.freeze({}),
+        latestValidity: Object.freeze({})
+    });
+}
+
+/**
+ * Processes a verified, chronologically ordered completed candle.
+ */
+function processCompletedCandle(
+    state: MTFTimeframeState,
+    completedCandle: MTFCandle,
     config: MTFTimeframeConfig
 ): HTFFeatureStepResult {
-    // 1. REJECT_AND_RESET Recovery: Reset feature state when an incomplete or skipped window is diagnosed
-    if (diagnostic !== null) {
-        const nextTimeframeState: MTFTimeframeState = Object.freeze({
-            ...previousState,
-            featureEngineState: createInitialML1FeatureState(),
-            lastCompletedBarIndex: null,
-            latestFeatures: Object.freeze({}),
-            latestValidity: Object.freeze({})
-        });
-        return { nextTimeframeState, observation: null };
-    }
-
-    // 2. If no completed candle arrived, feature state is unchanged (accumulating window in progress)
-    if (completedCandle === null) {
-        return { nextTimeframeState: previousState, observation: null };
-    }
-
-    // 3. Strict Invariant: Only COMPLETE candles may enter the feature engine
     if (completedCandle.completeness !== 'COMPLETE') {
         throw new Error(`MTF Feature Engine Error: Rejected candle with non-COMPLETE status '${completedCandle.completeness}'`);
     }
 
-    // 4. Timeframe matching invariant
     if (completedCandle.timeframe !== config.timeframe) {
         throw new Error(`MTF Feature Engine Error: Candle timeframe '${completedCandle.timeframe}' does not match config '${config.timeframe}'`);
     }
 
-    // 5. Convert MTFCandle to ML1Candle for Milestone 2 feature engine
+    if (
+        state.lastCompletedCandleOpenTimestamp !== null &&
+        completedCandle.openTimestamp <= state.lastCompletedCandleOpenTimestamp
+    ) {
+        throw new Error(
+            `MTF Feature Engine Error: Duplicate or out-of-order completed candle at ${completedCandle.openTimestamp} <= ${state.lastCompletedCandleOpenTimestamp}`
+        );
+    }
+
     const ml1Candle: ML1Candle = Object.freeze({
         time: completedCandle.openTimestamp,
         open: completedCandle.open,
@@ -69,30 +69,63 @@ export function stepTimeframeFeatureEngine(
         isSynthetic: false
     });
 
-    const nextBarIndex = previousState.lastCompletedBarIndex !== null
-        ? previousState.lastCompletedBarIndex + 1
+    const nextBarIndex = state.lastCompletedBarIndex !== null
+        ? state.lastCompletedBarIndex + 1
         : 0;
-
-    // 6. Execute frozen Milestone 2 feature engine mathematics
     const m2Res = stepML1Features(
         ml1Candle,
         nextBarIndex,
-        previousState.featureEngineState,
+        state.featureEngineState,
         config.featureConfig
     );
 
     const nextTimeframeState: MTFTimeframeState = Object.freeze({
-        ...previousState,
+        ...state,
         featureEngineState: m2Res.nextState,
         lastCompletedBarIndex: nextBarIndex,
-        latestFeatures: m2Res.observation.features,
-        latestValidity: m2Res.observation.validity
+        lastCompletedCandleOpenTimestamp: completedCandle.openTimestamp,
+        latestFeatures: Object.freeze({ ...m2Res.observation.features }),
+        latestValidity: Object.freeze({ ...m2Res.observation.validity })
     });
 
-    return {
-        nextTimeframeState,
-        observation: m2Res.observation
-    };
+    return { nextTimeframeState, observation: m2Res.observation };
+}
+
+/**
+ * Consumes completed candles and diagnostics in chronological order.
+ * If both arrive together, the diagnostic resets whichever stream segment it follows.
+ */
+export function stepTimeframeFeatureEngine(
+    previousState: MTFTimeframeState,
+    completedCandle: MTFCandle | null,
+    diagnostic: HTFIncompleteDiagnostic | null,
+    config: MTFTimeframeConfig
+): HTFFeatureStepResult {
+    if (completedCandle !== null && diagnostic !== null) {
+        if (completedCandle.closeTimestamp <= diagnostic.openTimestamp) {
+            const candleStep = processCompletedCandle(previousState, completedCandle, config);
+            return {
+                nextTimeframeState: resetFeatureState(candleStep.nextTimeframeState),
+                observation: candleStep.observation
+            };
+        }
+
+        return processCompletedCandle(
+            resetFeatureState(previousState),
+            completedCandle,
+            config
+        );
+    }
+
+    if (diagnostic !== null) {
+        return { nextTimeframeState: resetFeatureState(previousState), observation: null };
+    }
+
+    if (completedCandle !== null) {
+        return processCompletedCandle(previousState, completedCandle, config);
+    }
+
+    return { nextTimeframeState: previousState, observation: null };
 }
 
 /**
@@ -128,6 +161,7 @@ export function stepMTFFeatureEngine(
             ...previousMTFState.state15m,
             featureEngineState: res15m.nextTimeframeState.featureEngineState,
             lastCompletedBarIndex: res15m.nextTimeframeState.lastCompletedBarIndex,
+            lastCompletedCandleOpenTimestamp: res15m.nextTimeframeState.lastCompletedCandleOpenTimestamp,
             latestFeatures: res15m.nextTimeframeState.latestFeatures,
             latestValidity: res15m.nextTimeframeState.latestValidity
         }),
@@ -135,6 +169,7 @@ export function stepMTFFeatureEngine(
             ...previousMTFState.state1h,
             featureEngineState: res1h.nextTimeframeState.featureEngineState,
             lastCompletedBarIndex: res1h.nextTimeframeState.lastCompletedBarIndex,
+            lastCompletedCandleOpenTimestamp: res1h.nextTimeframeState.lastCompletedCandleOpenTimestamp,
             latestFeatures: res1h.nextTimeframeState.latestFeatures,
             latestValidity: res1h.nextTimeframeState.latestValidity
         })
