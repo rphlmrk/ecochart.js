@@ -8,6 +8,7 @@ export interface MTFTimeframeConfig {
     readonly durationMs: number;
     readonly alignment: 'UTC_HALF_OPEN';
     readonly expectedSourceIntervalMs: number;
+    readonly gapPolicy: 'REJECT_AND_RESET';
     readonly maxStalenessMs?: number;
     readonly featureConfig: ValidatedML1FeatureConfig;
 }
@@ -30,7 +31,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Validates MTF configuration and returns an immutable defensive copy.
+ * Validates MTF configuration and returns an immutable, deeply frozen defensive copy.
  */
 export function validateMTFConfig(rawConfig: unknown): ValidatedMTFGlobalConfig {
     if (!isRecord(rawConfig)) {
@@ -54,7 +55,7 @@ export function validateMTFConfig(rawConfig: unknown): ValidatedMTFGlobalConfig 
         if (rawTimeframeConfig.timeframe !== expectedTimeframe) {
             throw new Error(`MTF Configuration Error: timeframe identifier must be '${expectedTimeframe}', got '${rawTimeframeConfig.timeframe}'.`);
         }
-        if (rawTimeframeConfig.durationMs !== expectedDurationMs) {
+        if (!Number.isSafeInteger(rawTimeframeConfig.durationMs) || rawTimeframeConfig.durationMs !== expectedDurationMs) {
             throw new Error(`MTF Configuration Error: ${expectedTimeframe} durationMs must be exactly ${expectedDurationMs}, got ${rawTimeframeConfig.durationMs}.`);
         }
         if (rawTimeframeConfig.alignment !== 'UTC_HALF_OPEN') {
@@ -63,13 +64,16 @@ export function validateMTFConfig(rawConfig: unknown): ValidatedMTFGlobalConfig 
         if (rawTimeframeConfig.expectedSourceIntervalMs !== 60_000) {
             throw new Error(`MTF Configuration Error: expectedSourceIntervalMs must be 60000, got ${rawTimeframeConfig.expectedSourceIntervalMs}.`);
         }
+        if (rawTimeframeConfig.gapPolicy !== 'REJECT_AND_RESET') {
+            throw new Error(`MTF Configuration Error: gapPolicy must be explicitly 'REJECT_AND_RESET', got '${rawTimeframeConfig.gapPolicy}'.`);
+        }
 
         const maxStalenessMs = rawTimeframeConfig.maxStalenessMs;
         if (
             maxStalenessMs !== undefined &&
-            (typeof maxStalenessMs !== 'number' || !Number.isFinite(maxStalenessMs) || maxStalenessMs <= 0)
+            (typeof maxStalenessMs !== 'number' || !Number.isSafeInteger(maxStalenessMs) || maxStalenessMs <= 0)
         ) {
-            throw new Error('MTF Configuration Error: maxStalenessMs must be a positive number if defined.');
+            throw new Error(`MTF Configuration Error: maxStalenessMs must be a positive safe integer if defined, got ${maxStalenessMs}.`);
         }
         if (!isRecord(rawTimeframeConfig.featureConfig)) {
             throw new Error(`MTF Configuration Error: featureConfig for ${expectedTimeframe} must be a valid ML1 configuration.`);
@@ -81,6 +85,7 @@ export function validateMTFConfig(rawConfig: unknown): ValidatedMTFGlobalConfig 
             durationMs: expectedDurationMs,
             alignment: 'UTC_HALF_OPEN',
             expectedSourceIntervalMs: 60_000,
+            gapPolicy: 'REJECT_AND_RESET',
             ...(maxStalenessMs === undefined ? {} : { maxStalenessMs }),
             featureConfig
         };
@@ -109,6 +114,7 @@ export const MTF_CONFIG_A: ValidatedMTFGlobalConfig = validateMTFConfig({
         durationMs: 900_000,
         alignment: 'UTC_HALF_OPEN',
         expectedSourceIntervalMs: 60_000,
+        gapPolicy: 'REJECT_AND_RESET',
         featureConfig: ML1_CONFIG_A
     },
     config1h: {
@@ -116,6 +122,7 @@ export const MTF_CONFIG_A: ValidatedMTFGlobalConfig = validateMTFConfig({
         durationMs: 3_600_000,
         alignment: 'UTC_HALF_OPEN',
         expectedSourceIntervalMs: 60_000,
+        gapPolicy: 'REJECT_AND_RESET',
         featureConfig: ML1_CONFIG_A
     }
 });
@@ -131,6 +138,7 @@ export const MTF_CONFIG_B: ValidatedMTFGlobalConfig = validateMTFConfig({
         durationMs: 900_000,
         alignment: 'UTC_HALF_OPEN',
         expectedSourceIntervalMs: 60_000,
+        gapPolicy: 'REJECT_AND_RESET',
         featureConfig: ML1_CONFIG_B
     },
     config1h: {
@@ -138,6 +146,7 @@ export const MTF_CONFIG_B: ValidatedMTFGlobalConfig = validateMTFConfig({
         durationMs: 3_600_000,
         alignment: 'UTC_HALF_OPEN',
         expectedSourceIntervalMs: 60_000,
+        gapPolicy: 'REJECT_AND_RESET',
         featureConfig: ML1_CONFIG_B
     }
 });

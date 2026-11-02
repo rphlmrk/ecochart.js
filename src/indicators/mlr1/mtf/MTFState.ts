@@ -15,15 +15,19 @@ export function getUTCWindowBoundaries(
     timestamp: number,
     durationMs: number
 ): { openTimestamp: number; closeTimestamp: number } {
-    if (!Number.isFinite(timestamp) || timestamp < 0) {
-        throw new Error(`MTF Boundary Error: Invalid timestamp ${timestamp}`);
+    if (!Number.isSafeInteger(timestamp) || timestamp < 0 || timestamp >= 1e14) {
+        throw new Error(`MTF Boundary Error: Timestamp must be a safe non-negative integer < 1e14, got ${timestamp}`);
     }
-    if (!Number.isFinite(durationMs) || durationMs <= 0) {
-        throw new Error(`MTF Boundary Error: Invalid durationMs ${durationMs}`);
+    if (!Number.isSafeInteger(durationMs) || durationMs <= 0) {
+        throw new Error(`MTF Boundary Error: DurationMs must be a positive safe integer, got ${durationMs}`);
     }
 
     const openTimestamp = Math.floor(timestamp / durationMs) * durationMs;
-    return { openTimestamp, closeTimestamp: openTimestamp + durationMs };
+    const closeTimestamp = openTimestamp + durationMs;
+    if (!Number.isSafeInteger(closeTimestamp)) {
+        throw new Error(`MTF Boundary Error: Computed close timestamp is not a safe integer, got ${closeTimestamp}`);
+    }
+    return { openTimestamp, closeTimestamp };
 }
 
 /**
@@ -34,6 +38,13 @@ export function isSourceTimestampInWindow(
     windowOpen: number,
     windowClose: number
 ): boolean {
+    if (
+        !Number.isSafeInteger(sourceTime) ||
+        !Number.isSafeInteger(windowOpen) ||
+        !Number.isSafeInteger(windowClose)
+    ) {
+        return false;
+    }
     return sourceTime >= windowOpen && sourceTime < windowClose;
 }
 
@@ -44,6 +55,9 @@ export function isHTFCandleAvailableAt(
     observationTime: number,
     htfCloseTimestamp: number
 ): boolean {
+    if (!Number.isSafeInteger(observationTime) || !Number.isSafeInteger(htfCloseTimestamp)) {
+        return false;
+    }
     return observationTime >= htfCloseTimestamp;
 }
 
@@ -54,6 +68,9 @@ export function calculateContextAgeMs(
     observationTime: number,
     htfCloseTimestamp: number
 ): number | null {
+    if (!Number.isSafeInteger(observationTime) || !Number.isSafeInteger(htfCloseTimestamp)) {
+        return null;
+    }
     if (observationTime < htfCloseTimestamp) return null;
     return observationTime - htfCloseTimestamp;
 }

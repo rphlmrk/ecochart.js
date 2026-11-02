@@ -8,6 +8,7 @@ import {
     isHTFCandleAvailableAt,
     isSourceTimestampInWindow
 } from '../indicators/mlr1/mtf/MTFState';
+import type { MTFCandle } from '../indicators/mlr1/mtf/MTFTypes';
 
 function assert(condition: boolean, message: string): asserts condition {
     if (!condition) throw new Error(`[AssertionFailed] ${message}`);
@@ -66,7 +67,35 @@ export function runPhase3ATests(): boolean {
                 ...MTF_CONFIG_A,
                 config15m: { ...MTF_CONFIG_A.config15m, maxStalenessMs: 0 }
             }),
-            'maxStalenessMs must be a positive number'
+            'maxStalenessMs must be a positive safe integer'
+        );
+        assertThrows(
+            () => validateMTFConfig({
+                ...MTF_CONFIG_A,
+                config15m: { ...MTF_CONFIG_A.config15m, maxStalenessMs: 1.5 }
+            }),
+            'maxStalenessMs must be a positive safe integer'
+        );
+        assertThrows(
+            () => validateMTFConfig({
+                ...MTF_CONFIG_A,
+                config15m: { ...MTF_CONFIG_A.config15m, gapPolicy: 'IGNORE' }
+            }),
+            "gapPolicy must be explicitly 'REJECT_AND_RESET'"
+        );
+        assertThrows(
+            () => validateMTFConfig({
+                ...MTF_CONFIG_A,
+                config1h: { ...MTF_CONFIG_A.config1h, gapPolicy: undefined }
+            }),
+            "gapPolicy must be explicitly 'REJECT_AND_RESET'"
+        );
+        assertThrows(
+            () => validateMTFConfig({
+                ...MTF_CONFIG_A,
+                config15m: { ...MTF_CONFIG_A.config15m, durationMs: 900_000.5 }
+            }),
+            'durationMs must be exactly 900000'
         );
     });
 
@@ -80,9 +109,20 @@ export function runPhase3ATests(): boolean {
             assert(Object.isFrozen(profile.config15m.featureConfig.atrPeriods), 'Feature period arrays are not frozen');
             assert(profile.config15m.alignment === 'UTC_HALF_OPEN', '15m alignment mismatch');
             assert(profile.config1h.alignment === 'UTC_HALF_OPEN', '1h alignment mismatch');
+            assert(profile.config15m.gapPolicy === 'REJECT_AND_RESET', '15m gap policy mismatch');
+            assert(profile.config1h.gapPolicy === 'REJECT_AND_RESET', '1h gap policy mismatch');
         }
         assert(MTF_CONFIG_A.config15m.featureConfig.emaPeriods.length === 0, 'Profile A must ablate EMA');
         assert(MTF_CONFIG_B.config15m.featureConfig.emaPeriods.length > 0, 'Profile B must include EMA');
+        assert(ML1_CONFIG_A.timeframe === '1m', 'Standard MTF profiles must use the approved ML1 feature configuration');
+
+        const defensiveCopy = validateMTFConfig(MTF_CONFIG_A);
+        assert(defensiveCopy.config15m.featureConfig !== MTF_CONFIG_A.config15m.featureConfig, 'Feature config must be defensively copied');
+        assert(
+            defensiveCopy.config15m.featureConfig.atrPeriods !== MTF_CONFIG_A.config15m.featureConfig.atrPeriods,
+            'Feature period arrays must be defensively copied'
+        );
+        assert(Object.isFrozen(defensiveCopy.config15m.featureConfig.atrPeriods), 'Copied feature arrays must be frozen');
     });
 
     runTest('UTC boundaries and half-open window semantics', () => {
@@ -102,6 +142,34 @@ export function runPhase3ATests(): boolean {
         assert(isSourceTimestampInWindow(t1000, t1000, t1015), 'Window open must be inclusive');
         assert(isSourceTimestampInWindow(t1015 - 60_000, t1000, t1015), 'Last 1m candle must be in window');
         assert(!isSourceTimestampInWindow(t1015, t1000, t1015), 'Window close must be exclusive');
+
+        assertThrows(
+            () => getUTCWindowBoundaries(Number.NaN, 900_000),
+            'Timestamp must be a safe non-negative integer'
+        );
+        assertThrows(
+            () => getUTCWindowBoundaries(-1, 900_000),
+            'Timestamp must be a safe non-negative integer'
+        );
+        assertThrows(
+            () => getUTCWindowBoundaries(1.5, 900_000),
+            'Timestamp must be a safe non-negative integer'
+        );
+        assertThrows(
+            () => getUTCWindowBoundaries(1e14, 900_000),
+            'Timestamp must be a safe non-negative integer'
+        );
+        assertThrows(
+            () => getUTCWindowBoundaries(t1007, 0),
+            'DurationMs must be a positive safe integer'
+        );
+        assertThrows(
+            () => getUTCWindowBoundaries(t1007, 900_000.5),
+            'DurationMs must be a positive safe integer'
+        );
+        assert(!isSourceTimestampInWindow(1.5, t1000, t1015), 'Fractional source timestamps must be rejected');
+        assert(!isHTFCandleAvailableAt(Number.NaN, t1015), 'Non-finite observation times must be rejected');
+        assert(calculateContextAgeMs(t1015 + 0.5, t1015) === null, 'Fractional context times must be rejected');
     });
 
     runTest('Point-in-time availability and context age', () => {
@@ -151,7 +219,21 @@ export function runPhase3ATests(): boolean {
         }
     });
 
-    assert(ML1_CONFIG_A.timeframe === '1m', 'Standard MTF profiles must use the approved ML1 feature configuration');
+    runTest('Completed HTF candle completeness contract', () => {
+        const completeCandle: MTFCandle = {
+            timeframe: '15m',
+            openTimestamp: 1000,
+            closeTimestamp: 901000,
+            open: 100,
+            high: 105,
+            low: 95,
+            close: 102,
+            volume: 500,
+            sourceObservationCount: 15,
+            completeness: 'COMPLETE'
+        };
+        assert(completeCandle.completeness === 'COMPLETE', 'MTFCandle completeness must always be COMPLETE');
+    });
 
     console.log('\n=======================================');
     console.log('📊 ML-R1 PHASE 3A ACCEPTANCE AUDIT:');
@@ -161,7 +243,7 @@ export function runPhase3ATests(): boolean {
     console.log('=======================================\n');
 
     if (failed === 0) {
-        console.log('✅ ALL PHASE 3A CONTRACT TESTS PASSED.\n🔒 Phase 3A Contracts FROZEN.');
+        console.log('✅ ALL PHASE 3A CONTRACT TESTS PASSED (7/7).\n🔒 Phase 3A Contracts FULLY FROZEN.');
         return true;
     }
 

@@ -29,19 +29,33 @@ export interface HTFIncompleteDiagnostic {
 /**
  * Completed HTF candle for the half-open interval [openTimestamp, closeTimestamp).
  */
+/**
+ * Completed HTF candle for [openTimestamp, closeTimestamp).
+ * Incomplete windows are represented only by HTFIncompleteDiagnostic.
+ */
 export interface MTFCandle {
     readonly timeframe: SupportedMTFTimeframe;
-    readonly openTimestamp: number;
-    readonly closeTimestamp: number;
+    readonly openTimestamp: number; // Inclusive window start
+    readonly closeTimestamp: number; // Exclusive close boundary
     readonly open: number;
     readonly high: number;
     readonly low: number;
     readonly close: number;
     readonly volume: number;
     readonly sourceObservationCount: number;
-    readonly isComplete: boolean;
+    readonly completeness: 'COMPLETE';
 }
 
+/**
+ * Context Availability & Freshness Status Contract:
+ *
+ * | Status          | Meaning                                                             | isAvailable |
+ * | --------------- | ------------------------------------------------------------------- | ----------- |
+ * | UNAVAILABLE     | No eligible completed candle exists or reset is underway            | false       |
+ * | WARMING_UP      | Completed candle exists; context is available but features are warm | true        |
+ * | AVAILABLE_VALID | Completed candle exists and requested features are valid            | true        |
+ * | STALE           | Candle age exceeds maxStalenessMs; excluded from consumption        | false       |
+ */
 export type HTFContextAvailability =
     | 'UNAVAILABLE'
     | 'WARMING_UP'
