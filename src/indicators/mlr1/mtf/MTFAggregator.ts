@@ -311,10 +311,10 @@ export function stepMTFAggregation(
     const isBackwardsOrDuplicate = previousMTFState.last1mTimestamp !== null &&
         candle.time <= previousMTFState.last1mTimestamp;
     const previousBarIndex = previousMTFState.last1mBarIndex;
-    const isBarIndexRegression = barIndex !== undefined &&
+    const isBarIndexNonIncreasing = barIndex !== undefined &&
         previousBarIndex !== null &&
-        barIndex < previousBarIndex;
-    const effectiveSourceValid = isSourceValid && !isBarIndexRegression;
+        barIndex <= previousBarIndex;
+    const effectiveSourceValid = isSourceValid && !isBarIndexNonIncreasing;
 
     const res15m = stepHTFAggregation(
         candle,
@@ -339,7 +339,7 @@ export function stepMTFAggregation(
     const next1mTimestamp = isBackwardsOrDuplicate
         ? previousMTFState.last1mTimestamp
         : candle.time;
-    const nextBarIndex = isBackwardsOrDuplicate || isBarIndexRegression
+    const nextBarIndex = isBackwardsOrDuplicate || isBarIndexNonIncreasing
         ? previousBarIndex
         : (barIndex !== undefined ? barIndex : previousBarIndex);
     const nextState: MTFState = Object.freeze({

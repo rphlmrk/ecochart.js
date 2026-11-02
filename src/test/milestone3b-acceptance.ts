@@ -619,6 +619,35 @@ export function runPhase3BTests(): boolean {
         assert(result.nextState.state1h.aggregation.actualSourceCount === 3, '1h source count must be 3');
     });
 
+    // 24. Forward Timestamp with Equal Bar Index
+    runTest('24. Forward Timestamp with Equal Bar Index', () => {
+        let state = createInitialMTFState();
+        state = stepMTFAggregation(makeCandle(baseTime), true, state, MTF_CONFIG_A, 100).nextState;
+        state = stepMTFAggregation(
+            makeCandle(baseTime + 60_000),
+            true,
+            state,
+            MTF_CONFIG_A,
+            101
+        ).nextState;
+        assert(state.last1mBarIndex === 101, 'Bar index must be 101');
+        assert(state.last1mTimestamp === baseTime + 60_000, 'Timestamp must be 10:01');
+
+        const result = stepMTFAggregation(
+            makeCandle(baseTime + 120_000),
+            true,
+            state,
+            MTF_CONFIG_A,
+            101
+        );
+        assert(result.nextState.last1mTimestamp === baseTime + 120_000, 'Timestamp should advance to 10:02');
+        assert(result.nextState.last1mBarIndex === 101, 'Bar index must remain 101 on equal index');
+        assert(result.nextState.state15m.aggregation.invalidSourceCount === 1, '15m must reject equal index');
+        assert(result.nextState.state1h.aggregation.invalidSourceCount === 1, '1h must reject equal index');
+        assert(result.nextState.state15m.aggregation.actualSourceCount === 2, '15m source count must remain 2');
+        assert(result.nextState.state1h.aggregation.actualSourceCount === 2, '1h source count must remain 2');
+    });
+
     console.log(`\n=======================================`);
     console.log(`📊 ML-R1 PHASE 3B COMPLETE ACCEPTANCE AUDIT:`);
     console.log(`   ↳ Tests Executed:  ${passed + failed}`);
@@ -626,8 +655,8 @@ export function runPhase3BTests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log(`=======================================\n`);
 
-    if (failed === 0 && passed === 23) {
-        console.log('✅ ALL 23 PHASE 3B AGGREGATION CRITERIA RIGOROUSLY MET.');
+    if (failed === 0 && passed === 24) {
+        console.log('✅ ALL 24 PHASE 3B AGGREGATION CRITERIA RIGOROUSLY MET.');
         console.log('🔒 Phase 3B Aggregation Engine FULLY FROZEN.');
         return true;
     } else {
