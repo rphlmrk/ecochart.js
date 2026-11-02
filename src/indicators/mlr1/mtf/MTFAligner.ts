@@ -1,18 +1,66 @@
-import type { MTFContext, MTFState, MTFTimeframeContext } from './MTFTypes';
-import type { MTFTimeframeConfig, ValidatedMTFGlobalConfig } from './MTFConfig';
+import type { MTFTimeframeContext, MTFContext, MTFState } from './MTFTypes';
+import type { ValidatedMTFGlobalConfig, MTFTimeframeConfig } from './MTFConfig';
 import { createMTFTimeframeContext, isHTFCandleAvailableAt } from './MTFState';
 
 /**
- * Aligns one higher-timeframe state to a 1m observation without exposing future data.
+ * Validates that an observation timestamp is a safe, non-negative integer.
+ */
+export function validateObservationTimestamp(timestamp: number): void {
+    if (
+        !Number.isSafeInteger(timestamp) ||
+        timestamp < 0 ||
+        timestamp > Number.MAX_SAFE_INTEGER
+    ) {
+        throw new Error(`MTF Alignment Error: Invalid observation timestamp ${timestamp}`);
+    }
+}
+
+/**
+ * Pure causal alignment of one timeframe's context onto a 1m observation.
+ *
+ * Completed candles are exposed only at or after their exclusive close boundary.
+ * Feature warm-up and context availability remain separate dimensions.
  */
 export function alignTimeframeContext(
     observationTimestamp: number,
     timeframeState: MTFState['state15m'] | MTFState['state1h'],
     config: MTFTimeframeConfig
 ): MTFTimeframeContext {
-    const candle = timeframeState.aggregation.lastCompletedCandle;
+    validateObservationTimestamp(observationTimestamp);
 
-    if (!candle || !isHTFCandleAvailableAt(observationTimestamp, candle.closeTimestamp)) {
+    const candle = timeframeState.aggregation.lastCompletedCandle;
+    if (!candle) {
+        return createMTFTimeframeContext(
+            config.timeframe,
+            null,
+            observationTimestamp,
+            false,
+            Object.freeze({}),
+            Object.freeze({}),
+            config.maxStalenessMs
+        );
+    }
+
+    if (
+        candle.completeness !== 'COMPLETE' ||
+        candle.timeframe !== config.timeframe ||
+        !Number.isSafeInteger(candle.openTimestamp) ||
+        !Number.isSafeInteger(candle.closeTimestamp) ||
+        candle.closeTimestamp <= candle.openTimestamp
+    ) {
+        throw new Error('MTF Alignment Error: Invalid completed HTF candle in timeframe state');
+    }
+
+    if (
+        timeframeState.lastCompletedCandleOpenTimestamp !== null &&
+        timeframeState.lastCompletedCandleOpenTimestamp !== candle.openTimestamp
+    ) {
+        throw new Error(
+            `MTF Alignment Error: State inconsistency. Aggregation candle open (${candle.openTimestamp}) does not match feature engine watermark (${timeframeState.lastCompletedCandleOpenTimestamp})`
+        );
+    }
+
+    if (!isHTFCandleAvailableAt(observationTimestamp, candle.closeTimestamp)) {
         return createMTFTimeframeContext(
             config.timeframe,
             null,
@@ -37,7 +85,7 @@ export function alignTimeframeContext(
 }
 
 /**
- * Aligns independent 15m and 1h contexts onto a single 1m observation.
+ * Aligns completed 15m and 1h context onto a 1m observation independently.
  */
 export function alignMTFContext(
     observationTimestamp: number,
@@ -45,14 +93,23 @@ export function alignMTFContext(
     mtfState: MTFState,
     config: ValidatedMTFGlobalConfig
 ): MTFContext {
-    if (!Number.isSafeInteger(observationTimestamp) || observationTimestamp < 0) {
-        throw new Error(`MTF Alignment Error: Invalid observation timestamp ${observationTimestamp}`);
-    }
+    validateObservationTimestamp(observationTimestamp);
+
+    const context15m = alignTimeframeContext(
+        observationTimestamp,
+        mtfState.state15m,
+        config.config15m
+    );
+    const context1h = alignTimeframeContext(
+        observationTimestamp,
+        mtfState.state1h,
+        config.config1h
+    );
 
     return Object.freeze({
         observationTimestamp,
         symbol,
-        context15m: alignTimeframeContext(observationTimestamp, mtfState.state15m, config.config15m),
-        context1h: alignTimeframeContext(observationTimestamp, mtfState.state1h, config.config1h)
+        context15m,
+        context1h
     });
 }
