@@ -66,6 +66,26 @@ export function runPhase3ETests(): boolean {
         assert(observations[59].mtfContext.context1h.isAvailable === false, '1h must be unavailable at 10:59');
         assert(observations[60].mtfContext.context1h.isAvailable === true, '1h must become available at 11:00');
         assert(observations[60].mtfContext.context1h.contextAgeMs === 0, '1h context age must be 0ms at 11:00');
+
+        // Every aligned context must be causal relative to its 1m observation.
+        for (const observation of observations) {
+            const timestamp = observation.observation1m.timestamp;
+            const context15m = observation.mtfContext.context15m;
+            const context1h = observation.mtfContext.context1h;
+
+            if (context15m.lastCompletedCloseTimestamp !== null) {
+                assert(
+                    context15m.lastCompletedCloseTimestamp <= timestamp,
+                    `15m context exposed a future candle close (${context15m.lastCompletedCloseTimestamp} > ${timestamp})`
+                );
+            }
+            if (context1h.lastCompletedCloseTimestamp !== null) {
+                assert(
+                    context1h.lastCompletedCloseTimestamp <= timestamp,
+                    `1h context exposed a future candle close (${context1h.lastCompletedCloseTimestamp} > ${timestamp})`
+                );
+            }
+        }
     });
 
     // 2. 15m-Only Gap Integration (15m resets & recovers, 1h remains intact)
@@ -77,8 +97,8 @@ export function runPhase3ETests(): boolean {
             state = stepIntegratedMTFPipeline(makeCandle(baseTime + i * 60_000), i, state, pipelineConfig).nextState;
         }
 
-        // Jump 15m: 11:00 jumps to 11:30 (missing 11:01–11:29)
-        const resGap = stepIntegratedMTFPipeline(makeCandle(baseTime + 90 * 60_000), 61, state, pipelineConfig);
+        // Jump 15m: 11:00 jumps to 11:30 (missing 11:01–11:29) at absolute aligned slot 90
+        const resGap = stepIntegratedMTFPipeline(makeCandle(baseTime + 90 * 60_000), 90, state, pipelineConfig);
         state = resGap.nextState;
 
         // 15m must be reset and unavailable
@@ -110,8 +130,8 @@ export function runPhase3ETests(): boolean {
             state = stepIntegratedMTFPipeline(makeCandle(baseTime + i * 60_000), i, state, pipelineConfig).nextState;
         }
 
-        // Jump 2 hours to 13:00 (skipping 11:00–12:00 and 12:00–13:00)
-        const resJump = stepIntegratedMTFPipeline(makeCandle(baseTime + 180 * 60_000), 61, state, pipelineConfig);
+        // Jump 2 hours to 13:00 (skipping 11:00–12:00 and 12:00–13:00) at absolute aligned slot 180
+        const resJump = stepIntegratedMTFPipeline(makeCandle(baseTime + 180 * 60_000), 180, state, pipelineConfig);
 
         // 1h is reset and unavailable
         assert(resJump.observation.mtfContext.context1h.isAvailable === false, '1h must be unavailable after multi-hour gap');
@@ -136,8 +156,8 @@ export function runPhase3ETests(): boolean {
             state = stepIntegratedMTFPipeline(makeCandle(baseTime + i * 60_000), i, state, pipelineConfig).nextState;
         }
 
-        // Major 4-hour gap to 15:00
-        const resGap = stepIntegratedMTFPipeline(makeCandle(baseTime + 300 * 60_000), 61, state, pipelineConfig);
+        // Major 4-hour gap to 15:00 at absolute aligned slot 300
+        const resGap = stepIntegratedMTFPipeline(makeCandle(baseTime + 300 * 60_000), 300, state, pipelineConfig);
         assert(resGap.observation.mtfContext.context15m.isAvailable === false, '15m reset on major gap');
         assert(resGap.observation.mtfContext.context1h.isAvailable === false, '1h reset on major gap');
 
@@ -158,13 +178,18 @@ export function runPhase3ETests(): boolean {
     // 5. Warm-up Recovery Integration (Context is available, but individual features remain invalid)
     runTest('5. Warm-up Recovery Integration (Context is available, but individual features remain invalid)', () => {
         let state = createInitialIntegratedMTFState();
-        // Feed 16 candles: completes 1st 15m candle at 10:15
+        let obs15: IntegratedMTFObservation | null = null;
+
+        // Feed 16 candles: completes 1st 15m candle at 10:15 (index 15)
         for (let i = 0; i <= 15; i++) {
-            state = stepIntegratedMTFPipeline(makeCandle(baseTime + i * 60_000), i, state, pipelineConfig).nextState;
+            const result = stepIntegratedMTFPipeline(makeCandle(baseTime + i * 60_000), i, state, pipelineConfig);
+            state = result.nextState;
+            if (i === 15) {
+                obs15 = result.observation;
+            }
         }
 
-        // At 10:15: context is available, but warm-up is incomplete
-        const obs15 = stepIntegratedMTFPipeline(makeCandle(baseTime + 15 * 60_000), 15, state, pipelineConfig).observation;
+        assert(obs15 !== null, '10:15 observation must exist');
         assert(obs15.mtfContext.context15m.isAvailable === true, 'Context is available for consumption');
         assert(obs15.mtfContext.context15m.isWarmupComplete === false, 'isWarmupComplete must be false on 1st candle');
         assert(obs15.mtfContext.context15m.availabilityStatus === 'WARMING_UP', 'Status must be WARMING_UP');
@@ -179,7 +204,7 @@ export function runPhase3ETests(): boolean {
             mtfConfig: validateMTFConfig({
                 symbol: 'SOLUSDT',
                 baseTimeframe: '1m',
-                config15m: { ...MTF_CONFIG_A.config15m, maxStalenessMs: 300_000 }, // 5 mins
+                config15m: { ...MTF_CONFIG_A.config15m, maxStalenessMs: 30_000 }, // 30 seconds
                 config1h: { ...MTF_CONFIG_A.config1h, maxStalenessMs: 7_200_000 }
             })
         };
@@ -189,11 +214,12 @@ export function runPhase3ETests(): boolean {
             state = stepIntegratedMTFPipeline(makeCandle(baseTime + i * 60_000), i, state, staleConfig).nextState;
         }
 
-        // At 10:25: age = 10 mins > 5 mins threshold -> STALE
-        const resStale = stepIntegratedMTFPipeline(makeCandle(baseTime + 25 * 60_000), 25, state, staleConfig);
+        // 10:16 is contiguous. The prior 15m candle closed at 10:15, so age 60s exceeds 30s.
+        const resStale = stepIntegratedMTFPipeline(makeCandle(baseTime + 16 * 60_000), 16, state, staleConfig);
         assert(resStale.observation.mtfContext.context15m.isAvailable === false, 'Stale 15m context cannot be consumed');
         assert(resStale.observation.mtfContext.context15m.availabilityStatus === 'STALE', 'Status must be STALE');
         assert(resStale.observation.mtfContext.context15m.lastCompletedCandle !== null, 'Stale candle preserved for diagnostics');
+        assert(resStale.observation.mtfContext.context15m.contextAgeMs === 60_000, 'Context age must be 60,000ms');
     });
 
     // 7. Chronology Attacks on Integrated Pipeline
@@ -244,13 +270,19 @@ export function runPhase3ETests(): boolean {
     // 9. Coherent Integrated Observation Snapshot Capture
     runTest('9. Coherent Integrated Observation Snapshot Capture', () => {
         let state = createInitialIntegratedMTFState();
-        // Feed 61 candles to complete both 15m (4th window) and 1h (1st window) at 11:00
+        let resultAt1100: ReturnType<typeof stepIntegratedMTFPipeline> | null = null;
+
+        // Feed 61 candles to complete both 15m (4th window) and 1h (1st window) at 11:00 (index 60)
         for (let i = 0; i <= 60; i++) {
-            state = stepIntegratedMTFPipeline(makeCandle(baseTime + i * 60_000), i, state, pipelineConfig).nextState;
+            const result = stepIntegratedMTFPipeline(makeCandle(baseTime + i * 60_000), i, state, pipelineConfig);
+            state = result.nextState;
+            if (i === 60) {
+                resultAt1100 = result;
+            }
         }
 
-        const res1100 = stepIntegratedMTFPipeline(makeCandle(baseTime + 3_600_000), 60, state, pipelineConfig);
-        const snapshot = res1100.observation;
+        assert(resultAt1100 !== null, '11:00 observation must exist');
+        const snapshot = resultAt1100.observation;
 
         // Verify structural presence of all required fields
         assert(snapshot.observation1m !== undefined, '1m observation must be present');

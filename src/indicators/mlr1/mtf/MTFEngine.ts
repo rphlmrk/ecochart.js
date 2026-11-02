@@ -81,5 +81,5 @@ export function stepIntegratedMTFPipeline(
         mtfContext
     });
 
-    return { nextState, observation };
+    return Object.freeze({ nextState, observation });
 }
