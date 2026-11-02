@@ -434,7 +434,7 @@ export function runPhase3CTests(): boolean {
         );
         assert(beforeGapResult.observation !== null, 'Completed candle before diagnostic must produce observation');
         assert(beforeGapResult.nextTimeframeState.lastCompletedBarIndex === null, 'Later diagnostic must reset feature index');
-        assert(beforeGapResult.nextTimeframeState.lastCompletedCandleOpenTimestamp === null, 'Later diagnostic must reset chronology');
+        assert(beforeGapResult.nextTimeframeState.lastCompletedCandleOpenTimestamp === candleBeforeGap.openTimestamp, 'Later diagnostic must preserve chronology watermark');
 
         const diagnosticBefore: HTFIncompleteDiagnostic = Object.freeze({
             timeframe: '15m',
@@ -459,6 +459,116 @@ export function runPhase3CTests(): boolean {
         assert(afterGapResult.nextTimeframeState.lastCompletedCandleOpenTimestamp === candleAfterGap.openTimestamp, 'Chronology must track post-diagnostic candle');
     });
 
+    // 16. Duplicate Completed Candle Rejected After Gap Reset
+    runTest('16. Duplicate Completed Candle Rejected After Gap Reset', () => {
+        let state = createInitialMTFState().state15m;
+        const c1000 = makeCompletedCandle('15m', baseTime, 900_000);
+        state = stepTimeframeFeatureEngine(state, c1000, null, MTF_CONFIG_A.config15m).nextTimeframeState;
+        assert(state.lastCompletedCandleOpenTimestamp === baseTime, 'Watermark must be 10:00');
+        assert(state.lastCompletedBarIndex === 0, 'Bar index must be 0');
+
+        const gapDiag: HTFIncompleteDiagnostic = Object.freeze({
+            timeframe: '15m',
+            openTimestamp: baseTime + 900_000,
+            closeTimestamp: baseTime + 1_800_000,
+            expectedSourceCount: 15,
+            actualSourceCount: 0,
+            missingTimestamps: Object.freeze([]),
+            duplicateCount: 0,
+            invalidSourceCount: 0,
+            completeness: 'INCOMPLETE_MISSING'
+        });
+        state = stepTimeframeFeatureEngine(state, null, gapDiag, MTF_CONFIG_A.config15m).nextTimeframeState;
+        assert(state.lastCompletedBarIndex === null, 'Feature bar index must reset');
+        assert(state.lastCompletedCandleOpenTimestamp === baseTime, 'Chronology watermark must remain 10:00');
+
+        let duplicateRejected = false;
+        try {
+            stepTimeframeFeatureEngine(state, c1000, null, MTF_CONFIG_A.config15m);
+        } catch (error) {
+            duplicateRejected = error instanceof Error && error.message.includes('Duplicate or out-of-order completed candle');
+        }
+        assert(duplicateRejected, 'Original candle must be rejected as duplicate after gap reset');
+
+        const c1030 = makeCompletedCandle('15m', baseTime + 1_800_000, 900_000);
+        const postGapResult = stepTimeframeFeatureEngine(state, c1030, null, MTF_CONFIG_A.config15m);
+        assert(postGapResult.observation !== null, 'Valid post-gap candle must be accepted');
+        assert(postGapResult.nextTimeframeState.lastCompletedBarIndex === 0, 'Feature bar index must restart at 0');
+        assert(postGapResult.nextTimeframeState.lastCompletedCandleOpenTimestamp === c1030.openTimestamp, 'Watermark must advance to post-gap candle');
+    });
+
+    // 17. Overlapping Diagnostic and Completed Candle Rejected
+    runTest('17. Overlapping Diagnostic and Completed Candle Rejected', () => {
+        const state = createInitialMTFState().state15m;
+        const candle = makeCompletedCandle('15m', baseTime, 900_000);
+        const overlappingDiag: HTFIncompleteDiagnostic = Object.freeze({
+            timeframe: '15m',
+            openTimestamp: baseTime + 600_000,
+            closeTimestamp: baseTime + 1_500_000,
+            expectedSourceCount: 15,
+            actualSourceCount: 10,
+            missingTimestamps: Object.freeze([]),
+            duplicateCount: 0,
+            invalidSourceCount: 0,
+            completeness: 'INCOMPLETE_MISSING'
+        });
+
+        let overlapRejected = false;
+        try {
+            stepTimeframeFeatureEngine(state, candle, overlappingDiag, MTF_CONFIG_A.config15m);
+        } catch (error) {
+            overlapRejected = error instanceof Error && error.message.includes('Diagnostic and completed candle intervals overlap');
+        }
+        assert(overlapRejected, 'Overlapping intervals must be rejected');
+
+        const exactDiag: HTFIncompleteDiagnostic = Object.freeze({
+            timeframe: '15m',
+            openTimestamp: baseTime,
+            closeTimestamp: baseTime + 900_000,
+            expectedSourceCount: 15,
+            actualSourceCount: 0,
+            missingTimestamps: Object.freeze([]),
+            duplicateCount: 0,
+            invalidSourceCount: 0,
+            completeness: 'INCOMPLETE_MISSING'
+        });
+        let exactRejected = false;
+        try {
+            stepTimeframeFeatureEngine(state, candle, exactDiag, MTF_CONFIG_A.config15m);
+        } catch (error) {
+            exactRejected = error instanceof Error && error.message.includes('Diagnostic and completed candle intervals overlap');
+        }
+        assert(exactRejected, 'Identical intervals must be rejected as ambiguous');
+    });
+
+    // 18. Diagnostic Timeframe Mismatch Rejected
+    runTest('18. Diagnostic Timeframe Mismatch Rejected', () => {
+        const diagnostic: HTFIncompleteDiagnostic = Object.freeze({
+            timeframe: '1h',
+            openTimestamp: baseTime,
+            closeTimestamp: baseTime + 3_600_000,
+            expectedSourceCount: 60,
+            actualSourceCount: 50,
+            missingTimestamps: Object.freeze([]),
+            duplicateCount: 0,
+            invalidSourceCount: 0,
+            completeness: 'INCOMPLETE_MISSING'
+        });
+
+        let mismatchRejected = false;
+        try {
+            stepTimeframeFeatureEngine(
+                createInitialMTFState().state15m,
+                null,
+                diagnostic,
+                MTF_CONFIG_A.config15m
+            );
+        } catch (error) {
+            mismatchRejected = error instanceof Error && error.message.includes("Diagnostic timeframe '1h' does not match config '15m'");
+        }
+        assert(mismatchRejected, '1h diagnostic passed to 15m engine must be rejected');
+    });
+
     console.log(`\n=======================================`);
     console.log(`📊 ML-R1 PHASE 3C ACCEPTANCE AUDIT:`);
     console.log(`   ↳ Tests Executed:  ${passed + failed}`);
@@ -466,8 +576,8 @@ export function runPhase3CTests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log(`=======================================\n`);
 
-    if (failed === 0 && passed === 15) {
-        console.log('✅ ALL 15 PHASE 3C FEATURE ENGINE CRITERIA RIGOROUSLY MET.');
+    if (failed === 0 && passed === 18) {
+        console.log('✅ ALL 18 PHASE 3C FEATURE ENGINE CRITERIA RIGOROUSLY MET.');
         console.log('🔒 Phase 3C Independent HTF Feature Engines FULLY FROZEN.');
         return true;
     } else {

@@ -28,7 +28,7 @@ function resetFeatureState(state: MTFTimeframeState): MTFTimeframeState {
         ...state,
         featureEngineState: createInitialML1FeatureState(),
         lastCompletedBarIndex: null,
-        lastCompletedCandleOpenTimestamp: null,
+        lastCompletedCandleOpenTimestamp: state.lastCompletedCandleOpenTimestamp,
         latestFeatures: Object.freeze({}),
         latestValidity: Object.freeze({})
     });
@@ -92,8 +92,8 @@ function processCompletedCandle(
 }
 
 /**
- * Consumes completed candles and diagnostics in chronological order.
- * If both arrive together, the diagnostic resets whichever stream segment it follows.
+ * Consumes completed candles and diagnostics in verified chronological order.
+ * If both arrive together, overlapping intervals are rejected.
  */
 export function stepTimeframeFeatureEngine(
     previousState: MTFTimeframeState,
@@ -101,6 +101,12 @@ export function stepTimeframeFeatureEngine(
     diagnostic: HTFIncompleteDiagnostic | null,
     config: MTFTimeframeConfig
 ): HTFFeatureStepResult {
+    if (diagnostic !== null && diagnostic.timeframe !== config.timeframe) {
+        throw new Error(
+            `MTF Feature Engine Error: Diagnostic timeframe '${diagnostic.timeframe}' does not match config '${config.timeframe}'`
+        );
+    }
+
     if (completedCandle !== null && diagnostic !== null) {
         if (completedCandle.closeTimestamp <= diagnostic.openTimestamp) {
             const candleStep = processCompletedCandle(previousState, completedCandle, config);
@@ -110,10 +116,16 @@ export function stepTimeframeFeatureEngine(
             };
         }
 
-        return processCompletedCandle(
-            resetFeatureState(previousState),
-            completedCandle,
-            config
+        if (diagnostic.closeTimestamp <= completedCandle.openTimestamp) {
+            return processCompletedCandle(
+                resetFeatureState(previousState),
+                completedCandle,
+                config
+            );
+        }
+
+        throw new Error(
+            'MTF Feature Engine Error: Diagnostic and completed candle intervals overlap or have ambiguous ordering'
         );
     }
 
