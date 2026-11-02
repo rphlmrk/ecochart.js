@@ -2,14 +2,15 @@ import { ML1_CONFIG_A } from '../indicators/mlr1/ML1FeatureConfigs';
 import { MTF_CONFIG_A, MTF_CONFIG_B, validateMTFConfig } from '../indicators/mlr1/mtf/MTFConfig';
 import {
     calculateContextAgeMs,
-    createEmptyMTFContext,
     createInitialMTFState,
     getUTCWindowBoundaries,
     isHTFCandleAvailableAt,
     isSourceTimestampInWindow,
-    resolveHTFAvailability
+    resolveHTFAvailability,
+    createMTFTimeframeContext
 } from '../indicators/mlr1/mtf/MTFState';
 import type { MTFCandle } from '../indicators/mlr1/mtf/MTFTypes';
+import type { ML1FeatureValidity, ML1FeatureValues } from '../indicators/mlr1/ML1FeatureTypes';
 
 function assert(condition: boolean, message: string): asserts condition {
     if (!condition) throw new Error(`[AssertionFailed] ${message}`);
@@ -240,10 +241,32 @@ export function runPhase3ATests(): boolean {
         assert(completeCandle.completeness === 'COMPLETE', 'MTFCandle must only represent complete candles');
     });
 
-    runTest('8. Context availability and stale-context semantics', () => {
+    runTest('8. Context availability, input hardening, and stale-context semantics', () => {
         const unavailable = resolveHTFAvailability(null, null, false);
         assert(unavailable.availabilityStatus === 'UNAVAILABLE', 'Expected UNAVAILABLE');
         assert(!unavailable.isAvailable, 'Unavailable context must not be consumed');
+
+        for (const badStaleness of [0, -500, 15.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+            assertThrows(
+                () => resolveHTFAvailability(null, null, false, badStaleness),
+                'positive safe integer'
+            );
+        }
+
+        for (const invalidAge of [-100, 50.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+            assert(
+                resolveHTFAvailability(completeCandle, invalidAge, true).availabilityStatus === 'UNAVAILABLE',
+                `Invalid context age ${invalidAge} must resolve to UNAVAILABLE`
+            );
+        }
+        assertThrows(
+            () => resolveHTFAvailability(completeCandle, 1_000, true, -500),
+            'positive safe integer'
+        );
+        assertThrows(
+            () => resolveHTFAvailability(completeCandle, 1_000, true, Number.NaN),
+            'positive safe integer'
+        );
 
         const warming = resolveHTFAvailability(completeCandle, 60_000, false);
         assert(warming.availabilityStatus === 'WARMING_UP', 'Expected WARMING_UP');
@@ -256,52 +279,97 @@ export function runPhase3ATests(): boolean {
         const staleThreshold = 300_000;
         const exactlyAtThreshold = resolveHTFAvailability(completeCandle, staleThreshold, true, staleThreshold);
         assert(exactlyAtThreshold.availabilityStatus === 'AVAILABLE_VALID', 'Context at the threshold is not stale');
+        assert(exactlyAtThreshold.isAvailable, 'Context at threshold must remain available');
 
-        const stale = resolveHTFAvailability(completeCandle, 360_000, true, staleThreshold);
-        assert(stale.availabilityStatus === 'STALE', 'Expected STALE');
-        assert(!stale.isAvailable, 'Stale context must not be consumed');
-        assert(
-            resolveHTFAvailability(completeCandle, -1, true).availabilityStatus === 'UNAVAILABLE',
-            'Negative context age must be unavailable'
+        const beyondThreshold = resolveHTFAvailability(completeCandle, staleThreshold + 1, true, staleThreshold);
+        assert(beyondThreshold.availabilityStatus === 'STALE', '1ms beyond threshold must be stale');
+        assert(!beyondThreshold.isAvailable, 'Stale context must not be consumed');
+
+        const mismatchedCandle: MTFCandle = { ...completeCandle, timeframe: '15m' };
+        assertThrows(
+            () => createMTFTimeframeContext('1h', mismatchedCandle, 1_000_000, false),
+            'does not match requested context timeframe'
         );
+
+        const observationTimestamp = Date.UTC(2026, 9, 15, 10, 21, 0);
+        const candle15mCloseTimestamp = Date.UTC(2026, 9, 15, 10, 15, 0);
+        const mutableCandle = {
+            ...completeCandle,
+            openTimestamp: Date.UTC(2026, 9, 15, 10, 0, 0),
+            closeTimestamp: candle15mCloseTimestamp
+        };
+        const stale15mContext = createMTFTimeframeContext(
+            '15m',
+            mutableCandle,
+            observationTimestamp,
+            true,
+            Object.freeze({ ATR_14: 2.5 }),
+            Object.freeze({ ATR_14: true }),
+            staleThreshold
+        );
+        mutableCandle.close = 999_999;
+        assert(stale15mContext.lastCompletedCandle !== mutableCandle, 'Context must take a defensive candle snapshot');
+        assert(stale15mContext.lastCompletedCandle?.close === completeCandle.close, 'Snapshot must preserve source close value');
+        assert(Object.isFrozen(stale15mContext.lastCompletedCandle), 'Candle snapshot must be frozen');
+        assert(
+            stale15mContext.lastCompletedCloseTimestamp === candle15mCloseTimestamp,
+            'Stale context must preserve the close timestamp'
+        );
+        assert(stale15mContext.contextAgeMs === staleThreshold + 60_000, 'Stale context age must be preserved');
+        assert(!stale15mContext.isAvailable, 'Stale context must be excluded from consumption');
+        assert(stale15mContext.availabilityStatus === 'STALE', 'Stale context status mismatch');
+
+        const candle1h: MTFCandle = {
+            ...completeCandle,
+            timeframe: '1h',
+            openTimestamp: Date.UTC(2026, 9, 15, 9, 0, 0),
+            closeTimestamp: Date.UTC(2026, 9, 15, 10, 0, 0),
+            sourceObservationCount: 60
+        };
+        const fresh1hContext = createMTFTimeframeContext(
+            '1h',
+            candle1h,
+            observationTimestamp,
+            true,
+            Object.freeze({ ATR_14: 5 }),
+            Object.freeze({ ATR_14: true }),
+            7_200_000
+        );
+        assert(!stale15mContext.isAvailable, 'Stale 15m context must remain unavailable');
+        assert(fresh1hContext.isAvailable, 'Fresh 1h context must remain available independently');
     });
 
-    runTest('9. Timeframe reset isolation and feature-validity independence', () => {
+    runTest('9. Timeframe state isolation and feature-validity independence', () => {
         const initialState = createInitialMTFState();
-        const reset15mState = {
-            ...initialState.state15m,
-            aggregation: {
-                ...initialState.state15m.aggregation,
-                lastDiagnostic: {
-                    timeframe: '15m' as const,
-                    openTimestamp: 0,
-                    closeTimestamp: 900_000,
-                    expectedSourceCount: 15,
-                    actualSourceCount: 12,
-                    missingTimestamps: [60_000, 120_000, 180_000],
-                    duplicateCount: 0,
-                    invalidSourceCount: 0,
-                    completeness: 'INCOMPLETE_MISSING' as const
-                }
-            }
-        };
-        const context = createEmptyMTFContext(1_000, 'SOLUSDT');
-
-        assert(reset15mState.aggregation.lastDiagnostic !== null, '15m reset diagnostic must be recorded');
-        assert(reset15mState.aggregation.actualSourceCount === 0, '15m source count must remain reset');
-        assert(initialState.state1h.aggregation.lastDiagnostic === null, '1h state must be unaffected by 15m reset');
+        assert(initialState.state15m !== initialState.state1h, 'Timeframe state objects must be distinct');
+        assert(initialState.state15m.aggregation !== initialState.state1h.aggregation, 'Aggregation states must be distinct');
         assert(
             initialState.state15m.featureEngineState !== initialState.state1h.featureEngineState,
-            'Resetting 15m must not share feature state with 1h'
+            'Feature engine states must be distinct'
         );
-        assert(
-            context.context15m.validity !== context.context1h.validity,
-            '15m and 1h feature validity maps must be independent'
-        );
-        assert(
-            context.context15m.features !== context.context1h.features,
-            '15m and 1h feature value maps must be independent'
-        );
+
+        const features15m: ML1FeatureValues = Object.freeze({ ATR_14: 2.5, EMA_200_Slope_10: 0 });
+        const validity15m: ML1FeatureValidity = Object.freeze({ ATR_14: true, EMA_200_Slope_10: false });
+        const context15m = createMTFTimeframeContext('15m', null, 1_000, false, features15m, validity15m);
+        assert(context15m.validity.ATR_14 === true, 'Valid feature must remain valid');
+        assert(context15m.validity.EMA_200_Slope_10 === false, 'Invalid feature must remain independently invalid');
+
+        const features1h: ML1FeatureValues = Object.freeze({ ATR_14: 5, EMA_200_Slope_10: 0.12 });
+        const validity1h: ML1FeatureValidity = Object.freeze({ ATR_14: true, EMA_200_Slope_10: true });
+        const context1h = createMTFTimeframeContext('1h', null, 1_000, false, features1h, validity1h);
+        assert(context1h.validity.EMA_200_Slope_10 === true, '1h validity must not inherit 15m invalidity');
+        assert(context15m.validity !== context1h.validity, 'Feature validity maps must not be shared');
+        assert(context15m.features !== context1h.features, 'Feature values must not be shared');
+
+        const mutableFeatures: ML1FeatureValues = { ATR_14: 2 };
+        const mutableValidity: ML1FeatureValidity = { ATR_14: true };
+        const frozenContext = createMTFTimeframeContext('15m', null, 1_000, false, mutableFeatures, mutableValidity);
+        mutableFeatures.ATR_14 = 99;
+        mutableValidity.ATR_14 = false;
+        assert(frozenContext.features.ATR_14 === 2, 'Context must defensively copy feature values');
+        assert(frozenContext.validity.ATR_14 === true, 'Context must defensively copy feature validity');
+        assert(Object.isFrozen(frozenContext.features), 'Feature values must be frozen');
+        assert(Object.isFrozen(frozenContext.validity), 'Feature validity must be frozen');
     });
 
     console.log('\n=======================================');

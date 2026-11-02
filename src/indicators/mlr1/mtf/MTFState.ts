@@ -9,6 +9,7 @@ import type {
     MTFTimeframeState,
     SupportedMTFTimeframe
 } from './MTFTypes';
+import type { ML1FeatureValidity, ML1FeatureValues } from '../ML1FeatureTypes';
 
 /**
  * Returns UTC-aligned half-open window boundaries: [openTimestamp, closeTimestamp).
@@ -103,21 +104,77 @@ export function resolveHTFAvailability(
     isAvailable: boolean;
     availabilityStatus: HTFContextAvailability;
 } {
-    if (
-        !lastCompletedCandle ||
-        contextAgeMs === null ||
-        !Number.isSafeInteger(contextAgeMs) ||
-        contextAgeMs < 0
-    ) {
+    if (maxStalenessMs !== undefined) {
+        if (!Number.isSafeInteger(maxStalenessMs) || maxStalenessMs <= 0) {
+            throw new Error(
+                `MTF Staleness Error: maxStalenessMs must be a positive safe integer if defined, got ${maxStalenessMs}`
+            );
+        }
+    }
+
+    if (!lastCompletedCandle || lastCompletedCandle.completeness !== 'COMPLETE') {
         return { isAvailable: false, availabilityStatus: 'UNAVAILABLE' };
     }
+
+    if (contextAgeMs === null || !Number.isSafeInteger(contextAgeMs) || contextAgeMs < 0) {
+        return { isAvailable: false, availabilityStatus: 'UNAVAILABLE' };
+    }
+
     if (maxStalenessMs !== undefined && contextAgeMs > maxStalenessMs) {
         return { isAvailable: false, availabilityStatus: 'STALE' };
     }
+
     if (!isWarmupComplete) {
         return { isAvailable: true, availabilityStatus: 'WARMING_UP' };
     }
     return { isAvailable: true, availabilityStatus: 'AVAILABLE_VALID' };
+}
+
+/**
+ * Builds an immutable timeframe context, retaining stale candle data for diagnostics
+ * while preventing stale context from being consumed.
+ */
+export function createMTFTimeframeContext(
+    timeframe: SupportedMTFTimeframe,
+    lastCompletedCandle: MTFCandle | null,
+    observationTimestamp: number,
+    isWarmupComplete: boolean,
+    features: ML1FeatureValues = {},
+    validity: ML1FeatureValidity = {},
+    maxStalenessMs?: number
+): MTFTimeframeContext {
+    if (lastCompletedCandle !== null && lastCompletedCandle.timeframe !== timeframe) {
+        throw new Error(
+            `MTF Context Error: Candle timeframe ${lastCompletedCandle.timeframe} does not match requested context timeframe ${timeframe}`
+        );
+    }
+
+    const candleSnapshot = lastCompletedCandle === null
+        ? null
+        : Object.freeze({ ...lastCompletedCandle });
+    const closeTimestamp = candleSnapshot?.closeTimestamp ?? null;
+    const contextAgeMs = closeTimestamp !== null && Number.isSafeInteger(observationTimestamp)
+        ? calculateContextAgeMs(observationTimestamp, closeTimestamp)
+        : null;
+    const { isAvailable, availabilityStatus } = resolveHTFAvailability(
+        candleSnapshot,
+        contextAgeMs,
+        isWarmupComplete,
+        maxStalenessMs
+    );
+
+    return Object.freeze({
+        timeframe,
+        lastCompletedCandle: candleSnapshot,
+        lastCompletedOpenTimestamp: candleSnapshot?.openTimestamp ?? null,
+        lastCompletedCloseTimestamp: closeTimestamp,
+        contextAgeMs,
+        isAvailable,
+        availabilityStatus,
+        isWarmupComplete,
+        features: Object.isFrozen(features) ? features : Object.freeze({ ...features }),
+        validity: Object.isFrozen(validity) ? validity : Object.freeze({ ...validity })
+    });
 }
 
 export function createInitialHTFAggregationState(): HTFAggregationState {
