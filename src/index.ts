@@ -4715,8 +4715,15 @@ export class WorkspaceManager {
 
                 const passedA = runPhase2ATests();
                 const passedJ = runPhase2JTests();
+                let auditSuccess = false;
+
                 if (passedA && passedJ) {
-                    generatePhase2JReports(actualHistoricalCandles, chart.currentSymbol, chart.currentInterval);
+                    const auditResult = generatePhase2JReports(actualHistoricalCandles, chart.currentSymbol, chart.currentInterval);
+                    auditSuccess = auditResult.passed;
+                }
+
+                if (!auditSuccess) {
+                    alert('Phase 2J Audit failed invariant or provenance validation. Check console.');
                 }
 
                 if (loadingDetail) loadingDetail.textContent = `Audit complete across ${candleCount.toLocaleString()} real candles! Check DevTools console.`;

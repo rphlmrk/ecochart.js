@@ -7,8 +7,10 @@ const resJ = runPhase2JTests();
 
 // Execute the Phase 2J audit report generator after all acceptance tests pass
 // This will print the reports directly to the console
+let auditPassed = false;
 if (resA && resJ) {
-    generatePhase2JReports();
+    const auditRes = generatePhase2JReports();
+    auditPassed = auditRes.passed;
 }
 
-process.exit(resA && resJ ? 0 : 1);
+process.exit(resA && resJ && auditPassed ? 0 : 1);
