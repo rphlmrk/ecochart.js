@@ -44,6 +44,8 @@ export { runPhase2ATests };
 import { runPhase2JTests } from './test/milestone2j-acceptance';
 import { generatePhase2JReports } from './analysis/ML1FeatureAuditGenerator';
 import type { ML1Candle } from './indicators/mlr1/ML1FeatureTypes';
+import { runMilestone2AcceptanceSuite } from './test/run-milestone2';
+export { runMilestone2AcceptanceSuite };
 export { runPhase2JTests, generatePhase2JReports };
 
 export interface SavedPaneState {
@@ -4713,17 +4715,14 @@ export class WorkspaceManager {
                     });
                 }
 
-                const passedA = runPhase2ATests();
-                const passedJ = runPhase2JTests();
-                let auditSuccess = false;
+                const suitePassed = runMilestone2AcceptanceSuite(
+                    actualHistoricalCandles,
+                    chart.currentSymbol,
+                    chart.currentInterval
+                );
 
-                if (passedA && passedJ) {
-                    const auditResult = generatePhase2JReports(actualHistoricalCandles, chart.currentSymbol, chart.currentInterval);
-                    auditSuccess = auditResult.passed;
-                }
-
-                if (!auditSuccess) {
-                    alert('Phase 2J Audit failed invariant or provenance validation. Check console.');
+                if (!suitePassed) {
+                    alert('Milestone 2 Acceptance Suite failed. Check console for details.');
                 }
 
                 if (loadingDetail) loadingDetail.textContent = `Audit complete across ${candleCount.toLocaleString()} real candles! Check DevTools console.`;

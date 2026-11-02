@@ -102,6 +102,11 @@ function generateDeterministicDataset(count: number, seed = 42): ML1Candle[] {
             candles.push({ time, open, high: NaN, low, close, volume: 50 });
             time += 60000;
         }
+        // 7. Inject structurally invalid OHLC relationship (High < Low)
+        else if (i === Math.floor(count / 6)) {
+            candles.push({ time, open: 100, high: 90, low: 110, close: 100, volume: 50 });
+            time += 60000;
+        }
     }
 
     return candles; // Chronological anomalies intentionally preserved
@@ -147,7 +152,19 @@ export function generatePhase2JReports(
     activeSymbol?: string,
     activeTimeframe?: string
 ): Phase2JAuditResult {
-    const isHistorical = Array.isArray(sourceCandles) && sourceCandles.length > 0;
+    const historicalInputProvided = sourceCandles !== undefined;
+    const isHistorical = historicalInputProvided;
+
+    if (isHistorical && (!Array.isArray(sourceCandles) || sourceCandles.length === 0)) {
+        console.error('❌ PHASE 2J AUDIT ABORTED: Historical input was provided but contains no candles.');
+        return {
+            passed: false,
+            provenanceValidated: false,
+            configA: null,
+            configB: null
+        };
+    }
+
     let provenance = '';
     let validationErrors = 0;
 
@@ -164,7 +181,12 @@ export function generatePhase2JReports(
         let lastTime = -1;
         for (let i = 0; i < sourceCandles!.length; i++) {
             const candle = sourceCandles![i];
-            if (!Number.isFinite(candle.time) || !Number.isFinite(candle.open) || !Number.isFinite(candle.high) ||
+            if (!Number.isFinite(candle.time) || candle.time <= 0 || candle.time >= 1e14) {
+                console.error(`❌ Provenance Error: Unsafe timestamp at candle index ${i}: ${candle.time}`);
+                validationErrors++;
+                break;
+            }
+            if (!Number.isFinite(candle.open) || !Number.isFinite(candle.high) ||
                 !Number.isFinite(candle.low) || !Number.isFinite(candle.close) || !Number.isFinite(candle.volume)) {
                 console.error(`❌ Provenance Error: Non-finite values detected at candle index ${i}`);
                 validationErrors++;
@@ -194,11 +216,8 @@ export function generatePhase2JReports(
             };
         }
 
-        const firstTimestamp = sourceCandles![0].time;
-        const lastTimestamp = sourceCandles![sourceCandles!.length - 1].time;
-        const isSafeTimestamp = (time: number) => Number.isFinite(time) && time > 0 && time < 1e14;
-        const firstTimeIso = isSafeTimestamp(firstTimestamp) ? new Date(firstTimestamp).toISOString() : 'INVALID_TIMESTAMP';
-        const lastTimeIso = isSafeTimestamp(lastTimestamp) ? new Date(lastTimestamp).toISOString() : 'INVALID_TIMESTAMP';
+        const firstTimeIso = new Date(sourceCandles![0].time).toISOString();
+        const lastTimeIso = new Date(sourceCandles![sourceCandles!.length - 1].time).toISOString();
         provenance = `REAL HISTORICAL FEED (${activeSymbol} ${activeTimeframe}) | Range: ${firstTimeIso} to ${lastTimeIso}`;
     } else {
         provenance = 'SYNTHETIC DATASET (Deterministic PRNG with injected anomalies)';
@@ -238,6 +257,8 @@ export function generatePhase2JReports(
     console.log(`\n### 4. Correlation & Redundancy Matrix (Two-Pass Centered Pearson)`);
     printCorrelationMatrix(resultsB.observations, ML1_CONFIG_B);
 
+    const rejectionAudit = runSyntheticRejectionAudit();
+
     const invariantChecks = (results: ConfigAuditMetrics) =>
         results.maskMismatchCount === 0 &&
         results.missingKeysCount === 0 &&
@@ -250,7 +271,8 @@ export function generatePhase2JReports(
     const passed =
         validationErrors === 0 &&
         invariantChecks(resultsA) &&
-        invariantChecks(resultsB);
+        invariantChecks(resultsB) &&
+        rejectionAudit.passed;
 
     if (passed) {
         console.log('\n✅ PHASE 2J CONFIGURATION, SCHEMA & QUANTITATIVE AUDIT COMPLETED.');
@@ -263,6 +285,34 @@ export function generatePhase2JReports(
         provenanceValidated: validationErrors === 0,
         configA: resultsA,
         configB: resultsB
+    };
+}
+
+/**
+ * Exercises rejected-observation invariants using deliberate synthetic anomalies.
+ */
+export function runSyntheticRejectionAudit(): {
+    passed: boolean;
+    rejectedCount: number;
+    rejectedStateMutations: number;
+} {
+    console.log(`\n### Companion Synthetic Rejection Invariant Audit`);
+    const syntheticCandles = generateDeterministicDataset(2000, 42);
+    const result = runConfigAudit(syntheticCandles, ML1_CONFIG_B);
+
+    const hasEncounteredRejections = result.rejectedCount >= 4;
+    const zeroMutations = result.rejectedStateMutations === 0;
+    const zeroFallbacks = result.fallbackViolations === 0;
+    const passed = hasEncounteredRejections && zeroMutations && zeroFallbacks;
+
+    console.log(`Deliberately Rejected Observations Tested: ${result.rejectedCount} (Expected >= 4)`);
+    console.log(`Rejected Observations Causing State Mutation: ${result.rejectedStateMutations} (Expected 0)`);
+    console.log(`Synthetic Rejection Verification: ${passed ? '✅ PASSED' : '❌ FAILED'}`);
+
+    return {
+        passed,
+        rejectedCount: result.rejectedCount,
+        rejectedStateMutations: result.rejectedStateMutations
     };
 }
 
@@ -327,7 +377,7 @@ function runConfigAudit(candles: ML1Candle[], config: ValidatedML1FeatureConfig)
             if (JSON.stringify(state) !== prevStateSnapshot || JSON.stringify(res.nextState) !== prevStateSnapshot) {
                 rejectedStateMutations++;
             }
-            state = res.nextState;
+            state = JSON.parse(prevStateSnapshot);
         }
     }
 
