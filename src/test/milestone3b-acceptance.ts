@@ -648,6 +648,51 @@ export function runPhase3BTests(): boolean {
         assert(result.nextState.state1h.aggregation.actualSourceCount === 2, '1h source count must remain 2');
     });
 
+    // 25. Invalid Numeric Bar Index Values
+    runTest('25. Invalid Numeric Bar Index Values (NaN, Infinity, Fractional, Negative)', () => {
+        const negativeInitial = stepMTFAggregation(
+            makeCandle(baseTime),
+            true,
+            createInitialMTFState(),
+            MTF_CONFIG_A,
+            -1
+        );
+        assert(negativeInitial.nextState.last1mBarIndex === null, 'Initial negative index must remain null');
+        assert(negativeInitial.nextState.last1mTimestamp === baseTime, 'Timestamp must record 10:00');
+        assert(negativeInitial.nextState.state15m.aggregation.invalidSourceCount === 1, '15m must reject negative index');
+        assert(negativeInitial.nextState.state1h.aggregation.invalidSourceCount === 1, '1h must reject negative index');
+        assert(negativeInitial.nextState.state15m.aggregation.actualSourceCount === 0, '15m count must remain 0');
+
+        const state = stepMTFAggregation(
+            makeCandle(baseTime),
+            true,
+            createInitialMTFState(),
+            MTF_CONFIG_A,
+            100
+        ).nextState;
+        assert(state.last1mBarIndex === 100, 'Bar index must be 100');
+
+        const invalidIndices = [NaN, Infinity, -Infinity, 1.5, -5];
+        for (let i = 0; i < invalidIndices.length; i++) {
+            const badIndex = invalidIndices[i];
+            const nextTime = baseTime + (i + 1) * 60_000;
+            const result = stepMTFAggregation(
+                makeCandle(nextTime),
+                true,
+                state,
+                MTF_CONFIG_A,
+                badIndex
+            );
+
+            assert(result.nextState.last1mTimestamp === nextTime, `Timestamp must advance for bad index ${badIndex}`);
+            assert(result.nextState.last1mBarIndex === 100, `Bar index must remain 100 for bad index ${badIndex}`);
+            assert(result.nextState.state15m.aggregation.invalidSourceCount === 1, `15m must reject bad index ${badIndex}`);
+            assert(result.nextState.state1h.aggregation.invalidSourceCount === 1, `1h must reject bad index ${badIndex}`);
+            assert(result.nextState.state15m.aggregation.actualSourceCount === 1, '15m count must remain 1');
+            assert(result.nextState.state1h.aggregation.actualSourceCount === 1, '1h count must remain 1');
+        }
+    });
+
     console.log(`\n=======================================`);
     console.log(`📊 ML-R1 PHASE 3B COMPLETE ACCEPTANCE AUDIT:`);
     console.log(`   ↳ Tests Executed:  ${passed + failed}`);
@@ -655,8 +700,8 @@ export function runPhase3BTests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log(`=======================================\n`);
 
-    if (failed === 0 && passed === 24) {
-        console.log('✅ ALL 24 PHASE 3B AGGREGATION CRITERIA RIGOROUSLY MET.');
+    if (failed === 0 && passed === 25) {
+        console.log('✅ ALL 25 PHASE 3B AGGREGATION CRITERIA RIGOROUSLY MET.');
         console.log('🔒 Phase 3B Aggregation Engine FULLY FROZEN.');
         return true;
     } else {
