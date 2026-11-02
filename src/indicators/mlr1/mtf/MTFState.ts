@@ -204,7 +204,9 @@ export function createInitialMTFTimeframeState(timeframe: SupportedMTFTimeframe)
         timeframe,
         aggregation: createInitialHTFAggregationState(),
         featureEngineState: createInitialML1FeatureState(),
-        lastCompletedBarIndex: null
+        lastCompletedBarIndex: null,
+        latestFeatures: Object.freeze({}),
+        latestValidity: Object.freeze({})
     });
 }
 

@@ -107,6 +107,8 @@ export interface MTFTimeframeState {
     readonly aggregation: HTFAggregationState;
     readonly featureEngineState: ML1FeatureState;
     readonly lastCompletedBarIndex: number | null;
+    readonly latestFeatures: ML1FeatureValues;
+    readonly latestValidity: ML1FeatureValidity;
 }
 
 export interface MTFState {

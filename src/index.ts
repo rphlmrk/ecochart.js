@@ -45,10 +45,13 @@ import { runPhase3ATests } from './test/milestone3a-acceptance';
 export { runPhase3ATests };
 import { runPhase3BTests } from './test/milestone3b-acceptance';
 export { runPhase3BTests };
+import { runPhase3CTests } from './test/milestone3c-acceptance';
+export { runPhase3CTests };
 export * from './indicators/mlr1/mtf/MTFTypes';
 export * from './indicators/mlr1/mtf/MTFConfig';
 export * from './indicators/mlr1/mtf/MTFState';
 export * from './indicators/mlr1/mtf/MTFAggregator';
+export * from './indicators/mlr1/mtf/MTFFeatureEngine';
 import { runPhase2JTests } from './test/milestone2j-acceptance';
 import { generatePhase2JReports } from './analysis/ML1FeatureAuditGenerator';
 import { runMilestone2AcceptanceSuite } from './test/run-milestone2';
@@ -4651,21 +4654,21 @@ export class WorkspaceManager {
             if (loadingOverlay) loadingOverlay.style.display = 'none';
         });
 
-        // Wire up on-demand Milestone 3 Phase 3B aggregation tests
+        // Wire up on-demand Milestone 3 Phase 3C feature engine tests
         const btnAiExportAudit = document.getElementById('btn-ai-export-audit');
         btnAiExportAudit?.addEventListener('click', async () => {
             if (loadingOverlay) loadingOverlay.style.display = 'flex';
-            if (loadingTitle) loadingTitle.textContent = 'Running Milestone 3 Phase 3B Tests...';
-            if (loadingDetail) loadingDetail.textContent = 'Verifying 15m/1h candle aggregation, completeness, and recovery...';
+            if (loadingTitle) loadingTitle.textContent = 'Running Milestone 3 Phase 3C Tests...';
+            if (loadingDetail) loadingDetail.textContent = 'Verifying independent 15m/1h feature calculations, warm-up, and gap resets...';
             await new Promise(resolve => setTimeout(resolve, 50));
 
             try {
-                const passed = runPhase3BTests();
+                const passed = runPhase3CTests();
 
                 if (loadingDetail) {
                     loadingDetail.textContent = passed
-                        ? '✅ All Phase 3B Aggregation Tests Passed! Check DevTools console.'
-                        : '❌ Phase 3B Tests Failed. Check DevTools console.';
+                        ? '✅ All Phase 3C Feature Engine Tests Passed! Check DevTools console.'
+                        : '❌ Phase 3C Tests Failed. Check DevTools console.';
                 }
 
                 setTimeout(() => {
@@ -4673,9 +4676,9 @@ export class WorkspaceManager {
                     modalAiExport?.close();
                 }, 1200);
             } catch (error) {
-                console.error('[Phase 3B Tests] Execution error:', error);
+                console.error('[Phase 3C Tests] Execution error:', error);
                 if (loadingOverlay) loadingOverlay.style.display = 'none';
-                alert(`Phase 3B Tests failed with error: ${error instanceof Error ? error.message : String(error)}`);
+                alert(`Phase 3C Tests failed with error: ${error instanceof Error ? error.message : String(error)}`);
             }
         });
 
@@ -5768,6 +5771,7 @@ export class WorkspaceManager {
         (window as any).runPhase2ATests = runPhase2ATests;
         (window as any).runPhase3ATests = runPhase3ATests;
         (window as any).runPhase3BTests = runPhase3BTests;
+        (window as any).runPhase3CTests = runPhase3CTests;
         (window as any).runPhase2JTests = runPhase2JTests;
         (window as any).generatePhase2JReports = generatePhase2JReports;
     }

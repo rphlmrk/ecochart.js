@@ -75,11 +75,21 @@ export function validateMTFConfig(rawConfig: unknown): ValidatedMTFGlobalConfig 
         ) {
             throw new Error(`MTF Configuration Error: maxStalenessMs must be a positive safe integer if defined, got ${maxStalenessMs}.`);
         }
-        if (!isRecord(rawTimeframeConfig.featureConfig)) {
+        const rawFeatureConfig = rawTimeframeConfig.featureConfig;
+        if (!isRecord(rawFeatureConfig)) {
             throw new Error(`MTF Configuration Error: featureConfig for ${expectedTimeframe} must be a valid ML1 configuration.`);
         }
 
-        const featureConfig = validateML1Config(rawTimeframeConfig.featureConfig);
+        const rawGapThreshold = rawFeatureConfig.gapDiscontinuityThresholdMs;
+        const featureConfig = validateML1Config({
+            ...rawFeatureConfig,
+            timeframe: expectedTimeframe,
+            expectedIntervalMs: expectedDurationMs,
+            gapDiscontinuityThresholdMs:
+                typeof rawGapThreshold === 'number' && rawGapThreshold >= expectedDurationMs
+                    ? rawGapThreshold
+                    : expectedDurationMs * 5
+        });
         const validatedConfig: MTFTimeframeConfig = {
             timeframe: expectedTimeframe,
             durationMs: expectedDurationMs,
