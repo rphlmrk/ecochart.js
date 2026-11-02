@@ -27,11 +27,18 @@ export interface ConfigAuditMetrics {
     fallbackViolations: number;
     nonFiniteAcceptedValues: number;
     rejectedStateMutations: number;
+    rejectionBreakdown: {
+        outOfOrder: number;
+        duplicate: number;
+        nonFiniteOhlcv: number;
+        structuralOhlc: number;
+    };
 }
 
 export interface Phase2JAuditResult {
     passed: boolean;
     provenanceValidated: boolean;
+    syntheticRejectionPassed: boolean;
     configA: ConfigAuditMetrics | null;
     configB: ConfigAuditMetrics | null;
 }
@@ -160,6 +167,7 @@ export function generatePhase2JReports(
         return {
             passed: false,
             provenanceValidated: false,
+            syntheticRejectionPassed: false,
             configA: null,
             configB: null
         };
@@ -211,6 +219,7 @@ export function generatePhase2JReports(
             return {
                 passed: false,
                 provenanceValidated: false,
+                syntheticRejectionPassed: false,
                 configA: null,
                 configB: null
             };
@@ -282,7 +291,8 @@ export function generatePhase2JReports(
 
     return {
         passed,
-        provenanceValidated: validationErrors === 0,
+        provenanceValidated: isHistorical && validationErrors === 0,
+        syntheticRejectionPassed: rejectionAudit.passed,
         configA: resultsA,
         configB: resultsB
     };
@@ -295,24 +305,42 @@ export function runSyntheticRejectionAudit(): {
     passed: boolean;
     rejectedCount: number;
     rejectedStateMutations: number;
+    breakdown: ConfigAuditMetrics['rejectionBreakdown'];
 } {
     console.log(`\n### Companion Synthetic Rejection Invariant Audit`);
     const syntheticCandles = generateDeterministicDataset(2000, 42);
     const result = runConfigAudit(syntheticCandles, ML1_CONFIG_B);
 
-    const hasEncounteredRejections = result.rejectedCount >= 4;
-    const zeroMutations = result.rejectedStateMutations === 0;
-    const zeroFallbacks = result.fallbackViolations === 0;
-    const passed = hasEncounteredRejections && zeroMutations && zeroFallbacks;
+    const breakdown = result.rejectionBreakdown;
+    const hasAllClasses =
+        breakdown.outOfOrder >= 1 &&
+        breakdown.duplicate >= 1 &&
+        breakdown.nonFiniteOhlcv >= 1 &&
+        breakdown.structuralOhlc >= 1;
+    const invariantChecksPassed =
+        result.maskMismatchCount === 0 &&
+        result.missingKeysCount === 0 &&
+        result.extraKeysCount === 0 &&
+        result.nonBooleanValidity === 0 &&
+        result.fallbackViolations === 0 &&
+        result.nonFiniteAcceptedValues === 0 &&
+        result.rejectedStateMutations === 0;
+    const passed = hasAllClasses && result.rejectedCount >= 4 && invariantChecksPassed;
 
     console.log(`Deliberately Rejected Observations Tested: ${result.rejectedCount} (Expected >= 4)`);
-    console.log(`Rejected Observations Causing State Mutation: ${result.rejectedStateMutations} (Expected 0)`);
-    console.log(`Synthetic Rejection Verification: ${passed ? '✅ PASSED' : '❌ FAILED'}`);
+    console.log(`  ↳ Out-Of-Order Timestamps:      ${breakdown.outOfOrder >= 1 ? '✅' : '❌'} (${breakdown.outOfOrder} rejected)`);
+    console.log(`  ↳ Duplicate Timestamps:         ${breakdown.duplicate >= 1 ? '✅' : '❌'} (${breakdown.duplicate} rejected)`);
+    console.log(`  ↳ Non-Finite OHLCV Values:      ${breakdown.nonFiniteOhlcv >= 1 ? '✅' : '❌'} (${breakdown.nonFiniteOhlcv} rejected)`);
+    console.log(`  ↳ Structurally Invalid OHLC:    ${breakdown.structuralOhlc >= 1 ? '✅' : '❌'} (${breakdown.structuralOhlc} rejected)`);
+    console.log(`Rejected Observations Causing Mutation:   ${result.rejectedStateMutations === 0 ? '✅ 0' : `❌ ${result.rejectedStateMutations}`}`);
+    console.log(`Synthetic Validity-Mask Invariants:       ${invariantChecksPassed ? '✅ PASSED' : '❌ FAILED'}`);
+    console.log(`Synthetic Rejection Verification:         ${passed ? '✅ PASSED' : '❌ FAILED'}`);
 
     return {
         passed,
         rejectedCount: result.rejectedCount,
-        rejectedStateMutations: result.rejectedStateMutations
+        rejectedStateMutations: result.rejectedStateMutations,
+        breakdown
     };
 }
 
@@ -331,6 +359,12 @@ function runConfigAudit(candles: ML1Candle[], config: ValidatedML1FeatureConfig)
     let fallbackViolations = 0;
     let nonFiniteAcceptedValues = 0;
     let rejectedStateMutations = 0;
+    const rejectionBreakdown = {
+        outOfOrder: 0,
+        duplicate: 0,
+        nonFiniteOhlcv: 0,
+        structuralOhlc: 0
+    };
 
     for (let i = 0; i < candles.length; i++) {
         const prevStateSnapshot = JSON.stringify(state);
@@ -377,6 +411,28 @@ function runConfigAudit(candles: ML1Candle[], config: ValidatedML1FeatureConfig)
             if (JSON.stringify(state) !== prevStateSnapshot || JSON.stringify(res.nextState) !== prevStateSnapshot) {
                 rejectedStateMutations++;
             }
+
+            const candle = candles[i];
+            const features = res.observation.features;
+            if (features['IsOutOfOrder'] === 1) {
+                rejectionBreakdown.outOfOrder++;
+            } else if (features['IsDuplicateTimestamp'] === 1) {
+                rejectionBreakdown.duplicate++;
+            } else if (features['IsValidOHLCV'] === 0) {
+                const hasNonFiniteValue =
+                    !Number.isFinite(candle.time) ||
+                    !Number.isFinite(candle.open) ||
+                    !Number.isFinite(candle.high) ||
+                    !Number.isFinite(candle.low) ||
+                    !Number.isFinite(candle.close) ||
+                    !Number.isFinite(candle.volume);
+                if (hasNonFiniteValue) {
+                    rejectionBreakdown.nonFiniteOhlcv++;
+                } else {
+                    rejectionBreakdown.structuralOhlc++;
+                }
+            }
+
             state = JSON.parse(prevStateSnapshot);
         }
     }
@@ -423,7 +479,8 @@ function runConfigAudit(candles: ML1Candle[], config: ValidatedML1FeatureConfig)
         nonBooleanValidity,
         fallbackViolations,
         nonFiniteAcceptedValues,
-        rejectedStateMutations
+        rejectedStateMutations,
+        rejectionBreakdown
     };
 }
 
