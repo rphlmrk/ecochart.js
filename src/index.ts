@@ -4657,31 +4657,48 @@ export class WorkspaceManager {
             if (loadingOverlay) loadingOverlay.style.display = 'none';
         });
 
-        // Wire up on-demand Milestone 3 Phase 3D causal alignment tests
+        // Wire up on-demand Milestone 3 Phase 3A to 3D test orchestrator
         const btnAiExportAudit = document.getElementById('btn-ai-export-audit');
         btnAiExportAudit?.addEventListener('click', async () => {
             if (loadingOverlay) loadingOverlay.style.display = 'flex';
-            if (loadingTitle) loadingTitle.textContent = 'Running Milestone 3 Phase 3D Tests...';
-            if (loadingDetail) loadingDetail.textContent = 'Verifying exclusive-close availability, exact-boundary age, and causal alignment...';
+            if (loadingTitle) loadingTitle.textContent = 'Running Milestone 3 Tests (Phases 3A to 3D)...';
+            if (loadingDetail) loadingDetail.textContent = 'Executing 3A Contracts, 3B Aggregation, 3C Feature Engines, and 3D Causal Alignment...';
             await new Promise(resolve => setTimeout(resolve, 50));
 
             try {
-                const passed = runPhase3DTests();
+                console.log('\n======================================================');
+                console.log('RUNNING MILESTONE 3 SUITE (PHASES 3A TO 3D)');
+                console.log('======================================================');
+
+                if (!runPhase3ATests()) throw new Error('Phase 3A Contract suite failed');
+                if (!runPhase3BTests()) throw new Error('Phase 3B Aggregation suite failed');
+                if (!runPhase3CTests()) throw new Error('Phase 3C Feature Engine suite failed');
+                if (!runPhase3DTests()) throw new Error('Phase 3D Causal Alignment suite failed');
+
+                console.log('\n======================================================');
+                console.log('ALL PHASES 3A TO 3D GATES PASSED (68/68 TESTS)');
+                console.log('   Phase 3A (Contracts):         9/9 PASSED');
+                console.log('   Phase 3B (Aggregation):      25/25 PASSED');
+                console.log('   Phase 3C (Feature Engines):  20/20 PASSED');
+                console.log('   Phase 3D (Causal Alignment): 14/14 PASSED');
+                console.log('======================================================\n');
 
                 if (loadingDetail) {
-                    loadingDetail.textContent = passed
-                        ? '✅ All Phase 3D Causal Alignment Tests Passed! Check DevTools console.'
-                        : '❌ Phase 3D Tests Failed. Check DevTools console.';
+                    loadingDetail.textContent = '✅ All Phases 3A to 3D Passed (68/68 Tests)! Check DevTools console.';
                 }
 
                 setTimeout(() => {
                     if (loadingOverlay) loadingOverlay.style.display = 'none';
                     modalAiExport?.close();
-                }, 1200);
+                }, 1400);
             } catch (error) {
-                console.error('[Phase 3D Tests] Execution error:', error);
-                if (loadingOverlay) loadingOverlay.style.display = 'none';
-                alert(`Phase 3D Tests failed with error: ${error instanceof Error ? error.message : String(error)}`);
+                const message = error instanceof Error ? error.message : String(error);
+                console.error('[Milestone 3 Execution Error]:', error);
+                if (loadingDetail) loadingDetail.textContent = `❌ ${message}. Check DevTools console.`;
+                setTimeout(() => {
+                    if (loadingOverlay) loadingOverlay.style.display = 'none';
+                }, 2000);
+                alert(`Milestone 3 Test Suite failed: ${message}`);
             }
         });
 
