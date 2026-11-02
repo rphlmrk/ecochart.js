@@ -4716,7 +4716,7 @@ export class WorkspaceManager {
                 const passedA = runPhase2ATests();
                 const passedJ = runPhase2JTests();
                 if (passedA && passedJ) {
-                    generatePhase2JReports(actualHistoricalCandles);
+                    generatePhase2JReports(actualHistoricalCandles, chart.currentSymbol, chart.currentInterval);
                 }
 
                 if (loadingDetail) loadingDetail.textContent = `Audit complete across ${candleCount.toLocaleString()} real candles! Check DevTools console.`;

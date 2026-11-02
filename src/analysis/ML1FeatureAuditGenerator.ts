@@ -118,17 +118,63 @@ function calculatePearson(x: number[], y: number[]): number {
     }
 
     const denom = Math.sqrt(sumDx2 * sumDy2);
-    if (denom === 0 || !Number.isFinite(denom)) return 0;
+    if (denom === 0 || !Number.isFinite(denom)) return NaN;
     const r = sumDxDy / denom;
-    return Number.isFinite(r) ? r : 0;
+    return Number.isFinite(r) ? r : NaN;
 }
 
-export function generatePhase2JReports(sourceCandles?: ML1Candle[]): void {
+export function generatePhase2JReports(sourceCandles?: ML1Candle[], activeSymbol?: string, activeTimeframe?: string): void {
     const isHistorical = Array.isArray(sourceCandles) && sourceCandles.length > 0;
+    let provenance = '';
+    let validationErrors = 0;
+
+    if (isHistorical) {
+        if (activeSymbol !== 'SOLUSDT') {
+            console.error(`❌ Provenance Error: Expected SOLUSDT, got ${activeSymbol}`);
+            validationErrors++;
+        }
+        if (activeTimeframe !== '1m') {
+            console.error(`❌ Provenance Error: Expected 1m, got ${activeTimeframe}`);
+            validationErrors++;
+        }
+
+        let lastTime = -1;
+        for (let i = 0; i < sourceCandles!.length; i++) {
+            const candle = sourceCandles![i];
+            if (!Number.isFinite(candle.time) || !Number.isFinite(candle.open) || !Number.isFinite(candle.high) ||
+                !Number.isFinite(candle.low) || !Number.isFinite(candle.close) || !Number.isFinite(candle.volume)) {
+                console.error(`❌ Provenance Error: Non-finite values at index ${i}`);
+                validationErrors++;
+                break;
+            }
+            if (candle.high < candle.low || candle.high < Math.max(candle.open, candle.close) ||
+                candle.low > Math.min(candle.open, candle.close) || candle.volume < 0) {
+                console.error(`❌ Provenance Error: Structurally invalid OHLCV at index ${i}`);
+                validationErrors++;
+                break;
+            }
+            if (candle.time <= lastTime) {
+                console.error(`❌ Provenance Error: Timestamps not strictly ascending at index ${i}`);
+                validationErrors++;
+                break;
+            }
+            lastTime = candle.time;
+        }
+
+        if (validationErrors > 0) {
+            console.warn('⚠️ Dataset failed provenance validation. Proceeding with caution.');
+        }
+
+        const firstTimestamp = sourceCandles![0].time;
+        const lastTimestamp = sourceCandles![sourceCandles!.length - 1].time;
+        const firstTime = Number.isFinite(firstTimestamp) ? new Date(firstTimestamp).toISOString() : 'Invalid timestamp';
+        const lastTimeIso = Number.isFinite(lastTimestamp) ? new Date(lastTimestamp).toISOString() : 'Invalid timestamp';
+        provenance = `REAL HISTORICAL FEED (${activeSymbol} ${activeTimeframe}) | Range: ${firstTime} to ${lastTimeIso}`;
+    } else {
+        provenance = 'SYNTHETIC DATASET (Deterministic PRNG with injected anomalies)';
+    }
+
     const candles = isHistorical ? sourceCandles! : generateDeterministicDataset(50000);
-    const provenance = isHistorical
-        ? `REAL HISTORICAL FEED (${ML1_CONFIG_B.symbol} ${ML1_CONFIG_B.timeframe})`
-        : `SYNTHETIC DATASET (Deterministic PRNG with injected anomalies)`;
 
     console.log(`\n======================================================`);
     console.log(`📊 ML-R1 PHASE 2J QUANTITATIVE AUDIT REPORT`);
@@ -159,8 +205,10 @@ export function generatePhase2JReports(sourceCandles?: ML1Candle[]): void {
     printValidityAudit('Configuration B', resultsB);
 
     // --- 4. NUMERICALLY STABLE CORRELATION REPORT ---
-    console.log(`\n### 4. Correlation & Redundancy Matrix (Two-Pass Welford/Centered)`);
+    console.log(`\n### 4. Correlation & Redundancy Matrix (Two-Pass Centered Pearson)`);
     printCorrelationMatrix(resultsB.observations, ML1_CONFIG_B);
+
+    console.log('\n✅ PHASE 2J CONFIGURATION, SCHEMA & QUANTITATIVE AUDIT COMPLETED.');
 }
 
 function runConfigAudit(candles: ML1Candle[], config: ValidatedML1FeatureConfig) {
@@ -169,10 +217,15 @@ function runConfigAudit(candles: ML1Candle[], config: ValidatedML1FeatureConfig)
     let rejectedCount = 0;
     let acceptedCount = 0;
     let maskMismatchCount = 0;
+    let missingKeysCount = 0;
+    let extraKeysCount = 0;
+    let nonBooleanValidity = 0;
     let fallbackViolations = 0;
     let nonFiniteAcceptedValues = 0;
+    let rejectedStateMutations = 0;
 
     for (let i = 0; i < candles.length; i++) {
+        const prevState = state;
         const res = stepML1Features(candles[i], i, state, config);
         observations.push(res.observation);
         state = res.nextState;
@@ -186,7 +239,18 @@ function runConfigAudit(candles: ML1Candle[], config: ValidatedML1FeatureConfig)
             const vKeys = Object.keys(res.observation.validity);
             if (fKeys.length !== vKeys.length) maskMismatchCount++;
 
-            // Strict Contract Audit 2: Validity === false MUST mean numeric fallback === 0
+            for (let k = 0; k < fKeys.length; k++) {
+                const key = fKeys[k];
+                if (!(key in res.observation.validity)) missingKeysCount++;
+            }
+
+            for (let k = 0; k < vKeys.length; k++) {
+                const key = vKeys[k];
+                const valid = res.observation.validity[key];
+                if (typeof valid !== 'boolean') nonBooleanValidity++;
+                if (!(key in res.observation.features)) extraKeysCount++;
+            }
+
             for (let k = 0; k < fKeys.length; k++) {
                 const key = fKeys[k];
                 const val = res.observation.features[key];
@@ -202,6 +266,9 @@ function runConfigAudit(candles: ML1Candle[], config: ValidatedML1FeatureConfig)
             }
         } else {
             rejectedCount++;
+            if (res.nextState !== prevState) {
+                rejectedStateMutations++;
+            }
         }
     }
 
@@ -242,8 +309,12 @@ function runConfigAudit(candles: ML1Candle[], config: ValidatedML1FeatureConfig)
         acceptedCount,
         rejectedCount,
         maskMismatchCount,
+        missingKeysCount,
+        extraKeysCount,
+        nonBooleanValidity,
         fallbackViolations,
-        nonFiniteAcceptedValues
+        nonFiniteAcceptedValues,
+        rejectedStateMutations
     };
 }
 
@@ -286,8 +357,12 @@ function printValidityAudit(label: string, results: any) {
     console.log(`Total Accepted Observations: ${results.acceptedCount}`);
     console.log(`Total Rejected Observations: ${results.rejectedCount}`);
     console.log(`Feature/Validity Mask Length Mismatches: ${results.maskMismatchCount}`);
+    console.log(`Feature Keys Missing from Validity: ${results.missingKeysCount}`);
+    console.log(`Validity Keys Missing from Features: ${results.extraKeysCount}`);
+    console.log(`Non-Boolean Validity Values: ${results.nonBooleanValidity}`);
     console.log(`Invalid-Flag Non-Zero Fallback Violations: ${results.fallbackViolations}`);
     console.log(`Non-Finite Values in Accepted Features: ${results.nonFiniteAcceptedValues}`);
+    console.log(`Rejected Observations Causing State Mutation: ${results.rejectedStateMutations}`);
 }
 
 function printCorrelationMatrix(observations: any[], config: ValidatedML1FeatureConfig) {
@@ -325,7 +400,7 @@ function printCorrelationMatrix(observations: any[], config: ValidatedML1Feature
 
             if (x.length >= 30) {
                 const r = calculatePearson(x, y);
-                if (Number.isFinite(r) && Math.abs(r) >= 0.70) {
+                if (Number.isFinite(r) && !Number.isNaN(r) && Math.abs(r) >= 0.70) {
                     correlations.push({
                         feature1: f1,
                         feature2: f2,
