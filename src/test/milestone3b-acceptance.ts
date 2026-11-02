@@ -560,6 +560,65 @@ export function runPhase3BTests(): boolean {
         assert(recovered.completed15m.completeness === 'COMPLETE', 'Recovered window must be complete');
     });
 
+    // 22. Forward Timestamp with Regressing Bar Index
+    runTest('22. Forward Timestamp with Regressing Bar Index', () => {
+        let state = createInitialMTFState();
+        state = stepMTFAggregation(makeCandle(baseTime), true, state, MTF_CONFIG_A, 100).nextState;
+        assert(state.last1mBarIndex === 100, 'Bar index must be 100');
+        assert(state.last1mTimestamp === baseTime, 'Timestamp must be 10:00');
+
+        state = stepMTFAggregation(
+            makeCandle(baseTime + 60_000),
+            true,
+            state,
+            MTF_CONFIG_A,
+            101
+        ).nextState;
+        assert(state.last1mBarIndex === 101, 'Bar index must be 101');
+        assert(state.last1mTimestamp === baseTime + 60_000, 'Timestamp must be 10:01');
+
+        const result = stepMTFAggregation(
+            makeCandle(baseTime + 120_000),
+            true,
+            state,
+            MTF_CONFIG_A,
+            99
+        );
+        assert(result.nextState.last1mTimestamp === baseTime + 120_000, 'Unified timestamp should record 10:02');
+        assert(result.nextState.last1mBarIndex === 101, 'Unified bar index must remain 101 on regression');
+        assert(result.nextState.state15m.aggregation.invalidSourceCount === 1, '15m must reject regressed-index candle');
+        assert(result.nextState.state1h.aggregation.invalidSourceCount === 1, '1h must reject regressed-index candle');
+        assert(result.nextState.state15m.aggregation.actualSourceCount === 2, '15m count must remain 2');
+        assert(result.nextState.state1h.aggregation.actualSourceCount === 2, '1h count must remain 2');
+    });
+
+    // 23. Forward Timestamp with Valid Increasing Bar Index
+    runTest('23. Forward Timestamp with Valid Increasing Bar Index', () => {
+        let state = createInitialMTFState();
+        state = stepMTFAggregation(makeCandle(baseTime), true, state, MTF_CONFIG_A, 100).nextState;
+        state = stepMTFAggregation(
+            makeCandle(baseTime + 60_000),
+            true,
+            state,
+            MTF_CONFIG_A,
+            101
+        ).nextState;
+
+        const result = stepMTFAggregation(
+            makeCandle(baseTime + 120_000),
+            true,
+            state,
+            MTF_CONFIG_A,
+            102
+        );
+        assert(result.nextState.last1mTimestamp === baseTime + 120_000, 'Timestamp must advance to 10:02');
+        assert(result.nextState.last1mBarIndex === 102, 'Bar index must advance to 102');
+        assert(result.nextState.state15m.aggregation.invalidSourceCount === 0, '15m has no invalid sources');
+        assert(result.nextState.state1h.aggregation.invalidSourceCount === 0, '1h has no invalid sources');
+        assert(result.nextState.state15m.aggregation.actualSourceCount === 3, '15m source count must be 3');
+        assert(result.nextState.state1h.aggregation.actualSourceCount === 3, '1h source count must be 3');
+    });
+
     console.log(`\n=======================================`);
     console.log(`📊 ML-R1 PHASE 3B COMPLETE ACCEPTANCE AUDIT:`);
     console.log(`   ↳ Tests Executed:  ${passed + failed}`);
@@ -567,8 +626,8 @@ export function runPhase3BTests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log(`=======================================\n`);
 
-    if (failed === 0 && passed === 21) {
-        console.log('✅ ALL 21 PHASE 3B AGGREGATION CRITERIA RIGOROUSLY MET.');
+    if (failed === 0 && passed === 23) {
+        console.log('✅ ALL 23 PHASE 3B AGGREGATION CRITERIA RIGOROUSLY MET.');
         console.log('🔒 Phase 3B Aggregation Engine FULLY FROZEN.');
         return true;
     } else {

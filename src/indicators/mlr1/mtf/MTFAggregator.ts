@@ -298,7 +298,8 @@ export function stepHTFAggregation(
 }
 
 /**
- * Steps the unified MTF Aggregator and keeps its 1m clock monotonic.
+ * Steps the unified MTF Aggregator, advancing 15m and 1h with complete independence.
+ * Enforces unified 1m clock monotonicity and rejects bar-index regressions.
  */
 export function stepMTFAggregation(
     candle: ML1Candle,
@@ -307,18 +308,24 @@ export function stepMTFAggregation(
     config: ValidatedMTFGlobalConfig,
     barIndex?: number
 ): MTFAggregatorStepResult {
-    // 15m Step
+    const isBackwardsOrDuplicate = previousMTFState.last1mTimestamp !== null &&
+        candle.time <= previousMTFState.last1mTimestamp;
+    const previousBarIndex = previousMTFState.last1mBarIndex;
+    const isBarIndexRegression = barIndex !== undefined &&
+        previousBarIndex !== null &&
+        barIndex < previousBarIndex;
+    const effectiveSourceValid = isSourceValid && !isBarIndexRegression;
+
     const res15m = stepHTFAggregation(
         candle,
-        isSourceValid,
+        effectiveSourceValid,
         previousMTFState.state15m.aggregation,
         config.config15m
     );
 
-    // 1h Step (Independent execution)
     const res1h = stepHTFAggregation(
         candle,
-        isSourceValid,
+        effectiveSourceValid,
         previousMTFState.state1h.aggregation,
         config.config1h
     );
@@ -329,19 +336,12 @@ export function stepMTFAggregation(
     const prev1hIdx = previousMTFState.state1h.lastCompletedBarIndex;
     const next1hIdx = res1h.completedCandle ? (prev1hIdx !== null ? prev1hIdx + 1 : 0) : prev1hIdx;
 
-    const isBackwardsOrDuplicate = previousMTFState.last1mTimestamp !== null &&
-        candle.time <= previousMTFState.last1mTimestamp;
     const next1mTimestamp = isBackwardsOrDuplicate
         ? previousMTFState.last1mTimestamp
         : candle.time;
-    const requestedBarIndex = barIndex !== undefined ? barIndex : previousMTFState.last1mBarIndex;
-    const nextBarIndex = isBackwardsOrDuplicate
-        ? previousMTFState.last1mBarIndex
-        : requestedBarIndex !== null &&
-            previousMTFState.last1mBarIndex !== null &&
-            requestedBarIndex < previousMTFState.last1mBarIndex
-            ? previousMTFState.last1mBarIndex
-            : requestedBarIndex;
+    const nextBarIndex = isBackwardsOrDuplicate || isBarIndexRegression
+        ? previousBarIndex
+        : (barIndex !== undefined ? barIndex : previousBarIndex);
     const nextState: MTFState = Object.freeze({
         stateVersion: previousMTFState.stateVersion,
         last1mBarIndex: nextBarIndex,
