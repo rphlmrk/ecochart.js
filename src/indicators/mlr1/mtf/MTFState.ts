@@ -183,6 +183,7 @@ export function createInitialHTFAggregationState(): HTFAggregationState {
         currentWindowClose: null,
         sourceCandles: Object.freeze([]),
         sourceTimestamps: Object.freeze([]),
+        observedTimestamps: Object.freeze([]),
         actualSourceCount: 0,
         runningOpen: null,
         runningHigh: null,

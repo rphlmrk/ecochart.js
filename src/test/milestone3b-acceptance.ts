@@ -328,25 +328,30 @@ export function runPhase3BTests(): boolean {
         assert(Object.isFrozen(storedCandle), 'Stored source candle must be frozen');
     });
 
-    // 12. Cross-Window Chronology Rejection
-    runTest('12. Cross-Window Chronology Rejection', () => {
+    // 12. Cross-Window Chronology Rejection and Unified 1m Monotonicity
+    runTest('12. Cross-Window Chronology Rejection and Unified 1m Monotonicity', () => {
         let state = createInitialMTFState();
         const baseTime = Date.UTC(2026, 9, 15, 10, 0, 0);
 
         for (let i = 0; i < 5; i++) {
-            state = stepMTFAggregation(makeCandle(baseTime + i * 60_000), true, state, MTF_CONFIG_A).nextState;
+            state = stepMTFAggregation(makeCandle(baseTime + i * 60_000), true, state, MTF_CONFIG_A, i).nextState;
         }
 
-        const result = stepMTFAggregation(
-            makeCandle(baseTime - 60_000, 50, 55, 45, 52, 10),
-            true,
-            state,
-            MTF_CONFIG_A
-        );
+        assert(state.last1mTimestamp === baseTime + 4 * 60_000, 'Unified timestamp must be at 10:04');
+        assert(state.last1mBarIndex === 4, 'Unified bar index must be 4');
+
+        const oldCandle = makeCandle(baseTime - 60_000, 50, 55, 45, 52, 10);
+        const result = stepMTFAggregation(oldCandle, true, state, MTF_CONFIG_A, 999);
         const aggregation = result.nextState.state15m.aggregation;
         assert(aggregation.currentWindowOpen === baseTime, 'Active window must not be replaced by an older window');
         assert(aggregation.invalidSourceCount === 1, 'Out-of-order candle must be counted as invalid');
         assert(aggregation.runningOpen === 100, 'Out-of-order candle must not alter accumulated OHLC');
+        assert(result.nextState.last1mTimestamp === state.last1mTimestamp, 'Out-of-order timestamp must not move unified clock backwards');
+        assert(result.nextState.last1mBarIndex === state.last1mBarIndex, 'Out-of-order timestamp must not advance unified bar index');
+
+        const duplicate = stepMTFAggregation(makeCandle(baseTime + 4 * 60_000), true, state, MTF_CONFIG_A, 888);
+        assert(duplicate.nextState.last1mTimestamp === state.last1mTimestamp, 'Duplicate timestamp must not advance unified clock');
+        assert(duplicate.nextState.last1mBarIndex === state.last1mBarIndex, 'Duplicate timestamp must not advance unified bar index');
     });
 
     // 13. Fully Skipped HTF Window Detection and Diagnostics
@@ -432,19 +437,22 @@ export function runPhase3BTests(): boolean {
         assert(result.nextState.state15m.aggregation.actualSourceCount === 1, '10:03 must not be accepted');
     });
 
-    // 17. Duplicate After Invalid Candle Classification
-    runTest('17. Duplicate After Invalid Candle Classification', () => {
+    // 17. Duplicate After Intervening Observation Classification
+    runTest('17. Duplicate After Intervening Observation Classification', () => {
         let state = createInitialMTFState();
+        state = stepMTFAggregation(makeCandle(baseTime), true, state, MTF_CONFIG_A).nextState;
         state = stepMTFAggregation(makeCandle(baseTime + 5 * 60_000), false, state, MTF_CONFIG_A).nextState;
+        state = stepMTFAggregation(makeCandle(baseTime + 6 * 60_000), true, state, MTF_CONFIG_A).nextState;
 
-        const result = stepMTFAggregation(
-            makeCandle(baseTime + 5 * 60_000),
-            true,
-            state,
-            MTF_CONFIG_A
+        const result = stepMTFAggregation(makeCandle(baseTime + 5 * 60_000), true, state, MTF_CONFIG_A);
+        assert(
+            result.nextState.state15m.aggregation.duplicateCount === 1,
+            'Repeat of invalid 10:05 must be a duplicate despite intervening 10:06'
         );
-        assert(result.nextState.state15m.aggregation.duplicateCount === 1, 'Repeat must be a duplicate');
-        assert(result.nextState.state15m.aggregation.invalidSourceCount === 1, 'Invalid count must remain 1');
+        assert(
+            result.nextState.state15m.aggregation.invalidSourceCount === 1,
+            'Invalid count must remain 1 from the original 10:05'
+        );
     });
 
     // 18. Multiple Skipped 15m Windows
@@ -477,8 +485,8 @@ export function runPhase3BTests(): boolean {
         );
     });
 
-    // 19. Multiple Skipped 1h Windows
-    runTest('19. Multiple Skipped 1h Windows', () => {
+    // 19. Multiple Skipped 1h Windows and Context Invalidation
+    runTest('19. Multiple Skipped 1h Windows and Context Invalidation', () => {
         let state = createInitialMTFState();
         for (let i = 0; i < 60; i++) {
             state = stepMTFAggregation(makeCandle(baseTime + i * 60_000), true, state, MTF_CONFIG_A).nextState;
@@ -494,6 +502,10 @@ export function runPhase3BTests(): boolean {
         assert(result.diagnostics1h.length === 2, 'Expected two skipped 1h window diagnostics');
         assert(result.diagnostics1h[0].openTimestamp === baseTime + 3_600_000, 'First skipped window is 11:00–12:00');
         assert(result.diagnostics1h[1].openTimestamp === baseTime + 2 * 3_600_000, 'Second skipped window is 12:00–13:00');
+        assert(
+            result.nextState.state1h.aggregation.lastCompletedCandle === null,
+            '1h context must be reset after skipped intervals'
+        );
     });
 
     // 20. Incomplete Active Window Plus Skipped Windows

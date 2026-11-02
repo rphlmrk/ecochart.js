@@ -87,6 +87,7 @@ export interface HTFAggregationState {
     readonly currentWindowClose: number | null;
     readonly sourceCandles: readonly ML1Candle[];
     readonly sourceTimestamps: readonly number[];
+    readonly observedTimestamps: readonly number[];
     readonly actualSourceCount: number;
     readonly runningOpen: number | null;
     readonly runningHigh: number | null;

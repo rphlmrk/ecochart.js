@@ -28,8 +28,8 @@ export interface MTFAggregatorStepResult {
 
 /**
  * Pure Single-Timeframe Aggregation Step.
- * Tracks observed stream chronology, diagnoses every closed or skipped window,
- * and executes REJECT_AND_RESET for incomplete windows.
+ * Tracks observed stream chronology and timestamps, diagnoses every closed or
+ * skipped window, and executes REJECT_AND_RESET for incomplete windows.
  */
 export function stepHTFAggregation(
     candle: ML1Candle,
@@ -50,7 +50,7 @@ export function stepHTFAggregation(
     const lastObserved = previousState.lastObservedSourceTimestamp;
 
     if (lastObserved !== null && candle.time <= lastObserved) {
-        if (candle.time === lastObserved || previousState.sourceTimestamps.includes(candle.time)) {
+        if (previousState.observedTimestamps.includes(candle.time)) {
             return {
                 nextState: Object.freeze({
                     ...previousState,
@@ -179,6 +179,7 @@ export function stepHTFAggregation(
                 currentWindowClose: targetWinClose,
                 sourceCandles: Object.freeze([]),
                 sourceTimestamps: Object.freeze([]),
+                observedTimestamps: Object.freeze([candle.time]),
                 actualSourceCount: 0,
                 runningOpen: null,
                 runningHigh: null,
@@ -205,6 +206,7 @@ export function stepHTFAggregation(
             currentWindowClose: targetWinClose,
             sourceCandles: Object.freeze([sourceSnapshot]),
             sourceTimestamps: Object.freeze([candle.time]),
+            observedTimestamps: Object.freeze([candle.time]),
             actualSourceCount: 1,
             runningOpen: candle.open,
             runningHigh: candle.high,
@@ -233,6 +235,7 @@ export function stepHTFAggregation(
     if (!isSourceValid) {
         const nextState: HTFAggregationState = Object.freeze({
             ...previousState,
+            observedTimestamps: Object.freeze([...previousState.observedTimestamps, candle.time]),
             invalidSourceCount: previousState.invalidSourceCount + 1,
             lastObservedSourceTimestamp: candle.time,
             lastCompletedCandle: lastCompleted,
@@ -249,6 +252,7 @@ export function stepHTFAggregation(
     if (!isInside) {
         const nextState: HTFAggregationState = Object.freeze({
             ...previousState,
+            observedTimestamps: Object.freeze([...previousState.observedTimestamps, candle.time]),
             invalidSourceCount: previousState.invalidSourceCount + 1,
             lastObservedSourceTimestamp: candle.time,
             lastCompletedCandle: lastCompleted,
@@ -272,6 +276,7 @@ export function stepHTFAggregation(
         ...previousState,
         sourceCandles: Object.freeze([...previousState.sourceCandles, sourceSnapshot]),
         sourceTimestamps: Object.freeze([...previousState.sourceTimestamps, candle.time]),
+        observedTimestamps: Object.freeze([...previousState.observedTimestamps, candle.time]),
         actualSourceCount: previousState.actualSourceCount + 1,
         runningOpen: rOpen,
         runningHigh: rHigh,
@@ -293,7 +298,7 @@ export function stepHTFAggregation(
 }
 
 /**
- * Steps the unified MTF Aggregator, advancing 15m and 1h with complete independence.
+ * Steps the unified MTF Aggregator and keeps its 1m clock monotonic.
  */
 export function stepMTFAggregation(
     candle: ML1Candle,
@@ -324,11 +329,23 @@ export function stepMTFAggregation(
     const prev1hIdx = previousMTFState.state1h.lastCompletedBarIndex;
     const next1hIdx = res1h.completedCandle ? (prev1hIdx !== null ? prev1hIdx + 1 : 0) : prev1hIdx;
 
-    const nextBarIndex = barIndex !== undefined ? barIndex : previousMTFState.last1mBarIndex;
+    const isBackwardsOrDuplicate = previousMTFState.last1mTimestamp !== null &&
+        candle.time <= previousMTFState.last1mTimestamp;
+    const next1mTimestamp = isBackwardsOrDuplicate
+        ? previousMTFState.last1mTimestamp
+        : candle.time;
+    const requestedBarIndex = barIndex !== undefined ? barIndex : previousMTFState.last1mBarIndex;
+    const nextBarIndex = isBackwardsOrDuplicate
+        ? previousMTFState.last1mBarIndex
+        : requestedBarIndex !== null &&
+            previousMTFState.last1mBarIndex !== null &&
+            requestedBarIndex < previousMTFState.last1mBarIndex
+            ? previousMTFState.last1mBarIndex
+            : requestedBarIndex;
     const nextState: MTFState = Object.freeze({
         stateVersion: previousMTFState.stateVersion,
         last1mBarIndex: nextBarIndex,
-        last1mTimestamp: candle.time,
+        last1mTimestamp: next1mTimestamp,
         state15m: Object.freeze({
             ...previousMTFState.state15m,
             aggregation: res15m.nextState,
