@@ -64,7 +64,7 @@ export function validateMTFConfig(rawConfig: unknown): ValidatedMTFGlobalConfig 
         if (rawTimeframeConfig.expectedSourceIntervalMs !== 60_000) {
             throw new Error(`MTF Configuration Error: expectedSourceIntervalMs must be 60000, got ${rawTimeframeConfig.expectedSourceIntervalMs}.`);
         }
-        if (rawTimeframeConfig.gapPolicy !== 'REJECT_AND_RESET') {
+        if (!('gapPolicy' in rawTimeframeConfig) || rawTimeframeConfig.gapPolicy !== 'REJECT_AND_RESET') {
             throw new Error(`MTF Configuration Error: gapPolicy must be explicitly 'REJECT_AND_RESET', got '${rawTimeframeConfig.gapPolicy}'.`);
         }
 

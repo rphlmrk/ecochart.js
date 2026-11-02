@@ -1,6 +1,8 @@
 import { createInitialML1FeatureState } from '../ML1FeatureEngine';
 import type {
     HTFAggregationState,
+    HTFContextAvailability,
+    MTFCandle,
     MTFContext,
     MTFState,
     MTFTimeframeContext,
@@ -15,8 +17,8 @@ export function getUTCWindowBoundaries(
     timestamp: number,
     durationMs: number
 ): { openTimestamp: number; closeTimestamp: number } {
-    if (!Number.isSafeInteger(timestamp) || timestamp < 0 || timestamp >= 1e14) {
-        throw new Error(`MTF Boundary Error: Timestamp must be a safe non-negative integer < 1e14, got ${timestamp}`);
+    if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
+        throw new Error(`MTF Boundary Error: Timestamp must be a safe non-negative integer, got ${timestamp}`);
     }
     if (!Number.isSafeInteger(durationMs) || durationMs <= 0) {
         throw new Error(`MTF Boundary Error: DurationMs must be a positive safe integer, got ${durationMs}`);
@@ -24,8 +26,8 @@ export function getUTCWindowBoundaries(
 
     const openTimestamp = Math.floor(timestamp / durationMs) * durationMs;
     const closeTimestamp = openTimestamp + durationMs;
-    if (!Number.isSafeInteger(closeTimestamp)) {
-        throw new Error(`MTF Boundary Error: Computed close timestamp is not a safe integer, got ${closeTimestamp}`);
+    if (!Number.isSafeInteger(openTimestamp) || !Number.isSafeInteger(closeTimestamp)) {
+        throw new Error('MTF Boundary Error: Calculated boundaries exceed safe integer range.');
     }
     return { openTimestamp, closeTimestamp };
 }
@@ -41,7 +43,10 @@ export function isSourceTimestampInWindow(
     if (
         !Number.isSafeInteger(sourceTime) ||
         !Number.isSafeInteger(windowOpen) ||
-        !Number.isSafeInteger(windowClose)
+        !Number.isSafeInteger(windowClose) ||
+        sourceTime < 0 ||
+        windowOpen < 0 ||
+        windowClose <= windowOpen
     ) {
         return false;
     }
@@ -55,7 +60,12 @@ export function isHTFCandleAvailableAt(
     observationTime: number,
     htfCloseTimestamp: number
 ): boolean {
-    if (!Number.isSafeInteger(observationTime) || !Number.isSafeInteger(htfCloseTimestamp)) {
+    if (
+        !Number.isSafeInteger(observationTime) ||
+        !Number.isSafeInteger(htfCloseTimestamp) ||
+        observationTime < 0 ||
+        htfCloseTimestamp <= 0
+    ) {
         return false;
     }
     return observationTime >= htfCloseTimestamp;
@@ -68,11 +78,46 @@ export function calculateContextAgeMs(
     observationTime: number,
     htfCloseTimestamp: number
 ): number | null {
-    if (!Number.isSafeInteger(observationTime) || !Number.isSafeInteger(htfCloseTimestamp)) {
+    if (
+        !Number.isSafeInteger(observationTime) ||
+        !Number.isSafeInteger(htfCloseTimestamp) ||
+        observationTime < 0 ||
+        htfCloseTimestamp <= 0
+    ) {
         return null;
     }
     if (observationTime < htfCloseTimestamp) return null;
     return observationTime - htfCloseTimestamp;
+}
+
+/**
+ * Resolves whether completed HTF context is eligible for consumption.
+ * The last candle and its age remain available to diagnostics when stale.
+ */
+export function resolveHTFAvailability(
+    lastCompletedCandle: MTFCandle | null,
+    contextAgeMs: number | null,
+    isWarmupComplete: boolean,
+    maxStalenessMs?: number
+): {
+    isAvailable: boolean;
+    availabilityStatus: HTFContextAvailability;
+} {
+    if (
+        !lastCompletedCandle ||
+        contextAgeMs === null ||
+        !Number.isSafeInteger(contextAgeMs) ||
+        contextAgeMs < 0
+    ) {
+        return { isAvailable: false, availabilityStatus: 'UNAVAILABLE' };
+    }
+    if (maxStalenessMs !== undefined && contextAgeMs > maxStalenessMs) {
+        return { isAvailable: false, availabilityStatus: 'STALE' };
+    }
+    if (!isWarmupComplete) {
+        return { isAvailable: true, availabilityStatus: 'WARMING_UP' };
+    }
+    return { isAvailable: true, availabilityStatus: 'AVAILABLE_VALID' };
 }
 
 export function createInitialHTFAggregationState(): HTFAggregationState {
