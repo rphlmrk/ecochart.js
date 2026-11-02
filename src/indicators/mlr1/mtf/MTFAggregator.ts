@@ -13,20 +13,23 @@ export interface HTFAggregationStepResult {
     readonly nextState: HTFAggregationState;
     readonly completedCandle: MTFCandle | null;
     readonly diagnostic: HTFIncompleteDiagnostic | null;
+    readonly diagnostics: readonly HTFIncompleteDiagnostic[];
 }
 
 export interface MTFAggregatorStepResult {
     readonly nextState: MTFState;
     readonly completed15m: MTFCandle | null;
     readonly diagnostic15m: HTFIncompleteDiagnostic | null;
+    readonly diagnostics15m: readonly HTFIncompleteDiagnostic[];
     readonly completed1h: MTFCandle | null;
     readonly diagnostic1h: HTFIncompleteDiagnostic | null;
+    readonly diagnostics1h: readonly HTFIncompleteDiagnostic[];
 }
 
 /**
  * Pure Single-Timeframe Aggregation Step.
- * Evaluates window closure, enforces 15/60 exact source completeness,
- * and executes REJECT_AND_RESET upon any missing or corrupt source record.
+ * Tracks observed stream chronology, diagnoses every closed or skipped window,
+ * and executes REJECT_AND_RESET for incomplete windows.
  */
 export function stepHTFAggregation(
     candle: ML1Candle,
@@ -38,23 +41,24 @@ export function stepHTFAggregation(
     const expectedCount = Math.round(durationMs / 60_000);
 
     let completedCandle: MTFCandle | null = null;
-    let diagnostic: HTFIncompleteDiagnostic | null = null;
+    const emittedDiagnostics: HTFIncompleteDiagnostic[] = [];
     let lastCompleted = previousState.lastCompletedCandle;
     let lastDiag = previousState.lastDiagnostic;
 
     const currentWinOpen = previousState.currentWindowOpen;
     const currentWinClose = previousState.currentWindowClose;
+    const lastObserved = previousState.lastObservedSourceTimestamp;
 
-    if (previousState.lastAcceptedSourceTimestamp !== null &&
-        candle.time <= previousState.lastAcceptedSourceTimestamp) {
-        if (previousState.sourceTimestamps.includes(candle.time)) {
+    if (lastObserved !== null && candle.time <= lastObserved) {
+        if (candle.time === lastObserved || previousState.sourceTimestamps.includes(candle.time)) {
             return {
                 nextState: Object.freeze({
                     ...previousState,
                     duplicateCount: previousState.duplicateCount + 1
                 }),
                 completedCandle: null,
-                diagnostic: null
+                diagnostic: null,
+                diagnostics: Object.freeze([])
             };
         }
         return {
@@ -63,7 +67,8 @@ export function stepHTFAggregation(
                 invalidSourceCount: previousState.invalidSourceCount + 1
             }),
             completedCandle: null,
-            diagnostic: null
+            diagnostic: null,
+            diagnostics: Object.freeze([])
         };
     }
 
@@ -115,7 +120,7 @@ export function stepHTFAggregation(
                 failureReason = 'INCOMPLETE_DUPLICATE';
             }
 
-            diagnostic = Object.freeze({
+            const activeDiagnostic = Object.freeze({
                 timeframe: config.timeframe,
                 openTimestamp: currentWinOpen,
                 closeTimestamp: currentWinClose,
@@ -127,7 +132,8 @@ export function stepHTFAggregation(
                 completeness: failureReason
             });
 
-            lastDiag = diagnostic;
+            emittedDiagnostics.push(activeDiagnostic);
+            lastDiag = activeDiagnostic;
             lastCompleted = null;
         }
     }
@@ -137,27 +143,34 @@ export function stepHTFAggregation(
     const targetWinClose = targetBounds.closeTimestamp;
 
     if (currentWinClose !== null && targetWinOpen > currentWinClose) {
-        const skippedTimestamps: number[] = [];
-        for (let t = currentWinClose; t < currentWinClose + durationMs; t += 60_000) {
-            skippedTimestamps.push(t);
+        for (let skipOpen = currentWinClose; skipOpen < targetWinOpen; skipOpen += durationMs) {
+            const skipClose = skipOpen + durationMs;
+            const skippedTimestamps: number[] = [];
+            for (let t = skipOpen; t < skipClose; t += 60_000) {
+                skippedTimestamps.push(t);
+            }
+            const skippedDiagnostic: HTFIncompleteDiagnostic = Object.freeze({
+                timeframe: config.timeframe,
+                openTimestamp: skipOpen,
+                closeTimestamp: skipClose,
+                expectedSourceCount: expectedCount,
+                actualSourceCount: 0,
+                missingTimestamps: Object.freeze(skippedTimestamps),
+                duplicateCount: 0,
+                invalidSourceCount: 0,
+                completeness: 'INCOMPLETE_MISSING'
+            });
+            emittedDiagnostics.push(skippedDiagnostic);
+            lastDiag = skippedDiagnostic;
         }
-        diagnostic = Object.freeze({
-            timeframe: config.timeframe,
-            openTimestamp: currentWinClose,
-            closeTimestamp: currentWinClose + durationMs,
-            expectedSourceCount: expectedCount,
-            actualSourceCount: 0,
-            missingTimestamps: Object.freeze(skippedTimestamps),
-            duplicateCount: 0,
-            invalidSourceCount: 0,
-            completeness: 'INCOMPLETE_MISSING'
-        });
-        lastDiag = diagnostic;
         lastCompleted = null;
     }
 
     const isNewWindow = isWindowClosed || currentWinOpen === null || currentWinOpen !== targetWinOpen;
     const sourceSnapshot: ML1Candle = Object.freeze({ ...candle });
+    const latestDiagnostic = emittedDiagnostics.length > 0
+        ? emittedDiagnostics[emittedDiagnostics.length - 1]
+        : null;
 
     if (isNewWindow) {
         if (!isSourceValid) {
@@ -174,11 +187,17 @@ export function stepHTFAggregation(
                 runningVolume: 0,
                 duplicateCount: 0,
                 invalidSourceCount: 1,
+                lastObservedSourceTimestamp: candle.time,
                 lastAcceptedSourceTimestamp: null,
                 lastCompletedCandle: lastCompleted,
                 lastDiagnostic: lastDiag
             });
-            return { nextState, completedCandle, diagnostic };
+            return {
+                nextState,
+                completedCandle,
+                diagnostic: latestDiagnostic,
+                diagnostics: Object.freeze(emittedDiagnostics)
+            };
         }
 
         const nextState: HTFAggregationState = Object.freeze({
@@ -194,11 +213,17 @@ export function stepHTFAggregation(
             runningVolume: candle.volume,
             duplicateCount: 0,
             invalidSourceCount: 0,
+            lastObservedSourceTimestamp: candle.time,
             lastAcceptedSourceTimestamp: candle.time,
             lastCompletedCandle: lastCompleted,
             lastDiagnostic: lastDiag
         });
-        return { nextState, completedCandle, diagnostic };
+        return {
+            nextState,
+            completedCandle,
+            diagnostic: latestDiagnostic,
+            diagnostics: Object.freeze(emittedDiagnostics)
+        };
     }
 
     const isInside = currentWinOpen !== null &&
@@ -209,20 +234,32 @@ export function stepHTFAggregation(
         const nextState: HTFAggregationState = Object.freeze({
             ...previousState,
             invalidSourceCount: previousState.invalidSourceCount + 1,
+            lastObservedSourceTimestamp: candle.time,
             lastCompletedCandle: lastCompleted,
             lastDiagnostic: lastDiag
         });
-        return { nextState, completedCandle, diagnostic };
+        return {
+            nextState,
+            completedCandle,
+            diagnostic: latestDiagnostic,
+            diagnostics: Object.freeze(emittedDiagnostics)
+        };
     }
 
     if (!isInside) {
         const nextState: HTFAggregationState = Object.freeze({
             ...previousState,
             invalidSourceCount: previousState.invalidSourceCount + 1,
+            lastObservedSourceTimestamp: candle.time,
             lastCompletedCandle: lastCompleted,
             lastDiagnostic: lastDiag
         });
-        return { nextState, completedCandle, diagnostic };
+        return {
+            nextState,
+            completedCandle,
+            diagnostic: latestDiagnostic,
+            diagnostics: Object.freeze(emittedDiagnostics)
+        };
     }
 
     const rOpen = previousState.runningOpen === null ? candle.open : previousState.runningOpen;
@@ -241,12 +278,18 @@ export function stepHTFAggregation(
         runningLow: rLow,
         runningClose: rClose,
         runningVolume: rVol,
+        lastObservedSourceTimestamp: candle.time,
         lastAcceptedSourceTimestamp: candle.time,
         lastCompletedCandle: lastCompleted,
         lastDiagnostic: lastDiag
     });
 
-    return { nextState, completedCandle, diagnostic };
+    return {
+        nextState,
+        completedCandle,
+        diagnostic: latestDiagnostic,
+        diagnostics: Object.freeze(emittedDiagnostics)
+    };
 }
 
 /**
@@ -302,8 +345,10 @@ export function stepMTFAggregation(
         nextState,
         completed15m: res15m.completedCandle,
         diagnostic15m: res15m.diagnostic,
+        diagnostics15m: res15m.diagnostics,
         completed1h: res1h.completedCandle,
-        diagnostic1h: res1h.diagnostic
+        diagnostic1h: res1h.diagnostic,
+        diagnostics1h: res1h.diagnostics
     };
 }
 
@@ -335,9 +380,9 @@ export function processMTFAggregationBatch(
         state = res.nextState;
 
         if (res.completed15m) completed15mCandles.push(res.completed15m);
-        if (res.diagnostic15m) diagnostics15m.push(res.diagnostic15m);
+        diagnostics15m.push(...res.diagnostics15m);
         if (res.completed1h) completed1hCandles.push(res.completed1h);
-        if (res.diagnostic1h) diagnostics1h.push(res.diagnostic1h);
+        diagnostics1h.push(...res.diagnostics1h);
     }
 
     return {

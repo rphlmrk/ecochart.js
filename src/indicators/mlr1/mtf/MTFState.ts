@@ -191,6 +191,7 @@ export function createInitialHTFAggregationState(): HTFAggregationState {
         runningVolume: 0,
         duplicateCount: 0,
         invalidSourceCount: 0,
+        lastObservedSourceTimestamp: null,
         lastAcceptedSourceTimestamp: null,
         lastCompletedCandle: null,
         lastDiagnostic: null

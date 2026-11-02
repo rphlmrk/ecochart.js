@@ -95,6 +95,7 @@ export interface HTFAggregationState {
     readonly runningVolume: number;
     readonly duplicateCount: number;
     readonly invalidSourceCount: number;
+    readonly lastObservedSourceTimestamp: number | null;
     readonly lastAcceptedSourceTimestamp: number | null;
     readonly lastCompletedCandle: MTFCandle | null;
     readonly lastDiagnostic: HTFIncompleteDiagnostic | null;

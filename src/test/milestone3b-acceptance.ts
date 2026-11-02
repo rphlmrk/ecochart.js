@@ -32,6 +32,8 @@ export function runPhase3BTests(): boolean {
         }
     };
 
+    const baseTime = Date.UTC(2026, 9, 15, 10, 0, 0);
+
     // 1. Exact 15m OHLCV Aggregation & Source Count (15 bars)
     runTest('1. Exact 15m OHLCV Aggregation & Source Count (15 bars)', () => {
         let state = createInitialMTFState();
@@ -273,8 +275,8 @@ export function runPhase3BTests(): boolean {
             streamingState = res.nextState;
             if (res.completed15m) streaming15m.push(res.completed15m);
             if (res.completed1h) streaming1h.push(res.completed1h);
-            if (res.diagnostic15m) streamingDiag15m.push(res.diagnostic15m);
-            if (res.diagnostic1h) streamingDiag1h.push(res.diagnostic1h);
+            streamingDiag15m.push(...res.diagnostics15m);
+            streamingDiag1h.push(...res.diagnostics1h);
         }
 
         assert(
@@ -393,15 +395,168 @@ export function runPhase3BTests(): boolean {
         assert(result.nextState.last1mBarIndex === 42, 'Existing bar index must be preserved when omitted');
     });
 
+    // 15. Invalid-First-Candle Chronology Protection
+    runTest('15. Invalid-First-Candle Chronology Protection', () => {
+        let state = createInitialMTFState();
+        const invalid1015 = makeCandle(baseTime + 15 * 60_000, 100, NaN, 95, 100, 10);
+        state = stepMTFAggregation(invalid1015, false, state, MTF_CONFIG_A).nextState;
+
+        assert(state.state15m.aggregation.currentWindowOpen === baseTime + 15 * 60_000, 'Window open must be 10:15');
+        assert(state.state15m.aggregation.invalidSourceCount === 1, 'Invalid count must be 1');
+        assert(
+            state.state15m.aggregation.lastObservedSourceTimestamp === baseTime + 15 * 60_000,
+            'Observed timestamp must advance to 10:15'
+        );
+
+        const olderCandle = makeCandle(baseTime + 14 * 60_000);
+        const result = stepMTFAggregation(olderCandle, true, state, MTF_CONFIG_A);
+        assert(
+            result.nextState.state15m.aggregation.currentWindowOpen === baseTime + 15 * 60_000,
+            'Active 10:15 window must not be replaced'
+        );
+        assert(result.nextState.state15m.aggregation.invalidSourceCount === 2, 'Older candle must be rejected');
+    });
+
+    // 16. Invalid-Middle-Candle Chronology Protection
+    runTest('16. Invalid-Middle-Candle Chronology Protection', () => {
+        let state = createInitialMTFState();
+        state = stepMTFAggregation(makeCandle(baseTime), true, state, MTF_CONFIG_A).nextState;
+        state = stepMTFAggregation(makeCandle(baseTime + 5 * 60_000), false, state, MTF_CONFIG_A).nextState;
+        assert(
+            state.state15m.aggregation.lastObservedSourceTimestamp === baseTime + 5 * 60_000,
+            'Observed timestamp must advance to 10:05'
+        );
+
+        const result = stepMTFAggregation(makeCandle(baseTime + 3 * 60_000), true, state, MTF_CONFIG_A);
+        assert(result.nextState.state15m.aggregation.invalidSourceCount === 2, 'Older 10:03 must be rejected');
+        assert(result.nextState.state15m.aggregation.actualSourceCount === 1, '10:03 must not be accepted');
+    });
+
+    // 17. Duplicate After Invalid Candle Classification
+    runTest('17. Duplicate After Invalid Candle Classification', () => {
+        let state = createInitialMTFState();
+        state = stepMTFAggregation(makeCandle(baseTime + 5 * 60_000), false, state, MTF_CONFIG_A).nextState;
+
+        const result = stepMTFAggregation(
+            makeCandle(baseTime + 5 * 60_000),
+            true,
+            state,
+            MTF_CONFIG_A
+        );
+        assert(result.nextState.state15m.aggregation.duplicateCount === 1, 'Repeat must be a duplicate');
+        assert(result.nextState.state15m.aggregation.invalidSourceCount === 1, 'Invalid count must remain 1');
+    });
+
+    // 18. Multiple Skipped 15m Windows
+    runTest('18. Multiple Skipped 15m Windows', () => {
+        let state = createInitialMTFState();
+        for (let i = 0; i < 15; i++) {
+            state = stepMTFAggregation(makeCandle(baseTime + i * 60_000), true, state, MTF_CONFIG_A).nextState;
+        }
+
+        const result = stepMTFAggregation(
+            makeCandle(baseTime + 45 * 60_000),
+            true,
+            state,
+            MTF_CONFIG_A
+        );
+        assert(result.diagnostics15m.length === 2, 'Expected two skipped 15m window diagnostics');
+        assert(
+            result.diagnostics15m[0].openTimestamp === baseTime + 15 * 60_000 &&
+                result.diagnostics15m[0].closeTimestamp === baseTime + 30 * 60_000,
+            'First skipped window must be 10:15–10:30'
+        );
+        assert(
+            result.diagnostics15m[1].openTimestamp === baseTime + 30 * 60_000 &&
+                result.diagnostics15m[1].closeTimestamp === baseTime + 45 * 60_000,
+            'Second skipped window must be 10:30–10:45'
+        );
+        assert(
+            result.nextState.state15m.aggregation.lastCompletedCandle === null,
+            'Context must reset after multiple skipped windows'
+        );
+    });
+
+    // 19. Multiple Skipped 1h Windows
+    runTest('19. Multiple Skipped 1h Windows', () => {
+        let state = createInitialMTFState();
+        for (let i = 0; i < 60; i++) {
+            state = stepMTFAggregation(makeCandle(baseTime + i * 60_000), true, state, MTF_CONFIG_A).nextState;
+        }
+
+        const result = stepMTFAggregation(
+            makeCandle(baseTime + 3 * 3_600_000),
+            true,
+            state,
+            MTF_CONFIG_A
+        );
+        assert(result.completed1h !== null, '10:00–11:00 window must complete');
+        assert(result.diagnostics1h.length === 2, 'Expected two skipped 1h window diagnostics');
+        assert(result.diagnostics1h[0].openTimestamp === baseTime + 3_600_000, 'First skipped window is 11:00–12:00');
+        assert(result.diagnostics1h[1].openTimestamp === baseTime + 2 * 3_600_000, 'Second skipped window is 12:00–13:00');
+    });
+
+    // 20. Incomplete Active Window Plus Skipped Windows
+    runTest('20. Incomplete Active Window Plus Skipped Windows', () => {
+        let state = createInitialMTFState();
+        for (let i = 0; i < 15; i++) {
+            if (i === 8) continue;
+            state = stepMTFAggregation(makeCandle(baseTime + i * 60_000), true, state, MTF_CONFIG_A).nextState;
+        }
+
+        const result = stepMTFAggregation(
+            makeCandle(baseTime + 45 * 60_000),
+            true,
+            state,
+            MTF_CONFIG_A
+        );
+        assert(result.diagnostics15m.length === 3, 'Expected active incomplete plus two skipped diagnostics');
+        assert(result.diagnostics15m[0].openTimestamp === baseTime, 'First diagnostic must be active window');
+        assert(result.diagnostics15m[0].actualSourceCount === 14, 'Active window must have 14 observations');
+        assert(result.diagnostics15m[1].openTimestamp === baseTime + 15 * 60_000, 'Second diagnostic must be 10:15');
+        assert(result.diagnostics15m[2].openTimestamp === baseTime + 30 * 60_000, 'Third diagnostic must be 10:30');
+    });
+
+    // 21. Recovery After Multi-Window Gap
+    runTest('21. Recovery After Multi-Window Gap', () => {
+        let state = createInitialMTFState();
+        for (let i = 0; i < 15; i++) {
+            state = stepMTFAggregation(makeCandle(baseTime + i * 60_000), true, state, MTF_CONFIG_A).nextState;
+        }
+
+        state = stepMTFAggregation(
+            makeCandle(baseTime + 45 * 60_000),
+            true,
+            state,
+            MTF_CONFIG_A
+        ).nextState;
+        assert(state.state15m.aggregation.lastCompletedCandle === null, 'Context must reset after gap');
+
+        for (let i = 46; i < 60; i++) {
+            state = stepMTFAggregation(makeCandle(baseTime + i * 60_000), true, state, MTF_CONFIG_A).nextState;
+        }
+
+        const recovered = stepMTFAggregation(
+            makeCandle(baseTime + 60 * 60_000),
+            true,
+            state,
+            MTF_CONFIG_A
+        );
+        assert(recovered.completed15m !== null, '10:45–11:00 must complete after recovery');
+        assert(recovered.completed15m.openTimestamp === baseTime + 45 * 60_000, 'Recovered window must open at 10:45');
+        assert(recovered.completed15m.closeTimestamp === baseTime + 60 * 60_000, 'Recovered window must close at 11:00');
+        assert(recovered.completed15m.completeness === 'COMPLETE', 'Recovered window must be complete');
+    });
+
     console.log(`\n=======================================`);
-    console.log(`📊 ML-R1 PHASE 3B ACCEPTANCE AUDIT:`);
+    console.log(`📊 ML-R1 PHASE 3B COMPLETE ACCEPTANCE AUDIT:`);
     console.log(`   ↳ Tests Executed:  ${passed + failed}`);
     console.log(`   ↳ Tests Passed:    ${passed}`);
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log(`=======================================\n`);
 
-    if (failed === 0 && passed === 14) {
-        console.log('✅ ALL 14 PHASE 3B AGGREGATION CRITERIA RIGOROUSLY MET.');
+    if (failed === 0 && passed === 21) {
+        console.log('✅ ALL 21 PHASE 3B AGGREGATION CRITERIA RIGOROUSLY MET.');
         console.log('🔒 Phase 3B Aggregation Engine FULLY FROZEN.');
         return true;
     } else {
