@@ -2998,37 +2998,8 @@ export class WorkspaceManager {
         this.setupGlobalControls();
         AlertUI.init();
 
-        // Run ML-R1 Acceptance Tests & Phase 2J Audit Reports
-        setTimeout(() => {
-            const passedA = runPhase2ATests();
-            const passedJ = runPhase2JTests();
-
-            if (passedA && passedJ) {
-                // Extract real historical candles from active chart if available
-                const activeChart = WorkspaceManager.getActiveChart();
-                let historicalCandles: ML1Candle[] | undefined = undefined;
-
-                if (activeChart && activeChart.dataStore.length > 50) {
-                    const ds = activeChart.dataStore;
-                    historicalCandles = [];
-                    for (let i = 0; i < ds.length; i++) {
-                        const b = i * 6;
-                        historicalCandles.push({
-                            time: ds.data[b],
-                            open: ds.data[b + 1],
-                            high: ds.data[b + 2],
-                            low: ds.data[b + 3],
-                            close: ds.data[b + 4],
-                            volume: ds.data[b + 5]
-                        });
-                    }
-                }
-
-                // Generates audit report on real historical feed if present; otherwise uses synthetic benchmark
-                generatePhase2JReports(historicalCandles);
-                console.log('🏆 MILESTONE 2 COMPLETE & FROZEN.');
-            }
-        }, 1000);
+        // Auto-run on boot disabled: Tests and historical audit reports are now executed on-demand
+        // via the "Run ML-R1 Audit (Real Data)" button inside the AI Export modal.
 
         window.addEventListener('ecochart-alerts-updated', () => {
             this.charts.forEach(c => {
@@ -4670,6 +4641,97 @@ export class WorkspaceManager {
             BackgroundDataMiner.abort();
             resetTopbarButton();
             if (loadingOverlay) loadingOverlay.style.display = 'none';
+        });
+
+        // Wire up on-demand ML-R1 Audit on actual downloaded historical data
+        const btnAiExportAudit = document.getElementById('btn-ai-export-audit');
+        btnAiExportAudit?.addEventListener('click', async () => {
+            const chart = WorkspaceManager.activeChart || WorkspaceManager.charts[0];
+            if (!chart) return;
+
+            const activeRange = document.querySelector('.ai-range-btn.active') as HTMLElement;
+            const rangeKey = activeRange?.dataset.val || '1m';
+
+            let durationMs = BackgroundDataMiner.rangeToMs(rangeKey);
+            let customStartMs: number | undefined;
+            let customEndMs: number | undefined;
+
+            if (rangeKey === 'custom') {
+                if (!customStartDate?.value || !customEndDate?.value) {
+                    alert('Please select both a Start Date and an End Date.');
+                    return;
+                }
+                customStartMs = new Date(`${customStartDate.value}T00:00:00Z`).getTime();
+                customEndMs = new Date(`${customEndDate.value}T23:59:59Z`).getTime();
+                if (isNaN(customStartMs) || isNaN(customEndMs) || customStartMs >= customEndMs) {
+                    alert('Invalid custom date range.');
+                    return;
+                }
+                durationMs = customEndMs - customStartMs;
+            }
+
+            if (loadingOverlay) loadingOverlay.style.display = 'flex';
+            if (loadingTitle) loadingTitle.textContent = `Downloading ${chart.currentSymbol} 1m data for ML-R1 Audit...`;
+
+            try {
+                const rawCandleBuffer = await BackgroundDataMiner.mineHistoricalCandles(
+                    chart.currentSymbol,
+                    '1m',
+                    durationMs,
+                    (p) => {
+                        if (progressFill) progressFill.style.width = `${p.percent}%`;
+                        if (progressPct) progressPct.textContent = `${p.percent}%`;
+                        if (progressCount) progressCount.textContent = `Batch ${p.currentBatch} / ${p.totalBatches}`;
+                        if (progressEta) progressEta.textContent = `ETA: ${p.etaSeconds}s`;
+                        if (loadingDetail) loadingDetail.textContent = `${p.candlesFetched.toLocaleString()} actual candles downloaded (${p.statusText})`;
+                    },
+                    customStartMs,
+                    customEndMs
+                );
+
+                if (rawCandleBuffer.length === 0) {
+                    alert('No historical candle data returned from Binance.');
+                    if (loadingOverlay) loadingOverlay.style.display = 'none';
+                    return;
+                }
+
+                if (loadingTitle) loadingTitle.textContent = 'Running ML-R1 Acceptance & Phase 2J Audit...';
+                if (loadingDetail) loadingDetail.textContent = 'Executing full pipeline across downloaded historical market data...';
+                await new Promise(resolve => setTimeout(resolve, 50));
+
+                const candleCount = Math.floor(rawCandleBuffer.length / 6);
+                const actualHistoricalCandles: ML1Candle[] = [];
+                for (let i = 0; i < candleCount; i++) {
+                    const b = i * 6;
+                    actualHistoricalCandles.push({
+                        time: rawCandleBuffer[b],
+                        open: rawCandleBuffer[b + 1],
+                        high: rawCandleBuffer[b + 2],
+                        low: rawCandleBuffer[b + 3],
+                        close: rawCandleBuffer[b + 4],
+                        volume: rawCandleBuffer[b + 5]
+                    });
+                }
+
+                const passedA = runPhase2ATests();
+                const passedJ = runPhase2JTests();
+                if (passedA && passedJ) {
+                    generatePhase2JReports(actualHistoricalCandles);
+                }
+
+                if (loadingDetail) loadingDetail.textContent = `Audit complete across ${candleCount.toLocaleString()} real candles! Check DevTools console.`;
+                setTimeout(() => {
+                    if (loadingOverlay) loadingOverlay.style.display = 'none';
+                    modalAiExport?.close();
+                }, 1200);
+
+            } catch (err: any) {
+                console.error('[ML-R1 Audit] Error during audit run:', err);
+                if (loadingOverlay) loadingOverlay.style.display = 'none';
+                if (err.message !== 'Mining cancelled by user.') {
+                    alert(`Audit failed: ${err.message}`);
+                }
+            }
         });
 
         btnAiExportStart?.addEventListener('click', async () => {
