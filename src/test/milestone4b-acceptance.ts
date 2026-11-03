@@ -297,12 +297,12 @@ export function runPhase4BTests(): boolean {
 
         const first = processSourceObservation(
             stats, t0, cleanQuality, true, strictPolicy, 60000,
-            { isUniqueSource: true, isUniqueAccepted: true }
+            { isUniqueSource: true, isCandidateUniqueAccepted: true }
         );
         assert(first.acceptance.isAccepted, 'First timestamp should be accepted');
         const second = processSourceObservation(
             first.nextStats, t1, invalidQuality, true, strictPolicy, 60000,
-            { isUniqueSource: true, isUniqueAccepted: false }
+            { isUniqueSource: true, isCandidateUniqueAccepted: true }
         );
         assert(!second.acceptance.isAccepted, 'Invalid newer timestamp should be rejected');
         assert(second.nextStats.lastSourceTimestamp === t1, 'Watermark should advance to newer rejected row');
@@ -310,15 +310,16 @@ export function runPhase4BTests(): boolean {
 
         const third = processSourceObservation(
             second.nextStats, t2, cleanQuality, true, strictPolicy, 60000,
-            { isUniqueSource: true, isUniqueAccepted: false }
+            { isUniqueSource: true, isCandidateUniqueAccepted: true }
         );
         assert(!third.acceptance.isAccepted, 'Regressing timestamp should be rejected');
         assert(third.nextStats.lastSourceTimestamp === t1, 'Watermark must remain at t1');
         assert(third.nextStats.outOfOrderCount === 1, 'Out-of-order counter should increment');
+        assert(third.nextStats.uniqueAcceptedTimestampsCount === 1, 'Rejected late arrival must not increment unique accepted count');
 
         const fourth = processSourceObservation(
             third.nextStats, t3, cleanQuality, true, strictPolicy, 60000,
-            { isUniqueSource: true, isUniqueAccepted: true }
+            { isUniqueSource: true, isCandidateUniqueAccepted: true }
         );
         assert(fourth.acceptance.isAccepted, 'Next chronological timestamp should be accepted');
         assert(fourth.nextStats.lastSourceTimestamp === t3, 'Watermark should advance to t3');
@@ -340,15 +341,15 @@ export function runPhase4BTests(): boolean {
         const quality = extractDataQuality(createMockObservation(100000, qualityFeatures()));
         const first = processSourceObservation(
             createInitialBackboneStats(), 100000, quality, true, permissivePolicy, 60000,
-            { isUniqueSource: true, isUniqueAccepted: true }
+            { isUniqueSource: true, isCandidateUniqueAccepted: true }
         );
         const second = processSourceObservation(
             first.nextStats, 160000, quality, true, permissivePolicy, 60000,
-            { isUniqueSource: true, isUniqueAccepted: true }
+            { isUniqueSource: true, isCandidateUniqueAccepted: true }
         );
         const duplicate = processSourceObservation(
             second.nextStats, 160000, quality, true, permissivePolicy, 60000,
-            { isUniqueSource: false, isUniqueAccepted: false }
+            { isUniqueSource: false, isCandidateUniqueAccepted: false }
         );
         assert(duplicate.nextStats.sourceRowCount === 3, 'Raw source row count should include duplicate arrival');
         assert(duplicate.nextStats.acceptedObservationCount === 3, 'Permissive policy accepts duplicate row');
@@ -373,6 +374,16 @@ export function runPhase4BTests(): boolean {
         assert(rangedUptime.totalExpectedObservations === 10, 'Configured range should include ten expected slots');
         assert(rangedUptime.sourceAvailabilityFraction === 0.6, 'Boundary gaps should reduce source availability to 60%');
         assert(rangedUptime.usableObservationFraction === 0.6, 'Boundary gaps should reduce usable coverage to 60%');
+
+        let misalignedRangeThrew = false;
+        try {
+            evaluateDatasetUptime(
+                rangedStats, strictPolicy, 60000, { startTimestamp: 0, endTimestamp: 90000 }
+            );
+        } catch {
+            misalignedRangeThrew = true;
+        }
+        assert(misalignedRangeThrew, 'Configured range span must align to the expected interval');
 
         for (const threshold of [-0.1, 1.1, NaN, Infinity]) {
             let threw = false;
@@ -452,23 +463,25 @@ export function runPhase4BTests(): boolean {
             { candle: { ...createCandle(340000), open: 12, high: 14, low: 11, close: 13 }, observation: createMockObservation(340000, qualityFeatures()) },
             { candle: { ...createCandle(400000), open: 13, high: 15, low: 12, close: 14 }, observation: createMockObservation(400000, qualityFeatures({ IsSourceValid: 0 })) }
         ];
-        const result = buildSourceBackbone(inputItems, 'SOLUSDT', '1m', 1, strictPolicy, 60000);
+        const dateRange = { startTimestamp: 100000, endTimestamp: 460000 };
+        const result = buildSourceBackbone(inputItems, 'SOLUSDT', '1m', 1, strictPolicy, 60000, dateRange);
 
         assert(result.stats.sourceRowCount === 6, 'Source row count must be 6');
         assert(result.acceptedRows.length === 3, 'Exactly 3 observations should be accepted');
         assert(result.rejectedRows.length === 3, 'Exactly 3 observations should be rejected');
-        assert(result.stats.uniqueSourceTimestampsCount === 5, 'Unique source timestamps should exclude the duplicate');
+        assert(result.stats.uniqueSourceTimestampsCount === 4, 'Unique expected-slot timestamps should exclude duplicates and off-grid rows');
         assert(result.stats.uniqueAcceptedTimestampsCount === 3, 'Unique accepted timestamps should exclude rejected rows');
+        assert(result.stats.offGridTimestampCount === 1, 'Off-grid timestamp count should include the late 140000 row');
         assert(result.stats.missingIntervalCount === 2, 'Exactly 2 missing intervals should be counted');
         assert(result.acceptedRows[0].sourceTimestamp === 100000, 'First row timestamp mismatch');
         assert(result.acceptedRows[1].sourceTimestamp === 160000, 'Second row timestamp mismatch');
         assert(result.acceptedRows[2].sourceTimestamp === 340000, 'Third row timestamp mismatch');
         assert(result.acceptedRows[0].observationTimestamp === 160000, 'Observation boundary mismatch');
         assert(result.acceptedRows[0].observationId === 'OBS_SOLUSDT_1m_V1_100000', 'Observation ID mismatch');
-        assert(result.uptime.totalExpectedObservations === 6, 'Duplicate/out-of-order rows must not expand the timeline');
-        assert(Math.abs(result.uptime.sourceAvailabilityFraction - 5 / 6) < 1e-4, 'Source availability must use unique timestamps');
-        assert(Math.abs(result.uptime.usableObservationFraction - 3 / 6) < 1e-4, 'Usable uptime must use unique accepted timestamps');
-        assert(!result.uptime.isUptimeValid, '3 accepted of 6 total slots should fail the 95% uptime policy');
+        assert(result.uptime.totalExpectedObservations === 7, 'Configured range should include seven expected timeline slots');
+        assert(Math.abs(result.uptime.sourceAvailabilityFraction - 4 / 7) < 1e-4, 'Source availability must exclude off-grid rows');
+        assert(Math.abs(result.uptime.usableObservationFraction - 3 / 7) < 1e-4, 'Usable uptime must use unique accepted timestamps');
+        assert(!result.uptime.isUptimeValid, '3 accepted of 7 total slots should fail the 95% uptime policy');
         assert(Object.isFrozen(result.acceptedRows), 'Accepted row collection must be immutable');
         assert(Object.isFrozen(result.rejectedRows), 'Rejected row collection must be immutable');
 
@@ -480,7 +493,7 @@ export function runPhase4BTests(): boolean {
             featureConfigVersion: 'v1',
             teacherVersion: 'v1',
             outcomeConfigVersion: 'v1',
-            dateRange: { startTimestamp: 100000, endTimestamp: 400000 },
+            dateRange,
             integrityPolicy: strictPolicy,
             exportConfig: { exportTierA: true, exportTierB: true, exportTierC: true, separateFiles: true }
         };
@@ -494,9 +507,24 @@ export function runPhase4BTests(): boolean {
         );
         assert(manifest.sourceRowCount === 6, 'Manifest source row count mismatch');
         assert(manifest.acceptedObservationCount === 3, 'Manifest accepted count mismatch');
-        assert(manifest.totalExpectedObservations === 6, 'Manifest expected count mismatch');
-        assert(manifest.usableObservationFraction === 0.5, 'Manifest usable fraction mismatch');
+        assert(manifest.startTimestamp === 100000, 'Manifest start must preserve configured date range');
+        assert(manifest.endTimestamp === 460000, 'Manifest end must preserve configured date range');
+        assert(manifest.totalExpectedObservations === 7, 'Manifest expected count must reflect configured date range');
+        assert(Math.abs(manifest.usableObservationFraction - 3 / 7) < 1e-4, 'Manifest usable fraction mismatch');
         assert(manifest.missingDataStats.invalidSourceCount === 1, 'Manifest invalid source count mismatch');
+        assert(manifest.missingDataStats.offGridTimestampCount === 1, 'Manifest off-grid count mismatch');
+
+        const outOfRangeResult = buildSourceBackbone(
+            [{ candle: createCandle(520000), observation: createMockObservation(520000, qualityFeatures()) }],
+            'SOLUSDT',
+            '1m',
+            1,
+            strictPolicy,
+            60000,
+            dateRange
+        );
+        assert(outOfRangeResult.stats.outOfRangeTimestampCount === 1, 'Out-of-range timestamp count must increment');
+        assert(outOfRangeResult.stats.uniqueSourceTimestampsCount === 0, 'Out-of-range timestamp must not count toward source availability');
     });
 
     console.log('\n=======================================');

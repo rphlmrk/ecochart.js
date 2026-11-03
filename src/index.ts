@@ -71,6 +71,8 @@ import { runMilestone2AcceptanceSuite } from './test/run-milestone2';
 export { runMilestone2AcceptanceSuite };
 export { runPhase2JTests, generatePhase2JReports };
 
+const auditBoundButtons = new WeakSet<HTMLElement>();
+
 export interface SavedPaneState {
     symbol: string;
     timeframe: string;
@@ -4669,7 +4671,7 @@ export class WorkspaceManager {
 
         // Unified on-demand test runner for Milestones 1 through 4
         const btnAiExportAudit = document.getElementById('btn-ai-export-audit');
-        btnAiExportAudit?.addEventListener('click', async () => {
+        const runAiExportAudit = async () => {
             if (loadingOverlay) loadingOverlay.style.display = 'flex';
             if (loadingTitle) loadingTitle.textContent = 'Running Milestones 1 to 4 Test Suites...';
             if (loadingDetail) loadingDetail.textContent = 'Executing full M1, M2 (2A-2H, 2J), M3 (3A-3E), and M4B pipelines...';
@@ -4721,7 +4723,11 @@ export class WorkspaceManager {
                 }, 2000);
                 alert(`Test Suite failed: ${message}`);
             }
-        });
+        };
+        if (btnAiExportAudit && !auditBoundButtons.has(btnAiExportAudit)) {
+            auditBoundButtons.add(btnAiExportAudit);
+            btnAiExportAudit.addEventListener('click', runAiExportAudit);
+        }
 
         btnAiExportStart?.addEventListener('click', async () => {
             const chart = WorkspaceManager.activeChart || WorkspaceManager.charts[0];

@@ -13,6 +13,8 @@ export interface BackboneStats {
     readonly outOfOrderCount: number;
     readonly invalidOhlcvCount: number;
     readonly invalidSourceCount: number;
+    readonly offGridTimestampCount: number;
+    readonly outOfRangeTimestampCount: number;
     readonly uniqueSourceTimestampsCount: number;
     readonly uniqueAcceptedTimestampsCount: number;
     readonly firstSourceTimestamp: number | null;
@@ -30,6 +32,8 @@ export function createInitialBackboneStats(): BackboneStats {
         outOfOrderCount: 0,
         invalidOhlcvCount: 0,
         invalidSourceCount: 0,
+        offGridTimestampCount: 0,
+        outOfRangeTimestampCount: 0,
         uniqueSourceTimestampsCount: 0,
         uniqueAcceptedTimestampsCount: 0,
         firstSourceTimestamp: null,
@@ -64,7 +68,9 @@ export interface SourceBackboneInputItem {
 
 export interface UniqueTimestampTracking {
     readonly isUniqueSource: boolean;
-    readonly isUniqueAccepted?: boolean;
+    readonly isCandidateUniqueAccepted?: boolean;
+    readonly isOffGridTimestamp?: boolean;
+    readonly isOutOfRangeTimestamp?: boolean;
 }
 
 export interface SourceBackboneAcceptedRow {
@@ -228,6 +234,8 @@ function validateRuntimeInputs(
         prevStats.outOfOrderCount,
         prevStats.invalidOhlcvCount,
         prevStats.invalidSourceCount,
+        prevStats.offGridTimestampCount,
+        prevStats.outOfRangeTimestampCount,
         prevStats.uniqueSourceTimestampsCount,
         prevStats.uniqueAcceptedTimestampsCount
     ];
@@ -310,8 +318,12 @@ export function processSourceObservation(
     if (knownUniqueTracking !== undefined &&
         (!knownUniqueTracking || typeof knownUniqueTracking !== 'object' ||
             typeof knownUniqueTracking.isUniqueSource !== 'boolean' ||
-            (knownUniqueTracking.isUniqueAccepted !== undefined &&
-                typeof knownUniqueTracking.isUniqueAccepted !== 'boolean'))) {
+            (knownUniqueTracking.isCandidateUniqueAccepted !== undefined &&
+                typeof knownUniqueTracking.isCandidateUniqueAccepted !== 'boolean') ||
+            (knownUniqueTracking.isOffGridTimestamp !== undefined &&
+                typeof knownUniqueTracking.isOffGridTimestamp !== 'boolean') ||
+            (knownUniqueTracking.isOutOfRangeTimestamp !== undefined &&
+                typeof knownUniqueTracking.isOutOfRangeTimestamp !== 'boolean'))) {
         throw new Error('Runtime Contract Error: knownUniqueTracking fields must be booleans.');
     }
 
@@ -351,8 +363,11 @@ export function processSourceObservation(
         ? sourceTimestamp
         : Math.min(prevStats.firstSourceTimestamp, sourceTimestamp);
     const isUniqueSource = knownUniqueTracking?.isUniqueSource ?? !combinedQuality.isDuplicate;
-    const isUniqueAccepted = knownUniqueTracking?.isUniqueAccepted ??
-        (acceptance.isAccepted && isUniqueSource && !combinedQuality.isDuplicate);
+    const isUniqueAccepted = knownUniqueTracking !== undefined
+        ? acceptance.isAccepted &&
+            (knownUniqueTracking.isCandidateUniqueAccepted ??
+                (isUniqueSource && !combinedQuality.isDuplicate))
+        : acceptance.isAccepted && isUniqueSource && !combinedQuality.isDuplicate;
     if (isUniqueAccepted &&
         (!isUniqueSource || !acceptance.isAccepted || combinedQuality.isDuplicate)) {
         throw new Error('Runtime Contract Error: a unique accepted timestamp must be unique, accepted, and non-duplicate.');
@@ -368,6 +383,10 @@ export function processSourceObservation(
         outOfOrderCount: prevStats.outOfOrderCount + (combinedQuality.isOutOfOrder ? 1 : 0),
         invalidOhlcvCount: prevStats.invalidOhlcvCount + (isValidOhlcv ? 0 : 1),
         invalidSourceCount: prevStats.invalidSourceCount + (dataQuality.isSourceValid ? 0 : 1),
+        offGridTimestampCount: prevStats.offGridTimestampCount +
+            (knownUniqueTracking?.isOffGridTimestamp ? 1 : 0),
+        outOfRangeTimestampCount: prevStats.outOfRangeTimestampCount +
+            (knownUniqueTracking?.isOutOfRangeTimestamp ? 1 : 0),
         uniqueSourceTimestampsCount: prevStats.uniqueSourceTimestampsCount + (isUniqueSource ? 1 : 0),
         uniqueAcceptedTimestampsCount: prevStats.uniqueAcceptedTimestampsCount + (isUniqueAccepted ? 1 : 0),
         firstSourceTimestamp: nextFirstTimestamp,
@@ -420,6 +439,8 @@ export function evaluateDatasetUptime(
         stats.sourceRowCount,
         stats.acceptedObservationCount,
         stats.rejectedObservationCount,
+        stats.offGridTimestampCount,
+        stats.outOfRangeTimestampCount,
         stats.uniqueSourceTimestampsCount,
         stats.uniqueAcceptedTimestampsCount
     ];
@@ -442,8 +463,12 @@ export function evaluateDatasetUptime(
             dateRange.startTimestamp < 0 || dateRange.endTimestamp < dateRange.startTimestamp) {
             throw new Error('IntegrityPolicy Error: dateRange must contain ordered non-negative safe integer timestamps.');
         }
+        const rangeSpan = dateRange.endTimestamp - dateRange.startTimestamp;
+        if (!Number.isSafeInteger(rangeSpan) || rangeSpan % expectedIntervalMs !== 0) {
+            throw new Error('IntegrityPolicy Error: dateRange span must be an exact multiple of expectedIntervalMs.');
+        }
         totalExpectedObservations =
-            Math.floor((dateRange.endTimestamp - dateRange.startTimestamp) / expectedIntervalMs) + 1;
+            Math.floor(rangeSpan / expectedIntervalMs) + 1;
         if (!Number.isSafeInteger(totalExpectedObservations)) {
             throw new Error('evaluateDatasetUptime Error: configured date range exceeds safe timeline slot count.');
         }
@@ -522,11 +547,20 @@ export function buildSourceBackbone(
     }
     validatePolicy(policy);
     calculateObservationTimestamp(0, expectedIntervalMs);
+    if (dateRange !== undefined &&
+        (!dateRange || !Number.isSafeInteger(dateRange.startTimestamp) || dateRange.startTimestamp < 0 ||
+            !Number.isSafeInteger(dateRange.endTimestamp) || dateRange.endTimestamp < dateRange.startTimestamp ||
+            !Number.isSafeInteger(dateRange.endTimestamp - dateRange.startTimestamp) ||
+            (dateRange.endTimestamp - dateRange.startTimestamp) % expectedIntervalMs !== 0)) {
+        throw new Error('buildSourceBackbone Error: dateRange must be ordered safe integer timestamps with an interval-aligned span.');
+    }
 
     let stats = createInitialBackboneStats();
     const acceptedRows: SourceBackboneAcceptedRow[] = [];
     const rejectedRows: SourceBackboneRejectedRow[] = [];
     const seenTimestamps = new Set<number>();
+    const acceptedTimestamps = new Set<number>();
+    const gridAnchor = dateRange?.startTimestamp ?? stream[0]?.candle.time ?? 0;
 
     for (const item of stream) {
         if (!item || typeof item !== 'object' || !item.candle || !item.observation) {
@@ -536,33 +570,46 @@ export function buildSourceBackbone(
             throw new Error('Runtime Contract Error: isValidOhlcv must be a boolean when provided.');
         }
         const dataQuality = extractDataQuality(item.observation);
-        const isUniqueSource = !seenTimestamps.has(item.candle.time);
+        const timestamp = item.candle.time;
+        const isOnGrid = (timestamp - gridAnchor) % expectedIntervalMs === 0;
+        const isWithinRange = dateRange === undefined ||
+            (timestamp >= dateRange.startTimestamp && timestamp <= dateRange.endTimestamp);
+        const isValidExpectedSlot = isOnGrid && isWithinRange;
+        const isUniqueSource = !seenTimestamps.has(timestamp) && isValidExpectedSlot;
         seenTimestamps.add(item.candle.time);
+        const isCandidateUniqueAccepted = isUniqueSource &&
+            !acceptedTimestamps.has(timestamp) && isValidExpectedSlot;
         const nativeValidOhlcv = validateCandleOhlcv(item.candle);
         const isValidOhlcv = nativeValidOhlcv && (item.isValidOhlcv ?? true);
         const result = processSourceObservation(
             stats,
-            item.candle.time,
+            timestamp,
             dataQuality,
             isValidOhlcv,
             policy,
             expectedIntervalMs,
-            { isUniqueSource }
+            {
+                isUniqueSource,
+                isCandidateUniqueAccepted,
+                isOffGridTimestamp: !isOnGrid,
+                isOutOfRangeTimestamp: !isWithinRange
+            }
         );
         stats = result.nextStats;
         const candle = Object.freeze({ ...item.candle });
 
         if (result.acceptance.isAccepted) {
+            acceptedTimestamps.add(timestamp);
             acceptedRows.push(Object.freeze({
-                observationId: generateObservationId(symbol, timeframe, item.candle.time, datasetVersion),
-                sourceTimestamp: item.candle.time,
+                observationId: generateObservationId(symbol, timeframe, timestamp, datasetVersion),
+                sourceTimestamp: timestamp,
                 observationTimestamp: result.observationTimestamp,
                 candle,
                 dataQuality: result.acceptance.dataQuality
             }));
         } else {
             rejectedRows.push(Object.freeze({
-                sourceTimestamp: item.candle.time,
+                sourceTimestamp: timestamp,
                 candle,
                 reasons: result.acceptance.rejectionReasons
             }));
@@ -617,6 +664,10 @@ export function createDatasetManifest(
         outOfOrderCount: stats.outOfOrderCount,
         invalidOhlcvCount: stats.invalidOhlcvCount,
         invalidSourceCount: stats.invalidSourceCount,
+        offGridTimestampCount: stats.offGridTimestampCount +
+            (htfStatsOverhead?.offGridTimestampCount ?? 0),
+        outOfRangeTimestampCount: stats.outOfRangeTimestampCount +
+            (htfStatsOverhead?.outOfRangeTimestampCount ?? 0),
         htf15mGapCount: htfStatsOverhead?.htf15mGapCount ?? 0,
         htf1hGapCount: htfStatsOverhead?.htf1hGapCount ?? 0,
         htf15mResetCount: htfStatsOverhead?.htf15mResetCount ?? 0,
@@ -630,8 +681,8 @@ export function createDatasetManifest(
         sourceIdentity,
         symbol: buildConfig.symbol,
         timeframe: buildConfig.baseTimeframe,
-        startTimestamp: stats.firstSourceTimestamp ?? buildConfig.dateRange.startTimestamp,
-        endTimestamp: stats.lastSourceTimestamp ?? buildConfig.dateRange.endTimestamp,
+        startTimestamp: buildConfig.dateRange.startTimestamp,
+        endTimestamp: buildConfig.dateRange.endTimestamp,
         sourceRowCount: stats.sourceRowCount,
         acceptedObservationCount: stats.acceptedObservationCount,
         rejectedObservationCount: stats.rejectedObservationCount,
