@@ -1,4 +1,5 @@
 import { DataStore } from './data/DataStore';
+import JSZip from 'jszip';
 import { BinanceClient } from './network/BinanceClient';
 import { ChartRenderer, type ResampledHtfBar } from './renderer/ChartRenderer';
 import { themeManager } from './theme/ThemeManager';
@@ -77,6 +78,7 @@ import {
     extractDataQuality,
     validateCandleOhlcv
 } from './indicators/mlr1/dataset/ObservationBackbone';
+import type { ExportAccounting } from './indicators/mlr1/dataset/DatasetManifest';
 import { runMilestone2AcceptanceSuite } from './test/run-milestone2';
 export { runMilestone2AcceptanceSuite };
 export { runPhase2JTests, generatePhase2JReports };
@@ -5140,7 +5142,8 @@ export class WorkspaceManager {
                     backboneResult.acceptedRows,
                     headlessZigZag.cachedPivots,
                     exportSymbol,
-                    exportInterval
+                    exportInterval,
+                    intervalMs
                 );
 
                 if (events.length === 0) {
@@ -5154,7 +5157,8 @@ export class WorkspaceManager {
                 const auditResult = DatasetAuditor.runCausalityAudit(
                     events,
                     cleanDs,
-                    backboneResult.acceptedRows
+                    backboneResult.acceptedRows,
+                    intervalMs
                 );
                 const backboneChronologyValid = backboneResult.stats.outOfOrderCount === 0;
                 const backboneIdentityUnique = new Set(
@@ -5183,7 +5187,10 @@ export class WorkspaceManager {
                 auditRemarks.push(`Final exported Tier B/C ML-R1 events: ${events.length}`);
                 auditRemarks.push(`Tier A continuous observations: ${backboneResult.acceptedRows.length}`);
 
-                const exportAccounting = {
+                const exportAccounting: ExportAccounting = {
+                    rawSourceCandleCount: candleCount,
+                    acceptedSourceObservationCount: backboneResult.acceptedRows.length,
+                    rejectedSourceObservationCount: backboneResult.rejectedRows.length,
                     tierAContinuousObservationCount: backboneResult.acceptedRows.length,
                     tierAEventRepresentationRowCount: events.length,
                     tierBConfirmedTeacherEventCount: events.length,
@@ -5221,8 +5228,8 @@ export class WorkspaceManager {
                     );
                 }
 
-                // Step D: Export ML-R1 Events CSV
-                if (loadingTitle) loadingTitle.textContent = "Exporting ML-R1 CSV...";
+                // Step D: Build a single package before triggering the download.
+                if (loadingTitle) loadingTitle.textContent = "Packaging ML-R1 Dataset...";
                 if (loadingDetail) loadingDetail.textContent = `Generated ${events.length.toLocaleString()} ML-R1 structural event records.`;
                 if (progressFill) progressFill.style.width = "100%";
                 if (progressPct) progressPct.textContent = "100%";
@@ -5237,35 +5244,22 @@ export class WorkspaceManager {
                 if (!representationCsv || !eventCsv) {
                     throw new Error('CSV generation failed; no export files were downloaded.');
                 }
-                const files = [
-                    {
-                        blob: new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' }),
-                        filename: `MLR1_${exportSymbol}_${exportInterval}_Manifest.json`
-                    },
-                    {
-                        blob: new Blob([representationCsv], { type: 'text/csv;charset=utf-8;' }),
-                        filename: `MLR1_${exportSymbol}_${exportInterval}_Representation_Features.csv`
-                    },
-                    {
-                        blob: new Blob([eventCsv], { type: 'text/csv;charset=utf-8;' }),
-                        filename: `MLR1_${exportSymbol}_${exportInterval}_Events.csv`
-                    }
-                ];
-                const triggerDownload = (blob: Blob, filename: string) => {
-                    const url = URL.createObjectURL(blob);
-                    const link = document.createElement('a');
-                    link.href = url;
-                    link.download = filename;
-                    document.body.appendChild(link);
-                    link.click();
-                    setTimeout(() => {
-                        document.body.removeChild(link);
-                        URL.revokeObjectURL(url);
-                    }, 1500);
-                };
-                for (const file of files) {
-                    triggerDownload(file.blob, file.filename);
-                }
+                const zip = new JSZip();
+                zip.file(`MLR1_${exportSymbol}_${exportInterval}_Manifest.json`, JSON.stringify(manifest, null, 2));
+                zip.file(`MLR1_${exportSymbol}_${exportInterval}_Representation_Features.csv`, representationCsv);
+                zip.file(`MLR1_${exportSymbol}_${exportInterval}_Events.csv`, eventCsv);
+
+                const zipBlob = await zip.generateAsync({ type: 'blob' });
+                const zipUrl = URL.createObjectURL(zipBlob);
+                const downloadLink = document.createElement('a');
+                downloadLink.href = zipUrl;
+                downloadLink.download = `MLR1_${exportSymbol}_${exportInterval}_Dataset_Package.zip`;
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                setTimeout(() => {
+                    document.body.removeChild(downloadLink);
+                    URL.revokeObjectURL(zipUrl);
+                }, 1500);
 
                 resetTopbarButton();
                 setTimeout(() => {

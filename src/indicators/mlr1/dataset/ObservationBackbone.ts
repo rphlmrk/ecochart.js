@@ -790,6 +790,9 @@ export function createDatasetManifest(
         throw new Error('DatasetManifest Error: datasetId and sourceIdentity must be non-empty strings.');
     }
     const exportAccountingFields: readonly (keyof ExportAccounting)[] = [
+        'rawSourceCandleCount',
+        'acceptedSourceObservationCount',
+        'rejectedSourceObservationCount',
         'tierAContinuousObservationCount',
         'tierAEventRepresentationRowCount',
         'tierBConfirmedTeacherEventCount',
@@ -800,6 +803,17 @@ export function createDatasetManifest(
             !Number.isSafeInteger(exportAccounting[field]) || exportAccounting[field] < 0
         )) {
         throw new Error('DatasetManifest Error: exportAccounting counts must be non-negative safe integers.');
+    }
+    if (exportAccounting.rawSourceCandleCount !==
+        exportAccounting.acceptedSourceObservationCount + exportAccounting.rejectedSourceObservationCount) {
+        throw new Error(
+            'DatasetManifest Error: raw source candle count must equal accepted plus rejected source observations.'
+        );
+    }
+    if (exportAccounting.rawSourceCandleCount !== stats.sourceRowCount ||
+        exportAccounting.acceptedSourceObservationCount !== stats.acceptedObservationCount ||
+        exportAccounting.rejectedSourceObservationCount !== stats.rejectedObservationCount) {
+        throw new Error('DatasetManifest Error: source accounting must match backbone statistics.');
     }
     if (exportAccounting.tierAContinuousObservationCount !== stats.acceptedObservationCount) {
         throw new Error(
@@ -850,6 +864,9 @@ export function createDatasetManifest(
         buildTimestamp: Date.now(),
         auditResults,
         exportAccounting: Object.freeze({
+            rawSourceCandleCount: exportAccounting.rawSourceCandleCount,
+            acceptedSourceObservationCount: exportAccounting.acceptedSourceObservationCount,
+            rejectedSourceObservationCount: exportAccounting.rejectedSourceObservationCount,
             tierAContinuousObservationCount: exportAccounting.tierAContinuousObservationCount,
             tierAEventRepresentationRowCount: exportAccounting.tierAEventRepresentationRowCount,
             tierBConfirmedTeacherEventCount: exportAccounting.tierBConfirmedTeacherEventCount,

@@ -26,6 +26,9 @@ export interface IntegrityAuditResults {
 }
 
 export interface ExportAccounting {
+    readonly rawSourceCandleCount: number;
+    readonly acceptedSourceObservationCount: number;
+    readonly rejectedSourceObservationCount: number;
     readonly tierAContinuousObservationCount: number;
     readonly tierAEventRepresentationRowCount: number;
     readonly tierBConfirmedTeacherEventCount: number;

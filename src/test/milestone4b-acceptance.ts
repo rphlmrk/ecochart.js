@@ -581,6 +581,9 @@ export function runPhase4BTests(): boolean {
             result.uptime,
             { passed: true, chronologyValid: true, identityUnique: true, inputOutcomeSeparationValid: true, remarks: [] },
             {
+                rawSourceCandleCount: 6,
+                acceptedSourceObservationCount: 3,
+                rejectedSourceObservationCount: 3,
                 tierAContinuousObservationCount: 3,
                 tierAEventRepresentationRowCount: 0,
                 tierBConfirmedTeacherEventCount: 0,
@@ -595,11 +598,33 @@ export function runPhase4BTests(): boolean {
         assert(Math.abs(manifest.usableObservationFraction - 3 / 7) < 1e-4, 'Manifest usable fraction mismatch');
         assert(manifest.missingDataStats.invalidSourceCount === 1, 'Manifest invalid source count mismatch');
         assert(manifest.missingDataStats.outOfOrderCount === 1, 'Manifest out-of-order count mismatch');
+        assert(manifest.exportAccounting.rawSourceCandleCount === 6, 'Manifest raw source count mismatch');
+        assert(manifest.exportAccounting.acceptedSourceObservationCount === 3, 'Manifest accepted source count mismatch');
+        assert(manifest.exportAccounting.rejectedSourceObservationCount === 3, 'Manifest rejected source count mismatch');
         assert(manifest.exportAccounting.tierAContinuousObservationCount === 3, 'Manifest continuous observation count mismatch');
         assert(manifest.exportAccounting.tierAEventRepresentationRowCount === 0, 'Manifest representation row count mismatch');
         assert(manifest.exportAccounting.tierBConfirmedTeacherEventCount === 0, 'Manifest teacher event count mismatch');
         assert(manifest.exportAccounting.tierCOutcomeRowCount === 0, 'Manifest outcome row count mismatch');
         assert(Object.isFrozen(manifest.exportAccounting), 'Manifest export accounting must be immutable');
+
+        let accountingMismatchRejected = false;
+        try {
+            createDatasetManifest(
+                'DS_SOLUSDT_1M_INVALID',
+                'BINANCE_SPOT',
+                mockConfig,
+                result.stats,
+                result.uptime,
+                { passed: true, chronologyValid: true, identityUnique: true, inputOutcomeSeparationValid: true, remarks: [] },
+                {
+                    ...manifest.exportAccounting,
+                    rawSourceCandleCount: 7
+                }
+            );
+        } catch {
+            accountingMismatchRejected = true;
+        }
+        assert(accountingMismatchRejected, 'Manifest must reject inconsistent raw/accepted/rejected accounting');
     });
 
     runTest('15a. Candle context uses authoritative observation OHLC', () => {
@@ -667,5 +692,5 @@ export function runPhase4BTests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log('=======================================\n');
 
-    return failed === 0 && passed === 17;
+    return failed === 0 && passed === 18;
 }

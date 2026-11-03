@@ -167,6 +167,9 @@ export class CandleContextAggregator {
 
         const startOpen = acceptedRows[startBar].observation.sourceOpen;
         const endClose = acceptedRows[endBar].observation.sourceClose;
+        if (!Number.isFinite(startOpen) || !Number.isFinite(endClose) || startOpen <= 0 || endClose <= 0) {
+            return { netReturnAtr: 0, maxFavorableAtr: 0, maxAdverseAtr: 0, count: 0, relativeVolume: -1.0, validFraction: 0.0 };
+        }
         let maxH = -Infinity;
         let minL = Infinity;
         let matureCount = 0;
@@ -174,6 +177,9 @@ export class CandleContextAggregator {
 
         for (let i = startBar; i <= endBar; i++) {
             const observation = acceptedRows[i].observation;
+            if (!Number.isFinite(observation.sourceHigh) || !Number.isFinite(observation.sourceLow)) {
+                return { netReturnAtr: 0, maxFavorableAtr: 0, maxAdverseAtr: 0, count: 0, relativeVolume: -1.0, validFraction: 0.0 };
+            }
             if (observation.sourceHigh > maxH) maxH = observation.sourceHigh;
             if (observation.sourceLow < minL) minL = observation.sourceLow;
 
@@ -210,6 +216,9 @@ export class HybridTokenBuilder {
         acceptedRows: readonly SourceBackboneAcceptedRow[],
         currentAtr: number
     ) {
+        if (!Number.isFinite(currentAtr) || currentAtr <= 0) {
+            throw new Error('HybridTokenBuilder Error: currentAtr must be a positive finite number.');
+        }
         const confBar = event.confirmedBarIndex;
         const prevConfBar = prevEvent.confirmedBarIndex;
         
@@ -250,7 +259,8 @@ export class AIExporter {
         acceptedRows: readonly SourceBackboneAcceptedRow[],
         cachedPivots: any[],
         symbol: string,
-        timeframe: string
+        timeframe: string,
+        expectedIntervalMs: number = 60000
     ): MLR1EventRow[] {
         // ==========================================
         // 🔒 FROZEN RESEARCH CONTRACT PARAMETERS
@@ -266,10 +276,11 @@ export class AIExporter {
             throw new Error('AIExporter Error: dataStore with candle data is required.');
         }
         const len = dataStore.length;
-        if (!Number.isSafeInteger(len) || len < 0 ||
+        if (!Number.isSafeInteger(len) || len < 0 || dataStore.data.length < len * 6 ||
+            !Number.isSafeInteger(expectedIntervalMs) || expectedIntervalMs <= 0 ||
             !Array.isArray(acceptedRows) || acceptedRows.length !== len) {
             throw new Error(
-                `AIExporter Error: acceptedRows length (${acceptedRows?.length ?? 'invalid'}) must match dataStore length (${len}).`
+                `AIExporter Error: valid dataStore, positive interval, and acceptedRows matching dataStore length (${len}) are required.`
             );
         }
         for (let i = 0; i < len; i++) {
@@ -284,6 +295,12 @@ export class AIExporter {
                 candle.close !== dataStore.data[base + 4] ||
                 candle.volume !== dataStore.data[base + 5] ||
                 acceptedRows[i].observation.timestamp !== dataStore.data[base] ||
+                acceptedRows[i].observationTimestamp !== dataStore.data[base] + expectedIntervalMs ||
+                acceptedRows[i].observation.sourceOpen !== candle.open ||
+                acceptedRows[i].observation.sourceHigh !== candle.high ||
+                acceptedRows[i].observation.sourceLow !== candle.low ||
+                acceptedRows[i].observation.sourceClose !== candle.close ||
+                acceptedRows[i].observation.sourceVolume !== candle.volume ||
                 acceptedRows[i].observation.barIndex !== i) {
                 throw new Error(`AIExporter Error: accepted row ${i} does not match the downstream dataStore timeline.`);
             }
@@ -538,7 +555,8 @@ export class DatasetAuditor {
     public static runCausalityAudit(
         events: MLR1EventRow[],
         dataStore: any,
-        acceptedRows: readonly SourceBackboneAcceptedRow[]
+        acceptedRows: readonly SourceBackboneAcceptedRow[],
+        intervalMs: number
     ): {
         passed: boolean;
         chronologyValid: boolean;
@@ -554,6 +572,7 @@ export class DatasetAuditor {
             inputOutcomeSeparationValid: false
         };
         if (!dataStore || !dataStore.data || dataStore.length === 0 ||
+            !Number.isSafeInteger(intervalMs) || intervalMs <= 0 ||
             !Array.isArray(acceptedRows) || acceptedRows.length === 0) {
             console.error("❌ DatasetAuditor Error: dataStore and acceptedRows are mandatory for the 3-way verification pass.");
             return failResult;
@@ -572,6 +591,12 @@ export class DatasetAuditor {
                 row.candle.close !== dataStore.data[base + 4] ||
                 row.candle.volume !== dataStore.data[base + 5] ||
                 row.observation.timestamp !== dataStore.data[base] ||
+                row.observationTimestamp !== row.sourceTimestamp + intervalMs ||
+                row.observation.sourceOpen !== row.candle.open ||
+                row.observation.sourceHigh !== row.candle.high ||
+                row.observation.sourceLow !== row.candle.low ||
+                row.observation.sourceClose !== row.candle.close ||
+                row.observation.sourceVolume !== row.candle.volume ||
                 row.observation.barIndex !== rowIndex) {
                 console.error(`❌ DatasetAuditor Error: accepted row ${rowIndex} does not match the dataStore bar.`);
                 return failResult;
@@ -635,7 +660,7 @@ export class DatasetAuditor {
                 ev.bars_since_last_pivot, ev.context_candle_count, ev.entry_bar_index, ev.entry_time
             ];
             for (let k = 0; k < requiredIntegerFields.length; k++) {
-                if (!Number.isInteger(requiredIntegerFields[k])) mathFailures++;
+                if (!Number.isSafeInteger(requiredIntegerFields[k])) mathFailures++;
             }
 
             if (ev.atr_at_confirmation <= 0 || ev.context_max_favorable_atr < 0 || ev.context_max_adverse_atr < 0) {
@@ -714,20 +739,62 @@ export class DatasetAuditor {
 
             // Recompute each causal context feature from its authoritative accepted rows.
             const contextStart = ev.confirmed_bar_index - ev.bars_since_last_pivot + 1;
-            const context = CandleContextAggregator.summarize(
-                acceptedRows,
-                contextStart,
-                ev.confirmed_bar_index,
-                ev.atr_at_confirmation
-            );
-            const contextTolerance = 0.0001;
-            if (context.count !== ev.context_candle_count ||
-                Math.abs(context.netReturnAtr - ev.context_net_return_atr) > contextTolerance ||
-                Math.abs(context.maxFavorableAtr - ev.context_max_favorable_atr) > contextTolerance ||
-                Math.abs(context.maxAdverseAtr - ev.context_max_adverse_atr) > contextTolerance ||
-                Math.abs(context.relativeVolume - ev.context_relative_volume) > contextTolerance ||
-                Math.abs(context.validFraction - ev.context_relative_volume_valid_fraction) > contextTolerance) {
+            const contextEnd = ev.confirmed_bar_index;
+            if (!Number.isSafeInteger(contextStart) || !Number.isSafeInteger(contextEnd) ||
+                contextStart < 0 || contextEnd >= acceptedRows.length ||
+                contextStart > contextEnd || !Number.isFinite(ev.atr_at_confirmation) ||
+                ev.atr_at_confirmation <= 0) {
                 provenanceFailures++;
+            } else {
+                let matureCount = 0;
+                let sumRelativeVolume = 0;
+                let maxHigh = -Infinity;
+                let minLow = Infinity;
+                const startOpen = acceptedRows[contextStart].observation.sourceOpen;
+                const endClose = acceptedRows[contextEnd].observation.sourceClose;
+                let validContext = Number.isFinite(startOpen) && Number.isFinite(endClose) &&
+                    startOpen > 0 && endClose > 0;
+
+                for (let bar = contextStart; bar <= contextEnd; bar++) {
+                    const observation = acceptedRows[bar].observation;
+                    if (!Number.isFinite(observation.sourceHigh) ||
+                        !Number.isFinite(observation.sourceLow)) {
+                        validContext = false;
+                        break;
+                    }
+                    maxHigh = Math.max(maxHigh, observation.sourceHigh);
+                    minLow = Math.min(minLow, observation.sourceLow);
+
+                    const relativeVolume = observation.features['RelativeVolume_20'];
+                    if (observation.validity['RelativeVolume_20'] === true &&
+                        Number.isFinite(relativeVolume) && relativeVolume >= 0) {
+                        matureCount++;
+                        sumRelativeVolume += relativeVolume;
+                    }
+                }
+
+                if (!validContext) {
+                    provenanceFailures++;
+                } else {
+                    const contextCount = contextEnd - contextStart + 1;
+                    const expectedContext = {
+                        count: contextCount,
+                        netReturnAtr: (endClose - startOpen) / ev.atr_at_confirmation,
+                        maxFavorableAtr: (maxHigh - startOpen) / ev.atr_at_confirmation,
+                        maxAdverseAtr: (startOpen - minLow) / ev.atr_at_confirmation,
+                        relativeVolume: matureCount > 0 ? sumRelativeVolume / matureCount : -1,
+                        validFraction: matureCount / contextCount
+                    };
+                    const tolerance = 0.0001;
+                    if (expectedContext.count !== ev.context_candle_count ||
+                        Math.abs(expectedContext.netReturnAtr - ev.context_net_return_atr) > tolerance ||
+                        Math.abs(expectedContext.maxFavorableAtr - ev.context_max_favorable_atr) > tolerance ||
+                        Math.abs(expectedContext.maxAdverseAtr - ev.context_max_adverse_atr) > tolerance ||
+                        Math.abs(expectedContext.relativeVolume - ev.context_relative_volume) > tolerance ||
+                        Math.abs(expectedContext.validFraction - ev.context_relative_volume_valid_fraction) > tolerance) {
+                        provenanceFailures++;
+                    }
+                }
             }
 
             // 12. Independent Candle-Level Execution Replay (Tracking LONG and SHORT trajectories)
