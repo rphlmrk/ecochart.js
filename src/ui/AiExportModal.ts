@@ -238,7 +238,7 @@ export class AiExportModal {
 
                 progressBar.style.width = '100%';
                 progressPct.textContent = 'All Passed';
-                progressStatus.textContent = 'All Milestones 1–4 Passed! Check DevTools console.';
+                progressStatus.textContent = 'All Milestones 1–4 Passed (including 14/14 Phase 4B tests)! Check DevTools console.';
                 progressStatus.style.color = 'var(--chart-bull, #26A69A)';
             } catch (error: unknown) {
                 const message = error instanceof Error ? error.message : String(error);

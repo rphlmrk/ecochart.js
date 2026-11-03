@@ -6,6 +6,7 @@ export interface MissingDataStatistics {
     readonly duplicateTimestampCount: number;
     readonly outOfOrderCount: number;
     readonly invalidOhlcvCount: number;
+    readonly invalidSourceCount: number;
     readonly htf15mGapCount: number;
     readonly htf1hGapCount: number;
     readonly htf15mResetCount: number;
@@ -32,6 +33,10 @@ export interface DatasetManifest {
     readonly sourceRowCount: number;
     readonly acceptedObservationCount: number;
     readonly rejectedObservationCount: number;
+    readonly totalExpectedObservations: number;
+    readonly sourceAvailabilityFraction: number;
+    readonly usableObservationFraction: number;
+    readonly isUptimeValid: boolean;
 
     readonly featureVersion: string;
     readonly teacherVersion: string;

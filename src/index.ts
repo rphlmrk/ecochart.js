@@ -4695,7 +4695,7 @@ export class WorkspaceManager {
                 console.log('✅ Milestone 3: Passed (77/77 MTF Integration Tests)');
 
                 if (!runPhase4BTests()) throw new Error('Milestone 4B suite failed');
-                console.log('✅ Milestone 4B: Passed (12/12 Source Integrity Tests)');
+                console.log('✅ Milestone 4B: Passed (14/14 Source Integrity Tests)');
 
                 console.log('\n======================================================');
                 console.log('🏆 ALL MILESTONES 1 TO 4 ACCEPTANCE GATES VERIFIED');
