@@ -582,6 +582,8 @@ export function runPhase4BTests(): boolean {
             symbol: 'SOLUSDT',
             baseTimeframe: '1m',
             datasetVersion: 1,
+            representationSchemaVersion: 'MLR1_REPRESENTATION_V1',
+            modelInputSchemaVersion: 'MLR1_MODEL_INPUT_V1',
             sourceIntervalMs: 60000,
             featureConfigVersion: 'v1',
             teacherVersion: 'v1',
@@ -613,6 +615,11 @@ export function runPhase4BTests(): boolean {
             }
         );
         assert(manifest.sourceRowCount === 6, 'Manifest source row count mismatch');
+        assert(manifest.datasetVersion === 1, 'Manifest dataset version mismatch');
+        assert(manifest.representationSchemaVersion === 'MLR1_REPRESENTATION_V1',
+            'Manifest must preserve the configured representation schema version');
+        assert(manifest.modelInputSchemaVersion === 'MLR1_MODEL_INPUT_V1',
+            'Manifest must preserve the configured model-input schema version');
         assert(manifest.acceptedObservationCount === 3, 'Manifest accepted count mismatch');
         assert(manifest.startTimestamp === 100000, 'Manifest start must preserve configured date range');
         assert(manifest.endTimestamp === 460000, 'Manifest end must preserve configured date range');
@@ -893,7 +900,7 @@ export function runPhase4BTests(): boolean {
         'Event should retain the preceding pivot confirmation timestamp');
         assert(events[0].previous_pivot_type === pivots[firstEventTeacherIndex - 1].type,
             'Event should retain the preceding native pivot type');
-        const representationCsv = AIExporter.exportMLR1RepresentationCSV(events, 'SOLUSDT', '1m');
+        const representationCsv = AIExporter.exportMLR1RepresentationCSV(events, 'SOLUSDT', '1m', rows);
         assert(
             representationCsv !== null &&
                 DatasetAuditor.runCausalityAudit(events, dataStore, rows, 60000, pivots, representationCsv).passed,
@@ -941,6 +948,10 @@ export function runPhase4BTests(): boolean {
             'Representation artifact must retain every approved model-input field'
         );
         assert(
+            representationHeaders[0] === 'tierA_observation_id',
+            'Representation model inputs must link to the exact Tier A observation row'
+        );
+        assert(
             MLR1_OUTCOME_LABEL_ALLOWLIST.every(header => eventHeaders.includes(header)),
             'Separate event artifact must retain outcome labels and execution metadata'
         );
@@ -970,7 +981,8 @@ export function runPhase4BTests(): boolean {
                 AIExporter.exportMLR1RepresentationCSV(
                     [forgedHighOrientation],
                     'SOLUSDT',
-                    '1m'
+                    '1m',
+                    rows
                 ) ?? ''
             ).passed,
             'Auditor must reject HIGH pivots with an up next-leg orientation'
@@ -985,7 +997,8 @@ export function runPhase4BTests(): boolean {
                 AIExporter.exportMLR1RepresentationCSV(
                     [{ ...events[0], pivot_label: 'LH' }],
                     'SOLUSDT',
-                    '1m'
+                    '1m',
+                    rows
                 ) ?? ''
             ).passed,
             'Auditor must match the event current pivot to its cached teacher record'

@@ -44,6 +44,9 @@ export interface ExportAccounting {
 export interface DatasetManifest {
     readonly datasetId: string;
     readonly sourceIdentity: string;
+    readonly datasetVersion: number;
+    readonly representationSchemaVersion: string;
+    readonly modelInputSchemaVersion: string;
     readonly symbol: string;
     readonly timeframe: string;
     readonly startTimestamp: number;

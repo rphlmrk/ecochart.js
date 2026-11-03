@@ -12,6 +12,33 @@ export const AUDIT_ONLY_ALLOWLIST = [
     'sourceOHLCV'
 ] as const;
 
+export const MLR1_REPRESENTATION_SCHEMA_VERSION = 'MLR1_REPRESENTATION_V2';
+export const MLR1_MODEL_INPUT_SCHEMA_VERSION = 'MLR1_MODEL_INPUT_V2';
+
+/**
+ * Tier A event-window summaries use only accepted observations through the
+ * current pivot's confirmation bar. MTF context remains in the continuous
+ * observations artifact and is not duplicated into this event projection.
+ */
+export const TIER_A_MODEL_INPUT_ALLOWLIST = [
+    'context_net_return_atr',
+    'context_max_favorable_atr',
+    'context_max_adverse_atr',
+    'context_candle_count',
+    'context_relative_volume',
+    'context_relative_volume_valid_fraction'
+] as const;
+
+/** Confirmed structural descriptors; every value is available at confirmation. */
+export const TIER_B_MODEL_INPUT_ALLOWLIST = [
+    'pivot_type',
+    'pivot_label',
+    'completed_leg_direction',
+    'zigzag_next_leg_orientation',
+    'bars_since_last_pivot',
+    'leg_distance_atr'
+] as const;
+
 export const TIER_A_ALLOWLIST = [
     'observationId',
     'sourceTimestamp',

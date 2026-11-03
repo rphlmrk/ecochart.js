@@ -23,6 +23,8 @@ export interface DatasetConfig {
     readonly symbol: string;
     readonly baseTimeframe: string;
     readonly datasetVersion: number;
+    readonly representationSchemaVersion: string;
+    readonly modelInputSchemaVersion: string;
     readonly sourceIntervalMs: number;
     readonly featureConfigVersion: string;
     readonly teacherVersion: string;

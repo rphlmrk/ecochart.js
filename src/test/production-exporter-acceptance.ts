@@ -5,8 +5,17 @@ import {
     HybridTokenBuilder,
     SourceIntegrityError,
     auditConfirmedPivotSequence,
-    auditNativeConfirmedPivots
+    auditNativeConfirmedPivots,
+    buildRepresentationInput,
+    MLR1_MODEL_INPUT_SCHEMA,
+    MLR1_REPRESENTATION_COLUMNS,
+    MLR1_DATASET_VERSION,
+    validateMLR1ModelInput
 } from '../data/AIExporter';
+import {
+    MLR1_MODEL_INPUT_SCHEMA_VERSION,
+    MLR1_REPRESENTATION_SCHEMA_VERSION
+} from '../indicators/mlr1/dataset/DatasetSchema';
 import { BackgroundDataMiner } from '../data/BackgroundDataMiner';
 import { DataStore } from '../data/DataStore';
 import { StrictCBCZigZagIndicator } from '../indicators/plugins/StrictCBCZigZagIndicator';
@@ -319,7 +328,7 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
                 }
             },
             continuousCsv: 'source_timestamp\r\n1',
-            representationCsv: 'pivot_type\r\nlow',
+            representationCsv: 'tierB_pivot_type\r\nlow',
             eventCsv: 'long_outcome\r\nhard_stop',
             continuousFileName,
             representationFileName,
@@ -382,6 +391,51 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
         ), 'At least one confirmed event must have a complete 60-bar outcome horizon');
         assert(first.manifest.sourceRowCount === candleCount, 'Manifest raw count must match the source buffer');
         assert(first.manifest.auditResults.passed, 'Both production audits must pass');
+        assert(first.manifest.datasetVersion === MLR1_DATASET_VERSION && MLR1_DATASET_VERSION === 2,
+            'Representation contract correction must emit dataset version 2');
+        assert(first.manifest.representationSchemaVersion === MLR1_REPRESENTATION_SCHEMA_VERSION,
+            'Manifest must record the representation schema version');
+        assert(first.manifest.modelInputSchemaVersion === MLR1_MODEL_INPUT_SCHEMA_VERSION,
+            'Manifest must record the model-input schema version');
+        const representationHeaders = first.representationCsv.split('\r\n')[0].split(',');
+        assert(
+            representationHeaders.join(',') === MLR1_REPRESENTATION_COLUMNS.join(','),
+            'Representation columns and feature order must be explicit and deterministic'
+        );
+        assert(
+            representationHeaders.slice(1, 1 + MLR1_MODEL_INPUT_SCHEMA.tierA.length)
+                .every(header => header.startsWith('tierA_')) &&
+                representationHeaders.slice(1 + MLR1_MODEL_INPUT_SCHEMA.tierA.length)
+                    .every(header => header.startsWith('tierB_')),
+            'Model-input CSV must preserve distinct ordered Tier A and Tier B channels'
+        );
+        const selectedInput = buildRepresentationInput(
+            first.events[0],
+            first.backboneResult.acceptedRows[first.events[0].confirmed_bar_index].observationId
+        );
+        assert(selectedInput.schemaVersion === MLR1_MODEL_INPUT_SCHEMA.version,
+            'Model-input builder must declare its schema version');
+        assert(Object.keys(selectedInput.tierA).join(',') === MLR1_MODEL_INPUT_SCHEMA.tierA.join(','),
+            'Tier A model-input selection must be separately explicit and ordered');
+        assert(Object.keys(selectedInput.tierB).join(',') === MLR1_MODEL_INPUT_SCHEMA.tierB.join(','),
+            'Tier B model-input selection must be separately explicit and ordered');
+        assert(validateMLR1ModelInput(selectedInput), 'Valid versioned Tier A/Tier B input must pass validation');
+        assert(
+            selectedInput.tierAObservationId ===
+                first.backboneResult.acceptedRows[first.events[0].confirmed_bar_index].observationId,
+            'Tier A model input must link to its exact causal observation row'
+        );
+        assert(
+            !validateMLR1ModelInput({
+                ...selectedInput,
+                tierB: { ...selectedInput.tierB, outcome_class: 'future-result' }
+            }),
+            'Unknown and Tier C fields must fail closed at the model-input boundary'
+        );
+        assert(
+            Object.keys(selectedInput.tierB).length === 6,
+            'All six approved teacher descriptors must remain in the Tier B channel'
+        );
         const acceptedRows = first.backboneResult.acceptedRows;
         const dataStore = new DataStore(acceptedRows.length);
         dataStore.data = new Float64Array(acceptedRows.length * 6);
@@ -413,6 +467,112 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
                 first.representationCsv
             ).passed,
             'The auditor must accept the same native confirmed sequence used by event generation'
+        );
+        assert(first.mtfContexts !== undefined && first.mtfContexts.length === candleCount,
+            'Production 1m artifacts must retain one causal MTF context per accepted row');
+        const contextIndex = first.mtfContexts.findIndex(context =>
+            context.context15m.lastCompletedCandle !== null
+        );
+        assert(contextIndex >= 0, 'Fixture must contain a completed 15m context');
+        const forgedMtfContexts = first.mtfContexts.map((context, index) => index === contextIndex
+            ? {
+                ...context,
+                context15m: {
+                    ...context.context15m,
+                    lastCompletedCloseTimestamp: context.observationTimestamp + intervalMs
+                }
+            }
+            : context
+        );
+        assert(
+            !DatasetAuditor.runCausalityAudit(
+                first.events,
+                dataStore,
+                acceptedRows,
+                intervalMs,
+                nativePivots,
+                first.representationCsv,
+                forgedMtfContexts
+            ).passed,
+            'Auditor must reject MTF context that claims a completion after its observation timestamp'
+        );
+        assert(
+            first.events.every(event =>
+                event.entry_time === acceptedRows[event.confirmed_bar_index].observationTimestamp &&
+                event.confirmed_bar_index >= event.pivot_bar_index
+            ),
+            'Tier B descriptors must be aligned no earlier than the native teacher confirmation boundary'
+        );
+        const firstRepresentationLines = first.representationCsv.split('\r\n');
+        const futureLabelEvent = first.events.slice(1).find(event =>
+            event.pivot_label !== first.events[0].pivot_label
+        );
+        assert(futureLabelEvent !== undefined, 'Fixture must contain a distinct future teacher label');
+        const pivotLabelColumn = representationHeaders.indexOf('tierB_pivot_label');
+        const forgedFutureRow = firstRepresentationLines[1].split(',');
+        forgedFutureRow[pivotLabelColumn] = futureLabelEvent.pivot_label;
+        const futurePivotLeakCsv = [
+            firstRepresentationLines[0],
+            forgedFutureRow.join(','),
+            ...firstRepresentationLines.slice(2)
+        ].join('\r\n');
+        assert(
+            !DatasetAuditor.runCausalityAudit(
+                first.events,
+                dataStore,
+                acceptedRows,
+                intervalMs,
+                nativePivots,
+                futurePivotLeakCsv
+            ).passed,
+            'Auditor must reject a future confirmed-pivot descriptor in an earlier representation row'
+        );
+        const delayedTeacherEvent = first.events.find(event =>
+            event.confirmed_bar_index > event.pivot_bar_index
+        );
+        assert(delayedTeacherEvent !== undefined,
+            'Fixture must contain a teacher event confirmed after its source pivot bar');
+        const beforeConfirmationEvent = {
+            ...delayedTeacherEvent,
+            confirmed_bar_index: delayedTeacherEvent.pivot_bar_index,
+            confirmation_time_ms: acceptedRows[delayedTeacherEvent.pivot_bar_index].sourceTimestamp,
+            entry_bar_index: delayedTeacherEvent.pivot_bar_index + 1,
+            entry_time: acceptedRows[delayedTeacherEvent.pivot_bar_index].observationTimestamp
+        };
+        const beforeConfirmationCsv = AIExporter.exportMLR1RepresentationCSV(
+            [beforeConfirmationEvent],
+            'SOLUSDT',
+            '1m',
+            acceptedRows
+        );
+        assert(
+            beforeConfirmationCsv !== null &&
+                !DatasetAuditor.runCausalityAudit(
+                    [beforeConfirmationEvent],
+                    dataStore,
+                    acceptedRows,
+                    intervalMs,
+                    nativePivots,
+                    beforeConfirmationCsv
+                ).passed,
+            'Auditor must reject teacher descriptors made available before native confirmation'
+        );
+        const misclassifiedHeaders = [...representationHeaders];
+        misclassifiedHeaders[1] = 'tierB_context_net_return_atr';
+        const misclassifiedCsv = [
+            misclassifiedHeaders.join(','),
+            ...firstRepresentationLines.slice(1)
+        ].join('\r\n');
+        assert(
+            !DatasetAuditor.runCausalityAudit(
+                first.events,
+                dataStore,
+                acceptedRows,
+                intervalMs,
+                nativePivots,
+                misclassifiedCsv
+            ).inputOutcomeSeparationValid,
+            'Auditor classification contract must reject Tier A/Tier B channel swaps independently'
         );
 
         const sameTypeSequence = nativePivots.map(pivot => ({ ...pivot }));

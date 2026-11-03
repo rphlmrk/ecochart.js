@@ -928,6 +928,13 @@ export function createDatasetManifest(
     if (!datasetId || !sourceIdentity) {
         throw new Error('DatasetManifest Error: datasetId and sourceIdentity must be non-empty strings.');
     }
+    if (!Number.isSafeInteger(buildConfig.datasetVersion) || buildConfig.datasetVersion < 1 ||
+        typeof buildConfig.representationSchemaVersion !== 'string' ||
+        buildConfig.representationSchemaVersion.trim() === '' ||
+        typeof buildConfig.modelInputSchemaVersion !== 'string' ||
+        buildConfig.modelInputSchemaVersion.trim() === '') {
+        throw new Error('DatasetManifest Error: dataset and model-input schema versions must be explicit and valid.');
+    }
     const exportAccountingFields: readonly (keyof Omit<ExportAccounting, 'actualFileRowCounts'>)[] = [
         'rawSourceCandleCount',
         'acceptedSourceObservationCount',
@@ -1007,6 +1014,9 @@ export function createDatasetManifest(
     return Object.freeze({
         datasetId,
         sourceIdentity,
+        datasetVersion: buildConfig.datasetVersion,
+        representationSchemaVersion: buildConfig.representationSchemaVersion,
+        modelInputSchemaVersion: buildConfig.modelInputSchemaVersion,
         symbol: buildConfig.symbol,
         timeframe: buildConfig.baseTimeframe,
         startTimestamp: buildConfig.dateRange.startTimestamp,

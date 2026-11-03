@@ -6,7 +6,14 @@ import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
 import type { SourceBackboneAcceptedRow } from '../indicators/mlr1/dataset/ObservationBackbone';
 import type { DatasetManifest, ExportAccounting } from '../indicators/mlr1/dataset/DatasetManifest';
 import type { StrictZigZagPivot } from '../indicators/plugins/StrictCBCZigZagIndicator';
-import { TIER_C_QUARANTINE_LIST } from '../indicators/mlr1/dataset/DatasetSchema';
+import {
+    MLR1_MODEL_INPUT_SCHEMA_VERSION,
+    MLR1_REPRESENTATION_SCHEMA_VERSION,
+    TIER_A_ALLOWLIST,
+    TIER_A_MODEL_INPUT_ALLOWLIST,
+    TIER_B_MODEL_INPUT_ALLOWLIST,
+    TIER_C_QUARANTINE_LIST
+} from '../indicators/mlr1/dataset/DatasetSchema';
 import { DataStore } from './DataStore';
 import { ML1_CONFIG_B, ML1_CONFIG_B_VERSION } from '../indicators/mlr1/ML1FeatureConfigs';
 import {
@@ -38,6 +45,7 @@ import {
 } from '../indicators/plugins/StrictCBCZigZagIndicator';
 
 export const MLR1_OUTCOME_CONFIG_VERSION = 'MLR1_v2';
+export const MLR1_DATASET_VERSION = 2;
 const MLR1_EVENT_ID_VERSION = 'v2_ATR14_SL1.5_TP2_HZ60';
 const MLR1_MTF_CONTEXT_VERSION = 'M3A_3E_MTFv1';
 
@@ -46,22 +54,64 @@ export interface MLR1ExportMTFContext extends MTFContext {
     readonly htf1hDiagnostic: HTFIncompleteDiagnostic | null;
 }
 
-export const MLR1_REPRESENTATION_FEATURE_ALLOWLIST = [
-    'pivot_type',
-    'pivot_label',
-    'completed_leg_direction',
-    'zigzag_next_leg_orientation',
-    'bars_since_last_pivot',
-    'leg_distance_atr',
-    'context_net_return_atr',
-    'context_max_favorable_atr',
-    'context_max_adverse_atr',
-    'context_candle_count',
-    'context_relative_volume',
-    'context_relative_volume_valid_fraction'
-] as const;
+export const MLR1_MODEL_INPUT_SCHEMA = Object.freeze({
+    version: MLR1_MODEL_INPUT_SCHEMA_VERSION,
+    tierAObservationArtifact: 'Continuous_Observations.csv',
+    tierAObservationFields: TIER_A_ALLOWLIST,
+    tierAObservationJoinKey: 'observationId',
+    tierAObservationIdField: 'tierA_observation_id',
+    tierA: TIER_A_MODEL_INPUT_ALLOWLIST,
+    tierB: TIER_B_MODEL_INPUT_ALLOWLIST
+});
 
-export type MLR1RepresentationFeature = typeof MLR1_REPRESENTATION_FEATURE_ALLOWLIST[number];
+export const MLR1_REPRESENTATION_FEATURE_ALLOWLIST: readonly string[] = Object.freeze([
+    ...TIER_A_MODEL_INPUT_ALLOWLIST.map(field => `tierA_${field}`),
+    ...TIER_B_MODEL_INPUT_ALLOWLIST.map(field => `tierB_${field}`)
+]);
+
+export const MLR1_REPRESENTATION_COLUMNS: readonly string[] = Object.freeze([
+    MLR1_MODEL_INPUT_SCHEMA.tierAObservationIdField,
+    ...MLR1_REPRESENTATION_FEATURE_ALLOWLIST
+]);
+
+export type MLR1RepresentationFeature =
+    `tierA_${typeof TIER_A_MODEL_INPUT_ALLOWLIST[number]}` |
+    `tierB_${typeof TIER_B_MODEL_INPUT_ALLOWLIST[number]}`;
+
+export interface MLR1ModelInput {
+    readonly schemaVersion: typeof MLR1_MODEL_INPUT_SCHEMA_VERSION;
+    readonly tierAObservationId: string;
+    readonly tierA: Pick<MLR1EventRow, typeof TIER_A_MODEL_INPUT_ALLOWLIST[number]>;
+    readonly tierB: Pick<MLR1EventRow, typeof TIER_B_MODEL_INPUT_ALLOWLIST[number]>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(record: Record<string, unknown>, expected: readonly string[]): boolean {
+    const keys = Object.keys(record);
+    return keys.length === expected.length && expected.every(key => Object.prototype.hasOwnProperty.call(record, key));
+}
+
+export function validateMLR1ModelInput(input: unknown): input is MLR1ModelInput {
+    if (!isRecord(input) ||
+        !hasExactKeys(input, ['schemaVersion', 'tierAObservationId', 'tierA', 'tierB']) ||
+        input.schemaVersion !== MLR1_MODEL_INPUT_SCHEMA_VERSION ||
+        typeof input.tierAObservationId !== 'string' ||
+        input.tierAObservationId.trim() === '' ||
+        !isRecord(input.tierA) ||
+        !hasExactKeys(input.tierA, TIER_A_MODEL_INPUT_ALLOWLIST) ||
+        !isRecord(input.tierB) ||
+        !hasExactKeys(input.tierB, TIER_B_MODEL_INPUT_ALLOWLIST)) {
+        return false;
+    }
+
+    return [...Object.values(input.tierA), ...Object.values(input.tierB)].every(value =>
+        typeof value === 'string' ||
+        (typeof value === 'number' && Number.isFinite(value))
+    );
+}
 
 export class SourceIntegrityError extends Error {
     public readonly sourceReport: RawSourceAccountingReport;
@@ -81,13 +131,35 @@ export class SourceIntegrityError extends Error {
 }
 
 /**
- * 🔒 STRICT PROJECTION: This allowlist is the sole model-input projection.
+ * 🔒 STRICT PROJECTION: Tier A and Tier B are selected independently and versioned.
  * The combined event CSV is archival/label output and must not be used as input.
  */
-export function buildRepresentationInput(ev: MLR1EventRow): Record<MLR1RepresentationFeature, string | number> {
-    const input = {} as Record<MLR1RepresentationFeature, string | number>;
-    for (const key of MLR1_REPRESENTATION_FEATURE_ALLOWLIST) {
-        input[key] = ev[key];
+export function buildRepresentationInput(
+    ev: MLR1EventRow,
+    tierAObservationId: string
+): MLR1ModelInput {
+    const input: MLR1ModelInput = {
+        schemaVersion: MLR1_MODEL_INPUT_SCHEMA_VERSION,
+        tierAObservationId,
+        tierA: {
+            context_net_return_atr: ev.context_net_return_atr,
+            context_max_favorable_atr: ev.context_max_favorable_atr,
+            context_max_adverse_atr: ev.context_max_adverse_atr,
+            context_candle_count: ev.context_candle_count,
+            context_relative_volume: ev.context_relative_volume,
+            context_relative_volume_valid_fraction: ev.context_relative_volume_valid_fraction
+        },
+        tierB: {
+            pivot_type: ev.pivot_type,
+            pivot_label: ev.pivot_label,
+            completed_leg_direction: ev.completed_leg_direction,
+            zigzag_next_leg_orientation: ev.zigzag_next_leg_orientation,
+            bars_since_last_pivot: ev.bars_since_last_pivot,
+            leg_distance_atr: ev.leg_distance_atr
+        }
+    };
+    if (!validateMLR1ModelInput(input)) {
+        throw new Error('Model-input schema validation failed; only the versioned Tier A and Tier B fields are allowed.');
     }
     return input;
 }
@@ -873,15 +945,38 @@ export class AIExporter {
      * Physical File Segregation: Exports ONLY the 12 representation features for Transformer input.
      * Guarantees zero outcome or execution metadata exists in the training file.
      */
-    public static exportMLR1RepresentationCSV(events: MLR1EventRow[], symbol: string, timeframe: string): string | null {
+    public static exportMLR1RepresentationCSV(
+        events: MLR1EventRow[],
+        symbol: string,
+        timeframe: string,
+        acceptedRows: readonly SourceBackboneAcceptedRow[]
+    ): string | null {
         void symbol;
         void timeframe;
         if (events.length === 0) return null;
+        if (!Array.isArray(acceptedRows) || acceptedRows.length === 0) {
+            throw new Error('Representation CSV generation requires accepted Tier A observation rows.');
+        }
 
-        const headers = MLR1_REPRESENTATION_FEATURE_ALLOWLIST.map(this.csvEscape).join(',');
+        const headers = MLR1_REPRESENTATION_COLUMNS.map(this.csvEscape).join(',');
         const lines = events.map(e => {
-            const input = buildRepresentationInput(e);
-            return MLR1_REPRESENTATION_FEATURE_ALLOWLIST.map(key => this.csvEscape(input[key])).join(',');
+            const tierAObservation = acceptedRows[e.confirmed_bar_index];
+            if (!tierAObservation ||
+                tierAObservation.observation.barIndex !== e.confirmed_bar_index ||
+                tierAObservation.observationTimestamp !== e.entry_time ||
+                tierAObservation.sourceTimestamp !== e.confirmation_time_ms) {
+                throw new Error(
+                    `Representation CSV generation cannot align Tier A observation for event '${e.event_id}'.`
+                );
+            }
+            const input = buildRepresentationInput(e, tierAObservation.observationId);
+            const tierAValues = TIER_A_MODEL_INPUT_ALLOWLIST.map(key => input.tierA[key]);
+            const tierBValues = TIER_B_MODEL_INPUT_ALLOWLIST.map(key => input.tierB[key]);
+            return [
+                input.tierAObservationId,
+                ...tierAValues,
+                ...tierBValues
+            ].map(value => this.csvEscape(value)).join(',');
         });
 
         return [headers, ...lines].join('\r\n');
@@ -1351,7 +1446,7 @@ export class AIExporter {
             backboneInputs,
             symbol,
             interval,
-            1,
+            MLR1_DATASET_VERSION,
             strictPolicy,
             intervalMs,
             dateRange
@@ -1399,7 +1494,12 @@ export class AIExporter {
             throw new Error('No valid confirmed structural events were detected in this historical window.');
         }
 
-        const representationCsv = AIExporter.exportMLR1RepresentationCSV(events, symbol, interval);
+        const representationCsv = AIExporter.exportMLR1RepresentationCSV(
+            events,
+            symbol,
+            interval,
+            backboneResult.acceptedRows
+        );
         if (!representationCsv) {
             throw new Error('Representation CSV generation failed.');
         }
@@ -1410,7 +1510,8 @@ export class AIExporter {
             backboneResult.acceptedRows,
             intervalMs,
             zigZag.cachedPivots,
-            representationCsv
+            representationCsv,
+            mtfContexts
         );
         const chronologyValid = auditResult.chronologyValid &&
             backboneResult.stats.outOfOrderCount === 0;
@@ -1456,12 +1557,14 @@ export class AIExporter {
             actualFileRowCounts
         };
         const manifest = createDatasetManifest(
-            `DS_${symbol}_${interval}_V1`,
+            `DS_${symbol}_${interval}_V${MLR1_DATASET_VERSION}`,
             'BINANCE_SPOT',
             {
                 symbol,
                 baseTimeframe: interval,
-                datasetVersion: 1,
+                datasetVersion: MLR1_DATASET_VERSION,
+                representationSchemaVersion: MLR1_REPRESENTATION_SCHEMA_VERSION,
+                modelInputSchemaVersion: MLR1_MODEL_INPUT_SCHEMA_VERSION,
                 sourceIntervalMs: intervalMs,
                 featureConfigVersion: interval === '1m'
                     ? `${ML1_CONFIG_B_VERSION}+${MLR1_MTF_CONTEXT_VERSION}`
@@ -1492,8 +1595,9 @@ export class AIExporter {
                         ? '.'
                         : ' plus completed, causally aligned 15m/1h context and incomplete-window diagnostics.'),
                     `Artifact 2 (${representationFileName}): Tier A confirmed-event representation tensor ` +
-                    `(${actualFileRowCounts[representationFileName]} rows). Authoritative model-input boundary ` +
-                    'strictly whitelisted against MLR1_REPRESENTATION_FEATURE_ALLOWLIST.',
+                    `(${actualFileRowCounts[representationFileName]} rows). Versioned model input has separate ` +
+                    `Tier A (${TIER_A_MODEL_INPUT_ALLOWLIST.length}) and Tier B ` +
+                    `(${TIER_B_MODEL_INPUT_ALLOWLIST.length}) channels.`,
                     `Artifact 3 (${eventFileName}): Combined archival and supervised target dataset ` +
                     `(${actualFileRowCounts[eventFileName]} rows). Combines Tier B teacher events with Tier C ` +
                     'quarantined forward outcomes; not an unrestricted model input source. separateFiles is false.'
@@ -1514,6 +1618,7 @@ export class AIExporter {
             eventFileName,
             events,
             backboneResult,
+            mtfContexts,
             exportAccounting,
             auditResult
         };
@@ -1534,7 +1639,8 @@ export class DatasetAuditor {
         acceptedRows: readonly SourceBackboneAcceptedRow[],
         intervalMs: number,
         cachedPivots: readonly StrictZigZagPivot[],
-        representationCsv: string
+        representationCsv: string,
+        mtfContexts?: readonly MLR1ExportMTFContext[]
     ): {
         passed: boolean;
         chronologyValid: boolean;
@@ -1600,10 +1706,160 @@ export class DatasetAuditor {
                 row.observation.sourceClose !== row.candle.close ||
                 row.observation.sourceVolume !== row.candle.volume ||
                 row.observation.barIndex !== rowIndex ||
+                !isRecord(row.dataQuality) ||
+                Object.values(row.dataQuality).some(value => typeof value !== 'boolean') ||
+                row.dataQuality.isSourceValid !== true ||
+                !isRecord(row.observation.features) ||
+                !isRecord(row.observation.validity) ||
+                Object.keys(row.observation.features).length !== Object.keys(row.observation.validity).length ||
+                Object.keys(row.observation.features).some(key =>
+                    !Object.prototype.hasOwnProperty.call(row.observation.validity, key) ||
+                    !Number.isFinite(row.observation.features[key]) ||
+                    typeof row.observation.validity[key] !== 'boolean'
+                ) ||
                 (rowIndex > 0 &&
                     row.sourceTimestamp !== acceptedRows[rowIndex - 1].sourceTimestamp + intervalMs)) {
                 console.error(`❌ DatasetAuditor Error: accepted row ${rowIndex} does not match the dataStore bar.`);
                 return failResult;
+            }
+        }
+        let mtfProvenanceFailures = 0;
+        if (mtfContexts !== undefined) {
+            const rowIndexByTimestamp = new Map(
+                acceptedRows.map((row, index) => [row.sourceTimestamp, index] as const)
+            );
+            const verifiedHtfCandles = new Set<string>();
+            const contextFields = [
+                'timeframe',
+                'lastCompletedCandle',
+                'lastCompletedOpenTimestamp',
+                'lastCompletedCloseTimestamp',
+                'contextAgeMs',
+                'isAvailable',
+                'availabilityStatus',
+                'isWarmupComplete',
+                'features',
+                'validity'
+            ];
+            if (mtfContexts.length !== acceptedRows.length) {
+                mtfProvenanceFailures++;
+            } else {
+                for (let rowIndex = 0; rowIndex < mtfContexts.length; rowIndex++) {
+                    const row = acceptedRows[rowIndex];
+                    const mtf = mtfContexts[rowIndex];
+                    if (!mtf ||
+                        mtf.observationTimestamp !== row.observationTimestamp ||
+                        mtf.symbol !== row.observation.symbol) {
+                        mtfProvenanceFailures++;
+                        continue;
+                    }
+                    for (const [timeframe, durationMs, context] of [
+                        ['15m', 900_000, mtf.context15m],
+                        ['1h', 3_600_000, mtf.context1h]
+                    ] as const) {
+                        if (!isRecord(context) ||
+                            Object.keys(context).length !== contextFields.length ||
+                            contextFields.some(key => !Object.prototype.hasOwnProperty.call(context, key)) ||
+                            context.timeframe !== timeframe ||
+                            typeof context.isAvailable !== 'boolean' ||
+                            typeof context.isWarmupComplete !== 'boolean' ||
+                            !isRecord(context.features) ||
+                            !isRecord(context.validity)) {
+                            mtfProvenanceFailures++;
+                            continue;
+                        }
+                        const featureKeys = Object.keys(context.features);
+                        const validityKeys = Object.keys(context.validity);
+                        if (featureKeys.length !== validityKeys.length ||
+                            featureKeys.some(key =>
+                                !Object.prototype.hasOwnProperty.call(context.validity, key) ||
+                                !Number.isFinite(context.features[key]) ||
+                                typeof context.validity[key] !== 'boolean'
+                            )) {
+                            mtfProvenanceFailures++;
+                        }
+
+                        const completedCandle = context.lastCompletedCandle;
+                        if (completedCandle === null) {
+                            if (context.lastCompletedOpenTimestamp !== null ||
+                                context.lastCompletedCloseTimestamp !== null ||
+                                context.contextAgeMs !== null ||
+                                context.isAvailable ||
+                                context.availabilityStatus !== 'UNAVAILABLE' ||
+                                Object.keys(context.features).length !== 0 ||
+                                Object.keys(context.validity).length !== 0) {
+                                mtfProvenanceFailures++;
+                            }
+                            continue;
+                        }
+                        if (!isRecord(completedCandle) ||
+                            completedCandle.timeframe !== timeframe ||
+                            completedCandle.completeness !== 'COMPLETE' ||
+                            !Number.isSafeInteger(completedCandle.openTimestamp) ||
+                            !Number.isSafeInteger(completedCandle.closeTimestamp) ||
+                            completedCandle.closeTimestamp !== completedCandle.openTimestamp + durationMs ||
+                            completedCandle.openTimestamp % durationMs !== 0 ||
+                            completedCandle.closeTimestamp > row.observationTimestamp ||
+                            context.lastCompletedOpenTimestamp !== completedCandle.openTimestamp ||
+                            context.lastCompletedCloseTimestamp !== completedCandle.closeTimestamp ||
+                            context.contextAgeMs !== row.observationTimestamp - completedCandle.closeTimestamp ||
+                            !Number.isSafeInteger(completedCandle.sourceObservationCount) ||
+                            completedCandle.sourceObservationCount !== durationMs / intervalMs ||
+                            !['UNAVAILABLE', 'WARMING_UP', 'AVAILABLE_VALID', 'STALE']
+                                .includes(String(context.availabilityStatus))) {
+                            mtfProvenanceFailures++;
+                            continue;
+                        }
+                        const shouldBeAvailable =
+                            context.availabilityStatus === 'WARMING_UP' ||
+                            context.availabilityStatus === 'AVAILABLE_VALID';
+                        if (context.isAvailable !== shouldBeAvailable ||
+                            (context.availabilityStatus === 'WARMING_UP' && context.isWarmupComplete) ||
+                            (context.availabilityStatus === 'AVAILABLE_VALID' && !context.isWarmupComplete)) {
+                            mtfProvenanceFailures++;
+                        }
+
+                        const candleKey = `${timeframe}_${completedCandle.openTimestamp}`;
+                        if (verifiedHtfCandles.has(candleKey)) continue;
+                        verifiedHtfCandles.add(candleKey);
+                        const firstSourceIndex = rowIndexByTimestamp.get(completedCandle.openTimestamp);
+                        if (firstSourceIndex === undefined) {
+                            mtfProvenanceFailures++;
+                            continue;
+                        }
+                        const expectedSourceCount = durationMs / intervalMs;
+                        const htfSourceRows = acceptedRows.slice(
+                            firstSourceIndex,
+                            firstSourceIndex + expectedSourceCount
+                        );
+                        if (htfSourceRows.length !== expectedSourceCount ||
+                            htfSourceRows.some((sourceRow, index) =>
+                                sourceRow.sourceTimestamp !== completedCandle.openTimestamp + index * intervalMs
+                            )) {
+                            mtfProvenanceFailures++;
+                            continue;
+                        }
+                        const expectedHigh = Math.max(...htfSourceRows.map(sourceRow => sourceRow.candle.high));
+                        const expectedLow = Math.min(...htfSourceRows.map(sourceRow => sourceRow.candle.low));
+                        const expectedVolume = htfSourceRows.reduce(
+                            (sum, sourceRow) => sum + sourceRow.candle.volume,
+                            0
+                        );
+                        if (completedCandle.open !== htfSourceRows[0].candle.open ||
+                            completedCandle.high !== expectedHigh ||
+                            completedCandle.low !== expectedLow ||
+                            completedCandle.close !== htfSourceRows[expectedSourceCount - 1].candle.close ||
+                            Math.abs(completedCandle.volume - expectedVolume) >
+                                Math.max(1, Math.abs(expectedVolume)) * 1e-12) {
+                            mtfProvenanceFailures++;
+                        }
+                    }
+                }
+            }
+            if (mtfProvenanceFailures > 0) {
+                console.error(
+                    `DatasetAuditor Error: ${mtfProvenanceFailures} MTF context provenance or availability checks failed.`
+                );
             }
         }
         let lastHighPrice: number | null = null;
@@ -1662,16 +1918,37 @@ export class DatasetAuditor {
         const forbiddenRepresentationFields = new Set(
             TIER_C_QUARANTINE_LIST.map(field => field.toLowerCase())
         );
-        if (MLR1_REPRESENTATION_FEATURE_ALLOWLIST.some(field =>
+        const AUDITOR_TIER_A_FIELDS = [
+            'tierA_context_net_return_atr',
+            'tierA_context_max_favorable_atr',
+            'tierA_context_max_adverse_atr',
+            'tierA_context_candle_count',
+            'tierA_context_relative_volume',
+            'tierA_context_relative_volume_valid_fraction'
+        ] as const;
+        const AUDITOR_TIER_B_FIELDS = [
+            'tierB_pivot_type',
+            'tierB_pivot_label',
+            'tierB_completed_leg_direction',
+            'tierB_zigzag_next_leg_orientation',
+            'tierB_bars_since_last_pivot',
+            'tierB_leg_distance_atr'
+        ] as const;
+        const auditorExpectedRepresentationHeaders = [
+            'tierA_observation_id',
+            ...AUDITOR_TIER_A_FIELDS,
+            ...AUDITOR_TIER_B_FIELDS
+        ];
+        if (auditorExpectedRepresentationHeaders.some(field =>
             forbiddenRepresentationFields.has(field.toLowerCase())
         )) {
             allowlistFailures++;
         }
         const representationRecords = representationCsv.split('\r\n');
         const representationHeaders = representationRecords[0]?.split(',') ?? [];
-        if (representationHeaders.length !== MLR1_REPRESENTATION_FEATURE_ALLOWLIST.length ||
+        if (representationHeaders.length !== auditorExpectedRepresentationHeaders.length ||
             representationHeaders.some((header, index) =>
-                header !== MLR1_REPRESENTATION_FEATURE_ALLOWLIST[index] ||
+                header !== auditorExpectedRepresentationHeaders[index] ||
                 forbiddenRepresentationFields.has(header.toLowerCase())
             ) ||
             representationRecords.length !== events.length + 1) {
@@ -1682,12 +1959,11 @@ export class DatasetAuditor {
                 allowlistFailures++;
             }
         }
-        let provenanceFailures = 0;
+        let provenanceFailures = mtfProvenanceFailures;
         let candleExecutionFailures = 0;
 
         const idSet = new Set<string>();
         const VALID_OUTCOMES = new Set(['full_target', 'hard_stop', 'timeout_net_gain', 'timeout_net_loss']);
-        const ALLOWLIST_SET = new Set<string>(MLR1_REPRESENTATION_FEATURE_ALLOWLIST);
 
         for (let i = 0; i < events.length; i++) {
             const ev = events[i];
@@ -1906,20 +2182,28 @@ export class DatasetAuditor {
             if (ev.short_outcome === 'timeout_net_gain' && ev.short_net_r <= 0) timeoutClassFailures++;
             if (ev.short_outcome === 'timeout_net_loss' && ev.short_net_r > 0) timeoutClassFailures++;
 
-            // 11. Training Feature Allowlist Projection Check
-            const repInput = buildRepresentationInput(ev);
-            const inputKeys = Object.keys(repInput);
-            if (inputKeys.length !== MLR1_REPRESENTATION_FEATURE_ALLOWLIST.length) allowlistFailures++;
-            for (let k = 0; k < inputKeys.length; k++) {
-                if (!ALLOWLIST_SET.has(inputKeys[k]) ||
-                    forbiddenRepresentationFields.has(inputKeys[k].toLowerCase())) {
-                    allowlistFailures++;
-                }
-            }
+            // Validate exported channels against this independently declared audit contract.
             const serializedRepresentationRow = representationRecords[i + 1]?.split(',') ?? [];
-            for (let k = 0; k < MLR1_REPRESENTATION_FEATURE_ALLOWLIST.length; k++) {
-                const key = MLR1_REPRESENTATION_FEATURE_ALLOWLIST[k];
-                const value = repInput[key];
+            const expectedRepresentationValues: readonly (string | number)[] = [
+                acceptedRows[ev.confirmed_bar_index].observationId,
+                ev.context_net_return_atr,
+                ev.context_max_favorable_atr,
+                ev.context_max_adverse_atr,
+                ev.context_candle_count,
+                ev.context_relative_volume,
+                ev.context_relative_volume_valid_fraction,
+                ev.pivot_type,
+                ev.pivot_label,
+                ev.completed_leg_direction,
+                ev.zigzag_next_leg_orientation,
+                ev.bars_since_last_pivot,
+                ev.leg_distance_atr
+            ];
+            if (serializedRepresentationRow.length !== auditorExpectedRepresentationHeaders.length) {
+                allowlistFailures++;
+            }
+            for (let k = 0; k < expectedRepresentationValues.length; k++) {
+                const value = expectedRepresentationValues[k];
                 if ((typeof value !== 'string' && typeof value !== 'number') ||
                     (typeof value === 'number' && !Number.isFinite(value)) ||
                     serializedRepresentationRow[k] !== String(value)) {

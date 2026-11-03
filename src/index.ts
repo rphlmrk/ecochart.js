@@ -40,13 +40,24 @@ export {
     MarketFeatureEngine,
     CandleContextAggregator,
     HybridTokenBuilder,
+    MLR1_MODEL_INPUT_SCHEMA,
+    MLR1_DATASET_VERSION,
+    MLR1_REPRESENTATION_COLUMNS,
     MLR1_REPRESENTATION_FEATURE_ALLOWLIST,
     MLR1_OUTCOME_LABEL_ALLOWLIST,
     MLR1_OUTCOME_CONFIG_VERSION,
     buildRepresentationInput,
+    validateMLR1ModelInput,
     type MLR1RepresentationFeature,
+    type MLR1ModelInput,
     type MLR1EventRow
 } from './data/AIExporter';
+export {
+    MLR1_MODEL_INPUT_SCHEMA_VERSION,
+    MLR1_REPRESENTATION_SCHEMA_VERSION,
+    TIER_A_MODEL_INPUT_ALLOWLIST,
+    TIER_B_MODEL_INPUT_ALLOWLIST
+} from './indicators/mlr1/dataset/DatasetSchema';
 import { BackgroundDataMiner } from './data/BackgroundDataMiner';
 import { AlertUI } from './alerts/AlertUI';
 import { runMilestone1AcceptanceSuite } from './test/milestone1-acceptance';
