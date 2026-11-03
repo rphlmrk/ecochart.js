@@ -1,7 +1,16 @@
 /**
  * 🔒 FROZEN SCHEMA CONTRACT
- * Enforces explicit whitelisting of Tier A inputs and strict quarantining of Tier C outcomes.
+ * Enforces explicit whitelisting of Tier A inputs, structural boundaries for Tier B,
+ * and strict quarantining of Tier C outcomes.
  */
+
+/**
+ * Source OHLCV is preserved for auditing and reconstruction,
+ * but explicitly separated from the normalized ML tensor inputs.
+ */
+export const AUDIT_ONLY_ALLOWLIST = [
+    'sourceOHLCV'
+] as const;
 
 export const TIER_A_ALLOWLIST = [
     'observationId',
@@ -9,15 +18,82 @@ export const TIER_A_ALLOWLIST = [
     'observationTimestamp',
     'symbol',
     'timeframe',
-    'sourceOHLCV',
+    'dataQuality',
     'tierAFeatures',
     'tierAValidity',
     'context15m',
-    'context1h'
+    'context1h',
+    'htf15mDiagnostic',
+    'htf1hDiagnostic'
+] as const;
+
+// Deep MTF Schema Enforcement: Strictly matches HTFIncompleteDiagnostic from MTFTypes.ts
+export const HTF_DIAGNOSTIC_ALLOWLIST = [
+    'timeframe',
+    'openTimestamp',
+    'closeTimestamp',
+    'expectedSourceCount',
+    'actualSourceCount',
+    'missingTimestamps',
+    'duplicateCount',
+    'invalidSourceCount',
+    'completeness'
+] as const;
+
+// Nested MTF Schema Enforcement: Strictly matches MTFTimeframeContext from MTFTypes.ts
+export const MTF_CONTEXT_ALLOWLIST = [
+    'timeframe',
+    'lastCompletedCandle',
+    'lastCompletedOpenTimestamp',
+    'lastCompletedCloseTimestamp',
+    'contextAgeMs',
+    'isAvailable',
+    'availabilityStatus',
+    'isWarmupComplete',
+    'features',
+    'validity'
+] as const;
+
+// Deep MTF Schema Enforcement: Strictly matches MTFCandle from MTFTypes.ts
+export const MTF_COMPLETED_CANDLE_ALLOWLIST = [
+    'timeframe',
+    'openTimestamp',
+    'closeTimestamp',
+    'open',
+    'high',
+    'low',
+    'close',
+    'volume',
+    'sourceObservationCount',
+    'completeness'
+] as const;
+
+// Tier B Schema Enforcement: Strictly matches StrictCBCCandleTeacher from StrictCBCZigZagIndicator.ts
+// (Plus structuralEventId for relational tracking)
+export const TIER_B_ALLOWLIST = [
+    'structuralEventId',
+    'barIndex',
+    'timestamp',
+    'trend',
+    'anchorHigh',
+    'anchorLow',
+    'candidateType',
+    'candidatePrice',
+    'candidateBarIndex',
+    'candidateAgeBars',
+    'confirmedPivotEvent',
+    'confirmedPivotId',
+    'confirmedPivotPrice',
+    'confirmedPivotBarIndex',
+    'confirmedPivotConfirmedBarIndex',
+    'confirmedPivotLabel',
+    'confirmedPivotLagBars'
 ] as const;
 
 export const TIER_C_QUARANTINE_LIST = [
     'outcomeDefinition',
+    'horizonBars',
+    'horizonEndTimestamp',
     'forwardReturns',
     'maximumFavorableExcursion',
     'maximumAdverseExcursion',

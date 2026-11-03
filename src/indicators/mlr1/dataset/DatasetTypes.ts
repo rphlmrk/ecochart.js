@@ -1,5 +1,5 @@
 import type { ML1Candle, ML1FeatureValues, ML1FeatureValidity } from '../ML1FeatureTypes';
-import type { MTFTimeframeContext } from '../mtf/MTFTypes';
+import type { MTFTimeframeContext, HTFIncompleteDiagnostic } from '../mtf/MTFTypes';
 
 export interface DataQualityStatus {
     readonly isSourceValid: boolean;
@@ -10,6 +10,22 @@ export interface DataQualityStatus {
     readonly isUnexpectedInterval: boolean;
 }
 
+/**
+ * 🔒 TIMESTAMP & AVAILABILITY CONTRACT
+ *
+ * - sourceTimestamp:
+ *   Exact opening timestamp of the original 1m source candle.
+ *
+ * - observationTimestamp:
+ *   Exact time the completed observation becomes available.
+ *   This is the exclusive close boundary of the source candle.
+ *
+ * Observation availability is independent of downstream strategy
+ * decisions and execution timing.
+ *
+ * Any mapping to decision or execution timestamps belongs to a
+ * separately versioned execution contract.
+ */
 export interface ContinuousObservationRow {
     readonly observationId: string;
     readonly sourceTimestamp: number;
@@ -24,6 +40,8 @@ export interface ContinuousObservationRow {
     readonly tierAValidity: ML1FeatureValidity;
     readonly context15m: MTFTimeframeContext;
     readonly context1h: MTFTimeframeContext;
+    readonly htf15mDiagnostic: HTFIncompleteDiagnostic | null;
+    readonly htf1hDiagnostic: HTFIncompleteDiagnostic | null;
 
     readonly structuralEventId: string | null;
 }

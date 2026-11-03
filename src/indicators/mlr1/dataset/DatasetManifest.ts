@@ -7,6 +7,10 @@ export interface MissingDataStatistics {
     readonly invalidOhlcvCount: number;
     readonly htf15mGapCount: number;
     readonly htf1hGapCount: number;
+    readonly htf15mResetCount: number;
+    readonly htf1hResetCount: number;
+    readonly htf15mIncompleteWindowCount: number;
+    readonly htf1hIncompleteWindowCount: number;
 }
 
 export interface IntegrityAuditResults {
