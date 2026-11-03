@@ -133,6 +133,24 @@ export function runPhase4BTests(): boolean {
             threw = true;
         }
         assert(threw, 'Null policy must throw');
+
+        const corruptedStats = {
+            ...stats,
+            sourceRowCount: 2,
+            acceptedObservationCount: 1,
+            rejectedObservationCount: 0,
+            firstSourceTimestamp: 1700000000000,
+            lastSourceTimestamp: 1700000000000
+        };
+        threw = false;
+        try {
+            processSourceObservation(
+                corruptedStats, 1700000000000, quality, true, strictPolicy, 60000
+            );
+        } catch {
+            threw = true;
+        }
+        assert(threw, 'Corrupted source accounting must throw');
     });
 
     runTest('5. Native-clean duplicate detected and rejected', () => {
@@ -284,20 +302,37 @@ export function runPhase4BTests(): boolean {
     runTest('11. Uptime denominator and threshold range validation', () => {
         const stats = Object.freeze({
             ...createInitialBackboneStats(),
-            sourceRowCount: 100,
-            acceptedObservationCount: 96,
-            rejectedObservationCount: 4
+            sourceRowCount: 8,
+            acceptedObservationCount: 4,
+            rejectedObservationCount: 4,
+            missingIntervalCount: 2,
+            firstSourceTimestamp: 100000,
+            lastSourceTimestamp: 400000
         });
-        const passing = evaluateDatasetUptime(stats, { ...strictPolicy, requireMinimumUptimeFraction: 0.95 });
-        assert(passing.isUptimeValid, '96% usable fraction should pass 95%');
-        assert(Math.abs(passing.usableObservationFraction - 0.96) < 1e-4, 'Rejected rows must remain in denominator');
-        const failing = evaluateDatasetUptime(stats, { ...strictPolicy, requireMinimumUptimeFraction: 0.98 });
-        assert(!failing.isUptimeValid, '96% usable fraction should fail 98%');
+        const passing = evaluateDatasetUptime(
+            stats,
+            { ...strictPolicy, requireMinimumUptimeFraction: 0.6 },
+            60000
+        );
+        assert(passing.isUptimeValid, 'Four of six usable timeline slots should pass 60%');
+        assert(passing.totalExpectedObservations === 6, 'Uptime denominator must use the first-to-last unique slot span');
+        assert(Math.abs(passing.sourceAvailabilityFraction - 4 / 6) < 1e-4, 'Duplicates and out-of-order rows must not inflate availability');
+        assert(Math.abs(passing.usableObservationFraction - 4 / 6) < 1e-4, 'Rejected arrivals must not inflate usable uptime');
+        const failing = evaluateDatasetUptime(
+            stats,
+            { ...strictPolicy, requireMinimumUptimeFraction: 0.7 },
+            60000
+        );
+        assert(!failing.isUptimeValid, 'Four of six usable timeline slots should fail 70%');
 
         for (const threshold of [-0.1, 1.1, NaN, Infinity]) {
             let threw = false;
             try {
-                evaluateDatasetUptime(stats, { ...strictPolicy, requireMinimumUptimeFraction: threshold });
+                evaluateDatasetUptime(
+                    stats,
+                    { ...strictPolicy, requireMinimumUptimeFraction: threshold },
+                    60000
+                );
             } catch {
                 threw = true;
             }
@@ -364,9 +399,28 @@ export function runPhase4BTests(): boolean {
         assert(result.acceptedRows[2].sourceTimestamp === 340000, 'Third row timestamp mismatch');
         assert(result.acceptedRows[0].observationTimestamp === 160000, 'Observation boundary mismatch');
         assert(result.acceptedRows[0].observationId === 'OBS_SOLUSDT_1m_V1_100000', 'Observation ID mismatch');
-        assert(!result.uptime.isUptimeValid, '3 accepted of 8 total slots should fail the 95% uptime policy');
+        assert(result.uptime.totalExpectedObservations === 6, 'Duplicate/out-of-order rows must not expand the timeline');
+        assert(Math.abs(result.uptime.sourceAvailabilityFraction - 4 / 6) < 1e-4, 'Source availability must use unique slots');
+        assert(!result.uptime.isUptimeValid, '3 accepted of 6 total slots should fail the 95% uptime policy');
         assert(Object.isFrozen(result.acceptedRows), 'Accepted row collection must be immutable');
         assert(Object.isFrozen(result.rejectedRows), 'Rejected row collection must be immutable');
+    });
+
+    runTest('15. Concrete builder rejects candle/observation timestamp mismatch', () => {
+        const inputItems: SourceBackboneInputItem[] = [
+            {
+                candle: createCandle(100000),
+                observation: createMockObservation(160000, qualityFeatures()),
+                isValidOhlcv: true
+            }
+        ];
+        let threw = false;
+        try {
+            buildSourceBackbone(inputItems, 'SOLUSDT', '1m', 1, strictPolicy, 60000);
+        } catch (error: unknown) {
+            threw = error instanceof Error && error.message.includes('Timestamp mismatch');
+        }
+        assert(threw, 'Mismatched candle and observation timestamps must throw');
     });
 
     console.log('\n=======================================');
@@ -376,5 +430,5 @@ export function runPhase4BTests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log('=======================================\n');
 
-    return failed === 0 && passed === 14;
+    return failed === 0 && passed === 15;
 }

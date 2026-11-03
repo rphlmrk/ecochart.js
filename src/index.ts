@@ -4683,9 +4683,8 @@ export class WorkspaceManager {
                 if (!runMilestone1AcceptanceSuite()) throw new Error('Milestone 1 suite failed');
                 console.log('✅ Milestone 1: Passed (Causal StrictCBCZigZag)');
 
-                if (!runPhase2ATests()) throw new Error('Milestone 2A suite failed');
-                if (!runPhase2JTests()) throw new Error('Milestone 2J suite failed');
-                console.log('✅ Milestone 2: Passed (Native 1m Features & Schema)');
+                if (!runMilestone2AcceptanceSuite()) throw new Error('Milestone 2 acceptance suite failed');
+                console.log('✅ Milestone 2: Passed (Complete 2A–2H, 2J & Quantitative Audit)');
 
                 if (!runPhase3ATests()) throw new Error('Milestone 3A suite failed');
                 if (!runPhase3BTests()) throw new Error('Milestone 3B suite failed');
@@ -4695,7 +4694,7 @@ export class WorkspaceManager {
                 console.log('✅ Milestone 3: Passed (77/77 MTF Integration Tests)');
 
                 if (!runPhase4BTests()) throw new Error('Milestone 4B suite failed');
-                console.log('✅ Milestone 4B: Passed (14/14 Source Integrity Tests)');
+                console.log('✅ Milestone 4B: Passed (15/15 Source Integrity Tests)');
 
                 console.log('\n======================================================');
                 console.log('🏆 ALL MILESTONES 1 TO 4 ACCEPTANCE GATES VERIFIED');

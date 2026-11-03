@@ -12,6 +12,7 @@ export interface BackboneStats {
     readonly outOfOrderCount: number;
     readonly invalidOhlcvCount: number;
     readonly invalidSourceCount: number;
+    readonly firstSourceTimestamp: number | null;
     readonly lastSourceTimestamp: number | null;
 }
 
@@ -26,6 +27,7 @@ export function createInitialBackboneStats(): BackboneStats {
         outOfOrderCount: 0,
         invalidOhlcvCount: 0,
         invalidSourceCount: 0,
+        firstSourceTimestamp: null,
         lastSourceTimestamp: null
     });
 }
@@ -156,6 +158,12 @@ function validatePolicy(policy: IntegrityPolicy): void {
     if (policy.rejectInvalidOhlcv !== undefined && typeof policy.rejectInvalidOhlcv !== 'boolean') {
         throw new Error('Runtime Contract Error: rejectInvalidOhlcv must be a boolean when provided.');
     }
+    if (policy.requireMinimumUptimeFraction !== undefined &&
+        (!Number.isFinite(policy.requireMinimumUptimeFraction) ||
+            policy.requireMinimumUptimeFraction < 0 ||
+            policy.requireMinimumUptimeFraction > 1)) {
+        throw new Error('Runtime Contract Error: requireMinimumUptimeFraction must be a finite number between 0 and 1.');
+    }
 }
 
 function validateDataQuality(dataQuality: DataQualityStatus): void {
@@ -178,7 +186,8 @@ function validateRuntimeInputs(
     dataQuality: DataQualityStatus,
     isValidOhlcv: boolean,
     policy: IntegrityPolicy,
-    expectedIntervalMs: number
+    expectedIntervalMs: number,
+    prevStats: BackboneStats
 ): void {
     if (!Number.isSafeInteger(sourceTimestamp) || sourceTimestamp < 0) {
         throw new Error(`Runtime Contract Error: sourceTimestamp must be a non-negative safe integer, got ${sourceTimestamp}`);
@@ -191,6 +200,44 @@ function validateRuntimeInputs(
     }
     validateDataQuality(dataQuality);
     validatePolicy(policy);
+    if (!prevStats || typeof prevStats !== 'object') {
+        throw new Error('Runtime Contract Error: prevStats must be a valid object.');
+    }
+    if (
+        !Number.isSafeInteger(prevStats.sourceRowCount) || prevStats.sourceRowCount < 0 ||
+        !Number.isSafeInteger(prevStats.acceptedObservationCount) || prevStats.acceptedObservationCount < 0 ||
+        !Number.isSafeInteger(prevStats.rejectedObservationCount) || prevStats.rejectedObservationCount < 0 ||
+        prevStats.sourceRowCount !== prevStats.acceptedObservationCount + prevStats.rejectedObservationCount
+    ) {
+        throw new Error('Runtime Contract Error: prevStats violates accounting invariant (sourceRowCount !== accepted + rejected).');
+    }
+    const counters = [
+        prevStats.missingIntervalCount,
+        prevStats.unexpectedIntervalCount,
+        prevStats.duplicateTimestampCount,
+        prevStats.outOfOrderCount,
+        prevStats.invalidOhlcvCount,
+        prevStats.invalidSourceCount
+    ];
+    if (counters.some(counter => !Number.isSafeInteger(counter) || counter < 0)) {
+        throw new Error('Runtime Contract Error: prevStats contains invalid counters.');
+    }
+    for (const timestamp of [prevStats.firstSourceTimestamp, prevStats.lastSourceTimestamp]) {
+        if (timestamp !== null && (!Number.isSafeInteger(timestamp) || timestamp < 0)) {
+            throw new Error('Runtime Contract Error: prevStats contains an invalid timestamp boundary.');
+        }
+    }
+    if (
+        (prevStats.sourceRowCount === 0 &&
+            (prevStats.firstSourceTimestamp !== null || prevStats.lastSourceTimestamp !== null)) ||
+        (prevStats.sourceRowCount > 0 &&
+            (prevStats.firstSourceTimestamp === null || prevStats.lastSourceTimestamp === null)) ||
+        (prevStats.firstSourceTimestamp !== null &&
+            prevStats.lastSourceTimestamp !== null &&
+            prevStats.firstSourceTimestamp > prevStats.lastSourceTimestamp)
+    ) {
+        throw new Error('Runtime Contract Error: prevStats contains inconsistent timestamp boundaries.');
+    }
 }
 
 /**
@@ -241,25 +288,7 @@ export function processSourceObservation(
     policy: IntegrityPolicy,
     expectedIntervalMs: number
 ): ProcessSourceResult {
-    validateRuntimeInputs(sourceTimestamp, dataQuality, isValidOhlcv, policy, expectedIntervalMs);
-    if (!prevStats || typeof prevStats !== 'object') {
-        throw new Error('Runtime Contract Error: prevStats must be a valid object.');
-    }
-    if (
-        !Number.isSafeInteger(prevStats.sourceRowCount) || prevStats.sourceRowCount < 0 ||
-        !Number.isSafeInteger(prevStats.acceptedObservationCount) || prevStats.acceptedObservationCount < 0 ||
-        !Number.isSafeInteger(prevStats.rejectedObservationCount) || prevStats.rejectedObservationCount < 0 ||
-        !Number.isSafeInteger(prevStats.missingIntervalCount) || prevStats.missingIntervalCount < 0 ||
-        !Number.isSafeInteger(prevStats.unexpectedIntervalCount) || prevStats.unexpectedIntervalCount < 0 ||
-        !Number.isSafeInteger(prevStats.duplicateTimestampCount) || prevStats.duplicateTimestampCount < 0 ||
-        !Number.isSafeInteger(prevStats.outOfOrderCount) || prevStats.outOfOrderCount < 0 ||
-        !Number.isSafeInteger(prevStats.invalidOhlcvCount) || prevStats.invalidOhlcvCount < 0 ||
-        !Number.isSafeInteger(prevStats.invalidSourceCount) || prevStats.invalidSourceCount < 0 ||
-        (prevStats.lastSourceTimestamp !== null &&
-            (!Number.isSafeInteger(prevStats.lastSourceTimestamp) || prevStats.lastSourceTimestamp < 0))
-    ) {
-        throw new Error('Runtime Contract Error: prevStats contains invalid counters or timestamp watermark.');
-    }
+    validateRuntimeInputs(sourceTimestamp, dataQuality, isValidOhlcv, policy, expectedIntervalMs, prevStats);
 
     let internalDuplicate = false;
     let internalOutOfOrder = false;
@@ -293,6 +322,9 @@ export function processSourceObservation(
     const nextWatermark = prevStats.lastSourceTimestamp === null || sourceTimestamp > prevStats.lastSourceTimestamp
         ? sourceTimestamp
         : prevStats.lastSourceTimestamp;
+    const nextFirstTimestamp = prevStats.firstSourceTimestamp === null
+        ? sourceTimestamp
+        : Math.min(prevStats.firstSourceTimestamp, sourceTimestamp);
 
     const nextStats: BackboneStats = Object.freeze({
         sourceRowCount: prevStats.sourceRowCount + 1,
@@ -304,6 +336,7 @@ export function processSourceObservation(
         outOfOrderCount: prevStats.outOfOrderCount + (combinedQuality.isOutOfOrder ? 1 : 0),
         invalidOhlcvCount: prevStats.invalidOhlcvCount + (isValidOhlcv ? 0 : 1),
         invalidSourceCount: prevStats.invalidSourceCount + (dataQuality.isSourceValid ? 0 : 1),
+        firstSourceTimestamp: nextFirstTimestamp,
         lastSourceTimestamp: nextWatermark
     });
 
@@ -340,17 +373,21 @@ export function updateBackboneStats(
  */
 export function evaluateDatasetUptime(
     stats: BackboneStats,
-    policy: IntegrityPolicy
+    policy: IntegrityPolicy,
+    expectedIntervalMs = 60000
 ): DatasetUptimeEvaluation {
     validatePolicy(policy);
-    const minRequired = policy.requireMinimumUptimeFraction;
-    if (minRequired !== undefined && (!Number.isFinite(minRequired) || minRequired < 0 || minRequired > 1)) {
-        throw new Error(
-            `IntegrityPolicy Error: requireMinimumUptimeFraction must be a finite number in range [0, 1], got ${minRequired}`
-        );
+    if (!Number.isSafeInteger(expectedIntervalMs) || expectedIntervalMs <= 0) {
+        throw new Error('Runtime Contract Error: expectedIntervalMs must be a positive safe integer.');
     }
 
-    const totalExpectedObservations = stats.sourceRowCount + stats.missingIntervalCount;
+    let totalExpectedObservations = 0;
+    if (stats.firstSourceTimestamp !== null && stats.lastSourceTimestamp !== null) {
+        const spanMs = stats.lastSourceTimestamp - stats.firstSourceTimestamp;
+        if (spanMs >= 0) {
+            totalExpectedObservations = Math.floor(spanMs / expectedIntervalMs) + 1;
+        }
+    }
     if (totalExpectedObservations === 0) {
         return Object.freeze({
             isUptimeValid: false,
@@ -360,11 +397,13 @@ export function evaluateDatasetUptime(
         });
     }
 
-    const sourceAvailabilityFraction = stats.sourceRowCount / totalExpectedObservations;
-    const usableObservationFraction = stats.acceptedObservationCount / totalExpectedObservations;
+    const uniqueSlotsReceived = Math.max(0, totalExpectedObservations - stats.missingIntervalCount);
+    const sourceAvailabilityFraction = Math.min(1, uniqueSlotsReceived / totalExpectedObservations);
+    const usableObservationFraction = Math.min(1, stats.acceptedObservationCount / totalExpectedObservations);
 
     return Object.freeze({
-        isUptimeValid: minRequired === undefined || usableObservationFraction >= minRequired,
+        isUptimeValid: policy.requireMinimumUptimeFraction === undefined ||
+            usableObservationFraction >= policy.requireMinimumUptimeFraction,
         sourceAvailabilityFraction,
         usableObservationFraction,
         totalExpectedObservations
@@ -385,6 +424,18 @@ export function buildSourceBackbone(
 ): SourceBackboneBuildResult {
     if (!Array.isArray(stream)) {
         throw new Error('Runtime Contract Error: stream must be an array.');
+    }
+    for (let index = 0; index < stream.length; index++) {
+        const item = stream[index];
+        if (!item || typeof item !== 'object' || !item.candle || !item.observation) {
+            throw new Error(`buildSourceBackbone Error: item at index ${index} is missing candle or observation.`);
+        }
+        if (item.candle.time !== item.observation.timestamp) {
+            throw new Error(
+                `buildSourceBackbone Error: Timestamp mismatch at index ${index}. ` +
+                `Candle time (${item.candle.time}) !== observation timestamp (${item.observation.timestamp}).`
+            );
+        }
     }
     if (typeof symbol !== 'string' || symbol.length === 0) {
         throw new Error('Runtime Contract Error: symbol must be a non-empty string.');
@@ -439,6 +490,6 @@ export function buildSourceBackbone(
         acceptedRows: Object.freeze(acceptedRows),
         rejectedRows: Object.freeze(rejectedRows),
         stats,
-        uptime: evaluateDatasetUptime(stats, policy)
+        uptime: evaluateDatasetUptime(stats, policy, expectedIntervalMs)
     });
 }

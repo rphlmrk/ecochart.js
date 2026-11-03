@@ -192,7 +192,6 @@ export class AiExportModal {
 
         // Wire Up Event Handlers
         const btnClose = this.dialog.querySelector('#btn-close-ai-export');
-        const btnAudit = this.dialog.querySelector('#btn-ai-export-audit') as HTMLButtonElement;
         const btnCancel = this.dialog.querySelector('#btn-cancel-ai-export');
         const btnExecute = this.dialog.querySelector('#btn-execute-ai-export') as HTMLButtonElement;
         const customDateBox = this.dialog.querySelector('#ai-custom-dates') as HTMLElement;
@@ -204,50 +203,6 @@ export class AiExportModal {
 
         btnClose?.addEventListener('click', () => this.close());
         btnCancel?.addEventListener('click', () => this.close());
-        btnAudit?.addEventListener('click', async () => {
-            progressContainer.style.display = 'flex';
-            progressBar.style.width = '0%';
-            progressPct.textContent = '0%';
-            progressStatus.textContent = 'Running Complete Test Suite (Milestones 1 to 4)...';
-            progressStatus.style.color = 'var(--chart-accent, #2962FF)';
-            progressStats.style.display = 'none';
-            await new Promise(resolve => setTimeout(resolve, 50));
-
-            try {
-                const win = window as Window & {
-                    runMilestone1AcceptanceSuite?: () => boolean;
-                    runPhase2ATests?: () => boolean;
-                    runPhase2JTests?: () => boolean;
-                    runPhase3ATests?: () => boolean;
-                    runPhase3BTests?: () => boolean;
-                    runPhase3CTests?: () => boolean;
-                    runPhase3DTests?: () => boolean;
-                    runPhase3ETests?: () => boolean;
-                    runPhase4BTests?: () => boolean;
-                };
-
-                if (!win.runMilestone1AcceptanceSuite?.()) throw new Error('Milestone 1 suite failed');
-                if (!win.runPhase2ATests?.()) throw new Error('Milestone 2A suite failed');
-                if (!win.runPhase2JTests?.()) throw new Error('Milestone 2J suite failed');
-                if (!win.runPhase3ATests?.()) throw new Error('Milestone 3A suite failed');
-                if (!win.runPhase3BTests?.()) throw new Error('Milestone 3B suite failed');
-                if (!win.runPhase3CTests?.()) throw new Error('Milestone 3C suite failed');
-                if (!win.runPhase3DTests?.()) throw new Error('Milestone 3D suite failed');
-                if (!win.runPhase3ETests?.()) throw new Error('Milestone 3E suite failed');
-                if (!win.runPhase4BTests?.()) throw new Error('Milestone 4B suite failed');
-
-                progressBar.style.width = '100%';
-                progressPct.textContent = 'All Passed';
-                progressStatus.textContent = 'All Milestones 1–4 Passed (including 14/14 Phase 4B tests)! Check DevTools console.';
-                progressStatus.style.color = 'var(--chart-bull, #26A69A)';
-            } catch (error: unknown) {
-                const message = error instanceof Error ? error.message : String(error);
-                console.error('[AiExportModal] Complete audit failed:', error);
-                progressStatus.textContent = `Error: ${message}`;
-                progressStatus.style.color = '#EF5350';
-            }
-        });
-
         // Range Presets
         const rangeBtns = this.dialog.querySelectorAll('.ai-range-btn');
         rangeBtns.forEach((btn) => {
