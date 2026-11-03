@@ -541,6 +541,22 @@ export function runPhase4BTests(): boolean {
         assert(manifest.missingDataStats.outOfOrderCount === 1, 'Manifest out-of-order count mismatch');
     });
 
+    runTest('16. Off-grid record preserves the build grid anchor', () => {
+        const stream: SourceBackboneInputItem[] = [
+            { candle: createCandle(100000), observation: createMockObservation(100000, qualityFeatures()) },
+            { candle: createCandle(100030), observation: createMockObservation(100030, qualityFeatures()) },
+            { candle: createCandle(160000), observation: createMockObservation(160000, qualityFeatures()) }
+        ];
+        const result = buildSourceBackbone(stream, 'SOLUSDT', '1m', 1, strictPolicy, 60000);
+
+        assert(result.acceptedRows.length === 2, 'Both on-grid candles must be accepted');
+        assert(result.rejectedRows.length === 1, 'Off-grid candle must be rejected');
+        assert(result.rejectedRows[0].reasons.includes('OFF_GRID_TIMESTAMP'), 'Off-grid rejection reason missing');
+        assert(result.acceptedRows[0].sourceTimestamp === 100000, 'First accepted timestamp mismatch');
+        assert(result.acceptedRows[1].sourceTimestamp === 160000, 'Later on-grid timestamp must retain original anchor');
+        assert(result.stats.offGridTimestampCount === 1, 'Exactly one off-grid timestamp should be counted');
+    });
+
     console.log('\n=======================================');
     console.log('📊 ML-R1 PHASE 4B FULL ACCEPTANCE AUDIT:');
     console.log(`   ↳ Tests Executed:  ${passed + failed}`);
@@ -548,5 +564,5 @@ export function runPhase4BTests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log('=======================================\n');
 
-    return failed === 0 && passed === 15;
+    return failed === 0 && passed === 16;
 }
