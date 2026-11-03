@@ -4677,7 +4677,7 @@ export class WorkspaceManager {
 
             try {
                 console.log('\n======================================================');
-                console.log('🚀 EXECUTING COMPLETE TEST SUITE: MILESTONES 1 TO 4');
+                console.log('🚀 EXECUTING COMPLETE ML-R1 TEST SUITE: MILESTONES 1 TO 4');
                 console.log('======================================================');
 
                 if (!runMilestone1AcceptanceSuite()) throw new Error('Milestone 1 suite failed');
@@ -4698,7 +4698,7 @@ export class WorkspaceManager {
                 console.log('✅ Milestone 4B: Passed (12/12 Source Integrity Tests)');
 
                 console.log('\n======================================================');
-                console.log('🏆 ALL MILESTONES 1 TO 4 GATES VERIFIED AND PASSED');
+                console.log('🏆 ALL MILESTONES 1 TO 4 ACCEPTANCE GATES VERIFIED');
                 console.log('======================================================\n');
 
                 if (loadingDetail) {

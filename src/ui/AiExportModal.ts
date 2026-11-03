@@ -178,7 +178,7 @@ export class AiExportModal {
                 <!-- Footer Actions -->
                 <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--chart-grid, #2A2E39); background: var(--chart-bg, #131722);">
                     <button id="btn-ai-export-audit" type="button" style="background: rgba(41, 98, 255, 0.15); border: 1px solid var(--chart-accent, #2962FF); color: var(--chart-accent, #2962FF); padding: 7px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 700;">
-                        🧪 Run All Tests (M1 to M4)
+                        🧪 Run Milestones 1–4 Tests
                     </button>
                     <button id="btn-cancel-ai-export" type="button" style="background: transparent; border: 1px solid var(--chart-grid, #363A45); color: var(--chart-text, #D1D4DC); padding: 7px 14px; font-size: 12px; font-weight: 600; border-radius: 4px; cursor: pointer;">
                         Cancel
@@ -238,7 +238,7 @@ export class AiExportModal {
 
                 progressBar.style.width = '100%';
                 progressPct.textContent = 'All Passed';
-                progressStatus.textContent = 'All Milestones 1 to 4 Passed! Check DevTools console.';
+                progressStatus.textContent = 'All Milestones 1–4 Passed! Check DevTools console.';
                 progressStatus.style.color = 'var(--chart-bull, #26A69A)';
             } catch (error: unknown) {
                 const message = error instanceof Error ? error.message : String(error);

@@ -34,10 +34,22 @@ export interface SourceAcceptanceResult {
     readonly dataQuality: DataQualityStatus;
 }
 
+export interface ProcessSourceResult {
+    readonly nextStats: BackboneStats;
+    readonly acceptance: SourceAcceptanceResult;
+    readonly observationTimestamp: number;
+}
+
+export interface DatasetUptimeEvaluation {
+    readonly isUptimeValid: boolean;
+    readonly sourceAvailabilityFraction: number;
+    readonly usableObservationFraction: number;
+    readonly totalExpectedObservations: number;
+}
+
 /**
  * 🔒 IDENTITY CONTRACT
  * Generates a deterministic, stable identifier for the observation row.
- * Does not rely on unstable array indices.
  */
 export function generateObservationId(
     symbol: string,
@@ -56,11 +68,11 @@ export function calculateObservationTimestamp(
     sourceTimestamp: number,
     sourceIntervalMs: number
 ): number {
-    if (!Number.isFinite(sourceTimestamp) || sourceTimestamp < 0) {
-        throw new Error('Invalid sourceTimestamp: Must be a non-negative finite number.');
+    if (!Number.isSafeInteger(sourceTimestamp) || sourceTimestamp < 0) {
+        throw new Error('Invalid sourceTimestamp: Must be a non-negative safe integer.');
     }
-    if (!Number.isFinite(sourceIntervalMs) || sourceIntervalMs <= 0) {
-        throw new Error('Invalid sourceIntervalMs: Must be a positive finite number.');
+    if (!Number.isSafeInteger(sourceIntervalMs) || sourceIntervalMs <= 0) {
+        throw new Error('Invalid sourceIntervalMs: Must be a positive safe integer.');
     }
     const result = sourceTimestamp + sourceIntervalMs;
     if (!Number.isSafeInteger(result)) {
@@ -70,35 +82,38 @@ export function calculateObservationTimestamp(
 }
 
 /**
- * Maps the native ML1FeatureEngine telemetry directly into the strict Dataset schema.
- * Prevents missing/undefined telemetry from silently resolving to 'false' (healthy).
+ * Maps the native ML1FeatureEngine telemetry into the dataset schema.
  */
 export function extractDataQuality(obs: ML1Observation): DataQualityStatus {
-    const f = obs.features;
+    const features = obs.features;
     const requiredKeys = [
-        'IsSourceValid', 'HasDataGap', 'IsDiscontinuity',
-        'IsDuplicateTimestamp', 'IsOutOfOrder', 'IsUnexpectedInterval'
+        'IsSourceValid',
+        'HasDataGap',
+        'IsDiscontinuity',
+        'IsDuplicateTimestamp',
+        'IsOutOfOrder',
+        'IsUnexpectedInterval'
     ] as const;
 
     for (const key of requiredKeys) {
-        const val = f[key];
-        if (typeof val !== 'number' || !Number.isFinite(val) || (val !== 0 && val !== 1)) {
-            throw new Error(`DataQuality Extraction Error: Required telemetry field '${key}' must be strictly 0 or 1, got ${val}.`);
+        const value = features[key];
+        if (typeof value !== 'number' || !Number.isFinite(value) || (value !== 0 && value !== 1)) {
+            throw new Error(`DataQuality Extraction Error: Telemetry field '${key}' must be strictly 0 or 1, got ${value}.`);
         }
     }
 
     return Object.freeze({
-        isSourceValid: f['IsSourceValid'] === 1,
-        hasDataGap: f['HasDataGap'] === 1,
-        isDiscontinuity: f['IsDiscontinuity'] === 1,
-        isDuplicate: f['IsDuplicateTimestamp'] === 1,
-        isOutOfOrder: f['IsOutOfOrder'] === 1,
-        isUnexpectedInterval: f['IsUnexpectedInterval'] === 1
+        isSourceValid: features['IsSourceValid'] === 1,
+        hasDataGap: features['HasDataGap'] === 1,
+        isDiscontinuity: features['IsDiscontinuity'] === 1,
+        isDuplicate: features['IsDuplicateTimestamp'] === 1,
+        isOutOfOrder: features['IsOutOfOrder'] === 1,
+        isUnexpectedInterval: features['IsUnexpectedInterval'] === 1
     });
 }
 
 /**
- * Evaluates observation acceptance strictly against the configured policy.
+ * Evaluates acceptance against the configured integrity policy.
  */
 export function evaluateAcceptance(
     dataQuality: DataQualityStatus,
@@ -107,8 +122,11 @@ export function evaluateAcceptance(
 ): SourceAcceptanceResult {
     const reasons: string[] = [];
 
-    if (policy.rejectInvalidSource && (!dataQuality.isSourceValid || !isValidOhlcv)) {
+    if (policy.rejectInvalidSource && !dataQuality.isSourceValid) {
         reasons.push('INVALID_SOURCE');
+    }
+    if (policy.rejectInvalidSource && !isValidOhlcv) {
+        reasons.push('INVALID_OHLCV');
     }
     if (policy.rejectDuplicateTimestamp && dataQuality.isDuplicate) {
         reasons.push('DUPLICATE_TIMESTAMP');
@@ -125,37 +143,52 @@ export function evaluateAcceptance(
 }
 
 /**
- * Audits minimum uptime requirement across a completed dataset manifest.
+ * Audits minimum uptime using source availability and accepted observations.
  */
 export function evaluateDatasetUptime(
     stats: BackboneStats,
     policy: IntegrityPolicy
-): { isUptimeValid: boolean; actualUptimeFraction: number } {
+): DatasetUptimeEvaluation {
     const minRequired = policy.requireMinimumUptimeFraction;
-    if (minRequired === undefined || minRequired <= 0) {
-        return { isUptimeValid: true, actualUptimeFraction: 1.0 };
+    if (minRequired !== undefined && (!Number.isFinite(minRequired) || minRequired < 0 || minRequired > 1)) {
+        throw new Error(
+            `IntegrityPolicy Error: requireMinimumUptimeFraction must be a finite number between 0 and 1, got ${minRequired}.`
+        );
     }
-    const totalExpectedObservations = stats.acceptedObservationCount + stats.missingIntervalCount;
+
+    const totalExpectedObservations = stats.sourceRowCount + stats.missingIntervalCount;
     if (totalExpectedObservations === 0) {
-        return { isUptimeValid: false, actualUptimeFraction: 0 };
+        return Object.freeze({
+            isUptimeValid: false,
+            sourceAvailabilityFraction: 0,
+            usableObservationFraction: 0,
+            totalExpectedObservations: 0
+        });
     }
-    const actualUptimeFraction = stats.acceptedObservationCount / totalExpectedObservations;
-    return {
-        isUptimeValid: actualUptimeFraction >= minRequired,
-        actualUptimeFraction
-    };
+
+    const sourceAvailabilityFraction = stats.sourceRowCount / totalExpectedObservations;
+    const usableObservationFraction = stats.acceptedObservationCount / totalExpectedObservations;
+
+    return Object.freeze({
+        isUptimeValid: minRequired === undefined || usableObservationFraction >= minRequired,
+        sourceAvailabilityFraction,
+        usableObservationFraction,
+        totalExpectedObservations
+    });
 }
 
 /**
- * Immutably updates backbone statistics and independently audits source chronology.
+ * Processes one source candle in arrival order, applying internal chronology
+ * checks and the configured policy before updating immutable statistics.
  */
-export function updateBackboneStats(
+export function processSourceObservation(
     prevStats: BackboneStats,
     sourceTimestamp: number,
-    acceptance: SourceAcceptanceResult,
-    expectedIntervalMs: number,
-    isValidOhlcv = true
-): BackboneStats {
+    dataQuality: DataQualityStatus,
+    isValidOhlcv: boolean,
+    policy: IntegrityPolicy,
+    expectedIntervalMs: number
+): ProcessSourceResult {
     if (!Number.isSafeInteger(sourceTimestamp) || sourceTimestamp < 0) {
         throw new Error(`Invalid sourceTimestamp: Expected non-negative safe integer, got ${sourceTimestamp}`);
     }
@@ -163,58 +196,76 @@ export function updateBackboneStats(
         throw new Error(`Invalid expectedIntervalMs: Expected positive safe integer, got ${expectedIntervalMs}`);
     }
 
-    const dq = acceptance.dataQuality;
-    let missingCount = prevStats.missingIntervalCount;
-    let unexpectedCount = prevStats.unexpectedIntervalCount;
-    let isInternalDup = false;
-    let isInternalOutOfOrder = false;
+    let internalDuplicate = false;
+    let internalOutOfOrder = false;
+    let internalUnexpectedInterval = false;
+    let missingIntervalAddition = 0;
 
     if (prevStats.lastSourceTimestamp !== null) {
         const deltaMs = sourceTimestamp - prevStats.lastSourceTimestamp;
-
         if (deltaMs === 0) {
-            isInternalDup = true;
+            internalDuplicate = true;
         } else if (deltaMs < 0) {
-            isInternalOutOfOrder = true;
+            internalOutOfOrder = true;
+        } else if (deltaMs < expectedIntervalMs) {
+            internalUnexpectedInterval = true;
         } else if (deltaMs > expectedIntervalMs) {
             const remainder = deltaMs % expectedIntervalMs;
             if (remainder === 0) {
-                missingCount += (deltaMs / expectedIntervalMs) - 1;
+                missingIntervalAddition = deltaMs / expectedIntervalMs - 1;
             } else {
-                unexpectedCount += 1;
+                internalUnexpectedInterval = true;
             }
-        } else if (deltaMs < expectedIntervalMs) {
-            unexpectedCount += 1;
         }
     }
 
-    if (
-        dq.isUnexpectedInterval &&
-        !isInternalOutOfOrder &&
-        !isInternalDup &&
-        prevStats.lastSourceTimestamp !== null &&
-        sourceTimestamp - prevStats.lastSourceTimestamp === expectedIntervalMs
-    ) {
-        unexpectedCount += 1;
-    }
-
+    const combinedQuality: DataQualityStatus = Object.freeze({
+        ...dataQuality,
+        isDuplicate: dataQuality.isDuplicate || internalDuplicate,
+        isOutOfOrder: dataQuality.isOutOfOrder || internalOutOfOrder,
+        isUnexpectedInterval: dataQuality.isUnexpectedInterval || internalUnexpectedInterval
+    });
+    const acceptance = evaluateAcceptance(combinedQuality, policy, isValidOhlcv);
     const nextWatermark = prevStats.lastSourceTimestamp === null || sourceTimestamp > prevStats.lastSourceTimestamp
         ? sourceTimestamp
         : prevStats.lastSourceTimestamp;
-    const hasDuplicate = dq.isDuplicate || isInternalDup;
-    const hasOutOfOrder = dq.isOutOfOrder || isInternalOutOfOrder;
-    const isInvalidOhlcv = !isValidOhlcv ||
-        (!dq.isSourceValid && !hasDuplicate && !hasOutOfOrder && !dq.isUnexpectedInterval);
 
-    return Object.freeze({
+    const nextStats: BackboneStats = Object.freeze({
         sourceRowCount: prevStats.sourceRowCount + 1,
         acceptedObservationCount: prevStats.acceptedObservationCount + (acceptance.isAccepted ? 1 : 0),
         rejectedObservationCount: prevStats.rejectedObservationCount + (acceptance.isAccepted ? 0 : 1),
-        missingIntervalCount: missingCount,
-        unexpectedIntervalCount: unexpectedCount,
-        duplicateTimestampCount: prevStats.duplicateTimestampCount + (hasDuplicate ? 1 : 0),
-        outOfOrderCount: prevStats.outOfOrderCount + (hasOutOfOrder ? 1 : 0),
-        invalidOhlcvCount: prevStats.invalidOhlcvCount + (isInvalidOhlcv ? 1 : 0),
+        missingIntervalCount: prevStats.missingIntervalCount + missingIntervalAddition,
+        unexpectedIntervalCount: prevStats.unexpectedIntervalCount + (combinedQuality.isUnexpectedInterval ? 1 : 0),
+        duplicateTimestampCount: prevStats.duplicateTimestampCount + (combinedQuality.isDuplicate ? 1 : 0),
+        outOfOrderCount: prevStats.outOfOrderCount + (combinedQuality.isOutOfOrder ? 1 : 0),
+        invalidOhlcvCount: prevStats.invalidOhlcvCount + (isValidOhlcv ? 0 : 1),
         lastSourceTimestamp: nextWatermark
     });
+
+    return Object.freeze({
+        nextStats,
+        acceptance,
+        observationTimestamp: calculateObservationTimestamp(sourceTimestamp, expectedIntervalMs)
+    });
+}
+
+/**
+ * Alias for callers that prefer the stats-oriented function name.
+ */
+export function updateBackboneStats(
+    prevStats: BackboneStats,
+    sourceTimestamp: number,
+    dataQuality: DataQualityStatus,
+    isValidOhlcv: boolean,
+    policy: IntegrityPolicy,
+    expectedIntervalMs: number
+): ProcessSourceResult {
+    return processSourceObservation(
+        prevStats,
+        sourceTimestamp,
+        dataQuality,
+        isValidOhlcv,
+        policy,
+        expectedIntervalMs
+    );
 }

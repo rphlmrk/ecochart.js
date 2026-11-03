@@ -3,9 +3,8 @@ import {
     generateObservationId,
     calculateObservationTimestamp,
     extractDataQuality,
-    evaluateAcceptance,
     evaluateDatasetUptime,
-    updateBackboneStats
+    processSourceObservation
 } from '../indicators/mlr1/dataset/ObservationBackbone';
 import type { ML1Observation } from '../indicators/mlr1/ML1FeatureTypes';
 import type { IntegrityPolicy } from '../indicators/mlr1/dataset/DatasetConfig';
@@ -42,18 +41,29 @@ export function runPhase4BTests(): boolean {
             testFn();
             passed++;
             console.log(`  ✅ Passed: ${name}`);
-        } catch (e: unknown) {
+        } catch (error: unknown) {
             failed++;
-            console.error(`  ❌ Failed: ${name} - ${e instanceof Error ? e.message : String(e)}`);
+            console.error(`  ❌ Failed: ${name} - ${error instanceof Error ? error.message : String(error)}`);
         }
     };
 
-    const policyStrict: IntegrityPolicy = {
+    const strictPolicy: IntegrityPolicy = {
         rejectInvalidSource: true,
         rejectDuplicateTimestamp: true,
         rejectOutOfOrder: true,
         requireMinimumUptimeFraction: 0.95
     };
+
+    const createQuality = (timestamp: number, overrides: Partial<Record<string, number>> = {}) =>
+        extractDataQuality(createMockObservation(timestamp, {
+            IsSourceValid: 1,
+            HasDataGap: 0,
+            IsDiscontinuity: 0,
+            IsDuplicateTimestamp: 0,
+            IsOutOfOrder: 0,
+            IsUnexpectedInterval: 0,
+            ...overrides
+        }));
 
     runTest('1. Deterministic Observation Identity', () => {
         const id1 = generateObservationId('SOLUSDT', '1m', 1700000000000, 1);
@@ -63,7 +73,10 @@ export function runPhase4BTests(): boolean {
     });
 
     runTest('2. Observation Timestamp Boundary & Validation', () => {
-        assert(calculateObservationTimestamp(1700000000000, 60000) === 1700000060000, 'Boundary calculation failed');
+        assert(
+            calculateObservationTimestamp(1700000000000, 60000) === 1700000060000,
+            'Boundary calculation failed'
+        );
         let threw = false;
         try {
             calculateObservationTimestamp(-100, 60000);
@@ -81,183 +94,209 @@ export function runPhase4BTests(): boolean {
     });
 
     runTest('3. Strict Binary Telemetry Validation', () => {
-        const validObs = createMockObservation(1700000000000, {
-            IsSourceValid: 1, HasDataGap: 0, IsDiscontinuity: 0,
-            IsDuplicateTimestamp: 0, IsOutOfOrder: 0, IsUnexpectedInterval: 0
-        });
-        const dq = extractDataQuality(validObs);
-        assert(dq.isSourceValid, 'Mapping failed for IsSourceValid');
+        const quality = createQuality(1700000000000);
+        assert(quality.isSourceValid, 'Mapping failed for IsSourceValid');
 
-        for (const badVal of [0.5, NaN, Infinity, -1, 2]) {
+        for (const badValue of [0.5, NaN, Infinity, -1, 2]) {
             let threw = false;
             try {
                 extractDataQuality(createMockObservation(1700000000000, {
-                    IsSourceValid: badVal, HasDataGap: 0, IsDiscontinuity: 0,
-                    IsDuplicateTimestamp: 0, IsOutOfOrder: 0, IsUnexpectedInterval: 0
+                    IsSourceValid: badValue,
+                    HasDataGap: 0,
+                    IsDiscontinuity: 0,
+                    IsDuplicateTimestamp: 0,
+                    IsOutOfOrder: 0,
+                    IsUnexpectedInterval: 0
                 }));
             } catch {
                 threw = true;
             }
-            assert(threw, `Telemetry with value ${badVal} must throw error`);
+            assert(threw, `Telemetry with value ${badValue} must throw`);
         }
     });
 
-    runTest('4. Integrity Policy: Independent rejectInvalidSource switch', () => {
-        const invalidDq = extractDataQuality(createMockObservation(1700000000000, {
-            IsSourceValid: 0, HasDataGap: 0, IsDiscontinuity: 0,
-            IsDuplicateTimestamp: 0, IsOutOfOrder: 0, IsUnexpectedInterval: 0
-        }));
-
-        const resStrict = evaluateAcceptance(invalidDq, policyStrict, true);
-        assert(!resStrict.isAccepted, 'Strict policy must reject invalid source');
-        assert(resStrict.rejectionReasons.includes('INVALID_SOURCE'), 'Must include INVALID_SOURCE reason');
-
-        const resPermissive = evaluateAcceptance(invalidDq, { ...policyStrict, rejectInvalidSource: false }, true);
-        assert(resPermissive.isAccepted, 'Permissive policy must permit when switch is false');
-    });
-
-    runTest('5. Integrity Policy: Independent rejectDuplicateTimestamp switch', () => {
-        const dupDq = extractDataQuality(createMockObservation(1700000000000, {
-            IsSourceValid: 0, HasDataGap: 0, IsDiscontinuity: 0,
-            IsDuplicateTimestamp: 1, IsOutOfOrder: 0, IsUnexpectedInterval: 0
-        }));
-
-        const resStrict = evaluateAcceptance(dupDq, policyStrict, true);
-        assert(!resStrict.isAccepted, 'Strict policy must reject duplicate');
-
-        const resPermissive = evaluateAcceptance(
-            dupDq,
-            { ...policyStrict, rejectDuplicateTimestamp: false, rejectInvalidSource: false },
-            true
+    runTest('4. Native-clean duplicate is detected and rejected by policy', () => {
+        const timestamp = 1700000000000;
+        const quality = createQuality(timestamp);
+        const first = processSourceObservation(
+            createInitialBackboneStats(), timestamp, quality, true, strictPolicy, 60000
         );
-        assert(resPermissive.isAccepted, 'Permissive policy must permit duplicate when switch is false');
-    });
-
-    runTest('6. Integrity Policy: Independent rejectOutOfOrder switch', () => {
-        const oooDq = extractDataQuality(createMockObservation(1700000000000, {
-            IsSourceValid: 0, HasDataGap: 0, IsDiscontinuity: 0,
-            IsDuplicateTimestamp: 0, IsOutOfOrder: 1, IsUnexpectedInterval: 0
-        }));
-
-        const resStrict = evaluateAcceptance(oooDq, policyStrict, true);
-        assert(!resStrict.isAccepted, 'Strict policy must reject out of order');
-
-        const resPermissive = evaluateAcceptance(
-            oooDq,
-            { ...policyStrict, rejectOutOfOrder: false, rejectInvalidSource: false },
-            true
+        const duplicate = processSourceObservation(
+            first.nextStats, timestamp, quality, true, strictPolicy, 60000
         );
-        assert(resPermissive.isAccepted, 'Permissive policy must permit out of order when switch is false');
+
+        assert(first.acceptance.isAccepted, 'First observation must be accepted');
+        assert(!duplicate.acceptance.isAccepted, 'Internal duplicate must be rejected');
+        assert(
+            duplicate.acceptance.rejectionReasons.includes('DUPLICATE_TIMESTAMP'),
+            'Must cite DUPLICATE_TIMESTAMP'
+        );
+        assert(duplicate.nextStats.duplicateTimestampCount === 1, 'Duplicate count must increment');
     });
 
-    runTest('7. Minimum Uptime Evaluation', () => {
-        let stats = createInitialBackboneStats();
-        stats = { ...stats, acceptedObservationCount: 96, missingIntervalCount: 4 };
+    runTest('5. Native-clean out-of-order timestamp is detected and rejected', () => {
+        const timestamp = 1700000000000;
+        const quality = createQuality(timestamp);
+        const first = processSourceObservation(
+            createInitialBackboneStats(), timestamp, quality, true, strictPolicy, 60000
+        );
+        const outOfOrder = processSourceObservation(
+            first.nextStats, timestamp - 60000, quality, true, strictPolicy, 60000
+        );
 
-        const passResult = evaluateDatasetUptime(stats, { ...policyStrict, requireMinimumUptimeFraction: 0.95 });
-        assert(passResult.isUptimeValid, '96% uptime must pass 95% requirement');
-        assert(Math.abs(passResult.actualUptimeFraction - 0.96) < 1e-4, 'Uptime fraction calculation mismatch');
-
-        const failResult = evaluateDatasetUptime(stats, { ...policyStrict, requireMinimumUptimeFraction: 0.98 });
-        assert(!failResult.isUptimeValid, '96% uptime must fail 98% requirement');
+        assert(!outOfOrder.acceptance.isAccepted, 'Out-of-order timestamp must be rejected');
+        assert(outOfOrder.acceptance.rejectionReasons.includes('OUT_OF_ORDER'), 'Must cite OUT_OF_ORDER');
+        assert(outOfOrder.nextStats.outOfOrderCount === 1, 'Out-of-order count must increment');
+        assert(outOfOrder.nextStats.lastSourceTimestamp === timestamp, 'Watermark must not regress');
     });
 
-    runTest('8. Stateful Chronology Watermark Tracking (No sorting)', () => {
-        let stats = createInitialBackboneStats();
-        const base = 1700000000000;
-        const validDq = extractDataQuality(createMockObservation(base, {
-            IsSourceValid: 1, HasDataGap: 0, IsDiscontinuity: 0,
-            IsDuplicateTimestamp: 0, IsOutOfOrder: 0, IsUnexpectedInterval: 0
-        }));
-        const accept = evaluateAcceptance(validDq, policyStrict);
+    runTest('6. Permissive policy accepts duplicate and out-of-order rows but audits them', () => {
+        const timestamp = 1700000000000;
+        const quality = createQuality(timestamp);
+        const permissivePolicy: IntegrityPolicy = {
+            rejectInvalidSource: false,
+            rejectDuplicateTimestamp: false,
+            rejectOutOfOrder: false
+        };
+        const first = processSourceObservation(
+            createInitialBackboneStats(), timestamp, quality, true, permissivePolicy, 60000
+        );
+        const duplicate = processSourceObservation(
+            first.nextStats, timestamp, quality, true, permissivePolicy, 60000
+        );
+        const outOfOrder = processSourceObservation(
+            duplicate.nextStats, timestamp - 60000, quality, true, permissivePolicy, 60000
+        );
 
-        stats = updateBackboneStats(stats, base, accept, 60000);
-        assert(stats.lastSourceTimestamp === base, 'Watermark should be t=0');
-
-        const oooAccept = evaluateAcceptance(validDq, { ...policyStrict, rejectOutOfOrder: false });
-        stats = updateBackboneStats(stats, base - 60000, oooAccept, 60000);
-        assert(stats.outOfOrderCount === 1, 'Out of order must be detected statefully');
-        assert(stats.lastSourceTimestamp === base, 'Watermark must NOT regress backwards');
+        assert(duplicate.acceptance.isAccepted, 'Permissive policy must accept duplicate');
+        assert(outOfOrder.acceptance.isAccepted, 'Permissive policy must accept out-of-order timestamp');
+        assert(outOfOrder.nextStats.duplicateTimestampCount === 1, 'Duplicate must remain audited');
+        assert(outOfOrder.nextStats.outOfOrderCount === 1, 'Out-of-order row must remain audited');
+        assert(outOfOrder.nextStats.acceptedObservationCount === 3, 'All three rows must be accepted');
     });
 
-    runTest('9. Exact Missing vs Unexpected Interval Accounting', () => {
-        let stats = createInitialBackboneStats();
-        const base = 1700000000000;
-        const validDq = extractDataQuality(createMockObservation(base, {
-            IsSourceValid: 1, HasDataGap: 0, IsDiscontinuity: 0,
-            IsDuplicateTimestamp: 0, IsOutOfOrder: 0, IsUnexpectedInterval: 0
-        }));
-        const accept = evaluateAcceptance(validDq, policyStrict);
+    runTest('7. Invalid source and invalid OHLCV are accounted separately', () => {
+        const timestamp = 1700000000000;
+        const invalidSourceQuality = createQuality(timestamp, { IsSourceValid: 0 });
+        const invalidSource = processSourceObservation(
+            createInitialBackboneStats(), timestamp, invalidSourceQuality, true, strictPolicy, 60000
+        );
+        assert(!invalidSource.acceptance.isAccepted, 'Invalid source must be rejected');
+        assert(invalidSource.acceptance.rejectionReasons.includes('INVALID_SOURCE'), 'Must cite INVALID_SOURCE');
+        assert(!invalidSource.acceptance.rejectionReasons.includes('INVALID_OHLCV'), 'Valid OHLCV must not be cited invalid');
+        assert(invalidSource.nextStats.invalidOhlcvCount === 0, 'Valid OHLCV must not increment invalid count');
 
-        stats = updateBackboneStats(stats, base, accept, 60000);
-        stats = updateBackboneStats(stats, base + 300000, accept, 60000);
-        assert(stats.missingIntervalCount === 4, 'Expected exactly 4 missing intervals');
-        assert(stats.unexpectedIntervalCount === 0, 'Clean gap must not be counted as unexpected');
-
-        stats = updateBackboneStats(stats, base + 610000, accept, 60000);
-        assert(stats.unexpectedIntervalCount === 1, 'Non-multiple delta must increment unexpectedIntervalCount');
+        const validSourceQuality = createQuality(timestamp + 60000);
+        const invalidOhlcv = processSourceObservation(
+            invalidSource.nextStats, timestamp + 60000, validSourceQuality, false, strictPolicy, 60000
+        );
+        assert(!invalidOhlcv.acceptance.isAccepted, 'Invalid OHLCV must be rejected');
+        assert(invalidOhlcv.acceptance.rejectionReasons.includes('INVALID_OHLCV'), 'Must cite INVALID_OHLCV');
+        assert(invalidOhlcv.nextStats.invalidOhlcvCount === 1, 'Invalid OHLCV must increment invalid count');
     });
 
-    runTest('10. Preserves Native isUnexpectedInterval Telemetry', () => {
-        let stats = createInitialBackboneStats();
-        const base = 1700000000000;
-        const unexpectedDq = extractDataQuality(createMockObservation(base, {
-            IsSourceValid: 0, HasDataGap: 0, IsDiscontinuity: 0,
-            IsDuplicateTimestamp: 0, IsOutOfOrder: 0, IsUnexpectedInterval: 1
-        }));
-        const accept = evaluateAcceptance(unexpectedDq, { ...policyStrict, rejectInvalidSource: false });
+    runTest('8. Native unexpected interval is recorded once alongside gap accounting', () => {
+        const timestamp = 1700000000000;
+        const first = processSourceObservation(
+            createInitialBackboneStats(), timestamp, createQuality(timestamp), true, strictPolicy, 60000
+        );
+        const nativeUnexpectedQuality = createQuality(timestamp + 300000, { HasDataGap: 1, IsUnexpectedInterval: 1 });
+        const result = processSourceObservation(
+            first.nextStats, timestamp + 300000, nativeUnexpectedQuality, true, strictPolicy, 60000
+        );
 
-        stats = updateBackboneStats(stats, base, accept, 60000);
-        stats = updateBackboneStats(stats, base + 60000, accept, 60000);
-        assert(stats.unexpectedIntervalCount === 1, 'Native unexpected interval flag must be recorded');
+        assert(result.nextStats.missingIntervalCount === 4, 'Four clean missing intervals must be counted');
+        assert(result.nextStats.unexpectedIntervalCount === 1, 'Native unexpected flag must be counted once');
     });
 
-    runTest('11. Total Accounting Invariants (sourceRows = accepted + rejected)', () => {
+    runTest('9. Uptime includes rejected rows and validates threshold bounds', () => {
+        const stats = Object.freeze({
+            ...createInitialBackboneStats(),
+            sourceRowCount: 100,
+            acceptedObservationCount: 96,
+            rejectedObservationCount: 4
+        });
+        const passing = evaluateDatasetUptime(stats, { ...strictPolicy, requireMinimumUptimeFraction: 0.95 });
+        assert(passing.isUptimeValid, '96% usable fraction must pass 95% threshold');
+        assert(Math.abs(passing.usableObservationFraction - 0.96) < 1e-4, 'Usable fraction denominator mismatch');
+        assert(passing.sourceAvailabilityFraction === 1, 'Source availability must include rejected source rows');
+
+        const failing = evaluateDatasetUptime(stats, { ...strictPolicy, requireMinimumUptimeFraction: 0.98 });
+        assert(!failing.isUptimeValid, '96% usable fraction must fail 98% threshold');
+
+        for (const threshold of [-0.1, 1.1, NaN, Infinity]) {
+            let threw = false;
+            try {
+                evaluateDatasetUptime(stats, { ...strictPolicy, requireMinimumUptimeFraction: threshold });
+            } catch {
+                threw = true;
+            }
+            assert(threw, `Threshold ${threshold} must throw`);
+        }
+    });
+
+    runTest('10. Source row accounting invariant across mixed feed', () => {
+        const timestamp = 1700000000000;
+        const validQuality = createQuality(timestamp);
+        const invalidQuality = createQuality(timestamp + 60000, { IsSourceValid: 0 });
         let stats = createInitialBackboneStats();
-        const base = 1700000000000;
-        const validDq = extractDataQuality(createMockObservation(base, {
-            IsSourceValid: 1, HasDataGap: 0, IsDiscontinuity: 0,
-            IsDuplicateTimestamp: 0, IsOutOfOrder: 0, IsUnexpectedInterval: 0
-        }));
-        const invalidDq = extractDataQuality(createMockObservation(base + 60000, {
-            IsSourceValid: 0, HasDataGap: 0, IsDiscontinuity: 0,
-            IsDuplicateTimestamp: 0, IsOutOfOrder: 0, IsUnexpectedInterval: 0
-        }));
 
-        const acceptTrue = evaluateAcceptance(validDq, policyStrict, true);
-        const acceptFalse = evaluateAcceptance(invalidDq, policyStrict, false);
+        stats = processSourceObservation(stats, timestamp, validQuality, true, strictPolicy, 60000).nextStats;
+        stats = processSourceObservation(stats, timestamp + 60000, invalidQuality, false, strictPolicy, 60000).nextStats;
+        stats = processSourceObservation(stats, timestamp + 60000, validQuality, true, strictPolicy, 60000).nextStats;
 
-        stats = updateBackboneStats(stats, base, acceptTrue, 60000, true);
-        stats = updateBackboneStats(stats, base + 60000, acceptFalse, 60000, false);
-
-        assert(stats.sourceRowCount === 2, 'Total rows must be 2');
-        assert(stats.acceptedObservationCount === 1, 'Accepted must be 1');
-        assert(stats.rejectedObservationCount === 1, 'Rejected must be 1');
+        assert(stats.sourceRowCount === 3, 'Must have 3 source rows');
+        assert(stats.acceptedObservationCount === 1, 'Must have 1 accepted row');
+        assert(stats.rejectedObservationCount === 2, 'Must have 2 rejected rows');
         assert(
             stats.sourceRowCount === stats.acceptedObservationCount + stats.rejectedObservationCount,
-            'Invariant holds'
+            'Source row accounting invariant must hold'
         );
     });
 
-    runTest('12. Immutability & No Fabricated Candles on Gap Recovery', () => {
-        const stats0 = createInitialBackboneStats();
-        const base = 1700000000000;
-        const validDq = extractDataQuality(createMockObservation(base, {
-            IsSourceValid: 1, HasDataGap: 1, IsDiscontinuity: 1,
-            IsDuplicateTimestamp: 0, IsOutOfOrder: 0, IsUnexpectedInterval: 0
-        }));
-        const accept = evaluateAcceptance(validDq, policyStrict);
+    runTest('11. Rejected newer candle advances chronology watermark', () => {
+        const timestamp = 1700000000000;
+        const invalidQuality = createQuality(timestamp + 60000, { IsSourceValid: 0 });
+        const result = processSourceObservation(
+            createInitialBackboneStats(), timestamp + 60000, invalidQuality, true, strictPolicy, 60000
+        );
 
-        const stats1 = updateBackboneStats(stats0, base + 1000000, accept, 60000);
+        assert(!result.acceptance.isAccepted, 'Invalid source must be rejected');
+        assert(result.nextStats.lastSourceTimestamp === timestamp + 60000, 'Watermark must advance despite rejection');
+    });
 
-        assert(stats0.sourceRowCount === 0, 'Initial stats object must remain unmutated');
-        assert(stats1.sourceRowCount === 1, 'Only the actual incoming candle counts as a source row');
-        assert(stats1.acceptedObservationCount === 1, 'Only 1 accepted observation recorded; no candles fabricated');
-        assert(Object.isFrozen(stats1), 'Returned stats must be frozen');
+    runTest('12. Dataset feed preserves order, excludes rejected rows, and fabricates no candles', () => {
+        const stream = [
+            { time: 100000, valid: true },
+            { time: 160000, valid: true },
+            { time: 160000, valid: true },
+            { time: 150000, valid: true },
+            { time: 400000, valid: true },
+            { time: 460000, valid: false }
+        ];
+        let stats = createInitialBackboneStats();
+        const acceptedRows: number[] = [];
+
+        for (const item of stream) {
+            const quality = createQuality(item.time, { IsSourceValid: item.valid ? 1 : 0 });
+            const result = processSourceObservation(stats, item.time, quality, true, strictPolicy, 60000);
+            stats = result.nextStats;
+            if (result.acceptance.isAccepted) acceptedRows.push(item.time);
+        }
+
+        assert(stats.sourceRowCount === 6, 'Source row count must be 6');
+        assert(stats.acceptedObservationCount === 3, 'Exactly 3 rows must be accepted');
+        assert(stats.rejectedObservationCount === 3, 'Exactly 3 rows must be rejected');
+        assert(stats.missingIntervalCount === 3, 'Exactly 3 missing intervals must be counted');
+        assert(acceptedRows.length === 3, 'Output must contain accepted observations only');
+        assert(
+            acceptedRows[0] === 100000 && acceptedRows[1] === 160000 && acceptedRows[2] === 400000,
+            'Original source order must be preserved without fabricated rows'
+        );
     });
 
     console.log('\n=======================================');
-    console.log('📊 ML-R1 PHASE 4B ACCEPTANCE AUDIT:');
+    console.log('📊 ML-R1 PHASE 4B FULL ACCEPTANCE AUDIT:');
     console.log(`   ↳ Tests Executed:  ${passed + failed}`);
     console.log(`   ↳ Tests Passed:    ${passed}`);
     console.log(`   ↳ Tests Failed:    ${failed}`);
