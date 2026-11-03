@@ -4826,8 +4826,165 @@ export class WorkspaceManager {
                 if (!runPhase4BTests()) throw new Error('Milestone 4B suite failed');
                 console.log('✅ Milestone 4B: Passed (20/20 Source Integrity Tests)');
 
+                // Deterministic Reconstruction Verification
+                if (loadingDetail) loadingDetail.textContent = 'Verifying Deterministic Reconstruction parity...';
+                await new Promise(resolve => setTimeout(resolve, 50));
+
+                const testSlice = realCandles.slice(0, 500);
+                if (testSlice.length !== 500) {
+                    throw new Error(`Deterministic Reconstruction requires 500 candles; received ${testSlice.length}.`);
+                }
+                const deterministicPolicy = {
+                    rejectInvalidSource: true,
+                    rejectInvalidOhlcv: true,
+                    rejectDuplicateTimestamp: true,
+                    rejectOutOfOrder: true,
+                    requireMinimumUptimeFraction: 1.0
+                };
+                const runPipelinePass = () => {
+                    let state = createInitialML1FeatureState();
+                    const inputs: Array<{
+                        candle: ML1Candle;
+                        observation: ReturnType<typeof stepML1Features>['observation'];
+                        isValidOhlcv: boolean;
+                    }> = [];
+                    for (let index = 0; index < testSlice.length; index++) {
+                        const candle = testSlice[index];
+                        const result = stepML1Features(candle, index, state, ML1_CONFIG_B);
+                        state = result.nextState;
+                        inputs.push({ candle, observation: result.observation, isValidOhlcv: true });
+                    }
+                    const backbone = buildSourceBackbone(
+                        inputs,
+                        'SOLUSDT',
+                        '1m',
+                        1,
+                        deterministicPolicy,
+                        60_000
+                    );
+
+                    const length = backbone.acceptedRows.length;
+                    if (length !== testSlice.length || backbone.rejectedRows.length > 0 ||
+                        !backbone.uptime.isUptimeValid) {
+                        throw new Error(
+                            'Deterministic Reconstruction test slice failed source integrity validation.'
+                        );
+                    }
+                    const buffer = new Float64Array(length * 6);
+                    for (let index = 0; index < length; index++) {
+                        const candle = backbone.acceptedRows[index].candle;
+                        const offset = index * 6;
+                        buffer[offset] = candle.time;
+                        buffer[offset + 1] = candle.open;
+                        buffer[offset + 2] = candle.high;
+                        buffer[offset + 3] = candle.low;
+                        buffer[offset + 4] = candle.close;
+                        buffer[offset + 5] = candle.volume;
+                    }
+                    const dataStore = {
+                        data: buffer,
+                        length,
+                        clear: () => {}
+                    } as unknown as DataStore;
+                    const zigZag = new StrictCBCZigZagIndicator();
+                    zigZag.calculate(dataStore);
+                    const events = AIExporter.buildMLR1Dataset(
+                        dataStore,
+                        backbone.acceptedRows,
+                        zigZag.cachedPivots,
+                        'SOLUSDT',
+                        '1m',
+                        60_000
+                    );
+                    const continuousCsv = AIExporter.exportMLR1ContinuousObservationsCSV(backbone.acceptedRows);
+                    const representationCsv = AIExporter.exportMLR1RepresentationCSV(events, 'SOLUSDT', '1m');
+                    const eventCsv = AIExporter.exportMLR1CSV(events, 'SOLUSDT', '1m');
+                    if (!continuousCsv || !representationCsv || !eventCsv) {
+                        throw new Error('Deterministic Reconstruction CSV generation failed.');
+                    }
+                    const deterministicFileNames = {
+                        continuous: 'MLR1_SOLUSDT_1m_Continuous_Observations.csv',
+                        representation: 'MLR1_SOLUSDT_1m_Representation_Features.csv',
+                        events: 'MLR1_SOLUSDT_1m_Events.csv'
+                    };
+                    const fileRowCounts = {
+                        [deterministicFileNames.continuous]: AIExporter.countCsvDataRows(continuousCsv),
+                        [deterministicFileNames.representation]: AIExporter.countCsvDataRows(representationCsv),
+                        [deterministicFileNames.events]: AIExporter.countCsvDataRows(eventCsv)
+                    };
+                    const identities = new Set(backbone.acceptedRows.map(row => row.observationId));
+                    const chronologyValid = backbone.stats.outOfOrderCount === 0;
+                    const identityUnique = identities.size === backbone.acceptedRows.length;
+                    const exportAccounting: ExportAccounting = {
+                        rawSourceCandleCount: testSlice.length,
+                        acceptedSourceObservationCount: backbone.acceptedRows.length,
+                        rejectedSourceObservationCount: backbone.rejectedRows.length,
+                        tierAContinuousObservationCount: backbone.acceptedRows.length,
+                        tierAEventRepresentationRowCount: events.length,
+                        tierBConfirmedTeacherEventCount: events.length,
+                        tierCOutcomeRowCount: events.length,
+                        actualFileRowCounts: fileRowCounts
+                    };
+                    const manifest = createDatasetManifest(
+                        'DS_SOLUSDT_1m_DETERMINISM_V1',
+                        'BINANCE_SPOT',
+                        {
+                            symbol: 'SOLUSDT',
+                            baseTimeframe: '1m',
+                            datasetVersion: 1,
+                            sourceIntervalMs: 60_000,
+                            featureConfigVersion: ML1_CONFIG_B_VERSION,
+                            teacherVersion: STRICT_CBC_ZIGZAG_TEACHER_VERSION,
+                            outcomeConfigVersion: MLR1_OUTCOME_CONFIG_VERSION,
+                            dateRange: {
+                                startTimestamp: backbone.acceptedRows[0].sourceTimestamp,
+                                endTimestamp: backbone.acceptedRows[length - 1].sourceTimestamp
+                            },
+                            integrityPolicy: deterministicPolicy,
+                            exportConfig: {
+                                exportTierA: true,
+                                exportTierB: true,
+                                exportTierC: true,
+                                separateFiles: false
+                            }
+                        },
+                        backbone.stats,
+                        backbone.uptime,
+                        {
+                            passed: backbone.uptime.isUptimeValid && backbone.rejectedRows.length === 0 &&
+                                chronologyValid && identityUnique,
+                            chronologyValid,
+                            identityUnique,
+                            inputOutcomeSeparationValid: true,
+                            remarks: []
+                        },
+                        exportAccounting
+                    );
+                    const manifestMetrics = JSON.stringify({ ...manifest, buildTimestamp: 0 });
+                    return {
+                        continuousCsv,
+                        representationCsv,
+                        eventCsv,
+                        eventCount: events.length,
+                        manifestMetrics
+                    };
+                };
+
+                const pass1 = runPipelinePass();
+                const pass2 = runPipelinePass();
+                if (pass1.eventCount !== pass2.eventCount ||
+                    pass1.continuousCsv !== pass2.continuousCsv ||
+                    pass1.representationCsv !== pass2.representationCsv ||
+                    pass1.eventCsv !== pass2.eventCsv ||
+                    pass1.manifestMetrics !== pass2.manifestMetrics) {
+                    throw new Error(
+                        'Deterministic Reconstruction Failure: Production pipeline produced divergent artifacts or manifest metrics across identical runs.'
+                    );
+                }
+                console.log('✅ Deterministic Reconstruction: CSV artifacts and manifest metrics have 100% bitwise parity.');
+
                 console.log('\n======================================================');
-                console.log('🏆 ALL MILESTONES 1 TO 4 ACCEPTANCE GATES VERIFIED');
+                console.log('🏆 ALL MILESTONES 1 TO 4 & DETERMINISTIC EXPORT GATES VERIFIED');
                 console.log('   ↳ Milestone 1:   6/6 Tests Passed');
                 console.log('   ↳ Milestone 2:  73/73 Tests Passed + Quantitative Invariant Audit');
                 console.log('   ↳ Milestone 3:  77/77 MTF Integration Tests Passed');
@@ -5223,8 +5380,15 @@ export class WorkspaceManager {
                     }
                 }
                 auditRemarks.push(
-                    'Tier B teacher fields and Tier C outcome labels share the archival Events CSV; ' +
-                    'only Representation_Features.csv is a model-input projection.'
+                    `Artifact 1 (${continuousFileName}): Tier A continuous causal observations ` +
+                    `(${backboneResult.acceptedRows.length} rows). Available for approved baseline model inputs; ` +
+                    'contains 1:1 feature values and validity masks.',
+                    `Artifact 2 (${representationFileName}): Tier A confirmed-event representation tensor ` +
+                    `(${events.length} rows). Authoritative model-input boundary strictly whitelisted against ` +
+                    'MLR1_REPRESENTATION_FEATURE_ALLOWLIST.',
+                    `Artifact 3 (${eventFileName}): Combined archival and supervised target dataset ` +
+                    `(${events.length} rows). Combines Tier B teacher events with Tier C quarantined forward ` +
+                    'outcomes; not an unrestricted model input source. separateFiles is false.'
                 );
                 const exportAccounting: ExportAccounting = {
                     rawSourceCandleCount: candleCount,

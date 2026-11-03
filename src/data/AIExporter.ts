@@ -1039,14 +1039,28 @@ export class DatasetAuditor {
             }
 
             // 12. Independent Candle-Level Execution Replay (Tracking LONG and SHORT trajectories)
-            if (!Number.isSafeInteger(ev.confirmed_bar_index) ||
+            if (!Number.isSafeInteger(ev.pivot_bar_index) ||
+                !Number.isSafeInteger(ev.confirmed_bar_index) ||
                 !Number.isSafeInteger(ev.entry_bar_index) ||
+                ev.pivot_bar_index < 0 ||
                 ev.confirmed_bar_index < 0 ||
+                ev.pivot_bar_index > ev.confirmed_bar_index ||
                 ev.confirmed_bar_index >= dataStore.length ||
                 ev.entry_bar_index !== ev.confirmed_bar_index + 1 ||
                 ev.entry_bar_index >= dataStore.length) {
+                indexFailures++;
                 candleExecutionFailures++;
                 continue;
+            }
+            const pivotRow = acceptedRows[ev.pivot_bar_index];
+            const confirmedRow = acceptedRows[ev.confirmed_bar_index];
+            if (ev.confirmation_time_ms !== confirmedRow.sourceTimestamp ||
+                confirmedRow.sourceTimestamp !== dataStore.data[ev.confirmed_bar_index * 6]) {
+                timeFailures++;
+            }
+            if (pivotRow.sourceTimestamp !== pivotRow.candle.time ||
+                pivotRow.sourceTimestamp !== dataStore.data[ev.pivot_bar_index * 6]) {
+                timeFailures++;
             }
             const entryBar = ev.entry_bar_index;
             const horizonEnd = entryBar + 60 - 1;
