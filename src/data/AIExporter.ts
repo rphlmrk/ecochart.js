@@ -1,6 +1,8 @@
 // =========================================================================
 // 🔒 FROZEN RESEARCH CONTRACT: EXPLICIT FEATURE / OUTCOME SEPARATION
 // =========================================================================
+import type { SourceBackboneAcceptedRow } from '../indicators/mlr1/dataset/ObservationBackbone';
+
 export const MLR1_REPRESENTATION_FEATURE_ALLOWLIST = [
     'pivot_type',
     'pivot_label',
@@ -152,45 +154,34 @@ export class MarketFeatureEngine {
 
 export class CandleContextAggregator {
     public static summarize(
-        dataStore: any, 
+        acceptedRows: readonly SourceBackboneAcceptedRow[],
         startBar: number, 
         endBar: number, 
-        currentAtr: number,
-        volSma: Float64Array,
-        volValidMask: Uint8Array
+        currentAtr: number
     ) {
-        if (startBar > endBar || currentAtr <= 0) {
+        if (!Number.isSafeInteger(startBar) || !Number.isSafeInteger(endBar) ||
+            startBar > endBar || startBar < 0 || endBar >= acceptedRows.length ||
+            !Number.isFinite(currentAtr) || currentAtr <= 0) {
             return { netReturnAtr: 0, maxFavorableAtr: 0, maxAdverseAtr: 0, count: 0, relativeVolume: -1.0, validFraction: 0.0 };
         }
 
-        const startOpen = dataStore.data[startBar * 6 + 1];
-        const endClose = dataStore.data[endBar * 6 + 4];
+        const startOpen = acceptedRows[startBar].candle.open;
+        const endClose = acceptedRows[endBar].candle.close;
         let maxH = -Infinity;
         let minL = Infinity;
-        
         let matureCount = 0;
-        let volSum = 0;
-        let volSmaSum = 0;
-        
-        for (let i = startBar; i <= endBar; i++) {
-            const base = i * 6;
-            if (dataStore.data[base + 2] > maxH) maxH = dataStore.data[base + 2];
-            if (dataStore.data[base + 3] < minL) minL = dataStore.data[base + 3];
-            
-            // Safeguard: Ensure volume is non-negative and finite, and SMA denominator is positive and finite
-            const vol = dataStore.data[base + 5];
-            const sma = volSma[i];
+        let sumRelativeVolume = 0;
 
-            if (
-                volValidMask[i] === 1 &&
-                Number.isFinite(vol) &&
-                vol >= 0 &&
-                Number.isFinite(sma) &&
-                sma > 0
-            ) {
+        for (let i = startBar; i <= endBar; i++) {
+            const observation = acceptedRows[i].observation;
+            if (observation.sourceHigh > maxH) maxH = observation.sourceHigh;
+            if (observation.sourceLow < minL) minL = observation.sourceLow;
+
+            const relativeVolume = observation.features['RelativeVolume_20'];
+            if (observation.validity['RelativeVolume_20'] === true &&
+                Number.isFinite(relativeVolume) && relativeVolume >= 0) {
                 matureCount++;
-                volSum += vol;
-                volSmaSum += sma;
+                sumRelativeVolume += relativeVolume;
             }
         }
 
@@ -198,9 +189,8 @@ export class CandleContextAggregator {
         const netReturnAtr = (endClose - startOpen) / currentAtr;
         const maxFavorableAtr = (maxH - startOpen) / currentAtr;
         const maxAdverseAtr = (startOpen - minL) / currentAtr;
-        
         const validFraction = count > 0 ? (matureCount / count) : 0.0;
-        const relativeVolume = (matureCount > 0 && volSmaSum > 0) ? (volSum / volSmaSum) : -1.0;
+        const relativeVolume = matureCount > 0 ? sumRelativeVolume / matureCount : -1.0;
 
         return {
             netReturnAtr,
@@ -217,10 +207,8 @@ export class HybridTokenBuilder {
     public static build(
         event: any, 
         prevEvent: any, 
-        dataStore: any, 
-        currentAtr: number,
-        volSmaRaw: Float64Array,
-        volValidMask: Uint8Array
+        acceptedRows: readonly SourceBackboneAcceptedRow[],
+        currentAtr: number
     ) {
         const confBar = event.confirmedBarIndex;
         const prevConfBar = prevEvent.confirmedBarIndex;
@@ -239,7 +227,7 @@ export class HybridTokenBuilder {
         const contextStart = prevConfBar + 1;
         const contextEnd = confBar; 
         
-        const ctx = CandleContextAggregator.summarize(dataStore, contextStart, contextEnd, currentAtr, volSmaRaw, volValidMask);
+        const ctx = CandleContextAggregator.summarize(acceptedRows, contextStart, contextEnd, currentAtr);
 
         return {
             completed_leg_direction,
@@ -259,6 +247,7 @@ export class HybridTokenBuilder {
 export class AIExporter {
     public static buildMLR1Dataset(
         dataStore: any,
+        acceptedRows: readonly SourceBackboneAcceptedRow[],
         cachedPivots: any[],
         symbol: string,
         timeframe: string
@@ -274,8 +263,20 @@ export class AIExporter {
         // ==========================================
 
         const len = dataStore.length;
+        if (!dataStore || !dataStore.data || !Number.isSafeInteger(len) || len < 0 ||
+            !Array.isArray(acceptedRows) || acceptedRows.length !== len) {
+            throw new Error(
+                `AIExporter Error: acceptedRows length (${acceptedRows?.length ?? 'invalid'}) must match dataStore length (${len}).`
+            );
+        }
+        for (let i = 0; i < len; i++) {
+            if (!acceptedRows[i] || !acceptedRows[i].candle || !acceptedRows[i].observation ||
+                acceptedRows[i].candle.time !== dataStore.data[i * 6] ||
+                acceptedRows[i].observation.timestamp !== dataStore.data[i * 6]) {
+                throw new Error(`AIExporter Error: accepted row ${i} does not match the downstream dataStore timeline.`);
+            }
+        }
         const atrRaw = MarketFeatureEngine.calculateATRArray(dataStore, ATR_PERIOD);
-        const { sma: volSmaRaw, validMask: volValidMask } = MarketFeatureEngine.calculateVolumeSMA(dataStore, 20);
         const events: MLR1EventRow[] = [];
 
         const indVersion = `v2_ATR${ATR_PERIOD}_SL${STOP_ATR_MULT}_TP${TARGET_R_MULT}_HZ${MAX_HORIZON_BARS}`;
@@ -315,7 +316,7 @@ export class AIExporter {
             const entryOpen = dataStore.data[entryBar * 6 + 1];
 
             // 1. Hybrid Token Construction
-            const tokenFeatures = HybridTokenBuilder.build(pivot, prevPivot, dataStore, currentAtr, volSmaRaw, volValidMask);
+            const tokenFeatures = HybridTokenBuilder.build(pivot, prevPivot, acceptedRows, currentAtr);
 
             // 2. Counterfactual Simulation
             const lStop = entryOpen - (currentAtr * STOP_ATR_MULT);

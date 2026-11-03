@@ -87,6 +87,7 @@ export interface SourceBackboneAcceptedRow {
     readonly sourceTimestamp: number;
     readonly observationTimestamp: number;
     readonly candle: ML1Candle;
+    readonly observation: ML1Observation;
     readonly dataQuality: DataQualityStatus;
 }
 
@@ -722,11 +723,17 @@ export function buildSourceBackbone(
 
         if (result.acceptance.isAccepted) {
             acceptedTimestamps.add(timestamp);
+            const observation: ML1Observation = Object.freeze({
+                ...item.observation,
+                features: Object.freeze({ ...item.observation.features }),
+                validity: Object.freeze({ ...item.observation.validity })
+            });
             acceptedRows.push(Object.freeze({
                 observationId: generateObservationId(symbol, timeframe, timestamp, datasetVersion),
                 sourceTimestamp: timestamp,
                 observationTimestamp: result.observationTimestamp,
                 candle,
+                observation,
                 dataQuality: result.acceptance.dataQuality
             }));
         } else {

@@ -4717,6 +4717,7 @@ export class WorkspaceManager {
                         `Provenance Gate requires SOLUSDT 1m. Currently active: ${chart.currentSymbol} ${chart.currentInterval}`
                     );
                 }
+                const intervalMs = 60_000;
                 const realCandlesRaw = await BackgroundDataMiner.mineHistoricalCandles(
                     chart.currentSymbol,
                     chart.currentInterval,
@@ -4733,6 +4734,7 @@ export class WorkspaceManager {
                 const realCandles = candlesFromFlatBuffer(realCandlesRaw);
                 let lastTime = -1;
                 let firstTime = -1;
+                let expectedNextTime = -1;
                 for (let index = 0; index < realCandles.length; index++) {
                     const candle = realCandles[index];
                     if (candle.time < 1e12) {
@@ -4746,6 +4748,11 @@ export class WorkspaceManager {
                         !Number.isFinite(candle.volume)) {
                         throw new Error(`Non-finite or unsafe OHLCV value at candle index ${index}.`);
                     }
+                    if (candle.time % intervalMs !== 0) {
+                        throw new Error(
+                            `Timestamp ${candle.time} is not aligned to the ${chart.currentInterval} interval.`
+                        );
+                    }
                     if (candle.high < candle.low ||
                         candle.high < Math.max(candle.open, candle.close) ||
                         candle.low > Math.min(candle.open, candle.close) ||
@@ -4754,30 +4761,36 @@ export class WorkspaceManager {
                     }
                     if (index === 0) {
                         firstTime = candle.time;
-                    } else if ((candle.time - firstTime) % 60_000 !== 0) {
-                        throw new Error(
-                            `Timestamp ${candle.time} is not on the 1m interval grid anchored at ${firstTime}.`
-                        );
-                    }
-                    if (candle.time <= lastTime) {
-                        throw new Error(
-                            `Chronological anomaly detected in fetched data at index ${index}: ${candle.time} <= ${lastTime}`
-                        );
-                    }
-                    if (!validateCandleOhlcv(candle)) {
-                        throw new Error(`Structurally invalid OHLCV at candle index ${index}.`);
+                    } else {
+                        if (candle.time <= lastTime) {
+                            throw new Error(
+                                `Chronological anomaly detected in fetched data at index ${index}: ${candle.time} <= ${lastTime}`
+                            );
+                        }
+                        if (expectedNextTime !== -1 && candle.time !== expectedNextTime) {
+                            throw new Error(
+                                `Missing 1m candle detected. Expected ${expectedNextTime}, got ${candle.time}. ` +
+                                `Delta: ${candle.time - expectedNextTime}ms`
+                            );
+                        }
                     }
                     lastTime = candle.time;
+                    expectedNextTime = candle.time + intervalMs;
                 }
-                if (realCandles.length < 9500) {
+                const expectedSevenDayCandles = 7 * 24 * 60;
+                if (realCandles.length !== expectedSevenDayCandles) {
                     throw new Error(
-                        `Provenance dataset too small. Expected approximately 10,080 candles for 7 days 1m, got ${realCandles.length}.`
+                        `Expected exactly ${expectedSevenDayCandles} contiguous 1m candles for provenance, got ${realCandles.length}.`
                     );
                 }
-                const actualCoverage = ((realCandles.length / 10_080) * 100).toFixed(2);
+                if (lastTime - firstTime !== (expectedSevenDayCandles - 1) * intervalMs) {
+                    throw new Error(
+                        'Historical data does not span the exact seven-day candle-open range.'
+                    );
+                }
                 console.log(
-                    `Provenance Data Verified: ${realCandles.length} candles (${actualCoverage}% of 7 days) ` +
-                    `from ${new Date(firstTime).toISOString()} to ${new Date(lastTime).toISOString()}`
+                    `Provenance Data Verified: ${realCandles.length} contiguous candles from ` +
+                    `${new Date(firstTime).toISOString()} to ${new Date(lastTime).toISOString()}`
                 );
 
                 console.log('\n======================================================');
@@ -4975,6 +4988,7 @@ export class WorkspaceManager {
 
                 const dsFirstTime = rawCandleBuffer[0];
                 let ml1State = createInitialML1FeatureState();
+                let expectedNextTime = -1;
                 const backboneInputs: Array<{
                     candle: ML1Candle;
                     observation: ReturnType<typeof stepML1Features>['observation'];
@@ -4995,7 +5009,25 @@ export class WorkspaceManager {
                             `Export aborted: candle timestamp ${candle.time} is invalid or is not in milliseconds.`
                         );
                     }
+                    if (candle.time % intervalMs !== 0) {
+                        throw new Error(
+                            `Export aborted: timestamp ${candle.time} is not aligned to ${chart.currentInterval}.`
+                        );
+                    }
                     const isValidOhlcv = validateCandleOhlcv(candle);
+                    if (!isValidOhlcv) {
+                        throw new Error(
+                            `Export aborted: Structurally invalid OHLCV at ${new Date(candle.time).toISOString()}.`
+                        );
+                    }
+                    if (expectedNextTime !== -1 && candle.time !== expectedNextTime) {
+                        throw new Error(
+                            `Export aborted: Missing candle detected. Expected ${new Date(expectedNextTime).toISOString()}, ` +
+                            `got ${new Date(candle.time).toISOString()}. A continuous timeline is required.`
+                        );
+                    }
+                    expectedNextTime = candle.time + intervalMs;
+
                     const result = stepML1Features(candle, i / 6, ml1State, featureConfig);
                     const quality = extractDataQuality(result.observation);
                     const isOnGrid = (candle.time - dsFirstTime) % intervalMs === 0;
@@ -5020,7 +5052,6 @@ export class WorkspaceManager {
                         );
                     }
 
-                    // The feature engine is immutable; commit its next state only after validation passes.
                     ml1State = result.nextState;
                     backboneInputs.push({ candle, observation: result.observation, isValidOhlcv });
                 }
@@ -5038,9 +5069,12 @@ export class WorkspaceManager {
                     intervalMs,
                     dateRange
                 );
-                if (!backboneResult.uptime.isUptimeValid || backboneResult.rejectedRows.length > 0) {
+                if (!backboneResult.uptime.isUptimeValid ||
+                    backboneResult.rejectedRows.length > 0 ||
+                    backboneResult.acceptedRows.length !== rawCandleBuffer.length / 6) {
                     throw new Error(
-                        `Dataset uptime requirement failed. 100% contiguous data is required. Usable fraction: ` +
+                        `M4B accepted-row accounting does not match the original source candle count. ` +
+                        `100% contiguous data is required. Usable fraction: ` +
                         `${(backboneResult.uptime.usableObservationFraction * 100).toFixed(2)}%`
                     );
                 }
@@ -5101,6 +5135,7 @@ export class WorkspaceManager {
 
                 const events = AIExporter.buildMLR1Dataset(
                     cleanDs,
+                    backboneResult.acceptedRows,
                     headlessZigZag.cachedPivots,
                     chart.currentSymbol,
                     chart.currentInterval
@@ -5139,6 +5174,8 @@ export class WorkspaceManager {
                     auditRemarks.push('Representation allowlist validation failed.');
                 }
                 if (!auditResult.passed) auditRemarks.push('Causality audit failed during export.');
+                auditRemarks.push(`Final exported Tier B/C ML-R1 events: ${events.length}`);
+                auditRemarks.push(`Tier A continuous observations: ${backboneResult.acceptedRows.length}`);
 
                 if (!sourceIntegrityPassed || !auditResult.passed ||
                     !chronologyValid || !identityUnique ||

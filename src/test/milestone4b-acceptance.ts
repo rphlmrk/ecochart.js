@@ -550,6 +550,9 @@ export function runPhase4BTests(): boolean {
         assert(result.acceptedRows[2].sourceTimestamp === 340000, 'Third row timestamp mismatch');
         assert(result.acceptedRows[0].observationTimestamp === 160000, 'Observation boundary mismatch');
         assert(result.acceptedRows[0].observationId === 'OBS_SOLUSDT_1m_V1_100000', 'Observation ID mismatch');
+        assert(result.acceptedRows[0].observation.timestamp === 100000, 'Accepted row must retain its authoritative ML1 observation');
+        assert(Object.isFrozen(result.acceptedRows[0].observation), 'Accepted ML1 observation must be immutable');
+        assert(Object.isFrozen(result.acceptedRows[0].observation.features), 'Accepted ML1 features must be immutable');
         assert(result.uptime.totalExpectedObservations === 7, 'Configured range should include seven expected timeline slots');
         assert(Math.abs(result.uptime.sourceAvailabilityFraction - 5 / 7) < 1e-4, 'Source availability must use unique on-grid timestamps');
         assert(Math.abs(result.uptime.usableObservationFraction - 3 / 7) < 1e-4, 'Usable uptime must use unique accepted timestamps');
