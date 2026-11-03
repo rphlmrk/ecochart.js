@@ -826,6 +826,9 @@ export function createDatasetManifest(
         throw new Error('DatasetManifest Error: actualFileRowCounts must be a non-null record.');
     }
     const fileRowCountEntries = Object.entries(exportAccounting.actualFileRowCounts);
+    if (fileRowCountEntries.length === 0) {
+        throw new Error('DatasetManifest Error: actualFileRowCounts must include generated dataset files.');
+    }
     for (const [fileName, rowCount] of fileRowCountEntries) {
         if (!fileName.trim() || !Number.isSafeInteger(rowCount) || rowCount < 0) {
             throw new Error(

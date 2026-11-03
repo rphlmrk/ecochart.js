@@ -2,6 +2,9 @@
 // 🔒 FROZEN RESEARCH CONTRACT: EXPLICIT FEATURE / OUTCOME SEPARATION
 // =========================================================================
 import type { SourceBackboneAcceptedRow } from '../indicators/mlr1/dataset/ObservationBackbone';
+import type { StrictZigZagPivot } from '../indicators/plugins/StrictCBCZigZagIndicator';
+
+export const MLR1_OUTCOME_CONFIG_VERSION = 'MLR1_v2';
 
 export const MLR1_REPRESENTATION_FEATURE_ALLOWLIST = [
     'pivot_type',
@@ -21,8 +24,8 @@ export const MLR1_REPRESENTATION_FEATURE_ALLOWLIST = [
 export type MLR1RepresentationFeature = typeof MLR1_REPRESENTATION_FEATURE_ALLOWLIST[number];
 
 /**
- * 🔒 STRICT PROJECTION: Constructs Transformer input strictly from the allowlist.
- * Ensures future outcome fields can NEVER enter the model.
+ * 🔒 STRICT PROJECTION: This allowlist is the sole model-input projection.
+ * The combined event CSV is archival/label output and must not be used as input.
  */
 export function buildRepresentationInput(ev: MLR1EventRow): Record<MLR1RepresentationFeature, string | number> {
     const input = {} as Record<MLR1RepresentationFeature, string | number>;
@@ -213,13 +216,23 @@ export class CandleContextAggregator {
 
 export class HybridTokenBuilder {
     public static build(
-        event: any, 
-        prevEvent: any, 
+        event: StrictZigZagPivot,
+        prevEvent: StrictZigZagPivot,
         acceptedRows: readonly SourceBackboneAcceptedRow[],
         currentAtr: number
     ) {
+        if (!event || typeof event !== 'object' ||
+            !prevEvent || typeof prevEvent !== 'object' ||
+            !Array.isArray(acceptedRows) || acceptedRows.length === 0) {
+            throw new Error('HybridTokenBuilder Error: pivot events and accepted rows are required.');
+        }
         if (!Number.isFinite(currentAtr) || currentAtr <= 0) {
             throw new Error('HybridTokenBuilder Error: currentAtr must be a positive finite number.');
+        }
+        if (!['high', 'low'].includes(event.type) ||
+            !['high', 'low'].includes(prevEvent.type) ||
+            event.type === prevEvent.type) {
+            throw new Error('HybridTokenBuilder Error: pivot types must be valid and alternate.');
         }
         const confBar = event.confirmedBarIndex;
         const prevConfBar = prevEvent.confirmedBarIndex;
@@ -230,8 +243,15 @@ export class HybridTokenBuilder {
                 `HybridTokenBuilder Error: invalid confirmed-bar indices: previous=${prevConfBar}, current=${confBar}.`
             );
         }
-        if (!Number.isFinite(event.price) || !Number.isFinite(prevEvent.price)) {
-            throw new Error('HybridTokenBuilder Error: pivot prices must be finite.');
+        if (!Number.isSafeInteger(event.barIndex) || !Number.isSafeInteger(prevEvent.barIndex) ||
+            event.barIndex < 0 || event.barIndex > confBar ||
+            prevEvent.barIndex < 0 || prevEvent.barIndex > prevConfBar ||
+            event.barIndex <= prevEvent.barIndex) {
+            throw new Error('HybridTokenBuilder Error: pivot indices must be valid and ordered before confirmation.');
+        }
+        if (!Number.isFinite(event.price) || event.price <= 0 ||
+            !Number.isFinite(prevEvent.price) || prevEvent.price <= 0) {
+            throw new Error('HybridTokenBuilder Error: pivot prices must be positive finite numbers.');
         }
         
         const barsSinceLast = confBar - prevConfBar;
@@ -247,7 +267,28 @@ export class HybridTokenBuilder {
 
         const contextStart = prevConfBar + 1;
         const contextEnd = confBar; 
-        
+        for (let index = contextStart; index <= contextEnd; index++) {
+            const row = acceptedRows[index];
+            const candle = row?.candle;
+            if (!row || !candle || !row.observation ||
+                !Number.isSafeInteger(row.sourceTimestamp) ||
+                row.sourceTimestamp !== candle.time ||
+                row.observation.timestamp !== row.sourceTimestamp ||
+                !Number.isSafeInteger(row.observationTimestamp) ||
+                row.observationTimestamp <= row.sourceTimestamp ||
+                !Number.isFinite(candle.open) || candle.open <= 0 ||
+                !Number.isFinite(candle.high) || candle.high <= 0 ||
+                !Number.isFinite(candle.low) || candle.low <= 0 ||
+                !Number.isFinite(candle.close) || candle.close <= 0 ||
+                !Number.isFinite(candle.volume) || candle.volume < 0 ||
+                candle.high < Math.max(candle.open, candle.close) ||
+                candle.low > Math.min(candle.open, candle.close) ||
+                candle.high < candle.low ||
+                (index > contextStart && row.sourceTimestamp <= acceptedRows[index - 1].sourceTimestamp)) {
+                throw new Error(`HybridTokenBuilder Error: accepted row ${index} is invalid or out of order.`);
+            }
+        }
+
         const ctx = CandleContextAggregator.summarize(acceptedRows, contextStart, contextEnd, currentAtr);
 
         return {
@@ -566,9 +607,20 @@ export class AIExporter {
         acceptedRows: readonly SourceBackboneAcceptedRow[]
     ): string | null {
         if (acceptedRows.length === 0) return null;
+        const firstRow = acceptedRows[0];
+        if (!firstRow || !firstRow.observation ||
+            !firstRow.observation.features || !firstRow.observation.validity) {
+            throw new Error('Continuous Observation Schema Error: first row must include features and validity maps.');
+        }
 
-        const featureKeys = Object.keys(acceptedRows[0].observation.features).sort();
-        const headers = [
+        const featureKeys = Object.keys(firstRow.observation.features).sort();
+        const validityKeys = Object.keys(firstRow.observation.validity).sort();
+        if (featureKeys.length !== validityKeys.length ||
+            featureKeys.some((key, index) => key !== validityKeys[index])) {
+            throw new Error('Continuous Observation Schema Error: feature and validity keys must match exactly.');
+        }
+        const observationIds = new Set<string>();
+        const headerNames = [
             'observation_id',
             'source_timestamp',
             'observation_timestamp',
@@ -577,27 +629,57 @@ export class AIExporter {
             'low',
             'close',
             'volume',
-            ...featureKeys
-        ].map(this.csvEscape).join(',');
+            ...featureKeys,
+            ...featureKeys.map(key => `valid_${key}`)
+        ];
+        if (new Set(headerNames).size !== headerNames.length) {
+            throw new Error('Continuous Observation Schema Error: generated CSV column names must be unique.');
+        }
+        const headers = headerNames.map(this.csvEscape).join(',');
         const lines = acceptedRows.map((row, index) => {
-            const currentFeatureKeys = Object.keys(row.observation.features).sort();
-            if (currentFeatureKeys.length !== featureKeys.length ||
-                currentFeatureKeys.some((key, keyIndex) => key !== featureKeys[keyIndex])) {
-                throw new Error(`Continuous Observation Schema Error: row ${index} feature keys differ from the schema.`);
+            if (!row || !row.observation || !row.observation.features ||
+                !row.observation.validity || !row.candle) {
+                throw new Error(`Continuous Observation Schema Error: row ${index} is incomplete.`);
             }
-            if (!row.observationId ||
+            const currentFeatureKeys = Object.keys(row.observation.features).sort();
+            const currentValidityKeys = Object.keys(row.observation.validity).sort();
+            if (currentFeatureKeys.length !== featureKeys.length ||
+                currentFeatureKeys.some((key, keyIndex) => key !== featureKeys[keyIndex]) ||
+                currentValidityKeys.length !== validityKeys.length ||
+                currentValidityKeys.some((key, keyIndex) => key !== validityKeys[keyIndex])) {
+                throw new Error(`Continuous Observation Schema Error: row ${index} feature or validity keys differ from the schema.`);
+            }
+            if (typeof row.observationId !== 'string' || row.observationId.trim().length === 0 ||
+                observationIds.has(row.observationId) ||
                 !Number.isSafeInteger(row.sourceTimestamp) ||
                 !Number.isSafeInteger(row.observationTimestamp) ||
+                row.sourceTimestamp < 0 ||
+                row.observationTimestamp < 0 ||
                 row.sourceTimestamp !== row.candle.time ||
                 row.sourceTimestamp !== row.observation.timestamp ||
                 row.observationTimestamp <= row.sourceTimestamp ||
+                !Number.isSafeInteger(row.observation.barIndex) ||
+                row.observation.barIndex < 0 ||
+                (index > 0 && (
+                    row.sourceTimestamp <= acceptedRows[index - 1].sourceTimestamp ||
+                    row.observationTimestamp <= acceptedRows[index - 1].observationTimestamp
+                )) ||
                 !Number.isFinite(row.candle.open) ||
                 !Number.isFinite(row.candle.high) ||
                 !Number.isFinite(row.candle.low) ||
                 !Number.isFinite(row.candle.close) ||
-                !Number.isFinite(row.candle.volume)) {
+                !Number.isFinite(row.candle.volume) ||
+                row.candle.open <= 0 ||
+                row.candle.high <= 0 ||
+                row.candle.low <= 0 ||
+                row.candle.close <= 0 ||
+                row.candle.volume < 0 ||
+                row.candle.high < Math.max(row.candle.open, row.candle.close) ||
+                row.candle.low > Math.min(row.candle.open, row.candle.close) ||
+                row.candle.high < row.candle.low) {
                 throw new Error(`Continuous Observation Schema Error: row ${index} has invalid identity, timestamps, or OHLCV.`);
             }
+            observationIds.add(row.observationId);
 
             const values = [
                 this.csvEscape(row.observationId),
@@ -614,12 +696,49 @@ export class AIExporter {
                         throw new Error(`Non-finite feature ${key} in continuous row ${index}.`);
                     }
                     return String(featureValue);
+                }),
+                ...featureKeys.map(key => {
+                    const isValid = row.observation.validity[key];
+                    if (typeof isValid !== 'boolean') {
+                        throw new Error(`Invalid validity marker for feature ${key} in continuous row ${index}.`);
+                    }
+                    return String(isValid);
                 })
             ];
             return values.join(',');
         });
 
         return [headers, ...lines].join('\r\n');
+    }
+
+    public static countCsvDataRows(csv: string): number {
+        if (typeof csv !== 'string' || csv.length === 0) {
+            throw new Error('CSV Row Count Error: CSV content must be a non-empty string.');
+        }
+        let inQuotedField = false;
+        let recordCount = 1;
+        for (let i = 0; i < csv.length; i++) {
+            const character = csv[i];
+            if (character === '"') {
+                if (inQuotedField && csv[i + 1] === '"') {
+                    i++;
+                } else {
+                    inQuotedField = !inQuotedField;
+                }
+            } else if (!inQuotedField && character === '\r') {
+                if (csv[i + 1] !== '\n') {
+                    throw new Error('CSV Row Count Error: CSV must use CRLF record separators.');
+                }
+                recordCount++;
+                i++;
+            } else if (!inQuotedField && character === '\n') {
+                throw new Error('CSV Row Count Error: CSV contains an unpaired line feed.');
+            }
+        }
+        if (inQuotedField) {
+            throw new Error('CSV Row Count Error: CSV contains an unterminated quoted field.');
+        }
+        return recordCount - 1;
     }
 }
 
@@ -650,6 +769,10 @@ export class DatasetAuditor {
             identityUnique: false,
             inputOutcomeSeparationValid: false
         };
+        if (!Array.isArray(events)) {
+            console.error('DatasetAuditor Error: events must be an array.');
+            return failResult;
+        }
         if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
             console.error('DatasetAuditor Error: intervalMs must be a positive safe integer.');
             return failResult;
@@ -667,7 +790,9 @@ export class DatasetAuditor {
         for (let rowIndex = 0; rowIndex < dataStore.length; rowIndex++) {
             const row = acceptedRows[rowIndex];
             const base = rowIndex * 6;
-            if (!row || row.candle.time !== dataStore.data[base] ||
+            if (!row || !row.candle || !row.observation ||
+                !row.observation.features || !row.observation.validity ||
+                row.candle.time !== dataStore.data[base] ||
                 row.candle.open !== dataStore.data[base + 1] ||
                 row.candle.high !== dataStore.data[base + 2] ||
                 row.candle.low !== dataStore.data[base + 3] ||
@@ -681,7 +806,8 @@ export class DatasetAuditor {
                 row.observation.sourceLow !== row.candle.low ||
                 row.observation.sourceClose !== row.candle.close ||
                 row.observation.sourceVolume !== row.candle.volume ||
-                row.observation.barIndex !== rowIndex) {
+                row.observation.barIndex !== rowIndex ||
+                (rowIndex > 0 && row.sourceTimestamp <= acceptedRows[rowIndex - 1].sourceTimestamp)) {
                 console.error(`❌ DatasetAuditor Error: accepted row ${rowIndex} does not match the dataStore bar.`);
                 return failResult;
             }
@@ -707,20 +833,48 @@ export class DatasetAuditor {
 
         for (let i = 0; i < events.length; i++) {
             const ev = events[i];
+            if (!ev || typeof ev !== 'object') {
+                directionFailures++;
+                continue;
+            }
+            const previousEvent = i > 0 ? events[i - 1] : undefined;
 
             // 1. Uniqueness
+            if (typeof ev.event_id !== 'string' || ev.event_id.trim().length === 0) {
+                duplicateFailures++;
+            }
             if (idSet.has(ev.event_id)) duplicateFailures++;
             idSet.add(ev.event_id);
 
             // 2. Strict Chronology & Integer Timestamps
             if (i > 0) {
-                if (ev.confirmation_time_ms <= events[i - 1].confirmation_time_ms) timeFailures++;
-                if (ev.confirmed_bar_index <= events[i - 1].confirmed_bar_index) timeFailures++;
+                if (!previousEvent || typeof previousEvent !== 'object') {
+                    timeFailures++;
+                } else {
+                    if (ev.confirmation_time_ms <= previousEvent.confirmation_time_ms) timeFailures++;
+                    if (ev.confirmed_bar_index <= previousEvent.confirmed_bar_index) timeFailures++;
+                }
             }
 
             // 3. Exact next_open Causality Contract
             if (ev.entry_bar_index !== ev.confirmed_bar_index + 1) indexFailures++;
             if (ev.entry_time <= ev.confirmation_time_ms) indexFailures++;
+            if (!Number.isSafeInteger(ev.pivot_bar_index) ||
+                !Number.isSafeInteger(ev.confirmed_bar_index) ||
+                ev.pivot_bar_index < 0 ||
+                ev.pivot_bar_index > ev.confirmed_bar_index ||
+                ev.confirmed_bar_index >= acceptedRows.length ||
+                acceptedRows[ev.confirmed_bar_index]?.sourceTimestamp !== ev.confirmation_time_ms ||
+                (ev.pivot_type === 'high'
+                    ? ev.pivot_price !== acceptedRows[ev.pivot_bar_index]?.candle.high
+                    : ev.pivot_type === 'low'
+                        ? ev.pivot_price !== acceptedRows[ev.pivot_bar_index]?.candle.low
+                        : true) ||
+                (i > 0 && (!previousEvent ||
+                    !Number.isSafeInteger(previousEvent.pivot_bar_index) ||
+                    ev.pivot_bar_index <= previousEvent.pivot_bar_index))) {
+                indexFailures++;
+            }
 
             // 4. Exhaustive Anti-NaN Gate on all 25 numeric fields
             const requiredFiniteNumbers = [

@@ -4,6 +4,8 @@ import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { TimeframeResampler } from '../../data/TimeframeResampler';
 import { Graphics } from 'pixi.js';
 
+export const STRICT_CBC_ZIGZAG_TEACHER_VERSION = 'StrictCBCZigZag_v1';
+
 export interface ConfirmedCBCEvent {
     eventId: string;
     symbol: string;

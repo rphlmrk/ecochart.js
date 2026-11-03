@@ -1,6 +1,8 @@
 import { validateML1Config } from './ML1FeatureEngine';
 import type { ValidatedML1FeatureConfig } from './ML1FeatureTypes';
 
+export const ML1_CONFIG_B_VERSION = 'ML1_CONFIG_B_v1';
+
 /**
  * ML-R1 Phase 2J — frozen configuration profiles.
  *

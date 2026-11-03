@@ -15,6 +15,7 @@ export interface ExportConfiguration {
     readonly exportTierA: boolean;
     readonly exportTierB: boolean;
     readonly exportTierC: boolean;
+    /** True only when Tier B teacher rows and Tier C outcome labels are separate files. */
     readonly separateFiles: boolean;
 }
 

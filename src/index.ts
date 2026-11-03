@@ -34,8 +34,8 @@ import { favoritesManager } from './data/FavoritesManager';
 import { DataWorkerClient } from './workers/DataWorkerClient';
 import { TimeframeResampler } from './data/TimeframeResampler';
 export { alertManager } from './alerts/AlertManager';
-import { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregator, HybridTokenBuilder, MLR1_REPRESENTATION_FEATURE_ALLOWLIST, MLR1_OUTCOME_LABEL_ALLOWLIST, buildRepresentationInput, type MLR1RepresentationFeature, type MLR1EventRow } from './data/AIExporter';
-export { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregator, HybridTokenBuilder, MLR1_REPRESENTATION_FEATURE_ALLOWLIST, MLR1_OUTCOME_LABEL_ALLOWLIST, buildRepresentationInput, type MLR1RepresentationFeature, type MLR1EventRow };
+import { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregator, HybridTokenBuilder, MLR1_REPRESENTATION_FEATURE_ALLOWLIST, MLR1_OUTCOME_LABEL_ALLOWLIST, MLR1_OUTCOME_CONFIG_VERSION, buildRepresentationInput, type MLR1RepresentationFeature, type MLR1EventRow } from './data/AIExporter';
+export { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregator, HybridTokenBuilder, MLR1_REPRESENTATION_FEATURE_ALLOWLIST, MLR1_OUTCOME_LABEL_ALLOWLIST, MLR1_OUTCOME_CONFIG_VERSION, buildRepresentationInput, type MLR1RepresentationFeature, type MLR1EventRow };
 import { BackgroundDataMiner } from './data/BackgroundDataMiner';
 import { AlertUI } from './alerts/AlertUI';
 import { runMilestone1AcceptanceSuite } from './test/milestone1-acceptance';
@@ -68,7 +68,8 @@ import { runPhase4BTests } from './test/milestone4b-acceptance';
 
 import { runPhase2JTests } from './test/milestone2j-acceptance';
 import { generatePhase2JReports } from './analysis/ML1FeatureAuditGenerator';
-import { ML1_CONFIG_B } from './indicators/mlr1/ML1FeatureConfigs';
+import { ML1_CONFIG_B, ML1_CONFIG_B_VERSION } from './indicators/mlr1/ML1FeatureConfigs';
+import { STRICT_CBC_ZIGZAG_TEACHER_VERSION } from './indicators/plugins/StrictCBCZigZagIndicator';
 import { createInitialML1FeatureState, stepML1Features, validateML1Config } from './indicators/mlr1/ML1FeatureEngine';
 import type { ML1Candle } from './indicators/mlr1/ML1FeatureTypes';
 import {
@@ -4823,7 +4824,7 @@ export class WorkspaceManager {
 
                 // Milestone 4B (Source Integrity & Observation Backbone)
                 if (!runPhase4BTests()) throw new Error('Milestone 4B suite failed');
-                console.log('✅ Milestone 4B: Passed (17/17 Source Integrity Tests)');
+                console.log('✅ Milestone 4B: Passed (20/20 Source Integrity Tests)');
 
                 console.log('\n======================================================');
                 console.log('🏆 ALL MILESTONES 1 TO 4 ACCEPTANCE GATES VERIFIED');
@@ -5117,16 +5118,16 @@ export class WorkspaceManager {
                     baseTimeframe: exportInterval,
                     datasetVersion: 1,
                     sourceIntervalMs: intervalMs,
-                    featureConfigVersion: 'ML1_CONFIG_B_v1',
-                    teacherVersion: 'StrictCBCZigZag_v1',
-                    outcomeConfigVersion: 'MLR1_v1',
+                    featureConfigVersion: ML1_CONFIG_B_VERSION,
+                    teacherVersion: STRICT_CBC_ZIGZAG_TEACHER_VERSION,
+                    outcomeConfigVersion: MLR1_OUTCOME_CONFIG_VERSION,
                     dateRange,
                     integrityPolicy: strictPolicy,
                     exportConfig: {
                         exportTierA: true,
                         exportTierB: true,
                         exportTierC: true,
-                        separateFiles: true
+                        separateFiles: false
                     }
                 };
 
@@ -5203,6 +5204,28 @@ export class WorkspaceManager {
                 const continuousFileName = `MLR1_${exportSymbol}_${exportInterval}_Continuous_Observations.csv`;
                 const representationFileName = `MLR1_${exportSymbol}_${exportInterval}_Representation_Features.csv`;
                 const eventFileName = `MLR1_${exportSymbol}_${exportInterval}_Events.csv`;
+                const actualCsvRowCounts = {
+                    [continuousFileName]: AIExporter.countCsvDataRows(continuousCsv),
+                    [representationFileName]: AIExporter.countCsvDataRows(representationCsv),
+                    [eventFileName]: AIExporter.countCsvDataRows(eventCsv)
+                };
+                const expectedCsvRowCounts: Readonly<Record<string, number>> = {
+                    [continuousFileName]: backboneResult.acceptedRows.length,
+                    [representationFileName]: events.length,
+                    [eventFileName]: events.length
+                };
+                for (const [fileName, expectedRowCount] of Object.entries(expectedCsvRowCounts)) {
+                    if (actualCsvRowCounts[fileName] !== expectedRowCount) {
+                        throw new Error(
+                            `CSV row accounting mismatch for ${fileName}: ` +
+                            `expected ${expectedRowCount}, generated ${actualCsvRowCounts[fileName]}.`
+                        );
+                    }
+                }
+                auditRemarks.push(
+                    'Tier B teacher fields and Tier C outcome labels share the archival Events CSV; ' +
+                    'only Representation_Features.csv is a model-input projection.'
+                );
                 const exportAccounting: ExportAccounting = {
                     rawSourceCandleCount: candleCount,
                     acceptedSourceObservationCount: backboneResult.acceptedRows.length,
@@ -5211,11 +5234,7 @@ export class WorkspaceManager {
                     tierAEventRepresentationRowCount: events.length,
                     tierBConfirmedTeacherEventCount: events.length,
                     tierCOutcomeRowCount: events.length,
-                    actualFileRowCounts: {
-                        [continuousFileName]: backboneResult.acceptedRows.length,
-                        [representationFileName]: events.length,
-                        [eventFileName]: events.length
-                    }
+                    actualFileRowCounts: actualCsvRowCounts
                 };
 
                 if (!sourceIntegrityPassed || !auditResult.passed ||

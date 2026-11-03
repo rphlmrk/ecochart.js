@@ -33,6 +33,11 @@ export interface ExportAccounting {
     readonly tierAEventRepresentationRowCount: number;
     readonly tierBConfirmedTeacherEventCount: number;
     readonly tierCOutcomeRowCount: number;
+    /**
+     * Data records in each generated file; CSV header rows are excluded.
+     * Tier B and Tier C may share an archival event file; the allowlisted
+     * representation file is the only model-input projection.
+     */
     readonly actualFileRowCounts: Readonly<Record<string, number>>;
 }
 

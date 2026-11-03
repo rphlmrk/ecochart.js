@@ -12,7 +12,7 @@ import {
     type SlotIntegrityContext,
     type SourceBackboneInputItem
 } from '../indicators/mlr1/dataset/ObservationBackbone';
-import { AIExporter, CandleContextAggregator } from '../data/AIExporter';
+import { AIExporter, CandleContextAggregator, HybridTokenBuilder } from '../data/AIExporter';
 import type { ML1Candle, ML1Observation } from '../indicators/mlr1/ML1FeatureTypes';
 import type { DatasetConfig, IntegrityPolicy } from '../indicators/mlr1/dataset/DatasetConfig';
 
@@ -32,7 +32,7 @@ function createMockObservation(timestamp: number, features: Record<string, numbe
         sourceClose: 11,
         sourceVolume: 100,
         features,
-        validity: {}
+        validity: Object.fromEntries(Object.keys(features).map(key => [key, true]))
     };
 }
 
@@ -670,6 +670,127 @@ export function runPhase4BTests(): boolean {
         assert(lines.length === 2, 'Continuous observation CSV must contain one header and one data row');
         assert(lines[1].split(',').slice(3, 8).join(',') === '10,12,9,11,100',
             'Continuous CSV OHLCV must come from the accepted candle');
+        assert(lines[0].includes('valid_IsSourceValid'), 'Continuous CSV must include feature validity columns');
+        assert(lines[1].endsWith('true,true,true,true,true,true'),
+            'Continuous CSV validity masks must be serialized as booleans');
+    });
+
+    runTest('15b. Continuous export validates masks, IDs, timestamps, and CSV row counts', () => {
+        const source = buildSourceBackbone(
+            [
+                { candle: createCandle(100000), observation: createMockObservation(100000, qualityFeatures()) },
+                { candle: createCandle(160000), observation: createMockObservation(160000, qualityFeatures()) }
+            ],
+            'SOLUSDT',
+            '1m',
+            1,
+            strictPolicy,
+            60000
+        );
+        const rows = source.acceptedRows;
+        const csv = AIExporter.exportMLR1ContinuousObservationsCSV(rows);
+        assert(csv !== null, 'Continuous CSV should be generated');
+        assert(AIExporter.countCsvDataRows(csv) === rows.length, 'CSV row count must exclude its header');
+        assert(
+            AIExporter.countCsvDataRows('a,b\r\n"line one\r\nline two",c\r\nx,y') === 2,
+            'CSV row counting must ignore quoted CRLF characters'
+        );
+
+        const malformedMasks = [{
+            ...rows[0],
+            observation: { ...rows[0].observation, validity: {} }
+        }];
+        let threw = false;
+        try {
+            AIExporter.exportMLR1ContinuousObservationsCSV(malformedMasks);
+        } catch {
+            threw = true;
+        }
+        assert(threw, 'Mismatched feature and validity keys must be rejected');
+
+        const duplicateIds = [rows[0], { ...rows[1], observationId: rows[0].observationId }];
+        threw = false;
+        try {
+            AIExporter.exportMLR1ContinuousObservationsCSV(duplicateIds);
+        } catch {
+            threw = true;
+        }
+        assert(threw, 'Duplicate observation IDs must be rejected');
+
+        const outOfOrder = [rows[1], rows[0]];
+        threw = false;
+        try {
+            AIExporter.exportMLR1ContinuousObservationsCSV(outOfOrder);
+        } catch {
+            threw = true;
+        }
+        assert(threw, 'Non-increasing source and availability timestamps must be rejected');
+    });
+
+    runTest('15c. Hybrid token builder rejects malformed pivot sequences', () => {
+        const rows = buildSourceBackbone(
+            [
+                { candle: createCandle(100000), observation: createMockObservation(100000, qualityFeatures()) },
+                { candle: createCandle(160000), observation: createMockObservation(160000, qualityFeatures()) }
+            ],
+            'SOLUSDT',
+            '1m',
+            1,
+            strictPolicy,
+            60000
+        ).acceptedRows;
+        const previousPivot = {
+            id: 1, barIndex: 0, time: 100000, price: 9, type: 'low' as const,
+            label: 'LL' as const, confirmedBarIndex: 0
+        };
+        const currentPivot = {
+            id: 2, barIndex: 1, time: 160000, price: 12, type: 'high' as const,
+            label: 'HH' as const, confirmedBarIndex: 1
+        };
+        const token = HybridTokenBuilder.build(currentPivot, previousPivot, rows, 1);
+        assert(token.completed_leg_direction === 'up', 'Valid alternating pivots should build a token');
+
+        let threw = false;
+        try {
+            HybridTokenBuilder.build({ ...currentPivot, price: 0 }, previousPivot, rows, 1);
+        } catch {
+            threw = true;
+        }
+        assert(threw, 'Non-positive pivot prices must be rejected');
+
+        threw = false;
+        try {
+            HybridTokenBuilder.build(
+                { ...currentPivot, type: 'low' },
+                previousPivot,
+                rows,
+                1
+            );
+        } catch {
+            threw = true;
+        }
+        assert(threw, 'Non-alternating event types must be rejected');
+
+        threw = false;
+        try {
+            HybridTokenBuilder.build(currentPivot, previousPivot, [], 1);
+        } catch {
+            threw = true;
+        }
+        assert(threw, 'An empty accepted-row array must be rejected');
+
+        threw = false;
+        try {
+            HybridTokenBuilder.build(
+                currentPivot,
+                previousPivot,
+                [rows[0], null as unknown as typeof rows[number]],
+                1
+            );
+        } catch {
+            threw = true;
+        }
+        assert(threw, 'Invalid accepted source rows must be rejected');
     });
 
     runTest('16. Off-grid record preserves the build grid anchor', () => {
@@ -724,5 +845,5 @@ export function runPhase4BTests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log('=======================================\n');
 
-    return failed === 0 && passed === 18;
+    return failed === 0 && passed === 20;
 }
