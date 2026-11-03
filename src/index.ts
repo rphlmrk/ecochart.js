@@ -54,6 +54,13 @@ export * from './indicators/mlr1/mtf/MTFAggregator';
 export * from './indicators/mlr1/mtf/MTFFeatureEngine';
 export * from './indicators/mlr1/mtf/MTFAligner';
 export * from './indicators/mlr1/mtf/MTFEngine';
+
+// Milestone 4: Dataset Contracts
+export * from './indicators/mlr1/dataset/DatasetConfig';
+export * from './indicators/mlr1/dataset/DatasetTypes';
+export * from './indicators/mlr1/dataset/DatasetManifest';
+export * from './indicators/mlr1/dataset/DatasetSchema';
+
 import { runPhase2JTests } from './test/milestone2j-acceptance';
 import { generatePhase2JReports } from './analysis/ML1FeatureAuditGenerator';
 import { runMilestone2AcceptanceSuite } from './test/run-milestone2';
