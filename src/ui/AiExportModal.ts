@@ -178,7 +178,7 @@ export class AiExportModal {
                 <!-- Footer Actions -->
                 <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--chart-grid, #2A2E39); background: var(--chart-bg, #131722);">
                     <button id="btn-ai-export-audit" type="button" style="background: rgba(41, 98, 255, 0.15); border: 1px solid var(--chart-accent, #2962FF); color: var(--chart-accent, #2962FF); padding: 7px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 700;">
-                        🧪 Run Phase 4B Tests
+                        🧪 Run All Tests (M1 to M4)
                     </button>
                     <button id="btn-cancel-ai-export" type="button" style="background: transparent; border: 1px solid var(--chart-grid, #363A45); color: var(--chart-text, #D1D4DC); padding: 7px 14px; font-size: 12px; font-weight: 600; border-radius: 4px; cursor: pointer;">
                         Cancel
@@ -208,26 +208,41 @@ export class AiExportModal {
             progressContainer.style.display = 'flex';
             progressBar.style.width = '0%';
             progressPct.textContent = '0%';
-            progressStatus.textContent = 'Running Phase 4B Source Integrity Audit...';
+            progressStatus.textContent = 'Running Complete Test Suite (Milestones 1 to 4)...';
             progressStatus.style.color = 'var(--chart-accent, #2962FF)';
             progressStats.style.display = 'none';
             await new Promise(resolve => setTimeout(resolve, 50));
 
             try {
-                const run4B = (window as Window & { runPhase4BTests?: () => boolean }).runPhase4BTests;
-                if (!run4B) {
-                    throw new Error('Phase 4B test suite not wired to window object.');
-                }
-                if (!run4B()) {
-                    throw new Error('Phase 4B Source Integrity suite failed.');
-                }
+                const win = window as Window & {
+                    runMilestone1AcceptanceSuite?: () => boolean;
+                    runPhase2ATests?: () => boolean;
+                    runPhase2JTests?: () => boolean;
+                    runPhase3ATests?: () => boolean;
+                    runPhase3BTests?: () => boolean;
+                    runPhase3CTests?: () => boolean;
+                    runPhase3DTests?: () => boolean;
+                    runPhase3ETests?: () => boolean;
+                    runPhase4BTests?: () => boolean;
+                };
+
+                if (!win.runMilestone1AcceptanceSuite?.()) throw new Error('Milestone 1 suite failed');
+                if (!win.runPhase2ATests?.()) throw new Error('Milestone 2A suite failed');
+                if (!win.runPhase2JTests?.()) throw new Error('Milestone 2J suite failed');
+                if (!win.runPhase3ATests?.()) throw new Error('Milestone 3A suite failed');
+                if (!win.runPhase3BTests?.()) throw new Error('Milestone 3B suite failed');
+                if (!win.runPhase3CTests?.()) throw new Error('Milestone 3C suite failed');
+                if (!win.runPhase3DTests?.()) throw new Error('Milestone 3D suite failed');
+                if (!win.runPhase3ETests?.()) throw new Error('Milestone 3E suite failed');
+                if (!win.runPhase4BTests?.()) throw new Error('Milestone 4B suite failed');
+
                 progressBar.style.width = '100%';
-                progressPct.textContent = '10/10';
-                progressStatus.textContent = 'Phase 4B Passed (10/10 Tests)! Check DevTools console.';
+                progressPct.textContent = 'All Passed';
+                progressStatus.textContent = 'All Milestones 1 to 4 Passed! Check DevTools console.';
                 progressStatus.style.color = 'var(--chart-bull, #26A69A)';
             } catch (error: unknown) {
                 const message = error instanceof Error ? error.message : String(error);
-                console.error('[AiExportModal] Phase 4B audit failed:', error);
+                console.error('[AiExportModal] Complete audit failed:', error);
                 progressStatus.textContent = `Error: ${message}`;
                 progressStatus.style.color = '#EF5350';
             }

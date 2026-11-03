@@ -11,6 +11,7 @@ export interface BackboneStats {
     readonly duplicateTimestampCount: number;
     readonly outOfOrderCount: number;
     readonly invalidOhlcvCount: number;
+    readonly lastSourceTimestamp: number | null;
 }
 
 export function createInitialBackboneStats(): BackboneStats {
@@ -22,8 +23,15 @@ export function createInitialBackboneStats(): BackboneStats {
         unexpectedIntervalCount: 0,
         duplicateTimestampCount: 0,
         outOfOrderCount: 0,
-        invalidOhlcvCount: 0
+        invalidOhlcvCount: 0,
+        lastSourceTimestamp: null
     });
+}
+
+export interface SourceAcceptanceResult {
+    readonly isAccepted: boolean;
+    readonly rejectionReasons: readonly string[];
+    readonly dataQuality: DataQualityStatus;
 }
 
 /**
@@ -70,11 +78,12 @@ export function extractDataQuality(obs: ML1Observation): DataQualityStatus {
     const requiredKeys = [
         'IsSourceValid', 'HasDataGap', 'IsDiscontinuity',
         'IsDuplicateTimestamp', 'IsOutOfOrder', 'IsUnexpectedInterval'
-    ];
+    ] as const;
 
     for (const key of requiredKeys) {
-        if (typeof f[key] !== 'number') {
-            throw new Error(`DataQuality Extraction Error: Required telemetry field '${key}' is missing or undefined.`);
+        const val = f[key];
+        if (typeof val !== 'number' || !Number.isFinite(val) || (val !== 0 && val !== 1)) {
+            throw new Error(`DataQuality Extraction Error: Required telemetry field '${key}' must be strictly 0 or 1, got ${val}.`);
         }
     }
 
@@ -89,61 +98,123 @@ export function extractDataQuality(obs: ML1Observation): DataQualityStatus {
 }
 
 /**
- * Decouples source-quality classification from the final dataset acceptance decision,
- * strictly enforcing the provided IntegrityPolicy.
+ * Evaluates observation acceptance strictly against the configured policy.
  */
 export function evaluateAcceptance(
     dataQuality: DataQualityStatus,
-    isValidOhlcv: boolean,
-    policy: IntegrityPolicy
-): boolean {
-    if (policy.rejectInvalidSource && !isValidOhlcv) return false;
-    if (policy.rejectDuplicateTimestamp && dataQuality.isDuplicate) return false;
-    if (policy.rejectOutOfOrder && dataQuality.isOutOfOrder) return false;
+    policy: IntegrityPolicy,
+    isValidOhlcv = true
+): SourceAcceptanceResult {
+    const reasons: string[] = [];
 
-    if (!dataQuality.isSourceValid) return false;
-
-    return true;
-}
-
-/**
- * Immutably accumulates dataset tracking statistics for the final manifest.
- * Enforces the core invariant: sourceRowCount = accepted + rejected.
- */
-export function updateBackboneStats(
-    prevStats: BackboneStats,
-    dataQuality: DataQualityStatus,
-    isValidOhlcv: boolean,
-    isAccepted: boolean,
-    timeDeltaSeconds: number,
-    expectedIntervalSeconds: number
-): BackboneStats {
-    let missingCount = prevStats.missingIntervalCount;
-    let unexpectedCount = prevStats.unexpectedIntervalCount;
-
-    if (timeDeltaSeconds > 0 && !dataQuality.isDuplicate && !dataQuality.isOutOfOrder) {
-        if (timeDeltaSeconds > expectedIntervalSeconds) {
-            const remainder = timeDeltaSeconds % expectedIntervalSeconds;
-            if (remainder === 0) {
-                missingCount += Math.floor(timeDeltaSeconds / expectedIntervalSeconds) - 1;
-            } else {
-                unexpectedCount += 1;
-            }
-        } else if (timeDeltaSeconds < expectedIntervalSeconds) {
-            unexpectedCount += 1;
-        }
-    } else if (timeDeltaSeconds < 0 && !dataQuality.isOutOfOrder) {
-        unexpectedCount += 1;
+    if (policy.rejectInvalidSource && (!dataQuality.isSourceValid || !isValidOhlcv)) {
+        reasons.push('INVALID_SOURCE');
+    }
+    if (policy.rejectDuplicateTimestamp && dataQuality.isDuplicate) {
+        reasons.push('DUPLICATE_TIMESTAMP');
+    }
+    if (policy.rejectOutOfOrder && dataQuality.isOutOfOrder) {
+        reasons.push('OUT_OF_ORDER');
     }
 
     return Object.freeze({
+        isAccepted: reasons.length === 0,
+        rejectionReasons: Object.freeze(reasons),
+        dataQuality
+    });
+}
+
+/**
+ * Audits minimum uptime requirement across a completed dataset manifest.
+ */
+export function evaluateDatasetUptime(
+    stats: BackboneStats,
+    policy: IntegrityPolicy
+): { isUptimeValid: boolean; actualUptimeFraction: number } {
+    const minRequired = policy.requireMinimumUptimeFraction;
+    if (minRequired === undefined || minRequired <= 0) {
+        return { isUptimeValid: true, actualUptimeFraction: 1.0 };
+    }
+    const totalExpectedObservations = stats.acceptedObservationCount + stats.missingIntervalCount;
+    if (totalExpectedObservations === 0) {
+        return { isUptimeValid: false, actualUptimeFraction: 0 };
+    }
+    const actualUptimeFraction = stats.acceptedObservationCount / totalExpectedObservations;
+    return {
+        isUptimeValid: actualUptimeFraction >= minRequired,
+        actualUptimeFraction
+    };
+}
+
+/**
+ * Immutably updates backbone statistics and independently audits source chronology.
+ */
+export function updateBackboneStats(
+    prevStats: BackboneStats,
+    sourceTimestamp: number,
+    acceptance: SourceAcceptanceResult,
+    expectedIntervalMs: number,
+    isValidOhlcv = true
+): BackboneStats {
+    if (!Number.isSafeInteger(sourceTimestamp) || sourceTimestamp < 0) {
+        throw new Error(`Invalid sourceTimestamp: Expected non-negative safe integer, got ${sourceTimestamp}`);
+    }
+    if (!Number.isSafeInteger(expectedIntervalMs) || expectedIntervalMs <= 0) {
+        throw new Error(`Invalid expectedIntervalMs: Expected positive safe integer, got ${expectedIntervalMs}`);
+    }
+
+    const dq = acceptance.dataQuality;
+    let missingCount = prevStats.missingIntervalCount;
+    let unexpectedCount = prevStats.unexpectedIntervalCount;
+    let isInternalDup = false;
+    let isInternalOutOfOrder = false;
+
+    if (prevStats.lastSourceTimestamp !== null) {
+        const deltaMs = sourceTimestamp - prevStats.lastSourceTimestamp;
+
+        if (deltaMs === 0) {
+            isInternalDup = true;
+        } else if (deltaMs < 0) {
+            isInternalOutOfOrder = true;
+        } else if (deltaMs > expectedIntervalMs) {
+            const remainder = deltaMs % expectedIntervalMs;
+            if (remainder === 0) {
+                missingCount += (deltaMs / expectedIntervalMs) - 1;
+            } else {
+                unexpectedCount += 1;
+            }
+        } else if (deltaMs < expectedIntervalMs) {
+            unexpectedCount += 1;
+        }
+    }
+
+    if (
+        dq.isUnexpectedInterval &&
+        !isInternalOutOfOrder &&
+        !isInternalDup &&
+        prevStats.lastSourceTimestamp !== null &&
+        sourceTimestamp - prevStats.lastSourceTimestamp === expectedIntervalMs
+    ) {
+        unexpectedCount += 1;
+    }
+
+    const nextWatermark = prevStats.lastSourceTimestamp === null || sourceTimestamp > prevStats.lastSourceTimestamp
+        ? sourceTimestamp
+        : prevStats.lastSourceTimestamp;
+    const hasDuplicate = dq.isDuplicate || isInternalDup;
+    const hasOutOfOrder = dq.isOutOfOrder || isInternalOutOfOrder;
+    const isInvalidOhlcv = !isValidOhlcv ||
+        (!dq.isSourceValid && !hasDuplicate && !hasOutOfOrder && !dq.isUnexpectedInterval);
+
+    return Object.freeze({
         sourceRowCount: prevStats.sourceRowCount + 1,
-        acceptedObservationCount: prevStats.acceptedObservationCount + (isAccepted ? 1 : 0),
-        rejectedObservationCount: prevStats.rejectedObservationCount + (isAccepted ? 0 : 1),
+        acceptedObservationCount: prevStats.acceptedObservationCount + (acceptance.isAccepted ? 1 : 0),
+        rejectedObservationCount: prevStats.rejectedObservationCount + (acceptance.isAccepted ? 0 : 1),
         missingIntervalCount: missingCount,
         unexpectedIntervalCount: unexpectedCount,
-        duplicateTimestampCount: prevStats.duplicateTimestampCount + (dataQuality.isDuplicate ? 1 : 0),
-        outOfOrderCount: prevStats.outOfOrderCount + (dataQuality.isOutOfOrder ? 1 : 0),
-        invalidOhlcvCount: prevStats.invalidOhlcvCount + (!isValidOhlcv ? 1 : 0)
+        duplicateTimestampCount: prevStats.duplicateTimestampCount + (hasDuplicate ? 1 : 0),
+        outOfOrderCount: prevStats.outOfOrderCount + (hasOutOfOrder ? 1 : 0),
+        invalidOhlcvCount: prevStats.invalidOhlcvCount + (isInvalidOhlcv ? 1 : 0),
+        lastSourceTimestamp: nextWatermark
     });
 }

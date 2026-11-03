@@ -4667,25 +4667,42 @@ export class WorkspaceManager {
             if (loadingOverlay) loadingOverlay.style.display = 'none';
         });
 
-        // Wire up on-demand Phase 4B test orchestrator
+        // Unified on-demand test runner for Milestones 1 through 4
         const btnAiExportAudit = document.getElementById('btn-ai-export-audit');
         btnAiExportAudit?.addEventListener('click', async () => {
             if (loadingOverlay) loadingOverlay.style.display = 'flex';
-            if (loadingTitle) loadingTitle.textContent = 'Running Milestone 4B Tests...';
-            if (loadingDetail) loadingDetail.textContent = 'Executing Source Integrity and Observation Backbone Audit...';
+            if (loadingTitle) loadingTitle.textContent = 'Running Milestones 1 to 4 Test Suites...';
+            if (loadingDetail) loadingDetail.textContent = 'Executing full M1, M2, M3, and M4B pipelines...';
             await new Promise(resolve => setTimeout(resolve, 50));
 
             try {
-                const run4B = (window as Window & { runPhase4BTests?: () => boolean }).runPhase4BTests;
-                if (!run4B) {
-                    throw new Error('Phase 4B test suite not wired to window object.');
-                }
-                if (!run4B()) {
-                    throw new Error('Phase 4B Source Integrity suite failed.');
-                }
+                console.log('\n======================================================');
+                console.log('🚀 EXECUTING COMPLETE TEST SUITE: MILESTONES 1 TO 4');
+                console.log('======================================================');
+
+                if (!runMilestone1AcceptanceSuite()) throw new Error('Milestone 1 suite failed');
+                console.log('✅ Milestone 1: Passed (Causal StrictCBCZigZag)');
+
+                if (!runPhase2ATests()) throw new Error('Milestone 2A suite failed');
+                if (!runPhase2JTests()) throw new Error('Milestone 2J suite failed');
+                console.log('✅ Milestone 2: Passed (Native 1m Features & Schema)');
+
+                if (!runPhase3ATests()) throw new Error('Milestone 3A suite failed');
+                if (!runPhase3BTests()) throw new Error('Milestone 3B suite failed');
+                if (!runPhase3CTests()) throw new Error('Milestone 3C suite failed');
+                if (!runPhase3DTests()) throw new Error('Milestone 3D suite failed');
+                if (!runPhase3ETests()) throw new Error('Milestone 3E suite failed');
+                console.log('✅ Milestone 3: Passed (77/77 MTF Integration Tests)');
+
+                if (!runPhase4BTests()) throw new Error('Milestone 4B suite failed');
+                console.log('✅ Milestone 4B: Passed (12/12 Source Integrity Tests)');
+
+                console.log('\n======================================================');
+                console.log('🏆 ALL MILESTONES 1 TO 4 GATES VERIFIED AND PASSED');
+                console.log('======================================================\n');
 
                 if (loadingDetail) {
-                    loadingDetail.textContent = '✅ Phase 4B Passed (10/10 Tests)! Check DevTools console.';
+                    loadingDetail.textContent = '✅ All Milestones 1 to 4 Passed! Check DevTools console.';
                 }
 
                 setTimeout(() => {
@@ -4694,12 +4711,12 @@ export class WorkspaceManager {
                 }, 1400);
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
-                console.error('[AiExportModal] Phase 4B audit failed:', error);
-                if (loadingDetail) loadingDetail.textContent = `❌ ${message}`;
+                console.error('[AiExportModal] Test suite execution error:', error);
+                if (loadingDetail) loadingDetail.textContent = `❌ ${message}. Check DevTools console.`;
                 setTimeout(() => {
                     if (loadingOverlay) loadingOverlay.style.display = 'none';
                 }, 2000);
-                alert(`Phase 4B Test Suite failed: ${message}`);
+                alert(`Test Suite failed: ${message}`);
             }
         });
 
