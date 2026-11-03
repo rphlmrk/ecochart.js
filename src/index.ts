@@ -1,5 +1,4 @@
 import { DataStore } from './data/DataStore';
-import JSZip from 'jszip';
 import { BinanceClient } from './network/BinanceClient';
 import { ChartRenderer, type ResampledHtfBar } from './renderer/ChartRenderer';
 import { themeManager } from './theme/ThemeManager';
@@ -77,6 +76,7 @@ export * from './indicators/mlr1/dataset/DatasetSchema';
 // Milestone 4: Backbone & Integrity
 export * from './indicators/mlr1/dataset/ObservationBackbone';
 import { runPhase4BTests } from './test/milestone4b-acceptance';
+import { runProductionExporterAcceptanceSuite } from './test/production-exporter-acceptance';
 
 import { runPhase2JTests } from './test/milestone2j-acceptance';
 import { generatePhase2JReports } from './analysis/ML1FeatureAuditGenerator';
@@ -4644,26 +4644,13 @@ export class WorkspaceManager {
             });
         });
 
-        // UI: Handle Packaging Format Cards
-        document.querySelectorAll('.ai-pack-card').forEach(card => {
-            card.addEventListener('click', (e) => {
-                document.querySelectorAll('.ai-pack-card').forEach(c => {
-                    (c as HTMLElement).style.borderColor = 'transparent';
-                    c.classList.remove('active');
-                });
-                const target = e.currentTarget as HTMLElement;
-                target.classList.add('active');
-                target.style.borderColor = '#EF5350';
-            });
-        });
-
         // Top-Bar Button State Management for Background Mining
         let isMiningActive = false;
         const resetTopbarButton = () => {
             isMiningActive = false;
             if (btnTopbarAiExport) {
                 btnTopbarAiExport.innerHTML = `<span>🧠</span><span class="desktop-only">AI Export</span>`;
-                btnTopbarAiExport.title = "Export AI Training Data (.csv)";
+                btnTopbarAiExport.title = "Export ML-R1 Dataset Package (.zip)";
                 btnTopbarAiExport.style.borderColor = "var(--chart-accent, #2962FF)";
                 btnTopbarAiExport.style.color = "var(--chart-accent, #2962FF)";
             }
@@ -4722,15 +4709,22 @@ export class WorkspaceManager {
                     );
                 }
                 const intervalMs = 60_000;
+                const expectedSevenDayCandles = 7 * 24 * 60;
+                const expectedLastOpenTime =
+                    Math.floor(Date.now() / intervalMs) * intervalMs - intervalMs;
+                const expectedFirstOpenTime =
+                    expectedLastOpenTime - (expectedSevenDayCandles - 1) * intervalMs;
                 const realCandlesRaw = await BackgroundDataMiner.mineHistoricalCandles(
                     chart.currentSymbol,
                     chart.currentInterval,
-                    7 * 86_400_000,
+                    expectedSevenDayCandles * intervalMs,
                     (progress) => {
                         if (loadingDetail) {
                             loadingDetail.textContent = `Fetching real provenance data: ${progress.percent}%`;
                         }
-                    }
+                    },
+                    expectedFirstOpenTime,
+                    expectedLastOpenTime
                 );
                 if (realCandlesRaw.length === 0 || realCandlesRaw.length % 6 !== 0) {
                     throw new Error('Historical fetch returned empty or malformed data (not divisible by 6).');
@@ -4765,6 +4759,11 @@ export class WorkspaceManager {
                     }
                     if (index === 0) {
                         firstTime = candle.time;
+                        if (candle.time !== expectedFirstOpenTime) {
+                            throw new Error(
+                                `Historical first candle mismatch: expected ${expectedFirstOpenTime}, got ${candle.time}.`
+                            );
+                        }
                     } else {
                         if (candle.time <= lastTime) {
                             throw new Error(
@@ -4778,16 +4777,22 @@ export class WorkspaceManager {
                             );
                         }
                     }
+                    const expectedTime = expectedFirstOpenTime + index * intervalMs;
+                    if (candle.time !== expectedTime) {
+                        throw new Error(
+                            `Historical candle boundary mismatch at index ${index}: expected ${expectedTime}, got ${candle.time}.`
+                        );
+                    }
                     lastTime = candle.time;
                     expectedNextTime = candle.time + intervalMs;
                 }
-                const expectedSevenDayCandles = 7 * 24 * 60;
                 if (realCandles.length !== expectedSevenDayCandles) {
                     throw new Error(
                         `Expected exactly ${expectedSevenDayCandles} contiguous 1m candles for provenance, got ${realCandles.length}.`
                     );
                 }
-                if (lastTime - firstTime !== (expectedSevenDayCandles - 1) * intervalMs) {
+                if (lastTime !== expectedLastOpenTime ||
+                    lastTime - firstTime !== (expectedSevenDayCandles - 1) * intervalMs) {
                     throw new Error(
                         'Historical data does not span the exact seven-day candle-open range.'
                     );
@@ -4825,7 +4830,10 @@ export class WorkspaceManager {
 
                 // Milestone 4B (Source Integrity & Observation Backbone)
                 if (!runPhase4BTests()) throw new Error('Milestone 4B suite failed');
-                console.log('✅ Milestone 4B: Passed (20/20 Source Integrity Tests)');
+                console.log('✅ Milestone 4B: Passed');
+                if (!await runProductionExporterAcceptanceSuite()) {
+                    throw new Error('Production exporter integrity suite failed');
+                }
 
                 // Deterministic Reconstruction Verification
                 if (loadingDetail) loadingDetail.textContent = 'Verifying Deterministic Reconstruction parity...';
@@ -4845,13 +4853,32 @@ export class WorkspaceManager {
                 });
                 const pass1 = await runPipelinePass();
                 const pass2 = await runPipelinePass();
+                if (pass1.events.length === 0 || !pass1.events.some(event =>
+                    event.entry_bar_index + 60 - 1 < pass1.backboneResult.acceptedRows.length
+                )) {
+                    throw new Error(
+                        'Deterministic Reconstruction requires at least one confirmed event with a complete 60-bar horizon.'
+                    );
+                }
+                if (pass1.manifest.buildTimestamp !== deterministicFixedTimestamp ||
+                    pass2.manifest.buildTimestamp !== deterministicFixedTimestamp) {
+                    throw new Error('Deterministic Reconstruction did not use the fixed build timestamp.');
+                }
+                const pass1EventIds = pass1.events.map(event => event.event_id);
+                const pass2EventIds = pass2.events.map(event => event.event_id);
+                const pass1Archive = await AIExporter.createVerifiedDatasetArchive(pass1);
+                const pass2Archive = await AIExporter.createVerifiedDatasetArchive(pass2);
+                const archiveBytesMatch = pass1Archive.length === pass2Archive.length &&
+                    pass1Archive.every((byte, index) => byte === pass2Archive[index]);
                 if (pass1.continuousCsv !== pass2.continuousCsv ||
                     pass1.representationCsv !== pass2.representationCsv ||
                     pass1.eventCsv !== pass2.eventCsv ||
                     pass1.events.length !== pass2.events.length ||
+                    JSON.stringify(pass1EventIds) !== JSON.stringify(pass2EventIds) ||
                     JSON.stringify(pass1.manifest) !== JSON.stringify(pass2.manifest) ||
                     JSON.stringify(pass1.exportAccounting) !== JSON.stringify(pass2.exportAccounting) ||
-                    JSON.stringify(pass1.auditResult) !== JSON.stringify(pass2.auditResult)) {
+                    JSON.stringify(pass1.auditResult) !== JSON.stringify(pass2.auditResult) ||
+                    !archiveBytesMatch) {
                     throw new Error(
                         'Deterministic Reconstruction Failure: shared production pipeline produced divergent artifacts or manifest metrics.'
                     );
@@ -4863,11 +4890,7 @@ export class WorkspaceManager {
 
                 console.log('\n======================================================');
                 console.log('🏆 ALL MILESTONES 1 TO 4 & DETERMINISTIC EXPORT GATES VERIFIED');
-                console.log('   ↳ Milestone 1:   6/6 Tests Passed');
-                console.log('   ↳ Milestone 2:  73/73 Tests Passed + Quantitative Invariant Audit');
-                console.log('   ↳ Milestone 3:  77/77 MTF Integration Tests Passed');
-                console.log('   ↳ Milestone 4B: 21/21 Source Integrity Tests Passed');
-                console.log('   ↳ Grand Total: 177/177 Tests Verified (100%)');
+                console.log('   ↳ M1, M2, M3A–M3E, M4B, and production exporter integrity gates passed.');
                 console.log('======================================================\n');
 
                 if (loadingDetail) {
@@ -4921,9 +4944,6 @@ export class WorkspaceManager {
                 durationMs = customEndMs - customStartMs;
             }
 
-            const activePack = document.querySelector('.ai-pack-card.active') as HTMLElement;
-            const _packFormat = (activePack?.dataset.pack || 'csv').toUpperCase();
-            void _packFormat;
             const targetRR = (document.getElementById('ai-export-rr') as HTMLSelectElement)?.value || "2.0";
             const forwardHorizon = (document.getElementById('ai-export-horizon') as HTMLInputElement)?.value || "30";
             void targetRR;
@@ -4969,6 +4989,12 @@ export class WorkspaceManager {
                 if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
                     throw new Error(`Unsupported chart interval for export: ${exportInterval}`);
                 }
+                if (customStartMs !== undefined && customEndMs !== undefined) {
+                    AIExporter.assertCandleBufferWithinBounds(rawCandleBuffer, {
+                        startTimestamp: customStartMs,
+                        endTimestamp: customEndMs
+                    });
+                }
                 const chartZigZag = chart.indicatorManager.activeIndicators.find(
                     indicator => indicator instanceof StrictCBCZigZagIndicator
                 ) as StrictCBCZigZagIndicator | undefined;
@@ -4989,14 +5015,14 @@ export class WorkspaceManager {
                     interval: exportInterval,
                     intervalMs,
                     zigZagParameters,
+                    sourceTimestampBounds: customStartMs !== undefined && customEndMs !== undefined
+                        ? { startTimestamp: customStartMs, endTimestamp: customEndMs }
+                        : undefined,
                     onProgress: detail => {
                         if (loadingDetail) loadingDetail.textContent = detail;
                     }
                 });
-                const { manifest, events, continuousFileName, representationFileName, eventFileName } = artifacts;
-                const continuousCsv = artifacts.continuousCsv;
-                const representationCsv = artifacts.representationCsv;
-                const eventCsv = artifacts.eventCsv;
+                const { events } = artifacts;
                 if (loadingTitle) loadingTitle.textContent = 'Packaging ML-R1 Dataset...';
                 if (loadingDetail) loadingDetail.textContent = `Generated ${events.length.toLocaleString()} ML-R1 event records.`;
                 if (progressFill) progressFill.style.width = '100%';
@@ -5004,13 +5030,10 @@ export class WorkspaceManager {
                 await new Promise(resolve => setTimeout(resolve, 25));
 
                 // Build the package only after the shared pipeline passes all audits.
-                const zip = new JSZip();
-                zip.file(`MLR1_${exportSymbol}_${exportInterval}_Manifest.json`, JSON.stringify(manifest, null, 2));
-                zip.file(continuousFileName, continuousCsv);
-                zip.file(representationFileName, representationCsv);
-                zip.file(eventFileName, eventCsv);
-
-                const zipBlob = await zip.generateAsync({ type: 'blob' });
+                const archiveBytes = await AIExporter.createVerifiedDatasetArchive(artifacts);
+                const archiveBuffer = new ArrayBuffer(archiveBytes.byteLength);
+                new Uint8Array(archiveBuffer).set(archiveBytes);
+                const zipBlob = new Blob([archiveBuffer], { type: 'application/zip' });
                 const zipUrl = URL.createObjectURL(zipBlob);
                 const downloadLink = document.createElement('a');
                 downloadLink.href = zipUrl;

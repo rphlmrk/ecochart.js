@@ -109,6 +109,18 @@ export interface SourceBackboneBuildResult {
     readonly uptime: DatasetUptimeEvaluation;
 }
 
+export interface RawSourceAccountingReport {
+    readonly acceptedSourceIndices: readonly number[];
+    readonly rejectedRows: readonly SourceBackboneRejectedRow[];
+    readonly stats: BackboneStats;
+    readonly uptime: DatasetUptimeEvaluation;
+}
+
+export interface RawSourceTimestampBounds {
+    readonly startTimestamp: number;
+    readonly endTimestamp: number;
+}
+
 /**
  * 🔒 IDENTITY CONTRACT
  * Generates a deterministic, stable identifier for the observation row.
@@ -600,6 +612,132 @@ export function evaluateDatasetUptime(
         sourceAvailabilityFraction,
         usableObservationFraction,
         totalExpectedObservations
+    });
+}
+
+/**
+ * Accounts for raw source rows before feature computation. Only accepted source
+ * indices may be passed to the ML1 feature engine.
+ */
+export function accountRawSourceRows(
+    candles: readonly ML1Candle[],
+    symbol: string,
+    timeframe: string,
+    policy: IntegrityPolicy,
+    expectedIntervalMs: number,
+    timestampBounds?: RawSourceTimestampBounds,
+    requireMillisecondTimestamps = false
+): RawSourceAccountingReport {
+    if (!Array.isArray(candles)) {
+        throw new Error('accountRawSourceRows Error: candles must be an array.');
+    }
+    if (typeof symbol !== 'string' || symbol.trim() === '' ||
+        typeof timeframe !== 'string' || timeframe.trim() === '') {
+        throw new Error('accountRawSourceRows Error: symbol and timeframe must be non-empty strings.');
+    }
+    if (!Number.isSafeInteger(expectedIntervalMs) || expectedIntervalMs <= 0) {
+        throw new Error('accountRawSourceRows Error: expectedIntervalMs must be a positive safe integer.');
+    }
+    validatePolicy(policy);
+    if (timestampBounds !== undefined &&
+        (!Number.isSafeInteger(timestampBounds.startTimestamp) ||
+            !Number.isSafeInteger(timestampBounds.endTimestamp) ||
+            timestampBounds.startTimestamp < 0 ||
+            timestampBounds.endTimestamp < timestampBounds.startTimestamp)) {
+        throw new Error('accountRawSourceRows Error: timestamp bounds must be ordered non-negative safe integers.');
+    }
+    if (typeof requireMillisecondTimestamps !== 'boolean') {
+        throw new Error('accountRawSourceRows Error: requireMillisecondTimestamps must be a boolean.');
+    }
+
+    let stats = createInitialBackboneStats();
+    const acceptedSourceIndices: number[] = [];
+    const rejectedRows: SourceBackboneRejectedRow[] = [];
+    const seenTimestamps = new Set<number>();
+    let gridAnchor: number | null = timestampBounds?.startTimestamp ?? null;
+
+    for (let index = 0; index < candles.length; index++) {
+        const candle = candles[index];
+        if (!candle || typeof candle !== 'object') {
+            throw new Error(`accountRawSourceRows Error: candle at index ${index} is missing.`);
+        }
+        const timestamp = candle.time;
+        const timestampIsValid = Number.isSafeInteger(timestamp) && timestamp >= 0 &&
+            (!requireMillisecondTimestamps || timestamp >= 1e12);
+        const isValidOhlcv = validateCandleOhlcv(candle);
+        if (!timestampIsValid) {
+            stats = Object.freeze({
+                ...stats,
+                sourceRowCount: stats.sourceRowCount + 1,
+                rejectedObservationCount: stats.rejectedObservationCount + 1,
+                invalidSourceCount: stats.invalidSourceCount + 1,
+                invalidOhlcvCount: stats.invalidOhlcvCount + (isValidOhlcv ? 0 : 1)
+            });
+            rejectedRows.push(Object.freeze({
+                sourceTimestamp: timestamp,
+                candle: Object.freeze({ ...candle }),
+                reasons: Object.freeze([
+                    'INVALID_TIMESTAMP',
+                    ...(!isValidOhlcv ? ['INVALID_OHLCV'] : [])
+                ])
+            }));
+            continue;
+        }
+
+        const anchor = gridAnchor ?? timestamp;
+        gridAnchor = anchor;
+        const isOnGrid = (timestamp - anchor) % expectedIntervalMs === 0;
+        const isWithinRange = timestampBounds === undefined ||
+            (timestamp >= timestampBounds.startTimestamp && timestamp <= timestampBounds.endTimestamp);
+        const isDuplicate = seenTimestamps.has(timestamp);
+        const previousTimestamp = stats.lastSourceTimestamp;
+        const isOutOfOrder = previousTimestamp !== null && timestamp < previousTimestamp;
+        const delta = previousTimestamp === null ? null : timestamp - previousTimestamp;
+        const isUnexpectedInterval = delta !== null &&
+            delta > 0 && (delta < expectedIntervalMs || delta % expectedIntervalMs !== 0);
+        const hasDataGap = delta !== null && delta > expectedIntervalMs &&
+            delta % expectedIntervalMs === 0;
+        const dataQuality: DataQualityStatus = Object.freeze({
+            isSourceValid: isValidOhlcv && isOnGrid && isWithinRange &&
+                !isDuplicate && !isOutOfOrder && !isUnexpectedInterval,
+            hasDataGap,
+            isDiscontinuity: hasDataGap,
+            isDuplicate,
+            isOutOfOrder,
+            isUnexpectedInterval
+        });
+        const uniqueSource = !isDuplicate && isOnGrid && isWithinRange;
+        const result = processSourceObservation(
+            stats,
+            timestamp,
+            dataQuality,
+            isValidOhlcv,
+            policy,
+            expectedIntervalMs,
+            {
+                isUniqueSource: uniqueSource,
+                isCandidateUniqueAccepted: uniqueSource
+            },
+            { gridAnchor: anchor, isOnGrid, isWithinRange }
+        );
+        stats = result.nextStats;
+        seenTimestamps.add(timestamp);
+        if (result.acceptance.isAccepted) {
+            acceptedSourceIndices.push(index);
+        } else {
+            rejectedRows.push(Object.freeze({
+                sourceTimestamp: timestamp,
+                candle: Object.freeze({ ...candle }),
+                reasons: result.acceptance.rejectionReasons
+            }));
+        }
+    }
+
+    return Object.freeze({
+        acceptedSourceIndices: Object.freeze(acceptedSourceIndices),
+        rejectedRows: Object.freeze(rejectedRows),
+        stats,
+        uptime: evaluateDatasetUptime(stats, policy, expectedIntervalMs)
     });
 }
 

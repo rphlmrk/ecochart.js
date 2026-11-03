@@ -70,7 +70,13 @@ export class BackgroundDataMiner {
         const intervalMs = this.intervalToMs(interval);
         const now = Date.now();
         const startTarget = customStartMs !== undefined ? customStartMs : (now - totalDurationMs);
-        const endTarget = customEndMs !== undefined ? customEndMs : now;
+        const requestedEndTarget = customEndMs !== undefined ? customEndMs : now;
+        const lastCompletedCandleOpenTime = Math.floor(now / intervalMs) * intervalMs - intervalMs;
+        const endTarget = Math.min(requestedEndTarget, lastCompletedCandleOpenTime);
+        if (!Number.isSafeInteger(startTarget) || !Number.isSafeInteger(requestedEndTarget) ||
+            startTarget < 0 || requestedEndTarget < startTarget) {
+            throw new Error('Historical fetch requires ordered non-negative integer time boundaries.');
+        }
         const effectiveDuration = Math.max(intervalMs, endTarget - startTarget);
 
         const estimatedTotalCandles = Math.ceil(effectiveDuration / intervalMs);
@@ -80,7 +86,7 @@ export class BackgroundDataMiner {
         let fetchStart = startTarget;
         let batchIndex = 0;
 
-        while (fetchStart < endTarget) {
+        while (fetchStart <= endTarget) {
             if (signal.aborted) {
                 throw new Error('Mining cancelled by user.');
             }
@@ -99,7 +105,14 @@ export class BackgroundDataMiner {
                 statusText: `Fetching 1,000 ${interval} candles from Binance...`
             });
 
-            const url = `https://api.binance.com/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&startTime=${fetchStart}&endTime=${endTarget}&limit=1000`;
+            const query = new URLSearchParams({
+                symbol: symbol.toUpperCase(),
+                interval,
+                startTime: String(fetchStart),
+                endTime: String(endTarget),
+                limit: '1000'
+            });
+            const url = `https://api.binance.com/api/v3/klines?${query.toString()}`;
 
             const res = await fetch(url, { signal });
             if (res.status === 429 || res.status === 418) {
@@ -109,16 +122,33 @@ export class BackgroundDataMiner {
                 throw new Error(`Binance API error: ${res.statusText}`);
             }
 
-            const rawKlines: any[] = await res.json();
+            const rawKlines: unknown = await res.json();
             if (!Array.isArray(rawKlines) || rawKlines.length === 0) {
                 break; // Reached end of historical data
             }
 
             for (let i = 0; i < rawKlines.length; i++) {
                 const k = rawKlines[i];
+                if (!Array.isArray(k) || k.length < 7) {
+                    throw new Error(`Binance returned a malformed kline at response index ${i}.`);
+                }
+                const candleTime = Number(k[0]);
+                const closeTime = Number(k[6]);
+                if (!Number.isSafeInteger(candleTime) || !Number.isSafeInteger(closeTime)) {
+                    throw new Error(`Binance returned an invalid kline timestamp at response index ${i}.`);
+                }
+                if (candleTime < startTarget || candleTime > endTarget) {
+                    throw new Error(
+                        `Binance returned candle ${candleTime} outside requested open-time bounds ` +
+                        `[${startTarget}, ${endTarget}].`
+                    );
+                }
+                if (closeTime >= now) {
+                    continue;
+                }
                 // Store format: [time, open, high, low, close, volume]
                 collectedCandles.push([
-                    k[0],
+                    candleTime,
                     parseFloat(k[1]),
                     parseFloat(k[2]),
                     parseFloat(k[3]),
@@ -127,7 +157,10 @@ export class BackgroundDataMiner {
                 ]);
             }
 
-            const lastCandleTime = rawKlines[rawKlines.length - 1][0];
+            const lastCandleTime = Number(rawKlines[rawKlines.length - 1][0]);
+            if (!Number.isSafeInteger(lastCandleTime) || lastCandleTime + 1 <= fetchStart) {
+                throw new Error('Binance pagination did not advance beyond the previous candle boundary.');
+            }
             fetchStart = lastCandleTime + 1; // Advance start to avoid duplicate boundary candle
 
             // If Binance returned fewer than 1000 bars, we have caught up to the present

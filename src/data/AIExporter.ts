@@ -1,8 +1,10 @@
 // =========================================================================
 // 🔒 FROZEN RESEARCH CONTRACT: EXPLICIT FEATURE / OUTCOME SEPARATION
 // =========================================================================
+import JSZip from 'jszip';
+import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
 import type { SourceBackboneAcceptedRow } from '../indicators/mlr1/dataset/ObservationBackbone';
-import type { ExportAccounting } from '../indicators/mlr1/dataset/DatasetManifest';
+import type { DatasetManifest, ExportAccounting } from '../indicators/mlr1/dataset/DatasetManifest';
 import type { StrictZigZagPivot } from '../indicators/plugins/StrictCBCZigZagIndicator';
 import { DataStore } from './DataStore';
 import { ML1_CONFIG_B, ML1_CONFIG_B_VERSION } from '../indicators/mlr1/ML1FeatureConfigs';
@@ -12,11 +14,11 @@ import {
     validateML1Config
 } from '../indicators/mlr1/ML1FeatureEngine';
 import {
+    accountRawSourceRows,
     buildSourceBackbone,
     createDatasetManifest,
-    evaluateAcceptance,
-    extractDataQuality,
-    validateCandleOhlcv
+    type RawSourceAccountingReport,
+    type RawSourceTimestampBounds
 } from '../indicators/mlr1/dataset/ObservationBackbone';
 import {
     STRICT_CBC_ZIGZAG_TEACHER_VERSION,
@@ -24,6 +26,7 @@ import {
 } from '../indicators/plugins/StrictCBCZigZagIndicator';
 
 export const MLR1_OUTCOME_CONFIG_VERSION = 'MLR1_v2';
+const MLR1_EVENT_ID_VERSION = 'v2_ATR14_SL1.5_TP2_HZ60';
 
 export const MLR1_REPRESENTATION_FEATURE_ALLOWLIST = [
     'pivot_type',
@@ -41,6 +44,23 @@ export const MLR1_REPRESENTATION_FEATURE_ALLOWLIST = [
 ] as const;
 
 export type MLR1RepresentationFeature = typeof MLR1_REPRESENTATION_FEATURE_ALLOWLIST[number];
+
+export class SourceIntegrityError extends Error {
+    public readonly sourceReport: RawSourceAccountingReport;
+
+    public constructor(sourceReport: RawSourceAccountingReport) {
+        const { stats, rejectedRows, uptime } = sourceReport;
+        super(
+            `Source integrity rejected ${rejectedRows.length} of ${stats.sourceRowCount} raw candles; ` +
+            `uptime=${uptime.usableObservationFraction}, missingIntervals=${stats.missingIntervalCount}, ` +
+            `duplicates=${stats.duplicateTimestampCount}, outOfOrder=${stats.outOfOrderCount}, ` +
+            `invalidOhlcv=${stats.invalidOhlcvCount}, offGrid=${stats.offGridTimestampCount}, ` +
+            `outOfRange=${stats.outOfRangeTimestampCount}.`
+        );
+        this.sourceReport = sourceReport;
+        this.name = 'SourceIntegrityError';
+    }
+}
 
 /**
  * 🔒 STRICT PROJECTION: This allowlist is the sole model-input projection.
@@ -374,7 +394,6 @@ export class AIExporter {
         // ==========================================
         // 🔒 FROZEN RESEARCH CONTRACT PARAMETERS
         // ==========================================
-        const ATR_PERIOD = 14;
         const STOP_ATR_MULT = 1.5;
         const TARGET_R_MULT = 2.0;
         const MAX_HORIZON_BARS = 60; 
@@ -449,7 +468,7 @@ export class AIExporter {
         }
         const events: MLR1EventRow[] = [];
 
-        const indVersion = `v2_ATR${ATR_PERIOD}_SL${STOP_ATR_MULT}_TP${TARGET_R_MULT}_HZ${MAX_HORIZON_BARS}`;
+        const indVersion = MLR1_EVENT_ID_VERSION;
         
         const excludedIndexZero = cachedPivots.length > 0 ? 1 : 0;
         let excludedMissingNextOpen = 0;
@@ -843,6 +862,106 @@ export class AIExporter {
         return recordCount - 1;
     }
 
+    public static assertCandleBufferWithinBounds(
+        candleBuffer: Float64Array,
+        bounds: RawSourceTimestampBounds
+    ): void {
+        if (!(candleBuffer instanceof Float64Array) || candleBuffer.length % 6 !== 0 ||
+            !Number.isSafeInteger(bounds.startTimestamp) ||
+            !Number.isSafeInteger(bounds.endTimestamp) ||
+            bounds.startTimestamp < 0 ||
+            bounds.endTimestamp < bounds.startTimestamp) {
+            throw new Error('Custom date validation requires a valid candle buffer and ordered timestamp bounds.');
+        }
+        for (let offset = 0; offset < candleBuffer.length; offset += 6) {
+            const timestamp = candleBuffer[offset];
+            if (!Number.isSafeInteger(timestamp) ||
+                timestamp < bounds.startTimestamp || timestamp > bounds.endTimestamp) {
+                throw new Error(
+                    `Fetched candle timestamp ${timestamp} falls outside custom date bounds ` +
+                    `[${bounds.startTimestamp}, ${bounds.endTimestamp}].`
+                );
+            }
+        }
+    }
+
+    public static async createVerifiedDatasetArchive(artifacts: {
+        manifest: Pick<DatasetManifest, 'symbol' | 'timeframe' | 'buildTimestamp' | 'exportAccounting'>;
+        continuousCsv: string;
+        representationCsv: string;
+        eventCsv: string;
+        continuousFileName: string;
+        representationFileName: string;
+        eventFileName: string;
+    }): Promise<Uint8Array> {
+        const manifestFileName =
+            `MLR1_${artifacts.manifest.symbol}_${artifacts.manifest.timeframe}_Manifest.json`;
+        const entries = [
+            { name: manifestFileName, content: JSON.stringify(artifacts.manifest, null, 2) },
+            { name: artifacts.continuousFileName, content: artifacts.continuousCsv },
+            { name: artifacts.representationFileName, content: artifacts.representationCsv },
+            { name: artifacts.eventFileName, content: artifacts.eventCsv }
+        ];
+        const entryNames = entries.map(entry => entry.name);
+        if (new Set(entryNames).size !== entryNames.length) {
+            throw new Error('Dataset archive contains duplicate expected entry names.');
+        }
+        if (entries.some(entry => !entry.name || entry.name.includes('/') || entry.name.includes('\\'))) {
+            throw new Error('Dataset archive entry names must be non-empty file names without path segments.');
+        }
+
+        const expectedCsvCounts = artifacts.manifest.exportAccounting.actualFileRowCounts;
+        for (const [fileName, content] of [
+            [artifacts.continuousFileName, artifacts.continuousCsv],
+            [artifacts.representationFileName, artifacts.representationCsv],
+            [artifacts.eventFileName, artifacts.eventCsv]
+        ] as const) {
+            const expectedRows = expectedCsvCounts[fileName];
+            if (!Number.isSafeInteger(expectedRows) ||
+                this.countCsvDataRows(content) !== expectedRows) {
+                throw new Error(`Dataset archive source CSV row count does not match manifest for '${fileName}'.`);
+            }
+        }
+
+        const zip = new JSZip();
+        const fixedEntryDate = new Date(artifacts.manifest.buildTimestamp);
+        if (!Number.isFinite(fixedEntryDate.getTime())) {
+            throw new Error('Dataset archive manifest has an invalid fixed build timestamp.');
+        }
+        for (const entry of entries) {
+            zip.file(entry.name, entry.content, { date: fixedEntryDate });
+        }
+        const archiveBytes = await zip.generateAsync({ type: 'uint8array' });
+        const reopened = await JSZip.loadAsync(archiveBytes);
+        const actualNames = Object.keys(reopened.files)
+            .filter(name => !reopened.files[name].dir)
+            .sort();
+        const expectedNames = [...entryNames].sort();
+        if (actualNames.length !== entries.length ||
+            actualNames.some((name, index) => name !== expectedNames[index])) {
+            throw new Error('Generated dataset archive entries do not match the expected manifest and CSV files.');
+        }
+
+        for (const expected of entries) {
+            const physicalEntry = reopened.file(expected.name);
+            if (!physicalEntry) {
+                throw new Error(`Generated dataset archive is missing '${expected.name}'.`);
+            }
+            const physicalContent = await physicalEntry.async('string');
+            if (physicalContent !== expected.content) {
+                throw new Error(`Generated dataset archive bytes differ from artifact '${expected.name}'.`);
+            }
+            const expectedRows = expectedCsvCounts[expected.name];
+            if (expectedRows !== undefined &&
+                this.countCsvDataRows(physicalContent) !== expectedRows) {
+                throw new Error(
+                    `Generated archive CSV row count does not match manifest for '${expected.name}'.`
+                );
+            }
+        }
+        return archiveBytes;
+    }
+
     public static async buildExportArtifacts(params: {
         rawCandleBuffer: Float64Array;
         symbol: string;
@@ -850,6 +969,7 @@ export class AIExporter {
         intervalMs: number;
         buildTimestamp?: number;
         zigZagParameters?: Readonly<Record<string, unknown>>;
+        sourceTimestampBounds?: RawSourceTimestampBounds;
         onProgress?: (detail: string) => void;
     }) {
         const { rawCandleBuffer, symbol, interval, intervalMs } = params;
@@ -881,26 +1001,10 @@ export class AIExporter {
             momentumPeriods: [...ML1_CONFIG_B.momentumPeriods],
             volumeSmaPeriods: [...ML1_CONFIG_B.volumeSmaPeriods]
         });
-        const firstTimestamp = rawCandleBuffer[0];
-        const backboneInputs: Array<{
-            candle: {
-                time: number;
-                open: number;
-                high: number;
-                low: number;
-                close: number;
-                volume: number;
-                isSynthetic: false;
-            };
-            observation: ReturnType<typeof stepML1Features>['observation'];
-            isValidOhlcv: boolean;
-        }> = [];
-        let state = createInitialML1FeatureState();
-        let expectedNextTime = -1;
-
-        params.onProgress?.(`Validating ${rawCandleCount.toLocaleString()} source candles...`);
-        for (let offset = 0; offset < rawCandleBuffer.length; offset += 6) {
-            const candle = {
+        const rawCandles: ML1Candle[] = new Array(rawCandleCount);
+        for (let index = 0; index < rawCandleCount; index++) {
+            const offset = index * 6;
+            rawCandles[index] = {
                 time: rawCandleBuffer[offset],
                 open: rawCandleBuffer[offset + 1],
                 high: rawCandleBuffer[offset + 2],
@@ -909,44 +1013,35 @@ export class AIExporter {
                 volume: rawCandleBuffer[offset + 5],
                 isSynthetic: false as const
             };
-            if (!Number.isSafeInteger(candle.time) || candle.time < 1e12) {
-                throw new Error(`Invalid millisecond timestamp at candle index ${offset / 6}.`);
-            }
-            if (candle.time % intervalMs !== 0) {
-                throw new Error(`Timestamp ${candle.time} is not aligned to ${interval}.`);
-            }
-            const isValidOhlcv = validateCandleOhlcv(candle);
-            if (!isValidOhlcv) {
-                throw new Error(`Structurally invalid OHLCV at ${new Date(candle.time).toISOString()}.`);
-            }
-            if (expectedNextTime !== -1 && candle.time !== expectedNextTime) {
-                throw new Error(
-                    `Missing candle detected. Expected ${expectedNextTime}, got ${candle.time}. ` +
-                    'A continuous timeline is required.'
-                );
-            }
-            expectedNextTime = candle.time + intervalMs;
+        }
+        const sourceReport = accountRawSourceRows(
+            rawCandles,
+            symbol,
+            interval,
+            strictPolicy,
+            intervalMs,
+            params.sourceTimestampBounds,
+            true
+        );
+        if (sourceReport.rejectedRows.length > 0 ||
+            !sourceReport.uptime.isUptimeValid ||
+            sourceReport.acceptedSourceIndices.length !== rawCandleCount) {
+            throw new SourceIntegrityError(sourceReport);
+        }
 
-            const result = stepML1Features(candle, offset / 6, state, featureConfig);
-            const quality = extractDataQuality(result.observation);
-            const acceptance = evaluateAcceptance(quality, strictPolicy, isValidOhlcv, {
-                gridAnchor: firstTimestamp,
-                isOnGrid: (candle.time - firstTimestamp) % intervalMs === 0,
-                isWithinRange: true
-            });
-            const continuityFailures = [
-                quality.hasDataGap ? 'DATA_GAP' : '',
-                quality.isDiscontinuity ? 'DISCONTINUITY' : '',
-                quality.isUnexpectedInterval ? 'UNEXPECTED_INTERVAL' : ''
-            ].filter(Boolean);
-            if (!acceptance.isAccepted || continuityFailures.length > 0) {
-                throw new Error(
-                    `Candle at timestamp ${candle.time} rejected: ` +
-                    [...acceptance.rejectionReasons, ...continuityFailures].join(', ')
-                );
-            }
+        const backboneInputs: Array<{
+            candle: ML1Candle;
+            observation: ReturnType<typeof stepML1Features>['observation'];
+            isValidOhlcv: boolean;
+        }> = [];
+        let state = createInitialML1FeatureState();
+
+        params.onProgress?.(`Validating ${rawCandleCount.toLocaleString()} source candles...`);
+        for (const rawIndex of sourceReport.acceptedSourceIndices) {
+            const candle = rawCandles[rawIndex];
+            const result = stepML1Features(candle, backboneInputs.length, state, featureConfig);
             state = result.nextState;
-            backboneInputs.push({ candle, observation: result.observation, isValidOhlcv });
+            backboneInputs.push({ candle, observation: result.observation, isValidOhlcv: true });
         }
 
         const dateRange = {
@@ -1128,7 +1223,7 @@ export class DatasetAuditor {
         dataStore: any,
         acceptedRows: readonly SourceBackboneAcceptedRow[],
         intervalMs: number,
-        cachedPivots?: readonly StrictZigZagPivot[]
+        cachedPivots: readonly StrictZigZagPivot[]
     ): {
         passed: boolean;
         chronologyValid: boolean;
@@ -1157,8 +1252,8 @@ export class DatasetAuditor {
             console.error("❌ DatasetAuditor Error: dataStore and acceptedRows are mandatory for the 3-way verification pass.");
             return failResult;
         }
-        if (cachedPivots !== undefined && !Array.isArray(cachedPivots)) {
-            console.error('DatasetAuditor Error: cachedPivots must be an array when supplied.');
+        if (!Array.isArray(cachedPivots)) {
+            console.error('DatasetAuditor Error: cachedPivots must be supplied as an array.');
             return failResult;
         }
         if (dataStore.length !== acceptedRows.length) {
@@ -1227,6 +1322,10 @@ export class DatasetAuditor {
             }
             if (idSet.has(ev.event_id)) duplicateFailures++;
             idSet.add(ev.event_id);
+            const expectedEventId =
+                `MLR1_${ev.symbol}_${ev.timeframe}_${MLR1_EVENT_ID_VERSION}_` +
+                `${ev.confirmation_time_ms}_${ev.pivot_time_ms}_${ev.pivot_type}`;
+            if (ev.event_id !== expectedEventId) duplicateFailures++;
 
             // 2. Strict Chronology & Integer Timestamps
             if (i > 0) {
@@ -1290,21 +1389,19 @@ export class DatasetAuditor {
                     ev.pivot_bar_index <= previousEvent.pivot_bar_index))) {
                 indexFailures++;
             }
-            if (cachedPivots) {
-                const currentTeacherIndex = cachedPivots.findIndex(
-                    pivot => pivot.barIndex === ev.pivot_bar_index &&
-                        pivot.confirmedBarIndex === ev.confirmed_bar_index
-                );
-                const previousTeacher = currentTeacherIndex > 0
-                    ? cachedPivots[currentTeacherIndex - 1]
-                    : undefined;
-                if (!previousTeacher ||
-                    previousTeacher.barIndex !== ev.previous_pivot_bar_index ||
-                    previousTeacher.confirmedBarIndex !== ev.previous_pivot_confirmed_bar_index ||
-                    previousTeacher.type !== ev.previous_pivot_type ||
-                    Math.abs(previousTeacher.price - ev.previous_pivot_price) > 0.0001) {
-                    provenanceFailures++;
-                }
+            const currentTeacherIndex = cachedPivots.findIndex(
+                pivot => pivot.barIndex === ev.pivot_bar_index &&
+                    pivot.confirmedBarIndex === ev.confirmed_bar_index
+            );
+            const previousTeacher = currentTeacherIndex > 0
+                ? cachedPivots[currentTeacherIndex - 1]
+                : undefined;
+            if (!previousTeacher ||
+                previousTeacher.barIndex !== ev.previous_pivot_bar_index ||
+                previousTeacher.confirmedBarIndex !== ev.previous_pivot_confirmed_bar_index ||
+                previousTeacher.type !== ev.previous_pivot_type ||
+                Math.abs(previousTeacher.price - ev.previous_pivot_price) > 0.0001) {
+                provenanceFailures++;
             }
 
             // 4. Exhaustive Anti-NaN Gate on all 25 numeric fields

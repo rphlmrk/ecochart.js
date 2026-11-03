@@ -1,4 +1,5 @@
 import {
+    accountRawSourceRows,
     buildSourceBackbone,
     calculateObservationTimestamp,
     createInitialBackboneStats,
@@ -12,7 +13,15 @@ import {
     type SlotIntegrityContext,
     type SourceBackboneInputItem
 } from '../indicators/mlr1/dataset/ObservationBackbone';
-import { AIExporter, CandleContextAggregator, DatasetAuditor, HybridTokenBuilder } from '../data/AIExporter';
+import {
+    AIExporter,
+    CandleContextAggregator,
+    DatasetAuditor,
+    HybridTokenBuilder,
+    MLR1_OUTCOME_LABEL_ALLOWLIST,
+    MLR1_REPRESENTATION_FEATURE_ALLOWLIST
+} from '../data/AIExporter';
+import { TIER_C_QUARANTINE_LIST } from '../indicators/mlr1/dataset/DatasetSchema';
 import type { ML1Candle, ML1Observation } from '../indicators/mlr1/ML1FeatureTypes';
 import type { DatasetConfig, IntegrityPolicy } from '../indicators/mlr1/dataset/DatasetConfig';
 
@@ -870,6 +879,44 @@ export function runPhase4BTests(): boolean {
             'Auditor should accept event pivot provenance matching the accepted candles'
         );
 
+        assert(
+            !DatasetAuditor.runCausalityAudit(events, dataStore, rows, 60000, undefined as unknown as typeof pivots).passed,
+            'Auditor must fail closed when cached pivots are omitted at runtime'
+        );
+        assert(
+            !DatasetAuditor.runCausalityAudit(
+                [{ ...events[0], event_id: 'forged-event-id' }],
+                dataStore,
+                rows,
+                60000,
+                pivots
+            ).passed,
+            'Auditor must independently recompute and verify event identities'
+        );
+
+        const representationCsv = AIExporter.exportMLR1RepresentationCSV(events, 'SOLUSDT', '1m');
+        const eventCsv = AIExporter.exportMLR1CSV(events, 'SOLUSDT', '1m');
+        assert(representationCsv !== null && eventCsv !== null, 'Both separated event artifacts should serialize');
+        const representationHeaders = representationCsv.split('\r\n')[0].split(',');
+        const eventHeaders = eventCsv.split('\r\n')[0].split(',');
+        for (const forbiddenField of [
+            ...TIER_C_QUARANTINE_LIST,
+            ...MLR1_OUTCOME_LABEL_ALLOWLIST
+        ]) {
+            assert(
+                !representationHeaders.includes(forbiddenField),
+                `Representation artifact must exclude quarantined field '${forbiddenField}'`
+            );
+        }
+        assert(
+            MLR1_REPRESENTATION_FEATURE_ALLOWLIST.every(header => representationHeaders.includes(header)),
+            'Representation artifact must retain every approved model-input field'
+        );
+        assert(
+            MLR1_OUTCOME_LABEL_ALLOWLIST.every(header => eventHeaders.includes(header)),
+            'Separate event artifact must retain outcome labels and execution metadata'
+        );
+
         const incorrectPreviousConfirmation = [{
             ...events[0],
             previous_pivot_confirmed_bar_index: 1
@@ -942,6 +989,52 @@ export function runPhase4BTests(): boolean {
         assert(result.stats.uniqueAcceptedTimestampsCount === 2, 'Exactly two unique timestamps should be accepted');
     });
 
+    runTest('18. Raw source rejection accounting precedes feature processing', () => {
+        const base = 1700000000000;
+        const rawRows: ML1Candle[] = [
+            createCandle(base),
+            { ...createCandle(base + 60000), high: 8 },
+            createCandle(base + 120000),
+            createCandle(base + 120000),
+            createCandle(base + 150000),
+            createCandle(base + 60000),
+            createCandle(base + 360000)
+        ];
+        const report = accountRawSourceRows(
+            rawRows,
+            'SOLUSDT',
+            '1m',
+            strictPolicy,
+            60000,
+            { startTimestamp: base, endTimestamp: base + 300000 }
+        );
+
+        assert(report.stats.sourceRowCount === rawRows.length, 'Raw source count must include every input row');
+        assert(
+            report.stats.sourceRowCount ===
+                report.stats.acceptedObservationCount + report.stats.rejectedObservationCount,
+            'Raw source accounting must reconcile accepted and rejected rows'
+        );
+        assert(report.stats.invalidOhlcvCount === 1, 'Malformed OHLCV must be counted');
+        assert(report.stats.duplicateTimestampCount >= 1, 'Duplicate timestamp must be counted');
+        assert(report.stats.outOfOrderCount === 1, 'Out-of-order timestamp must be counted');
+        assert(report.stats.offGridTimestampCount === 1, 'Off-grid timestamp must be counted');
+        assert(report.stats.outOfRangeTimestampCount === 1, 'Out-of-range timestamp must be counted');
+        assert(
+            report.acceptedSourceIndices.join(',') === '0,2',
+            'Only valid, unique, in-range source indices may proceed to feature computation'
+        );
+        assert(
+            report.rejectedRows.length === 5 &&
+                report.rejectedRows.some(row => row.reasons.includes('INVALID_OHLCV')) &&
+                report.rejectedRows.some(row => row.reasons.includes('DUPLICATE_TIMESTAMP')) &&
+                report.rejectedRows.some(row => row.reasons.includes('OUT_OF_ORDER')) &&
+                report.rejectedRows.some(row => row.reasons.includes('OFF_GRID_TIMESTAMP')) &&
+                report.rejectedRows.some(row => row.reasons.includes('OUT_OF_RANGE_TIMESTAMP')),
+            'Every rejected raw row must retain its M4B quality reason'
+        );
+    });
+
     console.log('\n=======================================');
     console.log('📊 ML-R1 PHASE 4B FULL ACCEPTANCE AUDIT:');
     console.log(`   ↳ Tests Executed:  ${passed + failed}`);
@@ -949,5 +1042,5 @@ export function runPhase4BTests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log('=======================================\n');
 
-    return failed === 0 && passed === 21;
+    return failed === 0 && passed === 22;
 }

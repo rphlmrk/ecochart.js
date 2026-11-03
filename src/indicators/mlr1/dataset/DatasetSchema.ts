@@ -99,5 +99,19 @@ export const TIER_C_QUARANTINE_LIST = [
     'maximumAdverseExcursion',
     'maturityStatus',
     'isOutcomeValid',
-    'outcomeCompletionTimestamp'
+    'outcomeCompletionTimestamp',
+    'entry_bar_index',
+    'entry_time',
+    'entry_price',
+    'atr_at_confirmation',
+    'long_stop_price',
+    'long_target_price',
+    'long_exit_price',
+    'long_net_r',
+    'long_outcome',
+    'short_stop_price',
+    'short_target_price',
+    'short_exit_price',
+    'short_net_r',
+    'short_outcome'
 ] as const;

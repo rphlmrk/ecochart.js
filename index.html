@@ -812,7 +812,7 @@
         <div style="margin-left: auto; display: flex; align-items: center; gap: 4px;">
 
           <!-- NEW: AI Export Toolbar Button -->
-          <button id="btn-topbar-ai-export" title="Export AI Training Data (.csv)"
+          <button id="btn-topbar-ai-export" title="Export ML-R1 Dataset Package (.zip)"
             style="background: rgba(41, 98, 255, 0.15); color: var(--chart-accent, #2962FF); border: 1px solid var(--chart-accent, #2962FF); padding: 3px 8px; font-size: 12px; font-weight: 700; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 4px; margin-right: 4px; height: 26px;">
             <span>🧠</span><span class="desktop-only">AI Export</span>
           </button>
@@ -2296,7 +2296,7 @@
       <div style="display: flex; gap: 12px;">
         <span style="font-size: 28px; line-height: 1;">🧠</span>
         <div>
-          <h3 style="margin: 0; font-size: 15px; font-weight: 700; color: var(--chart-text, #D1D4DC);">Export AI Training Data (.csv)</h3>
+          <h3 style="margin: 0; font-size: 15px; font-weight: 700; color: var(--chart-text, #D1D4DC);">Export ML-R1 Dataset Package (.zip)</h3>
           <div id="ai-export-subtitle" style="font-size: 11px; color: #787B86; margin-top: 4px;">BTCUSDT • 1m • Ground truth signal outcomes & range detection</div>
         </div>
       </div>
@@ -2330,18 +2330,12 @@
         </div>
       </div>
 
-      <!-- Packaging Format -->
+      <!-- Required ML-R1 Dataset Package -->
       <div>
-        <div style="font-size: 10px; font-weight: 700; color: #787B86; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">Packaging Format</div>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-          <div class="ai-pack-card active" data-pack="csv" style="background: rgba(120, 123, 134, 0.08); border: 1.5px solid #EF5350; border-radius: 6px; padding: 10px 12px; cursor: pointer; transition: all 0.2s;">
-            <div style="font-size: 12px; font-weight: 700; color: var(--chart-text, #D1D4DC); display: flex; align-items: center; gap: 6px;"><span style="font-size: 14px;">📄</span> Single Consolidated CSV</div>
-            <div style="font-size: 10px; color: #787B86; margin-top: 4px; margin-left: 20px;">One continuous chronological dataset</div>
-          </div>
-          <div class="ai-pack-card" data-pack="zip" style="background: rgba(120, 123, 134, 0.08); border: 1.5px solid transparent; border-radius: 6px; padding: 10px 12px; cursor: pointer; transition: all 0.2s;">
-            <div style="font-size: 12px; font-weight: 700; color: var(--chart-text, #D1D4DC); display: flex; align-items: center; gap: 6px;"><span style="font-size: 14px;">📦</span> Daily Partitioned ZIP</div>
-            <div style="font-size: 10px; color: #787B86; margin-top: 4px; margin-left: 20px;">One CSV per calendar day in a .zip</div>
-          </div>
+        <div style="font-size: 10px; font-weight: 700; color: #787B86; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">Package Format</div>
+        <div class="ai-pack-card active" data-pack="zip" style="background: rgba(120, 123, 134, 0.08); border: 1.5px solid #EF5350; border-radius: 6px; padding: 10px 12px;">
+          <div style="font-size: 12px; font-weight: 700; color: var(--chart-text, #D1D4DC); display: flex; align-items: center; gap: 6px;"><span style="font-size: 14px;">📦</span> ML-R1 Dataset Package (.zip)</div>
+          <div style="font-size: 10px; color: #787B86; margin-top: 4px; margin-left: 20px;">Manifest, continuous observations, representation features, and event outcomes</div>
         </div>
       </div>
 
@@ -2394,7 +2388,7 @@
         </button>
         <div style="display: flex; gap: 10px;">
           <button id="btn-ai-export-cancel" style="background: transparent; border: 1px solid var(--chart-grid, #434651); color: var(--chart-text, #D1D4DC); padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; transition: background 0.15s;">Cancel</button>
-          <button id="btn-ai-export-start" style="background: #EF5350; color: white; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 6px rgba(239, 83, 80, 0.4); transition: transform 0.1s ease;">Download CSV Dataset</button>
+          <button id="btn-ai-export-start" style="background: #EF5350; color: white; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 6px rgba(239, 83, 80, 0.4); transition: transform 0.1s ease;">Download ZIP Dataset Package</button>
         </div>
       </div>
       
