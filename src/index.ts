@@ -61,6 +61,10 @@ export * from './indicators/mlr1/dataset/DatasetTypes';
 export * from './indicators/mlr1/dataset/DatasetManifest';
 export * from './indicators/mlr1/dataset/DatasetSchema';
 
+// Milestone 4: Backbone & Integrity
+export * from './indicators/mlr1/dataset/ObservationBackbone';
+import { runPhase4BTests } from './test/milestone4b-acceptance';
+
 import { runPhase2JTests } from './test/milestone2j-acceptance';
 import { generatePhase2JReports } from './analysis/ML1FeatureAuditGenerator';
 import { runMilestone2AcceptanceSuite } from './test/run-milestone2';
@@ -4663,36 +4667,25 @@ export class WorkspaceManager {
             if (loadingOverlay) loadingOverlay.style.display = 'none';
         });
 
-        // Wire up on-demand Milestone 3 Phase 3A to 3E test orchestrator
+        // Wire up on-demand Phase 4B test orchestrator
         const btnAiExportAudit = document.getElementById('btn-ai-export-audit');
         btnAiExportAudit?.addEventListener('click', async () => {
             if (loadingOverlay) loadingOverlay.style.display = 'flex';
-            if (loadingTitle) loadingTitle.textContent = 'Running Milestone 3 Tests (Phases 3A to 3E)...';
-            if (loadingDetail) loadingDetail.textContent = 'Executing full 3A–3E pipeline: contracts, aggregation, features, alignment, and recovery...';
+            if (loadingTitle) loadingTitle.textContent = 'Running Milestone 4B Tests...';
+            if (loadingDetail) loadingDetail.textContent = 'Executing Source Integrity and Observation Backbone Audit...';
             await new Promise(resolve => setTimeout(resolve, 50));
 
             try {
-                console.log('\n======================================================');
-                console.log('RUNNING MILESTONE 3 COMPLETE SUITE (PHASES 3A TO 3E)');
-                console.log('======================================================');
-
-                if (!runPhase3ATests()) throw new Error('Phase 3A Contract suite failed');
-                if (!runPhase3BTests()) throw new Error('Phase 3B Aggregation suite failed');
-                if (!runPhase3CTests()) throw new Error('Phase 3C Feature Engine suite failed');
-                if (!runPhase3DTests()) throw new Error('Phase 3D Causal Alignment suite failed');
-                if (!runPhase3ETests()) throw new Error('Phase 3E Pipeline Integration suite failed');
-
-                console.log('\n======================================================');
-                console.log('ALL PHASES 3A TO 3E GATES PASSED (77/77 TESTS)');
-                console.log('   Phase 3A (Contracts):             9/9 PASSED');
-                console.log('   Phase 3B (Aggregation):          25/25 PASSED');
-                console.log('   Phase 3C (Feature Engines):      20/20 PASSED');
-                console.log('   Phase 3D (Causal Alignment):     14/14 PASSED');
-                console.log('   Phase 3E (Pipeline Integration):  9/9 PASSED');
-                console.log('======================================================\n');
+                const run4B = (window as Window & { runPhase4BTests?: () => boolean }).runPhase4BTests;
+                if (!run4B) {
+                    throw new Error('Phase 4B test suite not wired to window object.');
+                }
+                if (!run4B()) {
+                    throw new Error('Phase 4B Source Integrity suite failed.');
+                }
 
                 if (loadingDetail) {
-                    loadingDetail.textContent = '✅ All Phases 3A to 3E Passed (77/77 Tests)! Check DevTools console.';
+                    loadingDetail.textContent = '✅ Phase 4B Passed (10/10 Tests)! Check DevTools console.';
                 }
 
                 setTimeout(() => {
@@ -4701,12 +4694,12 @@ export class WorkspaceManager {
                 }, 1400);
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
-                console.error('[Milestone 3 Execution Error]:', error);
-                if (loadingDetail) loadingDetail.textContent = `❌ ${message}. Check DevTools console.`;
+                console.error('[AiExportModal] Phase 4B audit failed:', error);
+                if (loadingDetail) loadingDetail.textContent = `❌ ${message}`;
                 setTimeout(() => {
                     if (loadingOverlay) loadingOverlay.style.display = 'none';
                 }, 2000);
-                alert(`Milestone 3 Test Suite failed: ${message}`);
+                alert(`Phase 4B Test Suite failed: ${message}`);
             }
         });
 
@@ -5802,6 +5795,7 @@ export class WorkspaceManager {
         (window as any).runPhase3CTests = runPhase3CTests;
         (window as any).runPhase3DTests = runPhase3DTests;
         (window as any).runPhase3ETests = runPhase3ETests;
+        (window as any).runPhase4BTests = runPhase4BTests;
         (window as any).runPhase2JTests = runPhase2JTests;
         (window as any).generatePhase2JReports = generatePhase2JReports;
     }

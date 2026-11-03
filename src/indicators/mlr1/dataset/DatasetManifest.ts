@@ -2,6 +2,7 @@ import type { DatasetConfig } from './DatasetConfig';
 
 export interface MissingDataStatistics {
     readonly missingIntervalCount: number;
+    readonly unexpectedIntervalCount: number;
     readonly duplicateTimestampCount: number;
     readonly outOfOrderCount: number;
     readonly invalidOhlcvCount: number;

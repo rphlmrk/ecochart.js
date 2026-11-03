@@ -177,6 +177,9 @@ export class AiExportModal {
 
                 <!-- Footer Actions -->
                 <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--chart-grid, #2A2E39); background: var(--chart-bg, #131722);">
+                    <button id="btn-ai-export-audit" type="button" style="background: rgba(41, 98, 255, 0.15); border: 1px solid var(--chart-accent, #2962FF); color: var(--chart-accent, #2962FF); padding: 7px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 700;">
+                        🧪 Run Phase 4B Tests
+                    </button>
                     <button id="btn-cancel-ai-export" type="button" style="background: transparent; border: 1px solid var(--chart-grid, #363A45); color: var(--chart-text, #D1D4DC); padding: 7px 14px; font-size: 12px; font-weight: 600; border-radius: 4px; cursor: pointer;">
                         Cancel
                     </button>
@@ -189,6 +192,7 @@ export class AiExportModal {
 
         // Wire Up Event Handlers
         const btnClose = this.dialog.querySelector('#btn-close-ai-export');
+        const btnAudit = this.dialog.querySelector('#btn-ai-export-audit') as HTMLButtonElement;
         const btnCancel = this.dialog.querySelector('#btn-cancel-ai-export');
         const btnExecute = this.dialog.querySelector('#btn-execute-ai-export') as HTMLButtonElement;
         const customDateBox = this.dialog.querySelector('#ai-custom-dates') as HTMLElement;
@@ -200,6 +204,34 @@ export class AiExportModal {
 
         btnClose?.addEventListener('click', () => this.close());
         btnCancel?.addEventListener('click', () => this.close());
+        btnAudit?.addEventListener('click', async () => {
+            progressContainer.style.display = 'flex';
+            progressBar.style.width = '0%';
+            progressPct.textContent = '0%';
+            progressStatus.textContent = 'Running Phase 4B Source Integrity Audit...';
+            progressStatus.style.color = 'var(--chart-accent, #2962FF)';
+            progressStats.style.display = 'none';
+            await new Promise(resolve => setTimeout(resolve, 50));
+
+            try {
+                const run4B = (window as Window & { runPhase4BTests?: () => boolean }).runPhase4BTests;
+                if (!run4B) {
+                    throw new Error('Phase 4B test suite not wired to window object.');
+                }
+                if (!run4B()) {
+                    throw new Error('Phase 4B Source Integrity suite failed.');
+                }
+                progressBar.style.width = '100%';
+                progressPct.textContent = '10/10';
+                progressStatus.textContent = 'Phase 4B Passed (10/10 Tests)! Check DevTools console.';
+                progressStatus.style.color = 'var(--chart-bull, #26A69A)';
+            } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : String(error);
+                console.error('[AiExportModal] Phase 4B audit failed:', error);
+                progressStatus.textContent = `Error: ${message}`;
+                progressStatus.style.color = '#EF5350';
+            }
+        });
 
         // Range Presets
         const rangeBtns = this.dialog.querySelectorAll('.ai-range-btn');
