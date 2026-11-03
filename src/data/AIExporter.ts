@@ -1058,6 +1058,9 @@ export class DatasetAuditor {
                 confirmedRow.sourceTimestamp !== dataStore.data[ev.confirmed_bar_index * 6]) {
                 timeFailures++;
             }
+            if (ev.entry_time !== confirmedRow.observationTimestamp) {
+                timeFailures++;
+            }
             if (pivotRow.sourceTimestamp !== pivotRow.candle.time ||
                 pivotRow.sourceTimestamp !== dataStore.data[ev.pivot_bar_index * 6]) {
                 timeFailures++;

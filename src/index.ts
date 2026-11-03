@@ -4896,6 +4896,16 @@ export class WorkspaceManager {
                         '1m',
                         60_000
                     );
+                    const auditResult = DatasetAuditor.runCausalityAudit(
+                        events,
+                        dataStore,
+                        backbone.acceptedRows,
+                        60_000
+                    );
+                    if (!auditResult.passed || !auditResult.chronologyValid ||
+                        !auditResult.identityUnique || !auditResult.inputOutcomeSeparationValid) {
+                        throw new Error('Deterministic Reconstruction slice causality audit failed.');
+                    }
                     const continuousCsv = AIExporter.exportMLR1ContinuousObservationsCSV(backbone.acceptedRows);
                     const representationCsv = AIExporter.exportMLR1RepresentationCSV(events, 'SOLUSDT', '1m');
                     const eventCsv = AIExporter.exportMLR1CSV(events, 'SOLUSDT', '1m');
@@ -4907,14 +4917,19 @@ export class WorkspaceManager {
                         representation: 'MLR1_SOLUSDT_1m_Representation_Features.csv',
                         events: 'MLR1_SOLUSDT_1m_Events.csv'
                     };
-                    const fileRowCounts = {
+                    const identities = new Set(backbone.acceptedRows.map(row => row.observationId));
+                    const chronologyValid = backbone.stats.outOfOrderCount === 0;
+                    const identityUnique = identities.size === backbone.acceptedRows.length;
+                    const actualFileRowCounts = {
                         [deterministicFileNames.continuous]: AIExporter.countCsvDataRows(continuousCsv),
                         [deterministicFileNames.representation]: AIExporter.countCsvDataRows(representationCsv),
                         [deterministicFileNames.events]: AIExporter.countCsvDataRows(eventCsv)
                     };
-                    const identities = new Set(backbone.acceptedRows.map(row => row.observationId));
-                    const chronologyValid = backbone.stats.outOfOrderCount === 0;
-                    const identityUnique = identities.size === backbone.acceptedRows.length;
+                    if (actualFileRowCounts[deterministicFileNames.continuous] !== backbone.acceptedRows.length ||
+                        actualFileRowCounts[deterministicFileNames.representation] !== events.length ||
+                        actualFileRowCounts[deterministicFileNames.events] !== events.length) {
+                        throw new Error('Deterministic Reconstruction CSV row accounting failed.');
+                    }
                     const exportAccounting: ExportAccounting = {
                         rawSourceCandleCount: testSlice.length,
                         acceptedSourceObservationCount: backbone.acceptedRows.length,
@@ -4923,7 +4938,7 @@ export class WorkspaceManager {
                         tierAEventRepresentationRowCount: events.length,
                         tierBConfirmedTeacherEventCount: events.length,
                         tierCOutcomeRowCount: events.length,
-                        actualFileRowCounts: fileRowCounts
+                        actualFileRowCounts
                     };
                     const manifest = createDatasetManifest(
                         'DS_SOLUSDT_1m_DETERMINISM_V1',
@@ -4952,11 +4967,13 @@ export class WorkspaceManager {
                         backbone.uptime,
                         {
                             passed: backbone.uptime.isUptimeValid && backbone.rejectedRows.length === 0 &&
-                                chronologyValid && identityUnique,
-                            chronologyValid,
-                            identityUnique,
-                            inputOutcomeSeparationValid: true,
-                            remarks: []
+                                chronologyValid && identityUnique && auditResult.passed,
+                            chronologyValid: chronologyValid && auditResult.chronologyValid,
+                            identityUnique: identityUnique && auditResult.identityUnique,
+                            inputOutcomeSeparationValid: auditResult.inputOutcomeSeparationValid,
+                            remarks: [
+                                'Deterministic reconstruction slice passed the full dataset causality audit.'
+                            ]
                         },
                         exportAccounting
                     );
