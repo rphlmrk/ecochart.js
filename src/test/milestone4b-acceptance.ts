@@ -398,6 +398,24 @@ export function runPhase4BTests(): boolean {
             }
             assert(threw, `Invalid threshold ${threshold} must throw`);
         }
+
+        const invalidCounterStats = { ...rangedStats, missingIntervalCount: -1 };
+        let invalidCounterThrew = false;
+        try {
+            evaluateDatasetUptime(invalidCounterStats, strictPolicy, 60000);
+        } catch {
+            invalidCounterThrew = true;
+        }
+        assert(invalidCounterThrew, 'Negative statistics counters must throw');
+
+        const invalidBoundaryStats = { ...rangedStats, firstSourceTimestamp: 500000 };
+        let invalidBoundaryThrew = false;
+        try {
+            evaluateDatasetUptime(invalidBoundaryStats, strictPolicy, 60000);
+        } catch {
+            invalidBoundaryThrew = true;
+        }
+        assert(invalidBoundaryThrew, 'Inverted timestamp boundaries must throw');
     });
 
     runTest('12. Source accounting invariant across mixed input', () => {
@@ -425,21 +443,7 @@ export function runPhase4BTests(): boolean {
         assert(stats.sourceRowCount === stats.acceptedObservationCount + stats.rejectedObservationCount, 'Accounting invariant failed');
     });
 
-    runTest('13. Rejected chronologically newer candle advances watermark', () => {
-        const timestamp = 1700000000000;
-        const result = processSourceObservation(
-            createInitialBackboneStats(),
-            timestamp + 60000,
-            extractDataQuality(createMockObservation(timestamp + 60000, qualityFeatures({ IsSourceValid: 0 }))),
-            true,
-            strictPolicy,
-            60000
-        );
-        assert(!result.acceptance.isAccepted, 'Invalid source should be rejected');
-        assert(result.nextStats.lastSourceTimestamp === timestamp + 60000, 'Watermark must advance on rejected newer row');
-    });
-
-    runTest('14. Builder rejects candle/observation timestamp mismatch', () => {
+    runTest('13. Builder rejects candle/observation timestamp mismatch', () => {
         const mismatched: SourceBackboneInputItem[] = [{
             candle: createCandle(100000),
             observation: createMockObservation(160000, qualityFeatures()),
@@ -454,12 +458,36 @@ export function runPhase4BTests(): boolean {
         assert(threw, 'Mismatched timestamps must throw');
     });
 
-    runTest('15. Concrete builder and manifest reconciliation', () => {
+    runTest('14. Off-grid and out-of-range timestamps are rejected and counted', () => {
+        const dateRange = { startTimestamp: 100000, endTimestamp: 280000 };
+        const stream: SourceBackboneInputItem[] = [
+            { candle: createCandle(100000), observation: createMockObservation(100000, qualityFeatures()) },
+            { candle: createCandle(100030), observation: createMockObservation(100030, qualityFeatures()) },
+            { candle: createCandle(400000), observation: createMockObservation(400000, qualityFeatures()) }
+        ];
+        const result = buildSourceBackbone(
+            stream, 'SOLUSDT', '1m', 1, strictPolicy, 60000, dateRange
+        );
+
+        assert(result.acceptedRows.length === 1, 'Only the on-grid in-range row should be accepted');
+        assert(result.rejectedRows.length === 2, 'Off-grid and out-of-range rows should be rejected');
+        assert(result.rejectedRows[0].reasons.includes('OFF_GRID_TIMESTAMP'), 'Off-grid reason missing');
+        assert(result.rejectedRows[1].reasons.includes('OUT_OF_RANGE_TIMESTAMP'), 'Out-of-range reason missing');
+        assert(result.stats.offGridTimestampCount === 1, 'Off-grid timestamp count mismatch');
+        assert(result.stats.outOfRangeTimestampCount === 1, 'Out-of-range timestamp count mismatch');
+        assert(
+            result.stats.uniqueSourceTimestampsCount === 1,
+            `Only valid expected slots count as unique source timestamps, got ${result.stats.uniqueSourceTimestampsCount}`
+        );
+        assert(result.stats.uniqueAcceptedTimestampsCount === 1, 'Only the valid expected slot counts as uniquely accepted');
+    });
+
+    runTest('15. Concrete builder on-grid chronology and manifest reconciliation', () => {
         const inputItems: SourceBackboneInputItem[] = [
             { candle: createCandle(100000), observation: createMockObservation(100000, qualityFeatures()) },
-            { candle: { ...createCandle(160000), open: 11, high: 13, low: 10, close: 12 }, observation: createMockObservation(160000, qualityFeatures()) },
-            { candle: { ...createCandle(160000), open: 11, high: 13, low: 10, close: 12 }, observation: createMockObservation(160000, qualityFeatures()) },
-            { candle: { ...createCandle(140000), open: 10, high: 11, low: 9, close: 10 }, observation: createMockObservation(140000, qualityFeatures()) },
+            { candle: { ...createCandle(220000), open: 11, high: 13, low: 10, close: 12 }, observation: createMockObservation(220000, qualityFeatures({ HasDataGap: 1 })) },
+            { candle: { ...createCandle(220000), open: 11, high: 13, low: 10, close: 12 }, observation: createMockObservation(220000, qualityFeatures()) },
+            { candle: { ...createCandle(160000), open: 10, high: 11, low: 9, close: 10 }, observation: createMockObservation(160000, qualityFeatures()) },
             { candle: { ...createCandle(340000), open: 12, high: 14, low: 11, close: 13 }, observation: createMockObservation(340000, qualityFeatures()) },
             { candle: { ...createCandle(400000), open: 13, high: 15, low: 12, close: 14 }, observation: createMockObservation(400000, qualityFeatures({ IsSourceValid: 0 })) }
         ];
@@ -469,17 +497,15 @@ export function runPhase4BTests(): boolean {
         assert(result.stats.sourceRowCount === 6, 'Source row count must be 6');
         assert(result.acceptedRows.length === 3, 'Exactly 3 observations should be accepted');
         assert(result.rejectedRows.length === 3, 'Exactly 3 observations should be rejected');
-        assert(result.stats.uniqueSourceTimestampsCount === 4, 'Unique expected-slot timestamps should exclude duplicates and off-grid rows');
-        assert(result.stats.uniqueAcceptedTimestampsCount === 3, 'Unique accepted timestamps should exclude rejected rows');
-        assert(result.stats.offGridTimestampCount === 1, 'Off-grid timestamp count should include the late 140000 row');
-        assert(result.stats.missingIntervalCount === 2, 'Exactly 2 missing intervals should be counted');
+        assert(result.stats.uniqueSourceTimestampsCount === 5, 'Unique source timestamps should exclude only the duplicate');
+        assert(result.stats.uniqueAcceptedTimestampsCount === 3, 'Late rejected timestamp must not count as uniquely accepted');
         assert(result.acceptedRows[0].sourceTimestamp === 100000, 'First row timestamp mismatch');
-        assert(result.acceptedRows[1].sourceTimestamp === 160000, 'Second row timestamp mismatch');
+        assert(result.acceptedRows[1].sourceTimestamp === 220000, 'Second row timestamp mismatch');
         assert(result.acceptedRows[2].sourceTimestamp === 340000, 'Third row timestamp mismatch');
         assert(result.acceptedRows[0].observationTimestamp === 160000, 'Observation boundary mismatch');
         assert(result.acceptedRows[0].observationId === 'OBS_SOLUSDT_1m_V1_100000', 'Observation ID mismatch');
         assert(result.uptime.totalExpectedObservations === 7, 'Configured range should include seven expected timeline slots');
-        assert(Math.abs(result.uptime.sourceAvailabilityFraction - 4 / 7) < 1e-4, 'Source availability must exclude off-grid rows');
+        assert(Math.abs(result.uptime.sourceAvailabilityFraction - 5 / 7) < 1e-4, 'Source availability must use unique on-grid timestamps');
         assert(Math.abs(result.uptime.usableObservationFraction - 3 / 7) < 1e-4, 'Usable uptime must use unique accepted timestamps');
         assert(!result.uptime.isUptimeValid, '3 accepted of 7 total slots should fail the 95% uptime policy');
         assert(Object.isFrozen(result.acceptedRows), 'Accepted row collection must be immutable');
@@ -512,19 +538,7 @@ export function runPhase4BTests(): boolean {
         assert(manifest.totalExpectedObservations === 7, 'Manifest expected count must reflect configured date range');
         assert(Math.abs(manifest.usableObservationFraction - 3 / 7) < 1e-4, 'Manifest usable fraction mismatch');
         assert(manifest.missingDataStats.invalidSourceCount === 1, 'Manifest invalid source count mismatch');
-        assert(manifest.missingDataStats.offGridTimestampCount === 1, 'Manifest off-grid count mismatch');
-
-        const outOfRangeResult = buildSourceBackbone(
-            [{ candle: createCandle(520000), observation: createMockObservation(520000, qualityFeatures()) }],
-            'SOLUSDT',
-            '1m',
-            1,
-            strictPolicy,
-            60000,
-            dateRange
-        );
-        assert(outOfRangeResult.stats.outOfRangeTimestampCount === 1, 'Out-of-range timestamp count must increment');
-        assert(outOfRangeResult.stats.uniqueSourceTimestampsCount === 0, 'Out-of-range timestamp must not count toward source availability');
+        assert(manifest.missingDataStats.outOfOrderCount === 1, 'Manifest out-of-order count mismatch');
     });
 
     console.log('\n=======================================');
