@@ -99,7 +99,7 @@ export class BackgroundDataMiner {
                 statusText: `Fetching 1,000 ${interval} candles from Binance...`
             });
 
-            const url = `https://api.binance.com/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&startTime=${fetchStart}&limit=1000`;
+            const url = `https://api.binance.com/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&startTime=${fetchStart}&endTime=${endTarget}&limit=1000`;
 
             const res = await fetch(url, { signal });
             if (res.status === 429 || res.status === 418) {

@@ -79,6 +79,8 @@ export interface MLR1EventRow {
     pivot_label: string;
     pivot_price: number;
     previous_pivot_price: number;                          // Retained for independent leg verification
+    previous_pivot_bar_index: number;
+    previous_pivot_type: 'high' | 'low';
     pivot_bar_index: number;
     pivot_time_ms: number;
     confirmed_bar_index: number;
@@ -216,11 +218,17 @@ export class CandleContextAggregator {
             if (!row?.candle || !row.observation?.features || !row.observation.validity) {
                 throw new Error(`CandleContextAggregator Error: Accepted row ${i} is malformed.`);
             }
+            const { open, high, low, close, volume } = row.candle;
+            if (!Number.isFinite(open) || open <= 0 ||
+                !Number.isFinite(high) || high <= 0 ||
+                !Number.isFinite(low) || low <= 0 ||
+                !Number.isFinite(close) || close <= 0 ||
+                !Number.isFinite(volume) || volume < 0 ||
+                high < Math.max(open, close) || low > Math.min(open, close) || high < low) {
+                throw new Error(`CandleContextAggregator Error: Malformed OHLCV geometry in accepted row ${i}.`);
+            }
             const candleHigh = row.candle.high;
             const candleLow = row.candle.low;
-            if (!Number.isFinite(candleHigh) || !Number.isFinite(candleLow) || candleHigh < candleLow) {
-                throw new Error(`CandleContextAggregator Error: Malformed OHLC geometry in accepted row ${i}.`);
-            }
             if (candleHigh > maxH) maxH = candleHigh;
             if (candleLow < minL) minL = candleLow;
 
@@ -377,15 +385,17 @@ export class AIExporter {
         const len = dataStore.length;
         if (!Number.isSafeInteger(len) || len < 0 || dataStore.data.length < len * 6 ||
             !Number.isSafeInteger(expectedIntervalMs) || expectedIntervalMs <= 0 ||
-            !Array.isArray(acceptedRows) || acceptedRows.length !== len) {
+            !Array.isArray(acceptedRows) || acceptedRows.length !== len ||
+            !Array.isArray(cachedPivots)) {
             throw new Error(
-                `AIExporter Error: valid dataStore, positive interval, and acceptedRows matching dataStore length (${len}) are required.`
+                `AIExporter Error: valid dataStore, pivots, positive interval, and acceptedRows matching dataStore length (${len}) are required.`
             );
         }
         for (let i = 0; i < len; i++) {
             const base = i * 6;
             const candle = acceptedRows[i]?.candle;
             if (!acceptedRows[i] || !acceptedRows[i].candle || !acceptedRows[i].observation ||
+                !acceptedRows[i].observation.features || !acceptedRows[i].observation.validity ||
                 !candle ||
                 candle.time !== dataStore.data[base] ||
                 candle.open !== dataStore.data[base + 1] ||
@@ -393,6 +403,7 @@ export class AIExporter {
                 candle.low !== dataStore.data[base + 3] ||
                 candle.close !== dataStore.data[base + 4] ||
                 candle.volume !== dataStore.data[base + 5] ||
+                acceptedRows[i].sourceTimestamp !== dataStore.data[base] ||
                 acceptedRows[i].observation.timestamp !== dataStore.data[base] ||
                 acceptedRows[i].observationTimestamp !== dataStore.data[base] + expectedIntervalMs ||
                 acceptedRows[i].observation.sourceOpen !== candle.open ||
@@ -402,6 +413,36 @@ export class AIExporter {
                 acceptedRows[i].observation.sourceVolume !== candle.volume ||
                 acceptedRows[i].observation.barIndex !== i) {
                 throw new Error(`AIExporter Error: accepted row ${i} does not match the downstream dataStore timeline.`);
+            }
+        }
+
+        for (let pivotIndex = 0; pivotIndex < cachedPivots.length; pivotIndex++) {
+            const pivot = cachedPivots[pivotIndex];
+            if (!pivot || typeof pivot !== 'object' ||
+                (pivot.type !== 'high' && pivot.type !== 'low') ||
+                typeof pivot.label !== 'string' || pivot.label.length === 0 ||
+                !Number.isFinite(pivot.price) || pivot.price <= 0 ||
+                !Number.isSafeInteger(pivot.barIndex) || pivot.barIndex < 0 || pivot.barIndex >= len ||
+                !Number.isSafeInteger(pivot.confirmedBarIndex) ||
+                pivot.confirmedBarIndex < 0 || pivot.confirmedBarIndex >= len ||
+                pivot.barIndex > pivot.confirmedBarIndex) {
+                throw new Error(`AIExporter Schema Error: Malformed pivot structure at index ${pivotIndex}.`);
+            }
+            const sourceRow = acceptedRows[pivot.barIndex];
+            const expectedPrice = pivot.type === 'high' ? sourceRow.candle.high : sourceRow.candle.low;
+            if (pivot.time !== sourceRow.sourceTimestamp ||
+                Math.abs(pivot.price - expectedPrice) > 0.0001) {
+                throw new Error(
+                    `AIExporter Schema Error: Pivot ${pivotIndex} timestamp or price does not match its accepted source candle.`
+                );
+            }
+            if (pivotIndex > 0 &&
+                (pivot.type === cachedPivots[pivotIndex - 1].type ||
+                    pivot.barIndex <= cachedPivots[pivotIndex - 1].barIndex ||
+                    pivot.confirmedBarIndex <= cachedPivots[pivotIndex - 1].confirmedBarIndex)) {
+                throw new Error(
+                    `AIExporter Schema Error: Non-alternating or out-of-order pivot sequence at index ${pivotIndex}.`
+                );
             }
         }
         const events: MLR1EventRow[] = [];
@@ -539,6 +580,8 @@ export class AIExporter {
                 pivot_label: pivot.label,
                 pivot_price: pivot.price,
                 previous_pivot_price: prevPivot.price,
+                previous_pivot_bar_index: prevPivot.barIndex,
+                previous_pivot_type: prevPivot.type,
                 pivot_bar_index: pivot.barIndex,
                 pivot_time_ms: pivot.time,
                 confirmed_bar_index: confBar,
@@ -1165,7 +1208,10 @@ export class DatasetAuditor {
             const previousEvent = i > 0 ? events[i - 1] : undefined;
 
             // 1. Uniqueness
-            if (typeof ev.event_id !== 'string' || ev.event_id.trim().length === 0) {
+            if (typeof ev.event_id !== 'string' || ev.event_id.trim().length === 0 ||
+                typeof ev.symbol !== 'string' || ev.symbol.trim().length === 0 ||
+                typeof ev.timeframe !== 'string' || ev.timeframe.trim().length === 0 ||
+                typeof ev.pivot_label !== 'string' || ev.pivot_label.trim().length === 0) {
                 duplicateFailures++;
             }
             if (idSet.has(ev.event_id)) duplicateFailures++;
@@ -1181,21 +1227,43 @@ export class DatasetAuditor {
                 }
             }
 
-            // 3. Exact next_open Causality Contract
-            if (ev.entry_bar_index !== ev.confirmed_bar_index + 1) indexFailures++;
-            if (ev.entry_time <= ev.confirmation_time_ms) indexFailures++;
+            // 3. Exact next_open Causality & bounded structural-pivot provenance
             if (!Number.isSafeInteger(ev.pivot_bar_index) ||
+                !Number.isSafeInteger(ev.previous_pivot_bar_index) ||
                 !Number.isSafeInteger(ev.confirmed_bar_index) ||
-                !Number.isSafeInteger(ev.pivot_time_ms) ||
+                !Number.isSafeInteger(ev.entry_bar_index) ||
                 ev.pivot_bar_index < 0 ||
+                ev.previous_pivot_bar_index < 0 ||
+                ev.previous_pivot_bar_index >= ev.pivot_bar_index ||
                 ev.pivot_bar_index > ev.confirmed_bar_index ||
                 ev.confirmed_bar_index >= acceptedRows.length ||
-                acceptedRows[ev.confirmed_bar_index]?.sourceTimestamp !== ev.confirmation_time_ms ||
-                (ev.pivot_type === 'high'
-                    ? ev.pivot_price !== acceptedRows[ev.pivot_bar_index]?.candle.high
-                    : ev.pivot_type === 'low'
-                        ? ev.pivot_price !== acceptedRows[ev.pivot_bar_index]?.candle.low
-                        : true) ||
+                ev.entry_bar_index !== ev.confirmed_bar_index + 1 ||
+                ev.entry_bar_index >= acceptedRows.length ||
+                ev.entry_bar_index >= dataStore.length) {
+                indexFailures++;
+                candleExecutionFailures++;
+                continue;
+            }
+
+            if (ev.entry_time <= ev.confirmation_time_ms) indexFailures++;
+            const sourcePivotRow = acceptedRows[ev.pivot_bar_index];
+            const sourcePreviousPivotRow = acceptedRows[ev.previous_pivot_bar_index];
+            const sourceConfirmedRow = acceptedRows[ev.confirmed_bar_index];
+            const expectedPivotPrice = ev.pivot_type === 'high'
+                ? sourcePivotRow.candle.high
+                : sourcePivotRow.candle.low;
+            const expectedPreviousPivotPrice = ev.previous_pivot_type === 'high'
+                ? sourcePreviousPivotRow.candle.high
+                : sourcePreviousPivotRow.candle.low;
+            if (!['high', 'low'].includes(ev.pivot_type) ||
+                !['high', 'low'].includes(ev.previous_pivot_type) ||
+                ev.pivot_type === ev.previous_pivot_type ||
+                Math.abs(ev.pivot_price - expectedPivotPrice) > 0.0001 ||
+                Math.abs(ev.previous_pivot_price - expectedPreviousPivotPrice) > 0.0001 ||
+                ev.confirmation_time_ms !== sourceConfirmedRow.sourceTimestamp ||
+                ev.entry_time !== sourceConfirmedRow.observationTimestamp ||
+                ev.pivot_time_ms !== sourcePivotRow.sourceTimestamp ||
+                ev.pivot_time_ms > ev.confirmation_time_ms ||
                 (i > 0 && (!previousEvent ||
                     !Number.isSafeInteger(previousEvent.pivot_bar_index) ||
                     ev.pivot_bar_index <= previousEvent.pivot_bar_index))) {
@@ -1204,7 +1272,7 @@ export class DatasetAuditor {
 
             // 4. Exhaustive Anti-NaN Gate on all 25 numeric fields
             const requiredFiniteNumbers = [
-                ev.pivot_price, ev.previous_pivot_price, ev.pivot_bar_index,
+                ev.pivot_price, ev.previous_pivot_price, ev.previous_pivot_bar_index, ev.pivot_bar_index,
                 ev.pivot_time_ms, ev.confirmed_bar_index, ev.confirmation_time_ms, ev.bars_since_last_pivot,
                 ev.leg_distance_atr, ev.context_net_return_atr, ev.context_max_favorable_atr,
                 ev.context_max_adverse_atr, ev.context_candle_count, ev.context_relative_volume,
@@ -1220,7 +1288,8 @@ export class DatasetAuditor {
 
             // Strict Integer Fields
             const requiredIntegerFields = [
-                ev.pivot_bar_index, ev.pivot_time_ms, ev.confirmed_bar_index, ev.confirmation_time_ms,
+                ev.previous_pivot_bar_index, ev.pivot_bar_index, ev.pivot_time_ms,
+                ev.confirmed_bar_index, ev.confirmation_time_ms,
                 ev.bars_since_last_pivot, ev.context_candle_count, ev.entry_bar_index, ev.entry_time
             ];
             for (let k = 0; k < requiredIntegerFields.length; k++) {
@@ -1235,9 +1304,17 @@ export class DatasetAuditor {
             const expectedDir = ev.pivot_price > ev.previous_pivot_price ? 'up' : 
                                (ev.pivot_price < ev.previous_pivot_price ? 'down' : 'flat');
             if (ev.completed_leg_direction !== expectedDir) directionFailures++;
+            if (ev.atr_at_confirmation > 0) {
+                const expectedLegDistance = (ev.pivot_price - ev.previous_pivot_price) / ev.atr_at_confirmation;
+                if (Math.abs(ev.leg_distance_atr - expectedLegDistance) > 0.0001) mathFailures++;
+            } else {
+                mathFailures++;
+            }
 
             // Categorical validation
             if (!['high', 'low'].includes(ev.pivot_type)) directionFailures++;
+            if (!['high', 'low'].includes(ev.previous_pivot_type)) directionFailures++;
+            if (ev.pivot_type === ev.previous_pivot_type) directionFailures++;
             if (!['up', 'down', 'flat'].includes(ev.completed_leg_direction)) directionFailures++;
             if (!['up', 'down'].includes(ev.zigzag_next_leg_orientation)) directionFailures++;
 
@@ -1331,10 +1408,16 @@ export class DatasetAuditor {
                     minLow = Math.min(minLow, candleLow);
 
                     const relativeVolume = row.observation.features['RelativeVolume_20'];
-                    if (row.observation.validity['RelativeVolume_20'] === true &&
-                        Number.isFinite(relativeVolume) && relativeVolume >= 0) {
-                        matureCount++;
-                        sumRelativeVolume += relativeVolume;
+                    const relativeVolumeValid = row.observation.validity['RelativeVolume_20'];
+                    if (typeof relativeVolumeValid !== 'boolean') {
+                        provenanceFailures++;
+                    } else if (relativeVolumeValid) {
+                        if (!Number.isFinite(relativeVolume) || relativeVolume < 0) {
+                            provenanceFailures++;
+                        } else {
+                            matureCount++;
+                            sumRelativeVolume += relativeVolume;
+                        }
                     }
                 }
 

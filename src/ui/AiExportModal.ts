@@ -267,17 +267,6 @@ export class AiExportModal {
         // Execution Handler
         btnExecute?.addEventListener('click', async () => {
             if (this.isRunning) return;
-            this.isRunning = true;
-
-            btnExecute.disabled = true;
-            btnExecute.style.opacity = '0.6';
-            btnExecute.textContent = 'Processing...';
-
-            progressContainer.style.display = 'flex';
-            progressBar.style.width = '0%';
-            progressPct.textContent = '0%';
-            progressStatus.textContent = 'Preparing export...';
-            progressStats.style.display = 'none';
 
             let customStart: number | undefined;
             let customEnd: number | undefined;
@@ -285,8 +274,16 @@ export class AiExportModal {
             if (selectedRangeDays === -1) {
                 const sDate = (this.dialog!.querySelector('#ai-start-date') as HTMLInputElement).value;
                 const eDate = (this.dialog!.querySelector('#ai-end-date') as HTMLInputElement).value;
-                if (sDate) customStart = new Date(sDate).getTime();
-                if (eDate) customEnd = new Date(eDate).getTime() + 86399999;
+                if (!sDate || !eDate) {
+                    alert('Please select both a Start Date and an End Date.');
+                    return;
+                }
+                customStart = new Date(`${sDate}T00:00:00.000Z`).getTime();
+                customEnd = new Date(`${eDate}T23:59:59.999Z`).getTime();
+                if (!Number.isFinite(customStart) || !Number.isFinite(customEnd) || customStart >= customEnd) {
+                    alert('Invalid custom date range. The start date must precede the end date.');
+                    return;
+                }
             }
 
             const config: AiExportConfig = {
@@ -300,6 +297,17 @@ export class AiExportModal {
                 horizonBars: selectedHorizon,
                 includeAllCandles: true
             };
+
+            this.isRunning = true;
+            btnExecute.disabled = true;
+            btnExecute.style.opacity = '0.6';
+            btnExecute.textContent = 'Processing...';
+
+            progressContainer.style.display = 'flex';
+            progressBar.style.width = '0%';
+            progressPct.textContent = '0%';
+            progressStatus.textContent = 'Preparing export...';
+            progressStats.style.display = 'none';
 
             try {
                 const result = await AiExportService.runExport(config, dataStore, (p: ExportProgress) => {

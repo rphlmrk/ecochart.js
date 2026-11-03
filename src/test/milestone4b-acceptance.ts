@@ -12,7 +12,7 @@ import {
     type SlotIntegrityContext,
     type SourceBackboneInputItem
 } from '../indicators/mlr1/dataset/ObservationBackbone';
-import { AIExporter, CandleContextAggregator, HybridTokenBuilder } from '../data/AIExporter';
+import { AIExporter, CandleContextAggregator, DatasetAuditor, HybridTokenBuilder } from '../data/AIExporter';
 import type { ML1Candle, ML1Observation } from '../indicators/mlr1/ML1FeatureTypes';
 import type { DatasetConfig, IntegrityPolicy } from '../indicators/mlr1/dataset/DatasetConfig';
 
@@ -802,6 +802,80 @@ export function runPhase4BTests(): boolean {
         assert(threw, 'Invalid accepted source rows must be rejected');
     });
 
+    runTest('15d. Exporter validates pivot provenance before event eligibility', () => {
+        const candleCount = 70;
+        const startTime = 1700000000000;
+        const source = buildSourceBackbone(
+            Array.from({ length: candleCount }, (_, index) => {
+                const time = startTime + index * 60000;
+                return {
+                    candle: createCandle(time),
+                    observation: createMockObservation(
+                        time,
+                        qualityFeatures({ ATR_14: 1, RelativeVolume_20: 1 })
+                    )
+                };
+            }),
+            'SOLUSDT',
+            '1m',
+            1,
+            strictPolicy,
+            60000
+        );
+        const rows = source.acceptedRows.map((row, index) => ({
+            ...row,
+            observation: {
+                ...row.observation,
+                barIndex: index,
+                sourceOpen: row.candle.open,
+                sourceHigh: row.candle.high,
+                sourceLow: row.candle.low,
+                sourceClose: row.candle.close,
+                sourceVolume: row.candle.volume
+            }
+        }));
+        const data = new Float64Array(rows.length * 6);
+        rows.forEach((row, index) => {
+            const base = index * 6;
+            data.set([
+                row.candle.time,
+                row.candle.open,
+                row.candle.high,
+                row.candle.low,
+                row.candle.close,
+                row.candle.volume
+            ], base);
+        });
+        const dataStore = { data, length: rows.length };
+        const pivots = [
+            {
+                id: 1, barIndex: 1, time: rows[1].sourceTimestamp, price: rows[1].candle.low,
+                type: 'low' as const, label: 'LL' as const, confirmedBarIndex: 2
+            },
+            {
+                id: 2, barIndex: 4, time: rows[4].sourceTimestamp, price: rows[4].candle.high,
+                type: 'high' as const, label: 'HH' as const, confirmedBarIndex: 5
+            }
+        ];
+        const events = AIExporter.buildMLR1Dataset(dataStore, rows, pivots, 'SOLUSDT', '1m', 60000);
+        assert(events.length === 1, 'A complete, eligible alternating pivot pair should produce one event');
+        assert(events[0].previous_pivot_bar_index === 1, 'Event should retain the preceding pivot bar index');
+        assert(events[0].previous_pivot_type === 'low', 'Event should retain the preceding pivot type');
+        assert(
+            DatasetAuditor.runCausalityAudit(events, dataStore, rows, 60000).passed,
+            'Auditor should accept event pivot provenance matching the accepted candles'
+        );
+
+        const malformedPivots = [pivots[0], { ...pivots[1], time: pivots[1].time + 1 }];
+        let threw = false;
+        try {
+            AIExporter.buildMLR1Dataset(dataStore, rows, malformedPivots, 'SOLUSDT', '1m', 60000);
+        } catch {
+            threw = true;
+        }
+        assert(threw, 'Malformed pivot timestamps must fail before eligibility exclusions');
+    });
+
     runTest('16. Off-grid record preserves the build grid anchor', () => {
         const stream: SourceBackboneInputItem[] = [
             { candle: createCandle(100000), observation: createMockObservation(100000, qualityFeatures()) },
@@ -854,5 +928,5 @@ export function runPhase4BTests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log('=======================================\n');
 
-    return failed === 0 && passed === 20;
+    return failed === 0 && passed === 21;
 }

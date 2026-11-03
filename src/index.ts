@@ -4849,7 +4849,9 @@ export class WorkspaceManager {
                     pass1.representationCsv !== pass2.representationCsv ||
                     pass1.eventCsv !== pass2.eventCsv ||
                     pass1.events.length !== pass2.events.length ||
-                    JSON.stringify(pass1.manifest) !== JSON.stringify(pass2.manifest)) {
+                    JSON.stringify(pass1.manifest) !== JSON.stringify(pass2.manifest) ||
+                    JSON.stringify(pass1.exportAccounting) !== JSON.stringify(pass2.exportAccounting) ||
+                    JSON.stringify(pass1.auditResult) !== JSON.stringify(pass2.auditResult)) {
                     throw new Error(
                         'Deterministic Reconstruction Failure: shared production pipeline produced divergent artifacts or manifest metrics.'
                     );
@@ -4864,8 +4866,8 @@ export class WorkspaceManager {
                 console.log('   ↳ Milestone 1:   6/6 Tests Passed');
                 console.log('   ↳ Milestone 2:  73/73 Tests Passed + Quantitative Invariant Audit');
                 console.log('   ↳ Milestone 3:  77/77 MTF Integration Tests Passed');
-                console.log('   ↳ Milestone 4B: 17/17 Source Integrity Tests Passed');
-                console.log('   ↳ Grand Total: 173/173 Tests Verified (100%)');
+                console.log('   ↳ Milestone 4B: 21/21 Source Integrity Tests Passed');
+                console.log('   ↳ Grand Total: 177/177 Tests Verified (100%)');
                 console.log('======================================================\n');
 
                 if (loadingDetail) {
@@ -4910,7 +4912,7 @@ export class WorkspaceManager {
                     return;
                 }
                 customStartMs = new Date(`${customStartDate.value}T00:00:00Z`).getTime();
-                customEndMs = new Date(`${customEndDate.value}T23:59:59Z`).getTime();
+                customEndMs = new Date(`${customEndDate.value}T23:59:59.999Z`).getTime();
 
                 if (isNaN(customStartMs) || isNaN(customEndMs) || customStartMs >= customEndMs) {
                     alert('Invalid custom date range. The start date must precede the end date.');
