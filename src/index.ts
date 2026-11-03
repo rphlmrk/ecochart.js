@@ -34,8 +34,20 @@ import { favoritesManager } from './data/FavoritesManager';
 import { DataWorkerClient } from './workers/DataWorkerClient';
 import { TimeframeResampler } from './data/TimeframeResampler';
 export { alertManager } from './alerts/AlertManager';
-import { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregator, HybridTokenBuilder, MLR1_REPRESENTATION_FEATURE_ALLOWLIST, MLR1_OUTCOME_LABEL_ALLOWLIST, MLR1_OUTCOME_CONFIG_VERSION, buildRepresentationInput, type MLR1RepresentationFeature, type MLR1EventRow } from './data/AIExporter';
-export { AIExporter, DatasetAuditor, MarketFeatureEngine, CandleContextAggregator, HybridTokenBuilder, MLR1_REPRESENTATION_FEATURE_ALLOWLIST, MLR1_OUTCOME_LABEL_ALLOWLIST, MLR1_OUTCOME_CONFIG_VERSION, buildRepresentationInput, type MLR1RepresentationFeature, type MLR1EventRow };
+import { AIExporter } from './data/AIExporter';
+export { AIExporter };
+export {
+    DatasetAuditor,
+    MarketFeatureEngine,
+    CandleContextAggregator,
+    HybridTokenBuilder,
+    MLR1_REPRESENTATION_FEATURE_ALLOWLIST,
+    MLR1_OUTCOME_LABEL_ALLOWLIST,
+    MLR1_OUTCOME_CONFIG_VERSION,
+    buildRepresentationInput,
+    type MLR1RepresentationFeature,
+    type MLR1EventRow
+} from './data/AIExporter';
 import { BackgroundDataMiner } from './data/BackgroundDataMiner';
 import { AlertUI } from './alerts/AlertUI';
 import { runMilestone1AcceptanceSuite } from './test/milestone1-acceptance';
@@ -68,18 +80,7 @@ import { runPhase4BTests } from './test/milestone4b-acceptance';
 
 import { runPhase2JTests } from './test/milestone2j-acceptance';
 import { generatePhase2JReports } from './analysis/ML1FeatureAuditGenerator';
-import { ML1_CONFIG_B, ML1_CONFIG_B_VERSION } from './indicators/mlr1/ML1FeatureConfigs';
-import { STRICT_CBC_ZIGZAG_TEACHER_VERSION } from './indicators/plugins/StrictCBCZigZagIndicator';
-import { createInitialML1FeatureState, stepML1Features, validateML1Config } from './indicators/mlr1/ML1FeatureEngine';
 import type { ML1Candle } from './indicators/mlr1/ML1FeatureTypes';
-import {
-    buildSourceBackbone,
-    createDatasetManifest,
-    evaluateAcceptance,
-    extractDataQuality,
-    validateCandleOhlcv
-} from './indicators/mlr1/dataset/ObservationBackbone';
-import type { ExportAccounting } from './indicators/mlr1/dataset/DatasetManifest';
 import { runMilestone2AcceptanceSuite } from './test/run-milestone2';
 export { runMilestone2AcceptanceSuite };
 export { runPhase2JTests, generatePhase2JReports };
@@ -4830,175 +4831,33 @@ export class WorkspaceManager {
                 if (loadingDetail) loadingDetail.textContent = 'Verifying Deterministic Reconstruction parity...';
                 await new Promise(resolve => setTimeout(resolve, 50));
 
-                const testSlice = realCandles.slice(0, 500);
-                if (testSlice.length !== 500) {
-                    throw new Error(`Deterministic Reconstruction requires 500 candles; received ${testSlice.length}.`);
+                const testSlice = realCandlesRaw.subarray(0, 500 * 6);
+                if (testSlice.length !== 500 * 6) {
+                    throw new Error('Deterministic Reconstruction requires exactly 500 candles.');
                 }
-                const deterministicPolicy = {
-                    rejectInvalidSource: true,
-                    rejectInvalidOhlcv: true,
-                    rejectDuplicateTimestamp: true,
-                    rejectOutOfOrder: true,
-                    requireMinimumUptimeFraction: 1.0
-                };
-                const runPipelinePass = () => {
-                    let state = createInitialML1FeatureState();
-                    const inputs: Array<{
-                        candle: ML1Candle;
-                        observation: ReturnType<typeof stepML1Features>['observation'];
-                        isValidOhlcv: boolean;
-                    }> = [];
-                    for (let index = 0; index < testSlice.length; index++) {
-                        const candle = testSlice[index];
-                        const result = stepML1Features(candle, index, state, ML1_CONFIG_B);
-                        state = result.nextState;
-                        inputs.push({ candle, observation: result.observation, isValidOhlcv: true });
-                    }
-                    const backbone = buildSourceBackbone(
-                        inputs,
-                        'SOLUSDT',
-                        '1m',
-                        1,
-                        deterministicPolicy,
-                        60_000
-                    );
-
-                    const length = backbone.acceptedRows.length;
-                    if (length !== testSlice.length || backbone.rejectedRows.length > 0 ||
-                        !backbone.uptime.isUptimeValid) {
-                        throw new Error(
-                            'Deterministic Reconstruction test slice failed source integrity validation.'
-                        );
-                    }
-                    const buffer = new Float64Array(length * 6);
-                    for (let index = 0; index < length; index++) {
-                        const candle = backbone.acceptedRows[index].candle;
-                        const offset = index * 6;
-                        buffer[offset] = candle.time;
-                        buffer[offset + 1] = candle.open;
-                        buffer[offset + 2] = candle.high;
-                        buffer[offset + 3] = candle.low;
-                        buffer[offset + 4] = candle.close;
-                        buffer[offset + 5] = candle.volume;
-                    }
-                    const dataStore = {
-                        data: buffer,
-                        length,
-                        clear: () => {}
-                    } as unknown as DataStore;
-                    const zigZag = new StrictCBCZigZagIndicator();
-                    zigZag.calculate(dataStore);
-                    const events = AIExporter.buildMLR1Dataset(
-                        dataStore,
-                        backbone.acceptedRows,
-                        zigZag.cachedPivots,
-                        'SOLUSDT',
-                        '1m',
-                        60_000
-                    );
-                    const auditResult = DatasetAuditor.runCausalityAudit(
-                        events,
-                        dataStore,
-                        backbone.acceptedRows,
-                        60_000
-                    );
-                    if (!auditResult.passed || !auditResult.chronologyValid ||
-                        !auditResult.identityUnique || !auditResult.inputOutcomeSeparationValid) {
-                        throw new Error('Deterministic Reconstruction slice causality audit failed.');
-                    }
-                    const continuousCsv = AIExporter.exportMLR1ContinuousObservationsCSV(backbone.acceptedRows);
-                    const representationCsv = AIExporter.exportMLR1RepresentationCSV(events, 'SOLUSDT', '1m');
-                    const eventCsv = AIExporter.exportMLR1CSV(events, 'SOLUSDT', '1m');
-                    if (!continuousCsv || !representationCsv || !eventCsv) {
-                        throw new Error('Deterministic Reconstruction CSV generation failed.');
-                    }
-                    const deterministicFileNames = {
-                        continuous: 'MLR1_SOLUSDT_1m_Continuous_Observations.csv',
-                        representation: 'MLR1_SOLUSDT_1m_Representation_Features.csv',
-                        events: 'MLR1_SOLUSDT_1m_Events.csv'
-                    };
-                    const identities = new Set(backbone.acceptedRows.map(row => row.observationId));
-                    const chronologyValid = backbone.stats.outOfOrderCount === 0;
-                    const identityUnique = identities.size === backbone.acceptedRows.length;
-                    const actualFileRowCounts = {
-                        [deterministicFileNames.continuous]: AIExporter.countCsvDataRows(continuousCsv),
-                        [deterministicFileNames.representation]: AIExporter.countCsvDataRows(representationCsv),
-                        [deterministicFileNames.events]: AIExporter.countCsvDataRows(eventCsv)
-                    };
-                    if (actualFileRowCounts[deterministicFileNames.continuous] !== backbone.acceptedRows.length ||
-                        actualFileRowCounts[deterministicFileNames.representation] !== events.length ||
-                        actualFileRowCounts[deterministicFileNames.events] !== events.length) {
-                        throw new Error('Deterministic Reconstruction CSV row accounting failed.');
-                    }
-                    const exportAccounting: ExportAccounting = {
-                        rawSourceCandleCount: testSlice.length,
-                        acceptedSourceObservationCount: backbone.acceptedRows.length,
-                        rejectedSourceObservationCount: backbone.rejectedRows.length,
-                        tierAContinuousObservationCount: backbone.acceptedRows.length,
-                        tierAEventRepresentationRowCount: events.length,
-                        tierBConfirmedTeacherEventCount: events.length,
-                        tierCOutcomeRowCount: events.length,
-                        actualFileRowCounts
-                    };
-                    const manifest = createDatasetManifest(
-                        'DS_SOLUSDT_1m_DETERMINISM_V1',
-                        'BINANCE_SPOT',
-                        {
-                            symbol: 'SOLUSDT',
-                            baseTimeframe: '1m',
-                            datasetVersion: 1,
-                            sourceIntervalMs: 60_000,
-                            featureConfigVersion: ML1_CONFIG_B_VERSION,
-                            teacherVersion: STRICT_CBC_ZIGZAG_TEACHER_VERSION,
-                            outcomeConfigVersion: MLR1_OUTCOME_CONFIG_VERSION,
-                            dateRange: {
-                                startTimestamp: backbone.acceptedRows[0].sourceTimestamp,
-                                endTimestamp: backbone.acceptedRows[length - 1].sourceTimestamp
-                            },
-                            integrityPolicy: deterministicPolicy,
-                            exportConfig: {
-                                exportTierA: true,
-                                exportTierB: true,
-                                exportTierC: true,
-                                separateFiles: false
-                            }
-                        },
-                        backbone.stats,
-                        backbone.uptime,
-                        {
-                            passed: backbone.uptime.isUptimeValid && backbone.rejectedRows.length === 0 &&
-                                chronologyValid && identityUnique && auditResult.passed,
-                            chronologyValid: chronologyValid && auditResult.chronologyValid,
-                            identityUnique: identityUnique && auditResult.identityUnique,
-                            inputOutcomeSeparationValid: auditResult.inputOutcomeSeparationValid,
-                            remarks: [
-                                'Deterministic reconstruction slice passed the full dataset causality audit.'
-                            ]
-                        },
-                        exportAccounting
-                    );
-                    const manifestMetrics = JSON.stringify({ ...manifest, buildTimestamp: 0 });
-                    return {
-                        continuousCsv,
-                        representationCsv,
-                        eventCsv,
-                        eventCount: events.length,
-                        manifestMetrics
-                    };
-                };
-
-                const pass1 = runPipelinePass();
-                const pass2 = runPipelinePass();
-                if (pass1.eventCount !== pass2.eventCount ||
-                    pass1.continuousCsv !== pass2.continuousCsv ||
+                const deterministicFixedTimestamp = 1_700_000_000_000;
+                const runPipelinePass = () => AIExporter.buildExportArtifacts({
+                    rawCandleBuffer: testSlice,
+                    symbol: 'SOLUSDT',
+                    interval: '1m',
+                    intervalMs: 60_000,
+                    buildTimestamp: deterministicFixedTimestamp
+                });
+                const pass1 = await runPipelinePass();
+                const pass2 = await runPipelinePass();
+                if (pass1.continuousCsv !== pass2.continuousCsv ||
                     pass1.representationCsv !== pass2.representationCsv ||
                     pass1.eventCsv !== pass2.eventCsv ||
-                    pass1.manifestMetrics !== pass2.manifestMetrics) {
+                    pass1.events.length !== pass2.events.length ||
+                    JSON.stringify(pass1.manifest) !== JSON.stringify(pass2.manifest)) {
                     throw new Error(
-                        'Deterministic Reconstruction Failure: Production pipeline produced divergent artifacts or manifest metrics across identical runs.'
+                        'Deterministic Reconstruction Failure: shared production pipeline produced divergent artifacts or manifest metrics.'
                     );
                 }
-                console.log('✅ Deterministic Reconstruction: CSV artifacts and manifest metrics have 100% bitwise parity.');
+                console.log(
+                    '✅ Deterministic Reconstruction: shared production pipeline achieved bitwise parity ' +
+                    'across CSV artifacts, audit results, and manifest metrics.'
+                );
 
                 console.log('\n======================================================');
                 console.log('🏆 ALL MILESTONES 1 TO 4 & DETERMINISTIC EXPORT GATES VERIFIED');
@@ -5104,358 +4963,45 @@ export class WorkspaceManager {
                     return;
                 }
 
-                // =========================================================================
-                // --- START CHUNK B: HEADLESS MATH & DATASET GENERATION ---
-                // =========================================================================
-                if (rawCandleBuffer.length % 6 !== 0) {
-                    throw new Error('Historical fetch returned malformed candle data.');
-                }
-                const candleCount = Math.floor(rawCandleBuffer.length / 6);
-                if (candleCount === 0) {
-                    throw new Error('Historical fetch returned no candles.');
-                }
-
-                // 2. Instantiate Headless Strict CBC ZigZag Indicator with user's chart settings
-                const headlessZigZag = new StrictCBCZigZagIndicator();
-                headlessZigZag.currentSymbol = exportSymbol;
-                const chartZigZag = chart.indicatorManager.activeIndicators.find(i => i instanceof StrictCBCZigZagIndicator) as StrictCBCZigZagIndicator | undefined;
-                if (chartZigZag) {
-                    headlessZigZag.params.forEach(p => {
-                        const val = chartZigZag.getParam(p.id);
-                        if (val !== undefined) p.value = val;
-                    });
-                }
-
-                // --- M4B Backbone Integration (filters invalid data before downstream processing) ---
-                if (loadingTitle) loadingTitle.textContent = "Validating Source Integrity (M4B Backbone)...";
-                if (loadingDetail) {
-                    loadingDetail.textContent = `Reconciling ${candleCount.toLocaleString()} candles through the M4B backbone...`;
-                }
-                await new Promise(r => setTimeout(r, 25));
-
-                if (rawCandleBuffer.length === 0 || rawCandleBuffer.length % 6 !== 0) {
-                    throw new Error(
-                        'Historical fetch returned empty or malformed data buffer (length not divisible by 6).'
-                    );
-                }
                 const intervalMs = TimeframeResampler.parseMs(exportInterval);
                 if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
-                    throw new Error(`Unsupported chart interval for M4B validation: ${exportInterval}`);
+                    throw new Error(`Unsupported chart interval for export: ${exportInterval}`);
                 }
-                const strictPolicy = {
-                    rejectInvalidSource: true,
-                    rejectInvalidOhlcv: true,
-                    rejectDuplicateTimestamp: true,
-                    rejectOutOfOrder: true,
-                    requireMinimumUptimeFraction: 1.0
-                };
-                const featureConfig = validateML1Config({
-                    ...ML1_CONFIG_B,
+                const chartZigZag = chart.indicatorManager.activeIndicators.find(
+                    indicator => indicator instanceof StrictCBCZigZagIndicator
+                ) as StrictCBCZigZagIndicator | undefined;
+                const zigZagParameters: Record<string, unknown> = {};
+                if (chartZigZag) {
+                    for (const parameter of chartZigZag.params) {
+                        const value = chartZigZag.getParam(parameter.id);
+                        if (value !== undefined) zigZagParameters[parameter.id] = value;
+                    }
+                }
+
+                if (loadingTitle) loadingTitle.textContent = 'Validating Source Integrity and Building Dataset...';
+                if (loadingDetail) loadingDetail.textContent = 'Running the unified export pipeline...';
+                await new Promise(resolve => setTimeout(resolve, 25));
+                const artifacts = await AIExporter.buildExportArtifacts({
+                    rawCandleBuffer,
                     symbol: exportSymbol,
-                    timeframe: exportInterval,
-                    expectedIntervalMs: intervalMs,
-                    gapDiscontinuityThresholdMs: Math.max(
-                        ML1_CONFIG_B.gapDiscontinuityThresholdMs,
-                        intervalMs
-                    ),
-                    emaPeriods: [...ML1_CONFIG_B.emaPeriods],
-                    atrPeriods: [...ML1_CONFIG_B.atrPeriods],
-                    rollingRangePeriods: [...ML1_CONFIG_B.rollingRangePeriods],
-                    momentumPeriods: [...ML1_CONFIG_B.momentumPeriods],
-                    volumeSmaPeriods: [...ML1_CONFIG_B.volumeSmaPeriods]
-                });
-
-                const dsFirstTime = rawCandleBuffer[0];
-                let ml1State = createInitialML1FeatureState();
-                let expectedNextTime = -1;
-                const backboneInputs: Array<{
-                    candle: ML1Candle;
-                    observation: ReturnType<typeof stepML1Features>['observation'];
-                    isValidOhlcv: boolean;
-                }> = [];
-                for (let i = 0; i < rawCandleBuffer.length; i += 6) {
-                    const candle: ML1Candle = {
-                        time: rawCandleBuffer[i],
-                        open: rawCandleBuffer[i + 1],
-                        high: rawCandleBuffer[i + 2],
-                        low: rawCandleBuffer[i + 3],
-                        close: rawCandleBuffer[i + 4],
-                        volume: rawCandleBuffer[i + 5],
-                        isSynthetic: false
-                    };
-                    if (!Number.isSafeInteger(candle.time) || candle.time < 1e12) {
-                        throw new Error(
-                            `Export aborted: candle timestamp ${candle.time} is invalid or is not in milliseconds.`
-                        );
-                    }
-                    if (candle.time % intervalMs !== 0) {
-                        throw new Error(
-                            `Export aborted: timestamp ${candle.time} is not aligned to ${exportInterval}.`
-                        );
-                    }
-                    const isValidOhlcv = validateCandleOhlcv(candle);
-                    if (!isValidOhlcv) {
-                        throw new Error(
-                            `Export aborted: Structurally invalid OHLCV at ${new Date(candle.time).toISOString()}.`
-                        );
-                    }
-                    if (expectedNextTime !== -1 && candle.time !== expectedNextTime) {
-                        throw new Error(
-                            `Export aborted: Missing candle detected. Expected ${new Date(expectedNextTime).toISOString()}, ` +
-                            `got ${new Date(candle.time).toISOString()}. A continuous timeline is required.`
-                        );
-                    }
-                    expectedNextTime = candle.time + intervalMs;
-
-                    const result = stepML1Features(candle, i / 6, ml1State, featureConfig);
-                    const quality = extractDataQuality(result.observation);
-                    const isOnGrid = (candle.time - dsFirstTime) % intervalMs === 0;
-                    const acceptance = evaluateAcceptance(quality, strictPolicy, isValidOhlcv, {
-                        gridAnchor: dsFirstTime,
-                        isOnGrid,
-                        isWithinRange: true
-                    });
-                    const continuityFailures = [
-                        quality.hasDataGap ? 'DATA_GAP' : '',
-                        quality.isDiscontinuity ? 'DISCONTINUITY' : '',
-                        quality.isUnexpectedInterval ? 'UNEXPECTED_INTERVAL' : ''
-                    ].filter(Boolean);
-                    if (!acceptance.isAccepted || continuityFailures.length > 0) {
-                        const rejectionReasons = [
-                            ...acceptance.rejectionReasons,
-                            ...continuityFailures
-                        ];
-                        throw new Error(
-                            `Export aborted: Candle at timestamp ${candle.time} rejected due to: ` +
-                            `${rejectionReasons.join(', ')}. A continuous timeline is required.`
-                        );
-                    }
-
-                    ml1State = result.nextState;
-                    backboneInputs.push({ candle, observation: result.observation, isValidOhlcv });
-                }
-
-                const dateRange = {
-                    startTimestamp: backboneInputs[0].candle.time,
-                    endTimestamp: backboneInputs[backboneInputs.length - 1].candle.time
-                };
-                const backboneResult = buildSourceBackbone(
-                    backboneInputs,
-                    exportSymbol,
-                    exportInterval,
-                    1,
-                    strictPolicy,
+                    interval: exportInterval,
                     intervalMs,
-                    dateRange
-                );
-                if (!backboneResult.uptime.isUptimeValid ||
-                    backboneResult.rejectedRows.length > 0 ||
-                    backboneResult.acceptedRows.length !== rawCandleBuffer.length / 6) {
-                    throw new Error(
-                        `M4B accepted-row accounting does not match the original source candle count. ` +
-                        `100% contiguous data is required. Usable fraction: ` +
-                        `${(backboneResult.uptime.usableObservationFraction * 100).toFixed(2)}%`
-                    );
-                }
-                const cleanLength = backboneResult.acceptedRows.length;
-                if (cleanLength === 0) {
-                    throw new Error('M4B backbone accepted no candles; export cannot continue.');
-                }
-                const cleanBuffer = new Float64Array(cleanLength * 6);
-                for (let i = 0; i < cleanLength; i++) {
-                    const candle = backboneResult.acceptedRows[i].candle;
-                    const offset = i * 6;
-                    cleanBuffer[offset] = candle.time;
-                    cleanBuffer[offset + 1] = candle.open;
-                    cleanBuffer[offset + 2] = candle.high;
-                    cleanBuffer[offset + 3] = candle.low;
-                    cleanBuffer[offset + 4] = candle.close;
-                    cleanBuffer[offset + 5] = candle.volume;
-                }
-                const cleanDs = {
-                    data: cleanBuffer,
-                    length: cleanLength,
-                    clear: () => {}
-                } as unknown as DataStore;
-                if (loadingTitle) loadingTitle.textContent = "Processing Structural Events...";
-                if (loadingDetail) {
-                    loadingDetail.textContent =
-                        `Computing Strict CBC ZigZag pivots on ${cleanLength.toLocaleString()} accepted candles...`;
-                }
-                if (progressFill) progressFill.style.width = "85%";
-                if (progressPct) progressPct.textContent = "85%";
-                await new Promise(r => setTimeout(r, 25));
-                headlessZigZag.calculate(cleanDs);
-
-                const manifestConfig = {
-                    symbol: exportSymbol,
-                    baseTimeframe: exportInterval,
-                    datasetVersion: 1,
-                    sourceIntervalMs: intervalMs,
-                    featureConfigVersion: ML1_CONFIG_B_VERSION,
-                    teacherVersion: STRICT_CBC_ZIGZAG_TEACHER_VERSION,
-                    outcomeConfigVersion: MLR1_OUTCOME_CONFIG_VERSION,
-                    dateRange,
-                    integrityPolicy: strictPolicy,
-                    exportConfig: {
-                        exportTierA: true,
-                        exportTierB: true,
-                        exportTierC: true,
-                        separateFiles: false
+                    zigZagParameters,
+                    onProgress: detail => {
+                        if (loadingDetail) loadingDetail.textContent = detail;
                     }
-                };
+                });
+                const { manifest, events, continuousFileName, representationFileName, eventFileName } = artifacts;
+                const continuousCsv = artifacts.continuousCsv;
+                const representationCsv = artifacts.representationCsv;
+                const eventCsv = artifacts.eventCsv;
+                if (loadingTitle) loadingTitle.textContent = 'Packaging ML-R1 Dataset...';
+                if (loadingDetail) loadingDetail.textContent = `Generated ${events.length.toLocaleString()} ML-R1 event records.`;
+                if (progressFill) progressFill.style.width = '100%';
+                if (progressPct) progressPct.textContent = '100%';
+                await new Promise(resolve => setTimeout(resolve, 25));
 
-                // Step B: Build ML-R1 Dataset (Features, Context, and Frozen Outcome Engine)
-                if (loadingTitle) loadingTitle.textContent = "Building ML-R1 Dataset...";
-                if (loadingDetail) loadingDetail.textContent = `Generating causal features and counterfactual outcomes for ${headlessZigZag.cachedPivots.length} pivots...`;
-                if (progressFill) progressFill.style.width = "95%";
-                if (progressPct) progressPct.textContent = "95%";
-                await new Promise(r => setTimeout(r, 25));
-
-                const events = AIExporter.buildMLR1Dataset(
-                    cleanDs,
-                    backboneResult.acceptedRows,
-                    headlessZigZag.cachedPivots,
-                    exportSymbol,
-                    exportInterval,
-                    intervalMs
-                );
-
-                if (events.length === 0) {
-                    alert("No valid confirmed structural events were detected in this historical window.");
-                    if (loadingOverlay) loadingOverlay.style.display = 'none';
-                    resetTopbarButton();
-                    return;
-                }
-
-                // Step C: Run Pre-Flight Master Audit with Candle-Level Execution Replay
-                const auditResult = DatasetAuditor.runCausalityAudit(
-                    events,
-                    cleanDs,
-                    backboneResult.acceptedRows,
-                    intervalMs
-                );
-                const backboneChronologyValid = backboneResult.stats.outOfOrderCount === 0;
-                const backboneIdentityUnique = new Set(
-                    backboneResult.acceptedRows.map(row => row.observationId)
-                ).size === backboneResult.acceptedRows.length;
-                const chronologyValid = auditResult.chronologyValid && backboneChronologyValid;
-                const identityUnique = auditResult.identityUnique && backboneIdentityUnique;
-                const sourceIntegrityPassed = backboneResult.uptime.isUptimeValid &&
-                    backboneResult.rejectedRows.length === 0;
-                const auditRemarks: string[] = [];
-                if (backboneResult.rejectedRows.length > 0) {
-                    auditRemarks.push(`${backboneResult.rejectedRows.length} source rows were rejected by the M4B backbone.`);
-                }
-                if (!backboneResult.uptime.isUptimeValid) {
-                    auditRemarks.push(
-                        `Usable observation fraction (${backboneResult.uptime.usableObservationFraction}) ` +
-                        'is below the configured minimum.'
-                    );
-                }
-                if (!chronologyValid) auditRemarks.push('Source chronology validation failed.');
-                if (!identityUnique) auditRemarks.push('Accepted observation identities are not unique.');
-                if (!auditResult.inputOutcomeSeparationValid) {
-                    auditRemarks.push('Representation allowlist validation failed.');
-                }
-                if (!auditResult.passed) auditRemarks.push('Causality audit failed during export.');
-                auditRemarks.push(`Final exported Tier B/C ML-R1 events: ${events.length}`);
-                auditRemarks.push(`Tier A continuous observations: ${backboneResult.acceptedRows.length}`);
-
-                const continuousCsv = AIExporter.exportMLR1ContinuousObservationsCSV(
-                    backboneResult.acceptedRows
-                );
-                const representationCsv = AIExporter.exportMLR1RepresentationCSV(
-                    events,
-                    exportSymbol,
-                    exportInterval
-                );
-                const eventCsv = AIExporter.exportMLR1CSV(events, exportSymbol, exportInterval);
-                if (!continuousCsv || !representationCsv || !eventCsv) {
-                    throw new Error('CSV generation failed for one or more dataset tiers.');
-                }
-
-                const continuousFileName = `MLR1_${exportSymbol}_${exportInterval}_Continuous_Observations.csv`;
-                const representationFileName = `MLR1_${exportSymbol}_${exportInterval}_Representation_Features.csv`;
-                const eventFileName = `MLR1_${exportSymbol}_${exportInterval}_Events.csv`;
-                const actualCsvRowCounts = {
-                    [continuousFileName]: AIExporter.countCsvDataRows(continuousCsv),
-                    [representationFileName]: AIExporter.countCsvDataRows(representationCsv),
-                    [eventFileName]: AIExporter.countCsvDataRows(eventCsv)
-                };
-                const expectedCsvRowCounts: Readonly<Record<string, number>> = {
-                    [continuousFileName]: backboneResult.acceptedRows.length,
-                    [representationFileName]: events.length,
-                    [eventFileName]: events.length
-                };
-                for (const [fileName, expectedRowCount] of Object.entries(expectedCsvRowCounts)) {
-                    if (actualCsvRowCounts[fileName] !== expectedRowCount) {
-                        throw new Error(
-                            `CSV row accounting mismatch for ${fileName}: ` +
-                            `expected ${expectedRowCount}, generated ${actualCsvRowCounts[fileName]}.`
-                        );
-                    }
-                }
-                auditRemarks.push(
-                    `Artifact 1 (${continuousFileName}): Tier A continuous causal observations ` +
-                    `(${backboneResult.acceptedRows.length} rows). Available for approved baseline model inputs; ` +
-                    'contains 1:1 feature values and validity masks.',
-                    `Artifact 2 (${representationFileName}): Tier A confirmed-event representation tensor ` +
-                    `(${events.length} rows). Authoritative model-input boundary strictly whitelisted against ` +
-                    'MLR1_REPRESENTATION_FEATURE_ALLOWLIST.',
-                    `Artifact 3 (${eventFileName}): Combined archival and supervised target dataset ` +
-                    `(${events.length} rows). Combines Tier B teacher events with Tier C quarantined forward ` +
-                    'outcomes; not an unrestricted model input source. separateFiles is false.'
-                );
-                const exportAccounting: ExportAccounting = {
-                    rawSourceCandleCount: candleCount,
-                    acceptedSourceObservationCount: backboneResult.acceptedRows.length,
-                    rejectedSourceObservationCount: backboneResult.rejectedRows.length,
-                    tierAContinuousObservationCount: backboneResult.acceptedRows.length,
-                    tierAEventRepresentationRowCount: events.length,
-                    tierBConfirmedTeacherEventCount: events.length,
-                    tierCOutcomeRowCount: events.length,
-                    actualFileRowCounts: actualCsvRowCounts
-                };
-
-                if (!sourceIntegrityPassed || !auditResult.passed ||
-                    !chronologyValid || !identityUnique ||
-                    !auditResult.inputOutcomeSeparationValid) {
-                    throw new Error(
-                        'Pre-flight Master Audit failed: source integrity, identity, chronology, or separation invariant broken.'
-                    );
-                }
-
-                const manifest = createDatasetManifest(
-                    `DS_${exportSymbol}_${exportInterval}_V1`,
-                    'BINANCE_SPOT',
-                    manifestConfig,
-                    backboneResult.stats,
-                    backboneResult.uptime,
-                    {
-                        passed: sourceIntegrityPassed && auditResult.passed &&
-                            chronologyValid && identityUnique &&
-                            auditResult.inputOutcomeSeparationValid,
-                        chronologyValid,
-                        identityUnique,
-                        inputOutcomeSeparationValid: auditResult.inputOutcomeSeparationValid,
-                        remarks: auditRemarks
-                    },
-                    exportAccounting
-                );
-                if (!manifest.auditResults.passed) {
-                    throw new Error(
-                        'Pre-flight integrity audit failed. Dataset is contaminated or invalid; review the console.'
-                    );
-                }
-
-                // Step D: Build a single package before triggering the download.
-                if (loadingTitle) loadingTitle.textContent = "Packaging ML-R1 Dataset...";
-                if (loadingDetail) loadingDetail.textContent = `Generated ${events.length.toLocaleString()} ML-R1 structural event records.`;
-                if (progressFill) progressFill.style.width = "100%";
-                if (progressPct) progressPct.textContent = "100%";
-                await new Promise(r => setTimeout(r, 25));
-
+                // Build the package only after the shared pipeline passes all audits.
                 const zip = new JSZip();
                 zip.file(`MLR1_${exportSymbol}_${exportInterval}_Manifest.json`, JSON.stringify(manifest, null, 2));
                 zip.file(continuousFileName, continuousCsv);

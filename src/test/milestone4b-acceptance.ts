@@ -655,7 +655,10 @@ export function runPhase4BTests(): boolean {
 
     runTest('15a. Candle context and continuous CSV use accepted candle OHLC', () => {
         const result = buildSourceBackbone(
-            [{ candle: createCandle(100000), observation: createMockObservation(100000, qualityFeatures()) }],
+            [{
+                candle: createCandle(100000),
+                observation: createMockObservation(100000, qualityFeatures({ RelativeVolume_20: 0 }))
+            }],
             'SOLUSDT',
             '1m',
             1,
@@ -730,8 +733,14 @@ export function runPhase4BTests(): boolean {
     runTest('15c. Hybrid token builder rejects malformed pivot sequences', () => {
         const rows = buildSourceBackbone(
             [
-                { candle: createCandle(100000), observation: createMockObservation(100000, qualityFeatures()) },
-                { candle: createCandle(160000), observation: createMockObservation(160000, qualityFeatures()) }
+                {
+                    candle: createCandle(100000),
+                    observation: createMockObservation(100000, qualityFeatures({ RelativeVolume_20: 0 }))
+                },
+                {
+                    candle: createCandle(160000),
+                    observation: createMockObservation(160000, qualityFeatures({ RelativeVolume_20: 0 }))
+                }
             ],
             'SOLUSDT',
             '1m',

@@ -2,7 +2,26 @@
 // 🔒 FROZEN RESEARCH CONTRACT: EXPLICIT FEATURE / OUTCOME SEPARATION
 // =========================================================================
 import type { SourceBackboneAcceptedRow } from '../indicators/mlr1/dataset/ObservationBackbone';
+import type { ExportAccounting } from '../indicators/mlr1/dataset/DatasetManifest';
 import type { StrictZigZagPivot } from '../indicators/plugins/StrictCBCZigZagIndicator';
+import { DataStore } from './DataStore';
+import { ML1_CONFIG_B, ML1_CONFIG_B_VERSION } from '../indicators/mlr1/ML1FeatureConfigs';
+import {
+    createInitialML1FeatureState,
+    stepML1Features,
+    validateML1Config
+} from '../indicators/mlr1/ML1FeatureEngine';
+import {
+    buildSourceBackbone,
+    createDatasetManifest,
+    evaluateAcceptance,
+    extractDataQuality,
+    validateCandleOhlcv
+} from '../indicators/mlr1/dataset/ObservationBackbone';
+import {
+    STRICT_CBC_ZIGZAG_TEACHER_VERSION,
+    StrictCBCZigZagIndicator
+} from '../indicators/plugins/StrictCBCZigZagIndicator';
 
 export const MLR1_OUTCOME_CONFIG_VERSION = 'MLR1_v2';
 
@@ -61,6 +80,7 @@ export interface MLR1EventRow {
     pivot_price: number;
     previous_pivot_price: number;                          // Retained for independent leg verification
     pivot_bar_index: number;
+    pivot_time_ms: number;
     confirmed_bar_index: number;
     confirmation_time_ms: number;
 
@@ -162,16 +182,29 @@ export class CandleContextAggregator {
         endBar: number, 
         currentAtr: number
     ) {
+        if (!Number.isFinite(currentAtr) || currentAtr <= 0) {
+            throw new Error('CandleContextAggregator Error: currentAtr must be a positive finite number.');
+        }
+        if (!Array.isArray(acceptedRows)) {
+            throw new Error('CandleContextAggregator Error: acceptedRows must be an array.');
+        }
         if (!Number.isSafeInteger(startBar) || !Number.isSafeInteger(endBar) ||
-            startBar > endBar || startBar < 0 || endBar >= acceptedRows.length ||
-            !Number.isFinite(currentAtr) || currentAtr <= 0) {
-            return { netReturnAtr: 0, maxFavorableAtr: 0, maxAdverseAtr: 0, count: 0, relativeVolume: -1.0, validFraction: 0.0 };
+            startBar > endBar || startBar < 0 || endBar >= acceptedRows.length) {
+            throw new Error(
+                `CandleContextAggregator Error: Invalid context window bounds [${startBar}, ${endBar}] ` +
+                `across ${acceptedRows.length} rows.`
+            );
         }
 
-        const startOpen = acceptedRows[startBar].candle.open;
-        const endClose = acceptedRows[endBar].candle.close;
+        const startRow = acceptedRows[startBar];
+        const endRow = acceptedRows[endBar];
+        if (!startRow?.candle || !endRow?.candle) {
+            throw new Error('CandleContextAggregator Error: Context window contains a missing baseline candle.');
+        }
+        const startOpen = startRow.candle.open;
+        const endClose = endRow.candle.close;
         if (!Number.isFinite(startOpen) || !Number.isFinite(endClose) || startOpen <= 0 || endClose <= 0) {
-            return { netReturnAtr: 0, maxFavorableAtr: 0, maxAdverseAtr: 0, count: 0, relativeVolume: -1.0, validFraction: 0.0 };
+            throw new Error('CandleContextAggregator Error: Non-finite or non-positive baseline open/close.');
         }
         let maxH = -Infinity;
         let minL = Infinity;
@@ -180,17 +213,30 @@ export class CandleContextAggregator {
 
         for (let i = startBar; i <= endBar; i++) {
             const row = acceptedRows[i];
+            if (!row?.candle || !row.observation?.features || !row.observation.validity) {
+                throw new Error(`CandleContextAggregator Error: Accepted row ${i} is malformed.`);
+            }
             const candleHigh = row.candle.high;
             const candleLow = row.candle.low;
-            if (!Number.isFinite(candleHigh) || !Number.isFinite(candleLow)) {
-                return { netReturnAtr: 0, maxFavorableAtr: 0, maxAdverseAtr: 0, count: 0, relativeVolume: -1.0, validFraction: 0.0 };
+            if (!Number.isFinite(candleHigh) || !Number.isFinite(candleLow) || candleHigh < candleLow) {
+                throw new Error(`CandleContextAggregator Error: Malformed OHLC geometry in accepted row ${i}.`);
             }
             if (candleHigh > maxH) maxH = candleHigh;
             if (candleLow < minL) minL = candleLow;
 
             const relativeVolume = row.observation.features['RelativeVolume_20'];
-            if (row.observation.validity['RelativeVolume_20'] === true &&
-                Number.isFinite(relativeVolume) && relativeVolume >= 0) {
+            const isValid = row.observation.validity['RelativeVolume_20'];
+            if (typeof isValid !== 'boolean') {
+                throw new Error(
+                    `CandleContextAggregator Error: Non-boolean validity on RelativeVolume_20 at row ${i}.`
+                );
+            }
+            if (isValid) {
+                if (!Number.isFinite(relativeVolume) || relativeVolume < 0) {
+                    throw new Error(
+                        `CandleContextAggregator Error: RelativeVolume_20 marked valid but is invalid at row ${i}.`
+                    );
+                }
                 matureCount++;
                 sumRelativeVolume += relativeVolume;
             }
@@ -374,8 +420,16 @@ export class AIExporter {
             const confBar = pivot.confirmedBarIndex;
             if (!Number.isSafeInteger(confBar) || confBar < 0 || confBar >= len ||
                 !Number.isSafeInteger(prevPivot.confirmedBarIndex) || prevPivot.confirmedBarIndex < 0 ||
-                confBar <= prevPivot.confirmedBarIndex) {
+                confBar <= prevPivot.confirmedBarIndex ||
+                !Number.isSafeInteger(pivot.barIndex) || pivot.barIndex < 0 ||
+                pivot.barIndex > confBar ||
+                !Number.isSafeInteger(prevPivot.barIndex) || prevPivot.barIndex < 0 ||
+                prevPivot.barIndex > prevPivot.confirmedBarIndex) {
                 throw new Error(`AIExporter Error: pivot confirmation index ${confBar} is invalid or out of order.`);
+            }
+            if (pivot.time !== acceptedRows[pivot.barIndex].sourceTimestamp ||
+                prevPivot.time !== acceptedRows[prevPivot.barIndex].sourceTimestamp) {
+                throw new Error(`AIExporter Error: pivot timestamp does not match its accepted source candle at index ${pivot.barIndex}.`);
             }
             const entryBar = confBar + 1; // Strict rule: next_open
 
@@ -486,6 +540,7 @@ export class AIExporter {
                 pivot_price: pivot.price,
                 previous_pivot_price: prevPivot.price,
                 pivot_bar_index: pivot.barIndex,
+                pivot_time_ms: pivot.time,
                 confirmed_bar_index: confBar,
                 confirmation_time_ms: dataStore.data[confBar * 6],
                 
@@ -740,6 +795,276 @@ export class AIExporter {
         }
         return recordCount - 1;
     }
+
+    public static async buildExportArtifacts(params: {
+        rawCandleBuffer: Float64Array;
+        symbol: string;
+        interval: string;
+        intervalMs: number;
+        buildTimestamp?: number;
+        zigZagParameters?: Readonly<Record<string, unknown>>;
+        onProgress?: (detail: string) => void;
+    }) {
+        const { rawCandleBuffer, symbol, interval, intervalMs } = params;
+        if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
+            throw new Error(`Unsupported chart interval for export: ${interval}`);
+        }
+        if (!(rawCandleBuffer instanceof Float64Array) ||
+            rawCandleBuffer.length === 0 || rawCandleBuffer.length % 6 !== 0) {
+            throw new Error('Historical fetch returned empty or malformed data buffer (length not divisible by 6).');
+        }
+
+        const rawCandleCount = rawCandleBuffer.length / 6;
+        const strictPolicy = {
+            rejectInvalidSource: true,
+            rejectInvalidOhlcv: true,
+            rejectDuplicateTimestamp: true,
+            rejectOutOfOrder: true,
+            requireMinimumUptimeFraction: 1.0
+        };
+        const featureConfig = validateML1Config({
+            ...ML1_CONFIG_B,
+            symbol,
+            timeframe: interval,
+            expectedIntervalMs: intervalMs,
+            gapDiscontinuityThresholdMs: Math.max(ML1_CONFIG_B.gapDiscontinuityThresholdMs, intervalMs),
+            emaPeriods: [...ML1_CONFIG_B.emaPeriods],
+            atrPeriods: [...ML1_CONFIG_B.atrPeriods],
+            rollingRangePeriods: [...ML1_CONFIG_B.rollingRangePeriods],
+            momentumPeriods: [...ML1_CONFIG_B.momentumPeriods],
+            volumeSmaPeriods: [...ML1_CONFIG_B.volumeSmaPeriods]
+        });
+        const firstTimestamp = rawCandleBuffer[0];
+        const backboneInputs: Array<{
+            candle: {
+                time: number;
+                open: number;
+                high: number;
+                low: number;
+                close: number;
+                volume: number;
+                isSynthetic: false;
+            };
+            observation: ReturnType<typeof stepML1Features>['observation'];
+            isValidOhlcv: boolean;
+        }> = [];
+        let state = createInitialML1FeatureState();
+        let expectedNextTime = -1;
+
+        params.onProgress?.(`Validating ${rawCandleCount.toLocaleString()} source candles...`);
+        for (let offset = 0; offset < rawCandleBuffer.length; offset += 6) {
+            const candle = {
+                time: rawCandleBuffer[offset],
+                open: rawCandleBuffer[offset + 1],
+                high: rawCandleBuffer[offset + 2],
+                low: rawCandleBuffer[offset + 3],
+                close: rawCandleBuffer[offset + 4],
+                volume: rawCandleBuffer[offset + 5],
+                isSynthetic: false as const
+            };
+            if (!Number.isSafeInteger(candle.time) || candle.time < 1e12) {
+                throw new Error(`Invalid millisecond timestamp at candle index ${offset / 6}.`);
+            }
+            if (candle.time % intervalMs !== 0) {
+                throw new Error(`Timestamp ${candle.time} is not aligned to ${interval}.`);
+            }
+            const isValidOhlcv = validateCandleOhlcv(candle);
+            if (!isValidOhlcv) {
+                throw new Error(`Structurally invalid OHLCV at ${new Date(candle.time).toISOString()}.`);
+            }
+            if (expectedNextTime !== -1 && candle.time !== expectedNextTime) {
+                throw new Error(
+                    `Missing candle detected. Expected ${expectedNextTime}, got ${candle.time}. ` +
+                    'A continuous timeline is required.'
+                );
+            }
+            expectedNextTime = candle.time + intervalMs;
+
+            const result = stepML1Features(candle, offset / 6, state, featureConfig);
+            const quality = extractDataQuality(result.observation);
+            const acceptance = evaluateAcceptance(quality, strictPolicy, isValidOhlcv, {
+                gridAnchor: firstTimestamp,
+                isOnGrid: (candle.time - firstTimestamp) % intervalMs === 0,
+                isWithinRange: true
+            });
+            const continuityFailures = [
+                quality.hasDataGap ? 'DATA_GAP' : '',
+                quality.isDiscontinuity ? 'DISCONTINUITY' : '',
+                quality.isUnexpectedInterval ? 'UNEXPECTED_INTERVAL' : ''
+            ].filter(Boolean);
+            if (!acceptance.isAccepted || continuityFailures.length > 0) {
+                throw new Error(
+                    `Candle at timestamp ${candle.time} rejected: ` +
+                    [...acceptance.rejectionReasons, ...continuityFailures].join(', ')
+                );
+            }
+            state = result.nextState;
+            backboneInputs.push({ candle, observation: result.observation, isValidOhlcv });
+        }
+
+        const dateRange = {
+            startTimestamp: backboneInputs[0].candle.time,
+            endTimestamp: backboneInputs[backboneInputs.length - 1].candle.time
+        };
+        const backboneResult = buildSourceBackbone(
+            backboneInputs,
+            symbol,
+            interval,
+            1,
+            strictPolicy,
+            intervalMs,
+            dateRange
+        );
+        if (!backboneResult.uptime.isUptimeValid || backboneResult.rejectedRows.length > 0 ||
+            backboneResult.acceptedRows.length !== rawCandleCount) {
+            throw new Error(
+                `M4B accepted-row accounting mismatch. Expected ${rawCandleCount}, ` +
+                `accepted ${backboneResult.acceptedRows.length}, rejected ${backboneResult.rejectedRows.length}.`
+            );
+        }
+
+        const cleanData = new Float64Array(backboneResult.acceptedRows.length * 6);
+        for (let index = 0; index < backboneResult.acceptedRows.length; index++) {
+            const candle = backboneResult.acceptedRows[index].candle;
+            const offset = index * 6;
+            cleanData[offset] = candle.time;
+            cleanData[offset + 1] = candle.open;
+            cleanData[offset + 2] = candle.high;
+            cleanData[offset + 3] = candle.low;
+            cleanData[offset + 4] = candle.close;
+            cleanData[offset + 5] = candle.volume;
+        }
+        const dataStore = new DataStore(backboneResult.acceptedRows.length);
+        dataStore.data = cleanData;
+        dataStore.length = backboneResult.acceptedRows.length;
+
+        params.onProgress?.('Computing structural pivots and events...');
+        const zigZag = new StrictCBCZigZagIndicator();
+        zigZag.currentSymbol = symbol;
+        for (const parameter of zigZag.params) {
+            const value = params.zigZagParameters?.[parameter.id];
+            if (value !== undefined) parameter.value = value;
+        }
+        zigZag.calculate(dataStore);
+        const events = AIExporter.buildMLR1Dataset(
+            dataStore,
+            backboneResult.acceptedRows,
+            zigZag.cachedPivots,
+            symbol,
+            interval,
+            intervalMs
+        );
+        if (events.length === 0) {
+            throw new Error('No valid confirmed structural events were detected in this historical window.');
+        }
+
+        params.onProgress?.('Auditing event chronology and outcomes...');
+        const auditResult = DatasetAuditor.runCausalityAudit(
+            events,
+            dataStore,
+            backboneResult.acceptedRows,
+            intervalMs
+        );
+        const chronologyValid = auditResult.chronologyValid &&
+            backboneResult.stats.outOfOrderCount === 0;
+        const identityUnique = auditResult.identityUnique &&
+            new Set(backboneResult.acceptedRows.map(row => row.observationId)).size ===
+                backboneResult.acceptedRows.length;
+        if (!auditResult.passed || !chronologyValid || !identityUnique ||
+            !auditResult.inputOutcomeSeparationValid) {
+            throw new Error('Pre-flight master audit failed: source integrity, identity, chronology, or separation invariant broken.');
+        }
+
+        params.onProgress?.('Generating and reconciling CSV artifacts...');
+        const continuousCsv = AIExporter.exportMLR1ContinuousObservationsCSV(backboneResult.acceptedRows);
+        const representationCsv = AIExporter.exportMLR1RepresentationCSV(events, symbol, interval);
+        const eventCsv = AIExporter.exportMLR1CSV(events, symbol, interval);
+        if (!continuousCsv || !representationCsv || !eventCsv) {
+            throw new Error('CSV generation failed for one or more dataset tiers.');
+        }
+        const continuousFileName = `MLR1_${symbol}_${interval}_Continuous_Observations.csv`;
+        const representationFileName = `MLR1_${symbol}_${interval}_Representation_Features.csv`;
+        const eventFileName = `MLR1_${symbol}_${interval}_Events.csv`;
+        const actualFileRowCounts = {
+            [continuousFileName]: AIExporter.countCsvDataRows(continuousCsv),
+            [representationFileName]: AIExporter.countCsvDataRows(representationCsv),
+            [eventFileName]: AIExporter.countCsvDataRows(eventCsv)
+        };
+        if (actualFileRowCounts[continuousFileName] !== backboneResult.acceptedRows.length ||
+            actualFileRowCounts[representationFileName] !== events.length ||
+            actualFileRowCounts[eventFileName] !== events.length) {
+            throw new Error('Physical CSV data row count reconciliation failed.');
+        }
+
+        const exportAccounting: ExportAccounting = {
+            rawSourceCandleCount: rawCandleCount,
+            acceptedSourceObservationCount: backboneResult.acceptedRows.length,
+            rejectedSourceObservationCount: backboneResult.rejectedRows.length,
+            tierAContinuousObservationCount: backboneResult.acceptedRows.length,
+            tierAEventRepresentationRowCount: events.length,
+            tierBConfirmedTeacherEventCount: events.length,
+            tierCOutcomeRowCount: events.length,
+            actualFileRowCounts
+        };
+        const manifest = createDatasetManifest(
+            `DS_${symbol}_${interval}_V1`,
+            'BINANCE_SPOT',
+            {
+                symbol,
+                baseTimeframe: interval,
+                datasetVersion: 1,
+                sourceIntervalMs: intervalMs,
+                featureConfigVersion: ML1_CONFIG_B_VERSION,
+                teacherVersion: STRICT_CBC_ZIGZAG_TEACHER_VERSION,
+                outcomeConfigVersion: MLR1_OUTCOME_CONFIG_VERSION,
+                dateRange,
+                integrityPolicy: strictPolicy,
+                exportConfig: {
+                    exportTierA: true,
+                    exportTierB: true,
+                    exportTierC: true,
+                    separateFiles: false
+                }
+            },
+            backboneResult.stats,
+            backboneResult.uptime,
+            {
+                passed: auditResult.passed && chronologyValid && identityUnique &&
+                    auditResult.inputOutcomeSeparationValid,
+                chronologyValid,
+                identityUnique,
+                inputOutcomeSeparationValid: auditResult.inputOutcomeSeparationValid,
+                remarks: [
+                    `Artifact 1 (${continuousFileName}): Tier A continuous causal observations ` +
+                    `(${actualFileRowCounts[continuousFileName]} rows). Available for approved baseline ` +
+                    'model inputs; contains 1:1 feature values and validity masks.',
+                    `Artifact 2 (${representationFileName}): Tier A confirmed-event representation tensor ` +
+                    `(${actualFileRowCounts[representationFileName]} rows). Authoritative model-input boundary ` +
+                    'strictly whitelisted against MLR1_REPRESENTATION_FEATURE_ALLOWLIST.',
+                    `Artifact 3 (${eventFileName}): Combined archival and supervised target dataset ` +
+                    `(${actualFileRowCounts[eventFileName]} rows). Combines Tier B teacher events with Tier C ` +
+                    'quarantined forward outcomes; not an unrestricted model input source. separateFiles is false.'
+                ]
+            },
+            exportAccounting
+        );
+
+        return {
+            manifest: params.buildTimestamp === undefined
+                ? manifest
+                : { ...manifest, buildTimestamp: params.buildTimestamp },
+            continuousCsv,
+            representationCsv,
+            eventCsv,
+            continuousFileName,
+            representationFileName,
+            eventFileName,
+            events,
+            backboneResult,
+            exportAccounting,
+            auditResult
+        };
+    }
 }
 
 export class DatasetAuditor {
@@ -861,6 +1186,7 @@ export class DatasetAuditor {
             if (ev.entry_time <= ev.confirmation_time_ms) indexFailures++;
             if (!Number.isSafeInteger(ev.pivot_bar_index) ||
                 !Number.isSafeInteger(ev.confirmed_bar_index) ||
+                !Number.isSafeInteger(ev.pivot_time_ms) ||
                 ev.pivot_bar_index < 0 ||
                 ev.pivot_bar_index > ev.confirmed_bar_index ||
                 ev.confirmed_bar_index >= acceptedRows.length ||
@@ -879,7 +1205,7 @@ export class DatasetAuditor {
             // 4. Exhaustive Anti-NaN Gate on all 25 numeric fields
             const requiredFiniteNumbers = [
                 ev.pivot_price, ev.previous_pivot_price, ev.pivot_bar_index,
-                ev.confirmed_bar_index, ev.confirmation_time_ms, ev.bars_since_last_pivot,
+                ev.pivot_time_ms, ev.confirmed_bar_index, ev.confirmation_time_ms, ev.bars_since_last_pivot,
                 ev.leg_distance_atr, ev.context_net_return_atr, ev.context_max_favorable_atr,
                 ev.context_max_adverse_atr, ev.context_candle_count, ev.context_relative_volume,
                 ev.context_relative_volume_valid_fraction, ev.entry_bar_index, ev.entry_time,
@@ -894,7 +1220,7 @@ export class DatasetAuditor {
 
             // Strict Integer Fields
             const requiredIntegerFields = [
-                ev.pivot_bar_index, ev.confirmed_bar_index, ev.confirmation_time_ms,
+                ev.pivot_bar_index, ev.pivot_time_ms, ev.confirmed_bar_index, ev.confirmation_time_ms,
                 ev.bars_since_last_pivot, ev.context_candle_count, ev.entry_bar_index, ev.entry_time
             ];
             for (let k = 0; k < requiredIntegerFields.length; k++) {
@@ -1042,6 +1368,7 @@ export class DatasetAuditor {
             if (!Number.isSafeInteger(ev.pivot_bar_index) ||
                 !Number.isSafeInteger(ev.confirmed_bar_index) ||
                 !Number.isSafeInteger(ev.entry_bar_index) ||
+                !Number.isSafeInteger(ev.pivot_time_ms) ||
                 ev.pivot_bar_index < 0 ||
                 ev.confirmed_bar_index < 0 ||
                 ev.pivot_bar_index > ev.confirmed_bar_index ||
@@ -1062,7 +1389,9 @@ export class DatasetAuditor {
                 timeFailures++;
             }
             if (pivotRow.sourceTimestamp !== pivotRow.candle.time ||
-                pivotRow.sourceTimestamp !== dataStore.data[ev.pivot_bar_index * 6]) {
+                pivotRow.sourceTimestamp !== dataStore.data[ev.pivot_bar_index * 6] ||
+                ev.pivot_time_ms !== pivotRow.sourceTimestamp ||
+                ev.pivot_time_ms > ev.confirmation_time_ms) {
                 timeFailures++;
             }
             const entryBar = ev.entry_bar_index;
