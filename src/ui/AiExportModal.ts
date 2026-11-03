@@ -203,6 +203,7 @@ export class AiExportModal {
 
         btnClose?.addEventListener('click', () => this.close());
         btnCancel?.addEventListener('click', () => this.close());
+        // The audit button listener is registered centrally in src/index.ts.
         // Range Presets
         const rangeBtns = this.dialog.querySelectorAll('.ai-range-btn');
         rangeBtns.forEach((btn) => {

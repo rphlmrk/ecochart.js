@@ -4672,20 +4672,23 @@ export class WorkspaceManager {
         btnAiExportAudit?.addEventListener('click', async () => {
             if (loadingOverlay) loadingOverlay.style.display = 'flex';
             if (loadingTitle) loadingTitle.textContent = 'Running Milestones 1 to 4 Test Suites...';
-            if (loadingDetail) loadingDetail.textContent = 'Executing full M1, M2, M3, and M4B pipelines...';
+            if (loadingDetail) loadingDetail.textContent = 'Executing full M1, M2 (2A-2H, 2J), M3 (3A-3E), and M4B pipelines...';
             await new Promise(resolve => setTimeout(resolve, 50));
 
             try {
                 console.log('\n======================================================');
-                console.log('🚀 EXECUTING COMPLETE ML-R1 TEST SUITE: MILESTONES 1 TO 4');
+                console.log('🚀 EXECUTING COMPLETE ML-R1 SUITE: MILESTONES 1 TO 4');
                 console.log('======================================================');
 
+                // Milestone 1 (Causal StrictCBC Teacher)
                 if (!runMilestone1AcceptanceSuite()) throw new Error('Milestone 1 suite failed');
-                console.log('✅ Milestone 1: Passed (Causal StrictCBCZigZag)');
+                console.log('✅ Milestone 1: Passed (Causal StrictCBC Teacher)');
 
-                if (!runMilestone2AcceptanceSuite()) throw new Error('Milestone 2 acceptance suite failed');
+                // Milestone 2 (2A–2H core, 2J schema, and quantitative audit)
+                if (!runMilestone2AcceptanceSuite()) throw new Error('Milestone 2 complete suite failed');
                 console.log('✅ Milestone 2: Passed (Complete 2A–2H, 2J & Quantitative Audit)');
 
+                // Milestone 3 (All 77 Multi-Timeframe Integration Tests)
                 if (!runPhase3ATests()) throw new Error('Milestone 3A suite failed');
                 if (!runPhase3BTests()) throw new Error('Milestone 3B suite failed');
                 if (!runPhase3CTests()) throw new Error('Milestone 3C suite failed');
@@ -4693,11 +4696,12 @@ export class WorkspaceManager {
                 if (!runPhase3ETests()) throw new Error('Milestone 3E suite failed');
                 console.log('✅ Milestone 3: Passed (77/77 MTF Integration Tests)');
 
+                // Milestone 4B (Source Integrity & Observation Backbone)
                 if (!runPhase4BTests()) throw new Error('Milestone 4B suite failed');
                 console.log('✅ Milestone 4B: Passed (15/15 Source Integrity Tests)');
 
                 console.log('\n======================================================');
-                console.log('🏆 ALL MILESTONES 1 TO 4 ACCEPTANCE GATES VERIFIED');
+                console.log('🏆 ALL MILESTONES 1 TO 4 SUITES VERIFIED AND COMPLETE');
                 console.log('======================================================\n');
 
                 if (loadingDetail) {

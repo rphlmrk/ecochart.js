@@ -5,7 +5,7 @@ export interface DatasetDateRange {
 
 export interface IntegrityPolicy {
     readonly rejectInvalidSource: boolean;
-    readonly rejectInvalidOhlcv?: boolean; // Decouples invalid OHLCV rejection from source validity
+    readonly rejectInvalidOhlcv?: boolean; // Decoupled from source validity; defaults to rejectInvalidSource if omitted
     readonly rejectDuplicateTimestamp: boolean;
     readonly rejectOutOfOrder: boolean;
     readonly requireMinimumUptimeFraction?: number;

@@ -1,6 +1,7 @@
 import type { ML1Candle, ML1Observation } from '../ML1FeatureTypes';
 import type { DataQualityStatus } from './DatasetTypes';
-import type { IntegrityPolicy } from './DatasetConfig';
+import type { DatasetConfig, DatasetDateRange, IntegrityPolicy } from './DatasetConfig';
+import type { DatasetManifest, IntegrityAuditResults, MissingDataStatistics } from './DatasetManifest';
 
 export interface BackboneStats {
     readonly sourceRowCount: number;
@@ -12,6 +13,8 @@ export interface BackboneStats {
     readonly outOfOrderCount: number;
     readonly invalidOhlcvCount: number;
     readonly invalidSourceCount: number;
+    readonly uniqueSourceTimestampsCount: number;
+    readonly uniqueAcceptedTimestampsCount: number;
     readonly firstSourceTimestamp: number | null;
     readonly lastSourceTimestamp: number | null;
 }
@@ -27,6 +30,8 @@ export function createInitialBackboneStats(): BackboneStats {
         outOfOrderCount: 0,
         invalidOhlcvCount: 0,
         invalidSourceCount: 0,
+        uniqueSourceTimestampsCount: 0,
+        uniqueAcceptedTimestampsCount: 0,
         firstSourceTimestamp: null,
         lastSourceTimestamp: null
     });
@@ -54,7 +59,12 @@ export interface DatasetUptimeEvaluation {
 export interface SourceBackboneInputItem {
     readonly candle: ML1Candle;
     readonly observation: ML1Observation;
-    readonly isValidOhlcv: boolean;
+    readonly isValidOhlcv?: boolean;
+}
+
+export interface UniqueTimestampTracking {
+    readonly isUniqueSource: boolean;
+    readonly isUniqueAccepted?: boolean;
 }
 
 export interface SourceBackboneAcceptedRow {
@@ -217,9 +227,16 @@ function validateRuntimeInputs(
         prevStats.duplicateTimestampCount,
         prevStats.outOfOrderCount,
         prevStats.invalidOhlcvCount,
-        prevStats.invalidSourceCount
+        prevStats.invalidSourceCount,
+        prevStats.uniqueSourceTimestampsCount,
+        prevStats.uniqueAcceptedTimestampsCount
     ];
-    if (counters.some(counter => !Number.isSafeInteger(counter) || counter < 0)) {
+    if (
+        counters.some(counter => !Number.isSafeInteger(counter) || counter < 0) ||
+        prevStats.uniqueSourceTimestampsCount > prevStats.sourceRowCount ||
+        prevStats.uniqueAcceptedTimestampsCount > prevStats.uniqueSourceTimestampsCount ||
+        prevStats.uniqueAcceptedTimestampsCount > prevStats.acceptedObservationCount
+    ) {
         throw new Error('Runtime Contract Error: prevStats contains invalid counters.');
     }
     for (const timestamp of [prevStats.firstSourceTimestamp, prevStats.lastSourceTimestamp]) {
@@ -286,9 +303,17 @@ export function processSourceObservation(
     dataQuality: DataQualityStatus,
     isValidOhlcv: boolean,
     policy: IntegrityPolicy,
-    expectedIntervalMs: number
+    expectedIntervalMs: number,
+    knownUniqueTracking?: UniqueTimestampTracking
 ): ProcessSourceResult {
     validateRuntimeInputs(sourceTimestamp, dataQuality, isValidOhlcv, policy, expectedIntervalMs, prevStats);
+    if (knownUniqueTracking !== undefined &&
+        (!knownUniqueTracking || typeof knownUniqueTracking !== 'object' ||
+            typeof knownUniqueTracking.isUniqueSource !== 'boolean' ||
+            (knownUniqueTracking.isUniqueAccepted !== undefined &&
+                typeof knownUniqueTracking.isUniqueAccepted !== 'boolean'))) {
+        throw new Error('Runtime Contract Error: knownUniqueTracking fields must be booleans.');
+    }
 
     let internalDuplicate = false;
     let internalOutOfOrder = false;
@@ -325,6 +350,13 @@ export function processSourceObservation(
     const nextFirstTimestamp = prevStats.firstSourceTimestamp === null
         ? sourceTimestamp
         : Math.min(prevStats.firstSourceTimestamp, sourceTimestamp);
+    const isUniqueSource = knownUniqueTracking?.isUniqueSource ?? !combinedQuality.isDuplicate;
+    const isUniqueAccepted = knownUniqueTracking?.isUniqueAccepted ??
+        (acceptance.isAccepted && isUniqueSource && !combinedQuality.isDuplicate);
+    if (isUniqueAccepted &&
+        (!isUniqueSource || !acceptance.isAccepted || combinedQuality.isDuplicate)) {
+        throw new Error('Runtime Contract Error: a unique accepted timestamp must be unique, accepted, and non-duplicate.');
+    }
 
     const nextStats: BackboneStats = Object.freeze({
         sourceRowCount: prevStats.sourceRowCount + 1,
@@ -336,6 +368,8 @@ export function processSourceObservation(
         outOfOrderCount: prevStats.outOfOrderCount + (combinedQuality.isOutOfOrder ? 1 : 0),
         invalidOhlcvCount: prevStats.invalidOhlcvCount + (isValidOhlcv ? 0 : 1),
         invalidSourceCount: prevStats.invalidSourceCount + (dataQuality.isSourceValid ? 0 : 1),
+        uniqueSourceTimestampsCount: prevStats.uniqueSourceTimestampsCount + (isUniqueSource ? 1 : 0),
+        uniqueAcceptedTimestampsCount: prevStats.uniqueAcceptedTimestampsCount + (isUniqueAccepted ? 1 : 0),
         firstSourceTimestamp: nextFirstTimestamp,
         lastSourceTimestamp: nextWatermark
     });
@@ -356,7 +390,8 @@ export function updateBackboneStats(
     dataQuality: DataQualityStatus,
     isValidOhlcv: boolean,
     policy: IntegrityPolicy,
-    expectedIntervalMs: number
+    expectedIntervalMs: number,
+    knownUniqueTracking?: UniqueTimestampTracking
 ): ProcessSourceResult {
     return processSourceObservation(
         prevStats,
@@ -364,7 +399,8 @@ export function updateBackboneStats(
         dataQuality,
         isValidOhlcv,
         policy,
-        expectedIntervalMs
+        expectedIntervalMs,
+        knownUniqueTracking
     );
 }
 
@@ -374,19 +410,51 @@ export function updateBackboneStats(
 export function evaluateDatasetUptime(
     stats: BackboneStats,
     policy: IntegrityPolicy,
-    expectedIntervalMs = 60000
+    expectedIntervalMs = 60000,
+    dateRange?: DatasetDateRange
 ): DatasetUptimeEvaluation {
+    if (!stats || typeof stats !== 'object') {
+        throw new Error('evaluateDatasetUptime Error: stats must be a valid BackboneStats object.');
+    }
+    const counters = [
+        stats.sourceRowCount,
+        stats.acceptedObservationCount,
+        stats.rejectedObservationCount,
+        stats.uniqueSourceTimestampsCount,
+        stats.uniqueAcceptedTimestampsCount
+    ];
+    if (counters.some(value => !Number.isSafeInteger(value) || value < 0) ||
+        stats.sourceRowCount !== stats.acceptedObservationCount + stats.rejectedObservationCount ||
+        stats.uniqueSourceTimestampsCount > stats.sourceRowCount ||
+        stats.uniqueAcceptedTimestampsCount > stats.uniqueSourceTimestampsCount ||
+        stats.uniqueAcceptedTimestampsCount > stats.acceptedObservationCount) {
+        throw new Error('evaluateDatasetUptime Error: stats counters violate source/unique timestamp invariants.');
+    }
     validatePolicy(policy);
     if (!Number.isSafeInteger(expectedIntervalMs) || expectedIntervalMs <= 0) {
         throw new Error('Runtime Contract Error: expectedIntervalMs must be a positive safe integer.');
     }
 
     let totalExpectedObservations = 0;
-    if (stats.firstSourceTimestamp !== null && stats.lastSourceTimestamp !== null) {
+    if (dateRange !== undefined) {
+        if (!dateRange || !Number.isSafeInteger(dateRange.startTimestamp) ||
+            !Number.isSafeInteger(dateRange.endTimestamp) ||
+            dateRange.startTimestamp < 0 || dateRange.endTimestamp < dateRange.startTimestamp) {
+            throw new Error('IntegrityPolicy Error: dateRange must contain ordered non-negative safe integer timestamps.');
+        }
+        totalExpectedObservations =
+            Math.floor((dateRange.endTimestamp - dateRange.startTimestamp) / expectedIntervalMs) + 1;
+        if (!Number.isSafeInteger(totalExpectedObservations)) {
+            throw new Error('evaluateDatasetUptime Error: configured date range exceeds safe timeline slot count.');
+        }
+    } else if (stats.firstSourceTimestamp !== null && stats.lastSourceTimestamp !== null) {
         const spanMs = stats.lastSourceTimestamp - stats.firstSourceTimestamp;
         if (spanMs >= 0) {
             totalExpectedObservations = Math.floor(spanMs / expectedIntervalMs) + 1;
         }
+    }
+    if (!Number.isSafeInteger(totalExpectedObservations)) {
+        throw new Error('evaluateDatasetUptime Error: expected timeline slot count exceeds safe integer range.');
     }
     if (totalExpectedObservations === 0) {
         return Object.freeze({
@@ -397,9 +465,14 @@ export function evaluateDatasetUptime(
         });
     }
 
-    const uniqueSlotsReceived = Math.max(0, totalExpectedObservations - stats.missingIntervalCount);
-    const sourceAvailabilityFraction = Math.min(1, uniqueSlotsReceived / totalExpectedObservations);
-    const usableObservationFraction = Math.min(1, stats.acceptedObservationCount / totalExpectedObservations);
+    const sourceAvailabilityFraction = Math.min(
+        1,
+        stats.uniqueSourceTimestampsCount / totalExpectedObservations
+    );
+    const usableObservationFraction = Math.min(
+        1,
+        stats.uniqueAcceptedTimestampsCount / totalExpectedObservations
+    );
 
     return Object.freeze({
         isUptimeValid: policy.requireMinimumUptimeFraction === undefined ||
@@ -420,7 +493,8 @@ export function buildSourceBackbone(
     timeframe: string,
     datasetVersion: number,
     policy: IntegrityPolicy,
-    expectedIntervalMs: number
+    expectedIntervalMs: number,
+    dateRange?: DatasetDateRange
 ): SourceBackboneBuildResult {
     if (!Array.isArray(stream)) {
         throw new Error('Runtime Contract Error: stream must be an array.');
@@ -452,19 +526,28 @@ export function buildSourceBackbone(
     let stats = createInitialBackboneStats();
     const acceptedRows: SourceBackboneAcceptedRow[] = [];
     const rejectedRows: SourceBackboneRejectedRow[] = [];
+    const seenTimestamps = new Set<number>();
 
     for (const item of stream) {
         if (!item || typeof item !== 'object' || !item.candle || !item.observation) {
             throw new Error('Runtime Contract Error: each stream item must include a candle and observation.');
         }
+        if (item.isValidOhlcv !== undefined && typeof item.isValidOhlcv !== 'boolean') {
+            throw new Error('Runtime Contract Error: isValidOhlcv must be a boolean when provided.');
+        }
         const dataQuality = extractDataQuality(item.observation);
+        const isUniqueSource = !seenTimestamps.has(item.candle.time);
+        seenTimestamps.add(item.candle.time);
+        const nativeValidOhlcv = validateCandleOhlcv(item.candle);
+        const isValidOhlcv = nativeValidOhlcv && (item.isValidOhlcv ?? true);
         const result = processSourceObservation(
             stats,
             item.candle.time,
             dataQuality,
-            item.isValidOhlcv,
+            isValidOhlcv,
             policy,
-            expectedIntervalMs
+            expectedIntervalMs,
+            { isUniqueSource }
         );
         stats = result.nextStats;
         const candle = Object.freeze({ ...item.candle });
@@ -490,6 +573,78 @@ export function buildSourceBackbone(
         acceptedRows: Object.freeze(acceptedRows),
         rejectedRows: Object.freeze(rejectedRows),
         stats,
-        uptime: evaluateDatasetUptime(stats, policy, expectedIntervalMs)
+        uptime: evaluateDatasetUptime(stats, policy, expectedIntervalMs, dateRange)
+    });
+}
+
+/**
+ * Validates candle OHLCV structure before allowing it to contribute to the dataset.
+ */
+export function validateCandleOhlcv(candle: ML1Candle): boolean {
+    return !!candle && typeof candle === 'object' &&
+        Number.isSafeInteger(candle.time) && candle.time >= 0 &&
+        Number.isFinite(candle.open) && Number.isFinite(candle.high) &&
+        Number.isFinite(candle.low) && Number.isFinite(candle.close) &&
+        Number.isFinite(candle.volume) &&
+        candle.high >= candle.low &&
+        candle.high >= Math.max(candle.open, candle.close) &&
+        candle.low <= Math.min(candle.open, candle.close) &&
+        candle.volume >= 0;
+}
+
+/**
+ * Reconciles backbone accounting and uptime into the immutable dataset manifest.
+ */
+export function createDatasetManifest(
+    datasetId: string,
+    sourceIdentity: string,
+    buildConfig: DatasetConfig,
+    stats: BackboneStats,
+    uptime: DatasetUptimeEvaluation,
+    auditResults: IntegrityAuditResults,
+    htfStatsOverhead?: Partial<MissingDataStatistics>
+): DatasetManifest {
+    if (!datasetId || !sourceIdentity) {
+        throw new Error('DatasetManifest Error: datasetId and sourceIdentity must be non-empty strings.');
+    }
+    if (stats.sourceRowCount !== stats.acceptedObservationCount + stats.rejectedObservationCount) {
+        throw new Error('DatasetManifest Error: source row accounting invariant failed.');
+    }
+    const missingDataStats: MissingDataStatistics = Object.freeze({
+        missingIntervalCount: stats.missingIntervalCount,
+        unexpectedIntervalCount: stats.unexpectedIntervalCount,
+        duplicateTimestampCount: stats.duplicateTimestampCount,
+        outOfOrderCount: stats.outOfOrderCount,
+        invalidOhlcvCount: stats.invalidOhlcvCount,
+        invalidSourceCount: stats.invalidSourceCount,
+        htf15mGapCount: htfStatsOverhead?.htf15mGapCount ?? 0,
+        htf1hGapCount: htfStatsOverhead?.htf1hGapCount ?? 0,
+        htf15mResetCount: htfStatsOverhead?.htf15mResetCount ?? 0,
+        htf1hResetCount: htfStatsOverhead?.htf1hResetCount ?? 0,
+        htf15mIncompleteWindowCount: htfStatsOverhead?.htf15mIncompleteWindowCount ?? 0,
+        htf1hIncompleteWindowCount: htfStatsOverhead?.htf1hIncompleteWindowCount ?? 0
+    });
+
+    return Object.freeze({
+        datasetId,
+        sourceIdentity,
+        symbol: buildConfig.symbol,
+        timeframe: buildConfig.baseTimeframe,
+        startTimestamp: stats.firstSourceTimestamp ?? buildConfig.dateRange.startTimestamp,
+        endTimestamp: stats.lastSourceTimestamp ?? buildConfig.dateRange.endTimestamp,
+        sourceRowCount: stats.sourceRowCount,
+        acceptedObservationCount: stats.acceptedObservationCount,
+        rejectedObservationCount: stats.rejectedObservationCount,
+        totalExpectedObservations: uptime.totalExpectedObservations,
+        sourceAvailabilityFraction: uptime.sourceAvailabilityFraction,
+        usableObservationFraction: uptime.usableObservationFraction,
+        isUptimeValid: uptime.isUptimeValid,
+        featureVersion: buildConfig.featureConfigVersion,
+        teacherVersion: buildConfig.teacherVersion,
+        outcomeVersion: buildConfig.outcomeConfigVersion,
+        missingDataStats,
+        buildConfig,
+        buildTimestamp: Date.now(),
+        auditResults
     });
 }

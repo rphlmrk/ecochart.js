@@ -6,7 +6,7 @@ export interface MissingDataStatistics {
     readonly duplicateTimestampCount: number;
     readonly outOfOrderCount: number;
     readonly invalidOhlcvCount: number;
-    readonly invalidSourceCount: number;
+    readonly invalidSourceCount: number; // Independent accounting of native source invalidity
     readonly htf15mGapCount: number;
     readonly htf1hGapCount: number;
     readonly htf15mResetCount: number;
