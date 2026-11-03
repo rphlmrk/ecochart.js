@@ -118,6 +118,13 @@ export function runPhase4BTests(): boolean {
         assert(validateCandleOhlcv(createCandle(1700000000000)), 'Valid candle should pass OHLCV validation');
         assert(!validateCandleOhlcv({
             ...createCandle(1700000000000),
+            open: -10,
+            high: -9,
+            low: -11,
+            close: -10
+        }), 'Candle with non-positive prices must fail OHLCV validation');
+        assert(!validateCandleOhlcv({
+            ...createCandle(1700000000000),
             high: 8
         }), 'Candle with high below the open/close should fail OHLCV validation');
         for (const badValue of [0.5, NaN, Infinity, -1, 2]) {
@@ -874,13 +881,22 @@ export function runPhase4BTests(): boolean {
         assert(events[0].previous_pivot_confirmation_time_ms === rows[2].sourceTimestamp,
             'Event should retain the preceding pivot confirmation timestamp');
         assert(events[0].previous_pivot_type === 'low', 'Event should retain the preceding pivot type');
+        const representationCsv = AIExporter.exportMLR1RepresentationCSV(events, 'SOLUSDT', '1m');
         assert(
-            DatasetAuditor.runCausalityAudit(events, dataStore, rows, 60000, pivots).passed,
+            representationCsv !== null &&
+                DatasetAuditor.runCausalityAudit(events, dataStore, rows, 60000, pivots, representationCsv).passed,
             'Auditor should accept event pivot provenance matching the accepted candles'
         );
 
         assert(
-            !DatasetAuditor.runCausalityAudit(events, dataStore, rows, 60000, undefined as unknown as typeof pivots).passed,
+            !DatasetAuditor.runCausalityAudit(
+                events,
+                dataStore,
+                rows,
+                60000,
+                undefined as unknown as typeof pivots,
+                representationCsv ?? ''
+            ).passed,
             'Auditor must fail closed when cached pivots are omitted at runtime'
         );
         assert(
@@ -889,12 +905,12 @@ export function runPhase4BTests(): boolean {
                 dataStore,
                 rows,
                 60000,
-                pivots
+                pivots,
+                representationCsv ?? ''
             ).passed,
             'Auditor must independently recompute and verify event identities'
         );
 
-        const representationCsv = AIExporter.exportMLR1RepresentationCSV(events, 'SOLUSDT', '1m');
         const eventCsv = AIExporter.exportMLR1CSV(events, 'SOLUSDT', '1m');
         assert(representationCsv !== null && eventCsv !== null, 'Both separated event artifacts should serialize');
         const representationHeaders = representationCsv.split('\r\n')[0].split(',');
@@ -916,13 +932,63 @@ export function runPhase4BTests(): boolean {
             MLR1_OUTCOME_LABEL_ALLOWLIST.every(header => eventHeaders.includes(header)),
             'Separate event artifact must retain outcome labels and execution metadata'
         );
+        const representationWithOutcomeColumn =
+            `${representationCsv.split('\r\n')[0]},long_net_r\r\n${representationCsv.split('\r\n')[1]},0`;
+        assert(
+            !DatasetAuditor.runCausalityAudit(
+                events,
+                dataStore,
+                rows,
+                60000,
+                pivots,
+                representationWithOutcomeColumn
+            ).inputOutcomeSeparationValid,
+            'Auditor must reject Tier C fields in the actual representation CSV'
+        );
+        assert(
+            !DatasetAuditor.runCausalityAudit(
+                [{ ...events[0], zigzag_next_leg_orientation: 'up' }],
+                dataStore,
+                rows,
+                60000,
+                pivots,
+                AIExporter.exportMLR1RepresentationCSV(
+                    [{ ...events[0], zigzag_next_leg_orientation: 'up' }],
+                    'SOLUSDT',
+                    '1m'
+                ) ?? ''
+            ).passed,
+            'Auditor must reject HIGH pivots with an up next-leg orientation'
+        );
+        assert(
+            !DatasetAuditor.runCausalityAudit(
+                [{ ...events[0], pivot_label: 'LH' }],
+                dataStore,
+                rows,
+                60000,
+                pivots,
+                AIExporter.exportMLR1RepresentationCSV(
+                    [{ ...events[0], pivot_label: 'LH' }],
+                    'SOLUSDT',
+                    '1m'
+                ) ?? ''
+            ).passed,
+            'Auditor must match the event current pivot to its cached teacher record'
+        );
 
         const incorrectPreviousConfirmation = [{
             ...events[0],
             previous_pivot_confirmed_bar_index: 1
         }];
         assert(
-            !DatasetAuditor.runCausalityAudit(incorrectPreviousConfirmation, dataStore, rows, 60000, pivots).passed,
+            !DatasetAuditor.runCausalityAudit(
+                incorrectPreviousConfirmation,
+                dataStore,
+                rows,
+                60000,
+                pivots,
+                representationCsv
+            ).passed,
             'Auditor must reject incorrect preceding-pivot confirmation provenance'
         );
 
@@ -930,7 +996,14 @@ export function runPhase4BTests(): boolean {
             ? { ...row, sourceTimestamp: row.sourceTimestamp + 60000 }
             : row);
         assert(
-            !DatasetAuditor.runCausalityAudit(events, dataStore, discontinuousRows, 60000, pivots).passed,
+            !DatasetAuditor.runCausalityAudit(
+                events,
+                dataStore,
+                discontinuousRows,
+                60000,
+                pivots,
+                representationCsv
+            ).passed,
             'Auditor must reject a non-contiguous accepted timeline'
         );
 

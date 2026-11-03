@@ -6,6 +6,7 @@ import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
 import type { SourceBackboneAcceptedRow } from '../indicators/mlr1/dataset/ObservationBackbone';
 import type { DatasetManifest, ExportAccounting } from '../indicators/mlr1/dataset/DatasetManifest';
 import type { StrictZigZagPivot } from '../indicators/plugins/StrictCBCZigZagIndicator';
+import { TIER_C_QUARANTINE_LIST } from '../indicators/mlr1/dataset/DatasetSchema';
 import { DataStore } from './DataStore';
 import { ML1_CONFIG_B, ML1_CONFIG_B_VERSION } from '../indicators/mlr1/ML1FeatureConfigs';
 import {
@@ -17,6 +18,7 @@ import {
     accountRawSourceRows,
     buildSourceBackbone,
     createDatasetManifest,
+    validateCandleOhlcv,
     type RawSourceAccountingReport,
     type RawSourceTimestampBounds
 } from '../indicators/mlr1/dataset/ObservationBackbone';
@@ -386,7 +388,7 @@ export class AIExporter {
     public static buildMLR1Dataset(
         dataStore: any,
         acceptedRows: readonly SourceBackboneAcceptedRow[],
-        cachedPivots: any[],
+        cachedPivots: readonly StrictZigZagPivot[],
         symbol: string,
         timeframe: string,
         expectedIntervalMs: number = 60000
@@ -911,13 +913,23 @@ export class AIExporter {
         }
 
         const expectedCsvCounts = artifacts.manifest.exportAccounting.actualFileRowCounts;
+        const expectedCsvNames = [
+            artifacts.continuousFileName,
+            artifacts.representationFileName,
+            artifacts.eventFileName
+        ].sort();
+        const manifestCsvNames = Object.keys(expectedCsvCounts).sort();
+        if (manifestCsvNames.length !== expectedCsvNames.length ||
+            manifestCsvNames.some((fileName, index) => fileName !== expectedCsvNames[index])) {
+            throw new Error('Dataset archive CSV filenames do not match manifest accounting filenames.');
+        }
         for (const [fileName, content] of [
             [artifacts.continuousFileName, artifacts.continuousCsv],
             [artifacts.representationFileName, artifacts.representationCsv],
             [artifacts.eventFileName, artifacts.eventCsv]
         ] as const) {
             const expectedRows = expectedCsvCounts[fileName];
-            if (!Number.isSafeInteger(expectedRows) ||
+            if (!Number.isSafeInteger(expectedRows) || expectedRows < 0 ||
                 this.countCsvDataRows(content) !== expectedRows) {
                 throw new Error(`Dataset archive source CSV row count does not match manifest for '${fileName}'.`);
             }
@@ -1100,13 +1112,18 @@ export class AIExporter {
             throw new Error('No valid confirmed structural events were detected in this historical window.');
         }
 
+        const representationCsv = AIExporter.exportMLR1RepresentationCSV(events, symbol, interval);
+        if (!representationCsv) {
+            throw new Error('Representation CSV generation failed.');
+        }
         params.onProgress?.('Auditing event chronology and outcomes...');
         const auditResult = DatasetAuditor.runCausalityAudit(
             events,
             dataStore,
             backboneResult.acceptedRows,
             intervalMs,
-            zigZag.cachedPivots
+            zigZag.cachedPivots,
+            representationCsv
         );
         const chronologyValid = auditResult.chronologyValid &&
             backboneResult.stats.outOfOrderCount === 0;
@@ -1120,9 +1137,8 @@ export class AIExporter {
 
         params.onProgress?.('Generating and reconciling CSV artifacts...');
         const continuousCsv = AIExporter.exportMLR1ContinuousObservationsCSV(backboneResult.acceptedRows);
-        const representationCsv = AIExporter.exportMLR1RepresentationCSV(events, symbol, interval);
         const eventCsv = AIExporter.exportMLR1CSV(events, symbol, interval);
-        if (!continuousCsv || !representationCsv || !eventCsv) {
+        if (!continuousCsv || !eventCsv) {
             throw new Error('CSV generation failed for one or more dataset tiers.');
         }
         const continuousFileName = `MLR1_${symbol}_${interval}_Continuous_Observations.csv`;
@@ -1223,7 +1239,8 @@ export class DatasetAuditor {
         dataStore: any,
         acceptedRows: readonly SourceBackboneAcceptedRow[],
         intervalMs: number,
-        cachedPivots: readonly StrictZigZagPivot[]
+        cachedPivots: readonly StrictZigZagPivot[],
+        representationCsv: string
     ): {
         passed: boolean;
         chronologyValid: boolean;
@@ -1256,6 +1273,10 @@ export class DatasetAuditor {
             console.error('DatasetAuditor Error: cachedPivots must be supplied as an array.');
             return failResult;
         }
+        if (typeof representationCsv !== 'string' || representationCsv.length === 0) {
+            console.error('DatasetAuditor Error: the exported representation CSV is mandatory.');
+            return failResult;
+        }
         if (dataStore.length !== acceptedRows.length) {
             console.error("❌ DatasetAuditor Error: dataStore length does not match acceptedRows length.");
             return failResult;
@@ -1271,6 +1292,7 @@ export class DatasetAuditor {
                 row.candle.low !== dataStore.data[base + 3] ||
                 row.candle.close !== dataStore.data[base + 4] ||
                 row.candle.volume !== dataStore.data[base + 5] ||
+                !validateCandleOhlcv(row.candle) ||
                 row.sourceTimestamp !== dataStore.data[base] ||
                 row.observation.timestamp !== dataStore.data[base] ||
                 row.observationTimestamp !== row.sourceTimestamp + intervalMs ||
@@ -1286,6 +1308,45 @@ export class DatasetAuditor {
                 return failResult;
             }
         }
+        let lastHighPrice: number | null = null;
+        let lastLowPrice: number | null = null;
+        for (let pivotIndex = 0; pivotIndex < cachedPivots.length; pivotIndex++) {
+            const pivot = cachedPivots[pivotIndex];
+            if (!pivot || typeof pivot !== 'object' ||
+                !Number.isSafeInteger(pivot.id) || pivot.id <= 0 ||
+                (pivot.type !== 'high' && pivot.type !== 'low') ||
+                !['HH', 'LH', 'HL', 'LL'].includes(pivot.label) ||
+                !Number.isFinite(pivot.price) || pivot.price <= 0 ||
+                !Number.isSafeInteger(pivot.barIndex) || pivot.barIndex < 0 ||
+                pivot.barIndex >= acceptedRows.length ||
+                !Number.isSafeInteger(pivot.confirmedBarIndex) ||
+                pivot.confirmedBarIndex < pivot.barIndex ||
+                pivot.confirmedBarIndex >= acceptedRows.length) {
+                console.error(`DatasetAuditor Error: cached pivot ${pivotIndex} is malformed.`);
+                return failResult;
+            }
+            const sourceRow = acceptedRows[pivot.barIndex];
+            const expectedPrice = pivot.type === 'high'
+                ? sourceRow.candle.high
+                : sourceRow.candle.low;
+            const previousSameTypePrice = pivot.type === 'high' ? lastHighPrice : lastLowPrice;
+            const expectedLabel = pivot.type === 'high'
+                ? (previousSameTypePrice === null || pivot.price >= previousSameTypePrice ? 'HH' : 'LH')
+                : (previousSameTypePrice === null || pivot.price <= previousSameTypePrice ? 'LL' : 'HL');
+            if (pivot.time !== sourceRow.sourceTimestamp || pivot.price !== expectedPrice ||
+                pivot.label !== expectedLabel ||
+                (pivotIndex > 0 && (
+                    pivot.id <= cachedPivots[pivotIndex - 1].id ||
+                    pivot.type === cachedPivots[pivotIndex - 1].type ||
+                    pivot.barIndex <= cachedPivots[pivotIndex - 1].barIndex ||
+                    pivot.confirmedBarIndex <= cachedPivots[pivotIndex - 1].confirmedBarIndex
+                ))) {
+                console.error(`DatasetAuditor Error: cached pivot ${pivotIndex} disagrees with source chronology.`);
+                return failResult;
+            }
+            if (pivot.type === 'high') lastHighPrice = pivot.price;
+            else lastLowPrice = pivot.price;
+        }
 
         let timeFailures = 0;
         let indexFailures = 0;
@@ -1298,6 +1359,29 @@ export class DatasetAuditor {
         let outcomeMathFailures = 0;
         let timeoutClassFailures = 0;
         let allowlistFailures = 0;
+        const forbiddenRepresentationFields = new Set(
+            TIER_C_QUARANTINE_LIST.map(field => field.toLowerCase())
+        );
+        if (MLR1_REPRESENTATION_FEATURE_ALLOWLIST.some(field =>
+            forbiddenRepresentationFields.has(field.toLowerCase())
+        )) {
+            allowlistFailures++;
+        }
+        const representationRecords = representationCsv.split('\r\n');
+        const representationHeaders = representationRecords[0]?.split(',') ?? [];
+        if (representationHeaders.length !== MLR1_REPRESENTATION_FEATURE_ALLOWLIST.length ||
+            representationHeaders.some((header, index) =>
+                header !== MLR1_REPRESENTATION_FEATURE_ALLOWLIST[index] ||
+                forbiddenRepresentationFields.has(header.toLowerCase())
+            ) ||
+            representationRecords.length !== events.length + 1) {
+            allowlistFailures++;
+        }
+        for (let rowIndex = 1; rowIndex < representationRecords.length; rowIndex++) {
+            if (representationRecords[rowIndex].split(',').length !== representationHeaders.length) {
+                allowlistFailures++;
+            }
+        }
         let provenanceFailures = 0;
         let candleExecutionFailures = 0;
 
@@ -1393,14 +1477,26 @@ export class DatasetAuditor {
                 pivot => pivot.barIndex === ev.pivot_bar_index &&
                     pivot.confirmedBarIndex === ev.confirmed_bar_index
             );
+            const currentTeacher = currentTeacherIndex >= 0
+                ? cachedPivots[currentTeacherIndex]
+                : undefined;
             const previousTeacher = currentTeacherIndex > 0
                 ? cachedPivots[currentTeacherIndex - 1]
                 : undefined;
-            if (!previousTeacher ||
+            if (!currentTeacher ||
+                currentTeacher.barIndex !== ev.pivot_bar_index ||
+                currentTeacher.confirmedBarIndex !== ev.confirmed_bar_index ||
+                currentTeacher.type !== ev.pivot_type ||
+                currentTeacher.label !== ev.pivot_label ||
+                currentTeacher.price !== ev.pivot_price ||
+                currentTeacher.time !== ev.pivot_time_ms ||
+                currentTeacher.confirmedBarIndex !== sourceConfirmedRow.observation.barIndex ||
+                !previousTeacher ||
                 previousTeacher.barIndex !== ev.previous_pivot_bar_index ||
                 previousTeacher.confirmedBarIndex !== ev.previous_pivot_confirmed_bar_index ||
                 previousTeacher.type !== ev.previous_pivot_type ||
-                Math.abs(previousTeacher.price - ev.previous_pivot_price) > 0.0001) {
+                previousTeacher.price !== ev.previous_pivot_price ||
+                previousTeacher.time !== sourcePreviousPivotRow.sourceTimestamp) {
                 provenanceFailures++;
             }
 
@@ -1454,6 +1550,9 @@ export class DatasetAuditor {
             if (ev.pivot_type === ev.previous_pivot_type) directionFailures++;
             if (!['up', 'down', 'flat'].includes(ev.completed_leg_direction)) directionFailures++;
             if (!['up', 'down'].includes(ev.zigzag_next_leg_orientation)) directionFailures++;
+            if (ev.zigzag_next_leg_orientation !== (ev.pivot_type === 'high' ? 'down' : 'up')) {
+                directionFailures++;
+            }
 
             // 6. Volume Two-Way Sentinel Checks
             if (ev.context_relative_volume_valid_fraction < 0 || ev.context_relative_volume_valid_fraction > 1.0) {
@@ -1512,7 +1611,20 @@ export class DatasetAuditor {
             const inputKeys = Object.keys(repInput);
             if (inputKeys.length !== MLR1_REPRESENTATION_FEATURE_ALLOWLIST.length) allowlistFailures++;
             for (let k = 0; k < inputKeys.length; k++) {
-                if (!ALLOWLIST_SET.has(inputKeys[k])) allowlistFailures++;
+                if (!ALLOWLIST_SET.has(inputKeys[k]) ||
+                    forbiddenRepresentationFields.has(inputKeys[k].toLowerCase())) {
+                    allowlistFailures++;
+                }
+            }
+            const serializedRepresentationRow = representationRecords[i + 1]?.split(',') ?? [];
+            for (let k = 0; k < MLR1_REPRESENTATION_FEATURE_ALLOWLIST.length; k++) {
+                const key = MLR1_REPRESENTATION_FEATURE_ALLOWLIST[k];
+                const value = repInput[key];
+                if ((typeof value !== 'string' && typeof value !== 'number') ||
+                    (typeof value === 'number' && !Number.isFinite(value)) ||
+                    serializedRepresentationRow[k] !== String(value)) {
+                    allowlistFailures++;
+                }
             }
 
             // Recompute each causal context feature from its authoritative accepted rows.

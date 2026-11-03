@@ -905,6 +905,7 @@ export function validateCandleOhlcv(candle: ML1Candle): boolean {
         Number.isFinite(candle.open) && Number.isFinite(candle.high) &&
         Number.isFinite(candle.low) && Number.isFinite(candle.close) &&
         Number.isFinite(candle.volume) &&
+        candle.open > 0 && candle.high > 0 && candle.low > 0 && candle.close > 0 &&
         candle.high >= candle.low &&
         candle.high >= Math.max(candle.open, candle.close) &&
         candle.low <= Math.min(candle.open, candle.close) &&

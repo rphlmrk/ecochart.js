@@ -4746,6 +4746,9 @@ export class WorkspaceManager {
                         !Number.isFinite(candle.volume)) {
                         throw new Error(`Non-finite or unsafe OHLCV value at candle index ${index}.`);
                     }
+                    if (candle.open <= 0 || candle.high <= 0 || candle.low <= 0 || candle.close <= 0) {
+                        throw new Error(`Non-positive OHLC price at candle index ${index}.`);
+                    }
                     if (candle.time % intervalMs !== 0) {
                         throw new Error(
                             `Timestamp ${candle.time} is not aligned to the ${chart.currentInterval} interval.`

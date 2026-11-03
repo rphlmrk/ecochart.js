@@ -92,6 +92,26 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
         );
     });
 
+    await runTest('Non-positive OHLC prices are rejected and reconciled as raw source rows', async () => {
+        const base = 1_800_000_000_000;
+        const raw = new Float64Array([base, -10, -9, -11, -10, 100]);
+        let caught: unknown;
+        try {
+            await AIExporter.buildExportArtifacts({
+                rawCandleBuffer: raw,
+                symbol: 'SOLUSDT',
+                interval: '1m',
+                intervalMs: 60000
+            });
+        } catch (error: unknown) {
+            caught = error;
+        }
+        assert(caught instanceof SourceIntegrityError, 'Non-positive prices must fail source validation');
+        assert(caught.sourceReport.stats.sourceRowCount === 1, 'Raw source count must include rejected prices');
+        assert(caught.sourceReport.stats.invalidOhlcvCount === 1, 'Rejected prices must increment invalid OHLCV');
+        assert(caught.sourceReport.stats.rejectedObservationCount === 1, 'Rejected prices must be accounted once');
+    });
+
     await runTest('Historical fetch applies inclusive bounds and excludes incomplete klines', async () => {
         const now = 1_800_000_000_000;
         const currentOpen = Math.floor(now / 60000) * 60000;
@@ -106,6 +126,51 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
         assert(result.requestUrl.searchParams.get('endTime') === String(end), 'endTime must be inclusive and exact');
         assert(result.buffer.length === 6, 'The incomplete kline must not enter the returned buffer');
         assert(result.buffer[0] === start, 'The included candle must retain the requested start boundary');
+    });
+
+    await runTest('Seven-day fetch uses inclusive open-time bounds and returns exactly 10,080 rows when complete', async () => {
+        const originalNow = Date.now;
+        const originalFetch = globalThis.fetch;
+        const now = 1_800_000_000_000;
+        const intervalMs = 60000;
+        const expectedCount = 7 * 24 * 60;
+        const expectedLastOpen = Math.floor(now / intervalMs) * intervalMs - intervalMs;
+        const expectedFirstOpen = expectedLastOpen - (expectedCount - 1) * intervalMs;
+        const requests: URL[] = [];
+        Date.now = () => now;
+        globalThis.fetch = (async input => {
+            const url = new URL(String(input));
+            requests.push(url);
+            const requestedStart = Number(url.searchParams.get('startTime'));
+            const requestedEnd = Number(url.searchParams.get('endTime'));
+            let openTime = Math.ceil(requestedStart / intervalMs) * intervalMs;
+            const klines: unknown[][] = [];
+            while (openTime <= requestedEnd && klines.length < 1000) {
+                klines.push(mockKline(openTime, openTime + intervalMs - 1));
+                openTime += intervalMs;
+            }
+            return new Response(JSON.stringify(klines), { status: 200 });
+        }) as typeof fetch;
+        try {
+            const buffer = await BackgroundDataMiner.mineHistoricalCandles(
+                'SOLUSDT',
+                '1m',
+                expectedCount * intervalMs,
+                () => {},
+                expectedFirstOpen,
+                expectedLastOpen
+            );
+            assert(buffer.length / 6 === expectedCount, 'Complete inclusive seven-day range must contain 10,080 candles');
+            assert(buffer[0] === expectedFirstOpen, 'First open timestamp must match the requested boundary');
+            assert(buffer[buffer.length - 6] === expectedLastOpen, 'Last open timestamp must match the requested boundary');
+            assert(requests.length === Math.ceil(expectedCount / 1000), 'Fetch must paginate through the complete range');
+            assert(requests[0].searchParams.get('startTime') === String(expectedFirstOpen), 'First request start must be inclusive');
+            assert(requests.every(url => url.searchParams.get('endTime') === String(expectedLastOpen)),
+                'Every page must preserve the inclusive end bound');
+        } finally {
+            Date.now = originalNow;
+            globalThis.fetch = originalFetch;
+        }
     });
 
     await runTest('Historical fetch preserves duplicates for source-quality accounting', async () => {
@@ -206,6 +271,60 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
             duplicateNameThrew = true;
         }
         assert(duplicateNameThrew, 'Duplicate archive entry names must be rejected before ZIP generation');
+    });
+
+    await runTest('500-candle production export is deterministic with a mature CBC outcome', async () => {
+        const candleCount = 500;
+        const intervalMs = 60000;
+        const start = 1_700_000_000_000;
+        const rawCandleBuffer = new Float64Array(candleCount * 6);
+        for (let index = 0; index < candleCount; index++) {
+            const close = index % 8 < 4
+                ? 100 + (index % 4)
+                : 104 - (index % 4);
+            const open = index % 2 === 1 ? close - 0.5 : close + 0.5;
+            const high = Math.max(open, close) + 1;
+            const low = Math.min(open, close) - 1;
+            rawCandleBuffer.set(
+                [start + index * intervalMs, open, high, low, close, 100 + index % 7],
+                index * 6
+            );
+        }
+        const fixedBuildTimestamp = 1_700_000_000_000;
+        const build = () => AIExporter.buildExportArtifacts({
+            rawCandleBuffer,
+            symbol: 'SOLUSDT',
+            interval: '1m',
+            intervalMs,
+            buildTimestamp: fixedBuildTimestamp
+        });
+        const first = await build();
+        const second = await build();
+        assert(first.events.length > 0, 'Deterministic source must produce confirmed CBC events');
+        assert(first.events.some(event =>
+            event.entry_bar_index + 60 - 1 < first.backboneResult.acceptedRows.length
+        ), 'At least one confirmed event must have a complete 60-bar outcome horizon');
+        assert(first.manifest.sourceRowCount === candleCount, 'Manifest raw count must match the source buffer');
+        assert(first.manifest.auditResults.passed, 'Both production audits must pass');
+        assert(
+            JSON.stringify(first.events.map(event => event.event_id)) ===
+                JSON.stringify(second.events.map(event => event.event_id)),
+            'Event identities must be deterministic'
+        );
+        assert(first.events.length === second.events.length, 'Event counts must be deterministic');
+        assert(first.continuousCsv === second.continuousCsv, 'Continuous CSV bytes must be deterministic');
+        assert(first.representationCsv === second.representationCsv, 'Representation CSV bytes must be deterministic');
+        assert(first.eventCsv === second.eventCsv, 'Event CSV bytes must be deterministic');
+        assert(JSON.stringify(first.manifest) === JSON.stringify(second.manifest), 'Manifest contents must be deterministic');
+        assert(JSON.stringify(first.exportAccounting) === JSON.stringify(second.exportAccounting),
+            'Export accounting must be deterministic');
+        assert(JSON.stringify(first.auditResult) === JSON.stringify(second.auditResult),
+            'Audit results must be deterministic');
+        const firstArchive = await AIExporter.createVerifiedDatasetArchive(first);
+        const secondArchive = await AIExporter.createVerifiedDatasetArchive(second);
+        assert(firstArchive.length === secondArchive.length &&
+            firstArchive.every((byte, index) => byte === secondArchive[index]),
+        'ZIP physical artifact bytes must be deterministic');
     });
 
     await runTest('Live package UI exposes only the supported ZIP package', () => {
