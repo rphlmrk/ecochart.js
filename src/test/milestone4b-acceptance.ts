@@ -182,6 +182,28 @@ export function runPhase4BTests(): boolean {
             }
             assert(threw, `Invalid or contradictory slot context must throw: ${JSON.stringify(invalidContext)}`);
         }
+
+        for (const badContext of [null, 'invalid', []]) {
+            let errorMessage = '';
+            try {
+                processSourceObservation(
+                    stats,
+                    1700000000000,
+                    quality,
+                    true,
+                    strictPolicy,
+                    60000,
+                    undefined,
+                    badContext as unknown as SlotIntegrityContext
+                );
+            } catch (error: unknown) {
+                errorMessage = error instanceof Error ? error.message : String(error);
+            }
+            assert(
+                errorMessage.includes('slotContext must be a valid SlotIntegrityContext object'),
+                `Malformed slotContext (${JSON.stringify(badContext)}) must throw the expected runtime contract error`
+            );
+        }
     });
 
     runTest('5. Native-clean duplicate detected and rejected', () => {

@@ -338,10 +338,10 @@ export function processSourceObservation(
             typeof knownUniqueTracking.isCandidateUniqueAccepted !== 'boolean')) {
         throw new Error('Runtime Contract Error: knownUniqueTracking fields must be booleans.');
     }
-    if (slotContext !== undefined && (typeof slotContext !== 'object' || slotContext === null)) {
-        throw new Error('Runtime Contract Error: slotContext must be an object when provided.');
-    }
-    if (slotContext !== undefined && typeof slotContext === 'object' && slotContext !== null) {
+    if (slotContext !== undefined) {
+        if (typeof slotContext !== 'object' || slotContext === null || Array.isArray(slotContext)) {
+            throw new Error('Runtime Contract Error: slotContext must be a valid SlotIntegrityContext object');
+        }
         if (slotContext.gridAnchor !== undefined &&
             (!Number.isSafeInteger(slotContext.gridAnchor) || slotContext.gridAnchor < 0)) {
             throw new Error(
