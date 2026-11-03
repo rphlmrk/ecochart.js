@@ -71,7 +71,13 @@ export interface UniqueTimestampTracking {
     readonly isCandidateUniqueAccepted: boolean;
 }
 
+/**
+ * Contextual slot integrity information supplied by the ingestion builder.
+ * Direct API calls fall back to anchoring on prevStats.firstSourceTimestamp.
+ * Pass an explicit gridAnchor to preserve the timeline across off-grid arrivals.
+ */
 export interface SlotIntegrityContext {
+    readonly gridAnchor?: number;
     readonly isOnGrid?: boolean;
     readonly isWithinRange?: boolean;
 }
@@ -332,16 +338,38 @@ export function processSourceObservation(
             typeof knownUniqueTracking.isCandidateUniqueAccepted !== 'boolean')) {
         throw new Error('Runtime Contract Error: knownUniqueTracking fields must be booleans.');
     }
-    if (slotContext !== undefined &&
-        (!slotContext || typeof slotContext !== 'object' ||
-            (slotContext.isOnGrid !== undefined && typeof slotContext.isOnGrid !== 'boolean') ||
-            (slotContext.isWithinRange !== undefined && typeof slotContext.isWithinRange !== 'boolean'))) {
-        throw new Error('Runtime Contract Error: slotContext fields must be booleans when provided.');
+    if (slotContext !== undefined && (typeof slotContext !== 'object' || slotContext === null)) {
+        throw new Error('Runtime Contract Error: slotContext must be an object when provided.');
+    }
+    if (slotContext !== undefined && typeof slotContext === 'object' && slotContext !== null) {
+        if (slotContext.gridAnchor !== undefined &&
+            (!Number.isSafeInteger(slotContext.gridAnchor) || slotContext.gridAnchor < 0)) {
+            throw new Error(
+                `Runtime Contract Error: slotContext.gridAnchor must be a non-negative safe integer, got ${slotContext.gridAnchor}`
+            );
+        }
+        if (slotContext.isOnGrid !== undefined && typeof slotContext.isOnGrid !== 'boolean') {
+            throw new Error(`Runtime Contract Error: slotContext.isOnGrid must be a boolean, got ${typeof slotContext.isOnGrid}`);
+        }
+        if (slotContext.isWithinRange !== undefined && typeof slotContext.isWithinRange !== 'boolean') {
+            throw new Error(`Runtime Contract Error: slotContext.isWithinRange must be a boolean, got ${typeof slotContext.isWithinRange}`);
+        }
+        if (slotContext.gridAnchor !== undefined && slotContext.isOnGrid !== undefined) {
+            const calculatedOnGrid = (sourceTimestamp - slotContext.gridAnchor) % expectedIntervalMs === 0;
+            if (calculatedOnGrid !== slotContext.isOnGrid) {
+                throw new Error(
+                    `Runtime Contract Error: Contradictory slotContext: isOnGrid (${slotContext.isOnGrid}) ` +
+                    `does not match gridAnchor calculation (${calculatedOnGrid})`
+                );
+            }
+        }
     }
 
     const isOnGrid = slotContext?.isOnGrid ??
-        (prevStats.firstSourceTimestamp === null ||
-            (sourceTimestamp - prevStats.firstSourceTimestamp) % expectedIntervalMs === 0);
+        (slotContext?.gridAnchor !== undefined
+            ? (sourceTimestamp - slotContext.gridAnchor) % expectedIntervalMs === 0
+            : (prevStats.firstSourceTimestamp === null ||
+                (sourceTimestamp - prevStats.firstSourceTimestamp) % expectedIntervalMs === 0));
     const isWithinRange = slotContext?.isWithinRange ?? true;
     const isValidExpectedSlot = isOnGrid && isWithinRange;
 
@@ -350,7 +378,7 @@ export function processSourceObservation(
     let internalUnexpectedInterval = false;
     let missingIntervalAddition = 0;
 
-    if (prevStats.lastSourceTimestamp !== null) {
+    if (isOnGrid && prevStats.lastSourceTimestamp !== null) {
         const deltaMs = sourceTimestamp - prevStats.lastSourceTimestamp;
         if (deltaMs === 0) {
             internalDuplicate = true;
@@ -371,18 +399,21 @@ export function processSourceObservation(
         ...dataQuality,
         isDuplicate: dataQuality.isDuplicate || internalDuplicate,
         isOutOfOrder: dataQuality.isOutOfOrder || internalOutOfOrder,
-        isUnexpectedInterval: dataQuality.isUnexpectedInterval || internalUnexpectedInterval
+        isUnexpectedInterval: isOnGrid && (dataQuality.isUnexpectedInterval || internalUnexpectedInterval)
     });
     const acceptance = evaluateAcceptance(combinedQuality, policy, isValidOhlcv, {
         isOnGrid,
         isWithinRange
     });
-    const nextWatermark = prevStats.lastSourceTimestamp === null || sourceTimestamp > prevStats.lastSourceTimestamp
+    const nextWatermark = isValidExpectedSlot &&
+        (prevStats.lastSourceTimestamp === null || sourceTimestamp > prevStats.lastSourceTimestamp)
         ? sourceTimestamp
         : prevStats.lastSourceTimestamp;
-    const nextFirstTimestamp = prevStats.firstSourceTimestamp === null
-        ? sourceTimestamp
-        : Math.min(prevStats.firstSourceTimestamp, sourceTimestamp);
+    const nextFirstTimestamp = isValidExpectedSlot
+        ? (prevStats.firstSourceTimestamp === null
+            ? sourceTimestamp
+            : Math.min(prevStats.firstSourceTimestamp, sourceTimestamp))
+        : prevStats.firstSourceTimestamp;
     const isUniqueSource = knownUniqueTracking !== undefined
         ? knownUniqueTracking.isUniqueSource && isValidExpectedSlot
         : !combinedQuality.isDuplicate && isValidExpectedSlot;
@@ -579,8 +610,23 @@ export function buildSourceBackbone(
     expectedIntervalMs: number,
     dateRange?: DatasetDateRange
 ): SourceBackboneBuildResult {
+    if (!Number.isSafeInteger(expectedIntervalMs) || expectedIntervalMs <= 0) {
+        throw new Error(`buildSourceBackbone Error: expectedIntervalMs must be a positive safe integer, got ${expectedIntervalMs}`);
+    }
+    if (typeof symbol !== 'string' || symbol.trim() === '') {
+        throw new Error('buildSourceBackbone Error: symbol must be a non-empty string');
+    }
+    if (typeof timeframe !== 'string' || timeframe.trim() === '') {
+        throw new Error('buildSourceBackbone Error: timeframe must be a non-empty string');
+    }
+    if (!Number.isSafeInteger(datasetVersion) || datasetVersion < 1) {
+        throw new Error(`buildSourceBackbone Error: datasetVersion must be a positive safe integer, got ${datasetVersion}`);
+    }
+    if (!policy || typeof policy !== 'object') {
+        throw new Error('buildSourceBackbone Error: policy must be a valid IntegrityPolicy object');
+    }
     if (!Array.isArray(stream)) {
-        throw new Error('Runtime Contract Error: stream must be an array.');
+        throw new Error('buildSourceBackbone Error: stream must be an array.');
     }
     if (dateRange !== undefined) {
         if (!Number.isSafeInteger(dateRange.startTimestamp) || dateRange.startTimestamp < 0 ||
@@ -598,6 +644,10 @@ export function buildSourceBackbone(
                 `buildSourceBackbone Error: dateRange span (${rangeSpan}) must be an exact multiple of expectedIntervalMs (${expectedIntervalMs}).`
             );
         }
+        const expectedSlotCount = rangeSpan / expectedIntervalMs + 1;
+        if (!Number.isSafeInteger(expectedSlotCount)) {
+            throw new Error('buildSourceBackbone Error: expected timeline slot count exceeds safe integer range');
+        }
     }
     for (let index = 0; index < stream.length; index++) {
         const item = stream[index];
@@ -614,19 +664,7 @@ export function buildSourceBackbone(
             throw new Error(`buildSourceBackbone Error: item.isValidOhlcv at index ${index} must be a boolean when defined.`);
         }
     }
-    if (typeof timeframe !== 'string' || timeframe.trim().length === 0) {
-        throw new Error('Runtime Contract Error: timeframe must be a non-empty string.');
-    }
-    if (typeof symbol !== 'string' || symbol.trim().length === 0) {
-        throw new Error('Runtime Contract Error: symbol must be a non-empty string.');
-    }
-    if (!Number.isSafeInteger(datasetVersion) || datasetVersion < 1) {
-        throw new Error('Runtime Contract Error: datasetVersion must be a positive safe integer.');
-    }
     validatePolicy(policy);
-    if (!Number.isSafeInteger(expectedIntervalMs) || expectedIntervalMs <= 0) {
-        throw new Error('Runtime Contract Error: expectedIntervalMs must be a positive safe integer.');
-    }
     calculateObservationTimestamp(0, expectedIntervalMs);
     if (dateRange !== undefined &&
         (!dateRange || !Number.isSafeInteger(dateRange.startTimestamp) || dateRange.startTimestamp < 0 ||
@@ -674,6 +712,7 @@ export function buildSourceBackbone(
                 isCandidateUniqueAccepted
             },
             {
+                gridAnchor,
                 isOnGrid,
                 isWithinRange
             }

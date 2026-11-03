@@ -9,6 +9,7 @@ import {
     processSourceObservation,
     createDatasetManifest,
     validateCandleOhlcv,
+    type SlotIntegrityContext,
     type SourceBackboneInputItem
 } from '../indicators/mlr1/dataset/ObservationBackbone';
 import type { ML1Candle, ML1Observation } from '../indicators/mlr1/ML1FeatureTypes';
@@ -158,6 +159,29 @@ export function runPhase4BTests(): boolean {
             threw = true;
         }
         assert(threw, 'Corrupted source accounting must throw');
+
+        for (const invalidContext of [
+            { isOnGrid: 'yes' },
+            { isWithinRange: 1 },
+            { gridAnchor: 100000, isOnGrid: false }
+        ]) {
+            threw = false;
+            try {
+                processSourceObservation(
+                    stats,
+                    100000,
+                    quality,
+                    true,
+                    strictPolicy,
+                    60000,
+                    undefined,
+                    invalidContext as unknown as SlotIntegrityContext
+                );
+            } catch {
+                threw = true;
+            }
+            assert(threw, `Invalid or contradictory slot context must throw: ${JSON.stringify(invalidContext)}`);
+        }
     });
 
     runTest('5. Native-clean duplicate detected and rejected', () => {
@@ -544,7 +568,10 @@ export function runPhase4BTests(): boolean {
     runTest('16. Off-grid record preserves the build grid anchor', () => {
         const stream: SourceBackboneInputItem[] = [
             { candle: createCandle(100000), observation: createMockObservation(100000, qualityFeatures()) },
-            { candle: createCandle(100030), observation: createMockObservation(100030, qualityFeatures()) },
+            {
+                candle: createCandle(100030),
+                observation: createMockObservation(100030, qualityFeatures({ IsUnexpectedInterval: 1 }))
+            },
             { candle: createCandle(160000), observation: createMockObservation(160000, qualityFeatures()) }
         ];
         const result = buildSourceBackbone(stream, 'SOLUSDT', '1m', 1, strictPolicy, 60000);
@@ -555,6 +582,32 @@ export function runPhase4BTests(): boolean {
         assert(result.acceptedRows[0].sourceTimestamp === 100000, 'First accepted timestamp mismatch');
         assert(result.acceptedRows[1].sourceTimestamp === 160000, 'Later on-grid timestamp must retain original anchor');
         assert(result.stats.offGridTimestampCount === 1, 'Exactly one off-grid timestamp should be counted');
+        assert(result.stats.unexpectedIntervalCount === 0, 'Off-grid telemetry and later on-grid delta must not count as unexpected');
+    });
+
+    runTest('17. Out-of-range on-grid record cannot shift timestamp boundaries', () => {
+        const dateRange = { startTimestamp: 100000, endTimestamp: 280000 };
+        const stream: SourceBackboneInputItem[] = [
+            { candle: createCandle(100000), observation: createMockObservation(100000, qualityFeatures()) },
+            { candle: createCandle(40000), observation: createMockObservation(40000, qualityFeatures()) },
+            { candle: createCandle(160000), observation: createMockObservation(160000, qualityFeatures()) }
+        ];
+        const result = buildSourceBackbone(
+            stream, 'SOLUSDT', '1m', 1, strictPolicy, 60000, dateRange
+        );
+
+        assert(result.acceptedRows.length === 2, 'Both in-range rows should be accepted');
+        assert(result.rejectedRows.length === 1, 'Out-of-range row should be rejected');
+        assert(
+            result.rejectedRows[0].reasons.includes('OUT_OF_RANGE_TIMESTAMP'),
+            'Out-of-range row must include the out-of-range rejection reason'
+        );
+        assert(result.rejectedRows[0].reasons.includes('OUT_OF_ORDER'), 'Out-of-range row must also be rejected as out of order');
+        assert(result.stats.firstSourceTimestamp === 100000, 'firstSourceTimestamp must NOT move backwards to out-of-range 40000');
+        assert(result.stats.lastSourceTimestamp === 160000, 'Last valid row should advance the watermark');
+        assert(result.stats.outOfRangeTimestampCount === 1, 'Exactly one out-of-range timestamp should be counted');
+        assert(result.stats.uniqueSourceTimestampsCount === 2, 'Out-of-range record must not increment unique source count');
+        assert(result.stats.uniqueAcceptedTimestampsCount === 2, 'Exactly two unique timestamps should be accepted');
     });
 
     console.log('\n=======================================');
@@ -564,5 +617,5 @@ export function runPhase4BTests(): boolean {
     console.log(`   ↳ Tests Failed:    ${failed}`);
     console.log('=======================================\n');
 
-    return failed === 0 && passed === 16;
+    return failed === 0 && passed === 17;
 }

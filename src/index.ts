@@ -4700,15 +4700,15 @@ export class WorkspaceManager {
 
                 // Milestone 4B (Source Integrity & Observation Backbone)
                 if (!runPhase4BTests()) throw new Error('Milestone 4B suite failed');
-                console.log('✅ Milestone 4B: Passed (16/16 Source Integrity Tests)');
+                console.log('✅ Milestone 4B: Passed (17/17 Source Integrity Tests)');
 
                 console.log('\n======================================================');
                 console.log('🏆 ALL MILESTONES 1 TO 4 ACCEPTANCE GATES VERIFIED');
                 console.log('   ↳ Milestone 1:   6/6 Tests Passed');
                 console.log('   ↳ Milestone 2:  73/73 Tests Passed + Quantitative Invariant Audit');
                 console.log('   ↳ Milestone 3:  77/77 MTF Integration Tests Passed');
-                console.log('   ↳ Milestone 4B: 16/16 Source Integrity Tests Passed');
-                console.log('   ↳ Grand Total: 172/172 Tests Verified (100%)');
+                console.log('   ↳ Milestone 4B: 17/17 Source Integrity Tests Passed');
+                console.log('   ↳ Grand Total: 173/173 Tests Verified (100%)');
                 console.log('======================================================\n');
 
                 if (loadingDetail) {
