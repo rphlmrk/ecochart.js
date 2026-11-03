@@ -22,6 +22,7 @@ import {
     MLR1_REPRESENTATION_FEATURE_ALLOWLIST
 } from '../data/AIExporter';
 import { TIER_C_QUARANTINE_LIST } from '../indicators/mlr1/dataset/DatasetSchema';
+import { StrictCBCZigZagIndicator } from '../indicators/plugins/StrictCBCZigZagIndicator';
 import type { ML1Candle, ML1Observation } from '../indicators/mlr1/ML1FeatureTypes';
 import type { DatasetConfig, IntegrityPolicy } from '../indicators/mlr1/dataset/DatasetConfig';
 
@@ -819,13 +820,25 @@ export function runPhase4BTests(): boolean {
     });
 
     runTest('15d. Exporter validates pivot provenance before event eligibility', () => {
-        const candleCount = 70;
+        const candleCount = 120;
         const startTime = 1700000000000;
         const source = buildSourceBackbone(
             Array.from({ length: candleCount }, (_, index) => {
                 const time = startTime + index * 60000;
+                const close = index % 8 < 4
+                    ? 100 + (index % 4)
+                    : 104 - (index % 4);
+                const open = index % 2 === 1 ? close - 0.5 : close + 0.5;
+                const candle = {
+                    time,
+                    open,
+                    high: Math.max(open, close) + 1,
+                    low: Math.min(open, close) - 1,
+                    close,
+                    volume: 100 + index % 7
+                };
                 return {
-                    candle: createCandle(time),
+                    candle,
                     observation: createMockObservation(
                         time,
                         qualityFeatures({ ATR_14: 1, RelativeVolume_20: 1 })
@@ -863,24 +876,23 @@ export function runPhase4BTests(): boolean {
             ], base);
         });
         const dataStore = { data, length: rows.length };
-        const pivots = [
-            {
-                id: 1, barIndex: 1, time: rows[1].sourceTimestamp, price: rows[1].candle.low,
-                type: 'low' as const, label: 'LL' as const, confirmedBarIndex: 2
-            },
-            {
-                id: 2, barIndex: 4, time: rows[4].sourceTimestamp, price: rows[4].candle.high,
-                type: 'high' as const, label: 'HH' as const, confirmedBarIndex: 5
-            }
-        ];
+        const pivots = StrictCBCZigZagIndicator.extractPointInTimeTeacher(dataStore).pivots;
         const events = AIExporter.buildMLR1Dataset(dataStore, rows, pivots, 'SOLUSDT', '1m', 60000);
-        assert(events.length === 1, 'A complete, eligible alternating pivot pair should produce one event');
-        assert(events[0].previous_pivot_bar_index === 1, 'Event should retain the preceding pivot bar index');
-        assert(events[0].previous_pivot_confirmed_bar_index === 2,
-            'Event should retain the preceding pivot confirmation index');
-        assert(events[0].previous_pivot_confirmation_time_ms === rows[2].sourceTimestamp,
-            'Event should retain the preceding pivot confirmation timestamp');
-        assert(events[0].previous_pivot_type === 'low', 'Event should retain the preceding pivot type');
+        assert(events.length > 0, 'Native confirmed pivots with complete horizons should produce eligible events');
+        const firstEventTeacherIndex = pivots.findIndex(pivot =>
+            pivot.barIndex === events[0].pivot_bar_index &&
+            pivot.confirmedBarIndex === events[0].confirmed_bar_index
+        );
+        assert(firstEventTeacherIndex > 0, 'Eligible event must link to its preceding native teacher pivot');
+        assert(events[0].previous_pivot_bar_index === pivots[firstEventTeacherIndex - 1].barIndex,
+            'Event should retain the preceding native pivot bar index');
+        assert(events[0].previous_pivot_confirmed_bar_index === pivots[firstEventTeacherIndex - 1].confirmedBarIndex,
+            'Event should retain the preceding native pivot confirmation index');
+        assert(events[0].previous_pivot_confirmation_time_ms ===
+            rows[pivots[firstEventTeacherIndex - 1].confirmedBarIndex].sourceTimestamp,
+        'Event should retain the preceding pivot confirmation timestamp');
+        assert(events[0].previous_pivot_type === pivots[firstEventTeacherIndex - 1].type,
+            'Event should retain the preceding native pivot type');
         const representationCsv = AIExporter.exportMLR1RepresentationCSV(events, 'SOLUSDT', '1m');
         assert(
             representationCsv !== null &&
@@ -945,15 +957,18 @@ export function runPhase4BTests(): boolean {
             ).inputOutcomeSeparationValid,
             'Auditor must reject Tier C fields in the actual representation CSV'
         );
+        const highEvent = events.find(event => event.pivot_type === 'high');
+        assert(highEvent !== undefined, 'Native fixture must contain an eligible HIGH event');
+        const forgedHighOrientation = { ...highEvent, zigzag_next_leg_orientation: 'up' as const };
         assert(
             !DatasetAuditor.runCausalityAudit(
-                [{ ...events[0], zigzag_next_leg_orientation: 'up' }],
+                [forgedHighOrientation],
                 dataStore,
                 rows,
                 60000,
                 pivots,
                 AIExporter.exportMLR1RepresentationCSV(
-                    [{ ...events[0], zigzag_next_leg_orientation: 'up' }],
+                    [forgedHighOrientation],
                     'SOLUSDT',
                     '1m'
                 ) ?? ''

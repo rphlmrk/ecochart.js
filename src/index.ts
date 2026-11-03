@@ -4929,6 +4929,7 @@ export class WorkspaceManager {
             const rangeKey = activeRange?.dataset.val || '1m';
 
             let durationMs = BackgroundDataMiner.rangeToMs(rangeKey);
+            const intervalMs = TimeframeResampler.parseMs(exportInterval);
             let customStartMs: number | undefined;
             let customEndMs: number | undefined;
 
@@ -4946,11 +4947,16 @@ export class WorkspaceManager {
                 }
                 durationMs = customEndMs - customStartMs;
             }
-
-            const targetRR = (document.getElementById('ai-export-rr') as HTMLSelectElement)?.value || "2.0";
-            const forwardHorizon = (document.getElementById('ai-export-horizon') as HTMLInputElement)?.value || "30";
-            void targetRR;
-            void forwardHorizon;
+            if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
+                alert(`Unsupported chart interval for export: ${exportInterval}`);
+                return;
+            }
+            const expectedCandleCount = Math.max(1, Math.ceil(durationMs / intervalMs));
+            const expectedEndOpenTimestamp = Math.floor(Date.now() / intervalMs) * intervalMs - intervalMs;
+            const expectedStartOpenTimestamp =
+                expectedEndOpenTimestamp - (expectedCandleCount - 1) * intervalMs;
+            const fetchStartTimestamp = customStartMs ?? expectedStartOpenTimestamp;
+            const fetchEndTimestamp = customEndMs ?? expectedEndOpenTimestamp;
 
             // 1. NON-BLOCKING: Close modal immediately so the chart is 100% usable!
             modalAiExport?.close();
@@ -4978,8 +4984,8 @@ export class WorkspaceManager {
                         if (progressEta) progressEta.textContent = `ETA: ${p.etaSeconds}s`;
                         if (loadingDetail) loadingDetail.textContent = `${p.candlesFetched.toLocaleString()} candles fetched (${p.statusText})`;
                     },
-                    customStartMs,
-                    customEndMs
+                    fetchStartTimestamp,
+                    fetchEndTimestamp
                 );
 
                 if (rawCandleBuffer.length === 0) {
@@ -4988,15 +4994,19 @@ export class WorkspaceManager {
                     return;
                 }
 
-                const intervalMs = TimeframeResampler.parseMs(exportInterval);
-                if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
-                    throw new Error(`Unsupported chart interval for export: ${exportInterval}`);
-                }
                 if (customStartMs !== undefined && customEndMs !== undefined) {
                     AIExporter.assertCandleBufferWithinBounds(rawCandleBuffer, {
                         startTimestamp: customStartMs,
                         endTimestamp: customEndMs
                     });
+                } else {
+                    AIExporter.assertCandleBufferMatchesExactRange(
+                        rawCandleBuffer,
+                        intervalMs,
+                        expectedStartOpenTimestamp,
+                        expectedEndOpenTimestamp,
+                        expectedCandleCount
+                    );
                 }
                 const chartZigZag = chart.indicatorManager.activeIndicators.find(
                     indicator => indicator instanceof StrictCBCZigZagIndicator

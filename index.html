@@ -2339,53 +2339,16 @@
         </div>
       </div>
 
-      <!-- Variables -->
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-        <div>
-          <div style="font-size: 10px; font-weight: 700; color: #787B86; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">Target Reward : Risk</div>
-          <select id="ai-export-rr" style="width: 100%; background: var(--chart-bg, #131722); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #363A45); border-radius: 4px; padding: 8px 10px; font-size: 12px; font-family: inherit; outline: none; cursor: pointer;">
-            <option value="1.0">1.0 : 1</option>
-            <option value="1.5">1.5 : 1</option>
-            <option value="2.0" selected>2.0 : 1 (Recommended)</option>
-            <option value="3.0">3.0 : 1</option>
-          </select>
-        </div>
-        <div>
-          <div style="font-size: 10px; font-weight: 700; color: #787B86; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">Forward Horizon (Bars)</div>
-          <input type="number" id="ai-export-horizon" value="30" min="5" max="100" style="width: 100%; box-sizing: border-box; background: var(--chart-bg, #131722); color: var(--chart-text, #D1D4DC); border: 1px solid var(--chart-grid, #363A45); border-radius: 4px; padding: 8px 10px; font-size: 12px; font-family: inherit; outline: none;">
-        </div>
-      </div>
-
       <!-- Info Box -->
       <div style="background: rgba(120, 123, 134, 0.1); border: 1px solid var(--chart-grid, #2A2E39); border-radius: 6px; padding: 12px; font-size: 11px; line-height: 1.6; color: #A0A5B5;">
-        <div style="font-weight: 700; color: var(--chart-text, #D1D4DC); margin-bottom: 4px;">Included Indicator & Signal Columns:</div>
-        <div style="display: flex; align-items: flex-start; gap: 6px;">
-          <span style="color: #00E5FF; font-weight: 900;">•</span>
-          <div><strong style="color: #00E5FF;">EMA 10 / SMA 30:</strong> Values, spread difference, and cross events (+1/-1)</div>
-        </div>
-        <div style="display: flex; align-items: flex-start; gap: 6px;">
-          <span style="color: #EF5350; font-weight: 900;">•</span>
-          <div><strong style="color: #EF5350;">Market Structure Pullback Zones:</strong> In-zone status, zone ceiling & floor</div>
-        </div>
-        <div style="display: flex; align-items: flex-start; gap: 6px;">
-          <span style="color: #2962FF; font-weight: 900;">•</span>
-          <div><strong style="color: #2962FF;">Strict CBC Pullback Zones:</strong> Trend (+1/-1), Flip triggers, Anchor high/low</div>
-        </div>
-        <div style="display: flex; align-items: flex-start; gap: 6px;">
-          <span style="color: #FF9800; font-weight: 900;">•</span>
-          <div><strong style="color: #FF9800;">Range & Chop Detection:</strong> 10-bar signal cluster density counter</div>
-        </div>
-        <div style="display: flex; align-items: flex-start; gap: 6px;">
-          <span style="color: #D1D4DC; font-weight: 900;">•</span>
-          <div><strong style="color: #D1D4DC;">Forward Outcomes:</strong> Target hit (1 = Win), Stop hit (0 = Loss), Drawdown %</div>
-        </div>
+        <div style="font-weight: 700; color: var(--chart-text, #D1D4DC); margin-bottom: 4px;">Frozen ML-R1 export configuration</div>
+        <div>One accepted source candle produces one causal M1 observation. Confirmed Strict CBC events are linked to separate outcome labels.</div>
+        <div style="margin-top: 6px;">Execution labels use next-open entry, a 1.5 ATR stop, 2R target, 60-bar maximum horizon, and 0.05R transaction cost. These parameters are fixed by the dataset contract.</div>
       </div>
 
       <!-- Footer Buttons -->
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 4px;">
-        <button id="btn-ai-export-audit" type="button" style="background: rgba(41, 98, 255, 0.15); border: 1px solid var(--chart-accent, #2962FF); color: var(--chart-accent, #2962FF); padding: 8px 14px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
-          <span>🧪</span><span>Run Milestones 1–4 Tests</span>
-        </button>
+        <div></div>
         <div style="display: flex; gap: 10px;">
           <button id="btn-ai-export-cancel" style="background: transparent; border: 1px solid var(--chart-grid, #434651); color: var(--chart-text, #D1D4DC); padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; transition: background 0.15s;">Cancel</button>
           <button id="btn-ai-export-start" style="background: #EF5350; color: white; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 6px rgba(239, 83, 80, 0.4); transition: transform 0.1s ease;">Download ZIP Dataset Package</button>

@@ -14,6 +14,16 @@ import {
     stepML1Features,
     validateML1Config
 } from '../indicators/mlr1/ML1FeatureEngine';
+import { MTF_CONFIG_B, validateMTFConfig } from '../indicators/mlr1/mtf/MTFConfig';
+import {
+    createInitialIntegratedMTFState,
+    stepIntegratedMTFPipeline
+} from '../indicators/mlr1/mtf/MTFEngine';
+import { alignMTFContext } from '../indicators/mlr1/mtf/MTFAligner';
+import type {
+    HTFIncompleteDiagnostic,
+    MTFContext
+} from '../indicators/mlr1/mtf/MTFTypes';
 import {
     accountRawSourceRows,
     buildSourceBackbone,
@@ -29,6 +39,12 @@ import {
 
 export const MLR1_OUTCOME_CONFIG_VERSION = 'MLR1_v2';
 const MLR1_EVENT_ID_VERSION = 'v2_ATR14_SL1.5_TP2_HZ60';
+const MLR1_MTF_CONTEXT_VERSION = 'M3A_3E_MTFv1';
+
+export interface MLR1ExportMTFContext extends MTFContext {
+    readonly htf15mDiagnostic: HTFIncompleteDiagnostic | null;
+    readonly htf1hDiagnostic: HTFIncompleteDiagnostic | null;
+}
 
 export const MLR1_REPRESENTATION_FEATURE_ALLOWLIST = [
     'pivot_type',
@@ -74,6 +90,143 @@ export function buildRepresentationInput(ev: MLR1EventRow): Record<MLR1Represent
         input[key] = ev[key];
     }
     return input;
+}
+
+export interface ConfirmedPivotSequenceAudit {
+    readonly pivotCount: number;
+    readonly highCount: number;
+    readonly lowCount: number;
+    readonly sameTypeAdjacentPairCount: number;
+    readonly sourceOrderViolationCount: number;
+    readonly confirmationOrderViolationCount: number;
+    readonly firstViolation: {
+        readonly index: number;
+        readonly reasons: readonly string[];
+        readonly previous: StrictZigZagPivot;
+        readonly current: StrictZigZagPivot;
+        readonly previousSourceTimestamp: number | null;
+        readonly currentSourceTimestamp: number | null;
+        readonly previousConfirmationTimestamp: number | null;
+        readonly currentConfirmationTimestamp: number | null;
+    } | null;
+}
+
+export function auditConfirmedPivotSequence(
+    pivots: readonly StrictZigZagPivot[],
+    acceptedRows: readonly SourceBackboneAcceptedRow[]
+): ConfirmedPivotSequenceAudit {
+    let highCount = 0;
+    let lowCount = 0;
+    let sameTypeAdjacentPairCount = 0;
+    let sourceOrderViolationCount = 0;
+    let confirmationOrderViolationCount = 0;
+    let firstViolation: ConfirmedPivotSequenceAudit['firstViolation'] = null;
+
+    for (let index = 0; index < pivots.length; index++) {
+        const current = pivots[index];
+        if (current.type === 'high') highCount++;
+        else if (current.type === 'low') lowCount++;
+        if (index === 0) continue;
+
+        const previous = pivots[index - 1];
+        const reasons: string[] = [];
+        if (current.type === previous.type) {
+            sameTypeAdjacentPairCount++;
+            reasons.push('same-type adjacent confirmed pivots');
+        }
+        if (current.barIndex < previous.barIndex) {
+            sourceOrderViolationCount++;
+            reasons.push('decreasing source pivot bar index');
+        }
+        if (current.confirmedBarIndex <= previous.confirmedBarIndex) {
+            confirmationOrderViolationCount++;
+            reasons.push('non-increasing confirmation bar index');
+        }
+        if (reasons.length > 0 && firstViolation === null) {
+            firstViolation = {
+                index,
+                reasons,
+                previous,
+                current,
+                previousSourceTimestamp: acceptedRows[previous.barIndex]?.sourceTimestamp ?? null,
+                currentSourceTimestamp: acceptedRows[current.barIndex]?.sourceTimestamp ?? null,
+                previousConfirmationTimestamp:
+                    acceptedRows[previous.confirmedBarIndex]?.sourceTimestamp ?? null,
+                currentConfirmationTimestamp:
+                    acceptedRows[current.confirmedBarIndex]?.sourceTimestamp ?? null
+            };
+        }
+    }
+
+    return {
+        pivotCount: pivots.length,
+        highCount,
+        lowCount,
+        sameTypeAdjacentPairCount,
+        sourceOrderViolationCount,
+        confirmationOrderViolationCount,
+        firstViolation
+    };
+}
+
+export function auditNativeConfirmedPivots(
+    dataStore: { data: Float64Array; length: number },
+    cachedPivots: readonly StrictZigZagPivot[]
+): { matches: boolean; firstMismatchIndex: number | null } {
+    const nativePivots = StrictCBCZigZagIndicator.extractPointInTimeTeacher(dataStore).pivots;
+    const fields: readonly (keyof StrictZigZagPivot)[] = [
+        'id',
+        'barIndex',
+        'time',
+        'price',
+        'type',
+        'label',
+        'confirmedBarIndex'
+    ];
+    const sharedLength = Math.min(nativePivots.length, cachedPivots.length);
+    for (let index = 0; index < sharedLength; index++) {
+        if (fields.some(field => nativePivots[index][field] !== cachedPivots[index][field])) {
+            return { matches: false, firstMismatchIndex: index };
+        }
+    }
+    return {
+        matches: nativePivots.length === cachedPivots.length,
+        firstMismatchIndex: nativePivots.length === cachedPivots.length ? null : sharedLength
+    };
+}
+
+function formatPivotSequenceAudit(audit: ConfirmedPivotSequenceAudit): string {
+    const violation = audit.firstViolation;
+    const detail = violation ? {
+        sequenceIndex: violation.index,
+        reasons: violation.reasons,
+        previous: {
+            type: violation.previous.type,
+            price: violation.previous.price,
+            sourceBarIndex: violation.previous.barIndex,
+            confirmationBarIndex: violation.previous.confirmedBarIndex,
+            sourceTimestamp: violation.previousSourceTimestamp,
+            confirmationTimestamp: violation.previousConfirmationTimestamp
+        },
+        current: {
+            type: violation.current.type,
+            price: violation.current.price,
+            sourceBarIndex: violation.current.barIndex,
+            confirmationBarIndex: violation.current.confirmedBarIndex,
+            sourceTimestamp: violation.currentSourceTimestamp,
+            confirmationTimestamp: violation.currentConfirmationTimestamp
+        }
+    } : null;
+
+    return JSON.stringify({
+        ...(detail ? { violation: detail } : {}),
+        totalCachedPivotCount: audit.pivotCount,
+        highPivotCount: audit.highCount,
+        lowPivotCount: audit.lowCount,
+        sameTypeAdjacentPairCount: audit.sameTypeAdjacentPairCount,
+        sourceOrderViolationCount: audit.sourceOrderViolationCount,
+        confirmationOrderViolationCount: audit.confirmationOrderViolationCount
+    });
 }
 
 export const MLR1_OUTCOME_LABEL_ALLOWLIST = [
@@ -324,7 +477,7 @@ export class HybridTokenBuilder {
         if (!Number.isSafeInteger(event.barIndex) || !Number.isSafeInteger(prevEvent.barIndex) ||
             event.barIndex < 0 || event.barIndex > confBar ||
             prevEvent.barIndex < 0 || prevEvent.barIndex > prevConfBar ||
-            event.barIndex <= prevEvent.barIndex) {
+            event.barIndex < prevEvent.barIndex) {
             throw new Error('HybridTokenBuilder Error: pivot indices must be valid and ordered before confirmation.');
         }
         if (!Number.isFinite(event.price) || event.price <= 0 ||
@@ -439,6 +592,16 @@ export class AIExporter {
             }
         }
 
+        const nativePivotAudit = auditNativeConfirmedPivots(dataStore, cachedPivots);
+        if (!nativePivotAudit.matches) {
+            const index = nativePivotAudit.firstMismatchIndex;
+            throw new Error(
+                `AIExporter Schema Error: Cached pivots differ from the native confirmed-pivot sequence ` +
+                `at index ${index}; cached count ${cachedPivots.length}, native count ` +
+                `${StrictCBCZigZagIndicator.extractPointInTimeTeacher(dataStore).pivots.length}.`
+            );
+        }
+
         for (let pivotIndex = 0; pivotIndex < cachedPivots.length; pivotIndex++) {
             const pivot = cachedPivots[pivotIndex];
             if (!pivot || typeof pivot !== 'object' ||
@@ -459,14 +622,12 @@ export class AIExporter {
                     `AIExporter Schema Error: Pivot ${pivotIndex} timestamp or price does not match its accepted source candle.`
                 );
             }
-            if (pivotIndex > 0 &&
-                (pivot.type === cachedPivots[pivotIndex - 1].type ||
-                    pivot.barIndex <= cachedPivots[pivotIndex - 1].barIndex ||
-                    pivot.confirmedBarIndex <= cachedPivots[pivotIndex - 1].confirmedBarIndex)) {
-                throw new Error(
-                    `AIExporter Schema Error: Non-alternating or out-of-order pivot sequence at index ${pivotIndex}.`
-                );
-            }
+        }
+        const pivotSequenceAudit = auditConfirmedPivotSequence(cachedPivots, acceptedRows);
+        if (pivotSequenceAudit.firstViolation) {
+            throw new Error(
+                `AIExporter Schema Error: Confirmed pivot sequence violation: ${formatPivotSequenceAudit(pivotSequenceAudit)}`
+            );
         }
         const events: MLR1EventRow[] = [];
 
@@ -727,9 +888,16 @@ export class AIExporter {
     }
 
     public static exportMLR1ContinuousObservationsCSV(
-        acceptedRows: readonly SourceBackboneAcceptedRow[]
+        acceptedRows: readonly SourceBackboneAcceptedRow[],
+        mtfContexts?: readonly MLR1ExportMTFContext[]
     ): string | null {
         if (acceptedRows.length === 0) return null;
+        if (mtfContexts !== undefined && mtfContexts.length !== acceptedRows.length) {
+            throw new Error(
+                `Continuous Observation Schema Error: MTF context count ${mtfContexts.length} ` +
+                `does not match accepted row count ${acceptedRows.length}.`
+            );
+        }
         const firstRow = acceptedRows[0];
         if (!firstRow || !firstRow.observation ||
             !firstRow.observation.features || !firstRow.observation.validity) {
@@ -752,8 +920,17 @@ export class AIExporter {
             'low',
             'close',
             'volume',
+            'symbol',
+            'timeframe',
+            'data_quality',
             ...featureKeys,
-            ...featureKeys.map(key => `valid_${key}`)
+            ...featureKeys.map(key => `valid_${key}`),
+            ...(mtfContexts === undefined ? [] : [
+                'context15m',
+                'context1h',
+                'htf15mDiagnostic',
+                'htf1hDiagnostic'
+            ])
         ];
         if (new Set(headerNames).size !== headerNames.length) {
             throw new Error('Continuous Observation Schema Error: generated CSV column names must be unique.');
@@ -813,6 +990,9 @@ export class AIExporter {
                 String(row.candle.low),
                 String(row.candle.close),
                 String(row.candle.volume),
+                this.csvEscape(row.observation.symbol),
+                this.csvEscape(row.observation.timeframe),
+                this.csvEscape(JSON.stringify(row.dataQuality)),
                 ...featureKeys.map(key => {
                     const featureValue = row.observation.features[key];
                     if (!Number.isFinite(featureValue)) {
@@ -826,7 +1006,24 @@ export class AIExporter {
                         throw new Error(`Invalid validity marker for feature ${key} in continuous row ${index}.`);
                     }
                     return String(isValid);
-                })
+                }),
+                ...(mtfContexts === undefined ? [] : (() => {
+                    const context = mtfContexts[index];
+                    if (!context ||
+                        context.observationTimestamp !== row.observationTimestamp ||
+                        context.context15m.timeframe !== '15m' ||
+                        context.context1h.timeframe !== '1h') {
+                        throw new Error(
+                            `Continuous Observation Schema Error: MTF context at row ${index} is missing, misaligned, or has invalid timeframe identity.`
+                        );
+                    }
+                    return [
+                        this.csvEscape(JSON.stringify(context.context15m)),
+                        this.csvEscape(JSON.stringify(context.context1h)),
+                        this.csvEscape(JSON.stringify(context.htf15mDiagnostic)),
+                        this.csvEscape(JSON.stringify(context.htf1hDiagnostic))
+                    ];
+                })())
             ];
             return values.join(',');
         });
@@ -882,6 +1079,36 @@ export class AIExporter {
                 throw new Error(
                     `Fetched candle timestamp ${timestamp} falls outside custom date bounds ` +
                     `[${bounds.startTimestamp}, ${bounds.endTimestamp}].`
+                );
+            }
+        }
+    }
+
+    public static assertCandleBufferMatchesExactRange(
+        candleBuffer: Float64Array,
+        intervalMs: number,
+        expectedStartTimestamp: number,
+        expectedEndTimestamp: number,
+        expectedCandleCount: number
+    ): void {
+        if (!(candleBuffer instanceof Float64Array) ||
+            !Number.isSafeInteger(intervalMs) || intervalMs <= 0 ||
+            !Number.isSafeInteger(expectedStartTimestamp) || expectedStartTimestamp < 0 ||
+            !Number.isSafeInteger(expectedEndTimestamp) || expectedEndTimestamp < expectedStartTimestamp ||
+            !Number.isSafeInteger(expectedCandleCount) || expectedCandleCount <= 0 ||
+            expectedEndTimestamp - expectedStartTimestamp !== (expectedCandleCount - 1) * intervalMs ||
+            candleBuffer.length !== expectedCandleCount * 6) {
+            throw new Error(
+                `Historical range integrity error: expected ${expectedCandleCount} candles from ` +
+                `${expectedStartTimestamp} to ${expectedEndTimestamp} at ${intervalMs}ms intervals.`
+            );
+        }
+        for (let index = 0; index < expectedCandleCount; index++) {
+            const timestamp = candleBuffer[index * 6];
+            const expectedTimestamp = expectedStartTimestamp + index * intervalMs;
+            if (timestamp !== expectedTimestamp) {
+                throw new Error(
+                    `Historical range integrity error at candle ${index}: expected ${expectedTimestamp}, got ${timestamp}.`
                 );
             }
         }
@@ -1047,13 +1274,73 @@ export class AIExporter {
             isValidOhlcv: boolean;
         }> = [];
         let state = createInitialML1FeatureState();
+        let integratedState = interval === '1m' ? createInitialIntegratedMTFState() : null;
+        const mtfContexts: MLR1ExportMTFContext[] | undefined = interval === '1m' ? [] : undefined;
+        const mtfConfig = interval === '1m'
+            ? validateMTFConfig({
+                ...MTF_CONFIG_B,
+                symbol,
+                config15m: {
+                    ...MTF_CONFIG_B.config15m,
+                    featureConfig: validateML1Config({
+                        ...ML1_CONFIG_B,
+                        symbol,
+                        timeframe: '15m',
+                        expectedIntervalMs: 900_000,
+                        gapDiscontinuityThresholdMs: Math.max(
+                            ML1_CONFIG_B.gapDiscontinuityThresholdMs,
+                            900_000
+                        )
+                    })
+                },
+                config1h: {
+                    ...MTF_CONFIG_B.config1h,
+                    featureConfig: validateML1Config({
+                        ...ML1_CONFIG_B,
+                        symbol,
+                        timeframe: '1h',
+                        expectedIntervalMs: 3_600_000,
+                        gapDiscontinuityThresholdMs: Math.max(
+                            ML1_CONFIG_B.gapDiscontinuityThresholdMs,
+                            3_600_000
+                        )
+                    })
+                }
+            })
+            : null;
 
         params.onProgress?.(`Validating ${rawCandleCount.toLocaleString()} source candles...`);
         for (const rawIndex of sourceReport.acceptedSourceIndices) {
             const candle = rawCandles[rawIndex];
-            const result = stepML1Features(candle, backboneInputs.length, state, featureConfig);
-            state = result.nextState;
-            backboneInputs.push({ candle, observation: result.observation, isValidOhlcv: true });
+            if (integratedState && mtfConfig && mtfContexts) {
+                const result = stepIntegratedMTFPipeline(
+                    candle,
+                    backboneInputs.length,
+                    integratedState,
+                    { m1Config: featureConfig, mtfConfig }
+                );
+                integratedState = result.nextState;
+                backboneInputs.push({
+                    candle,
+                    observation: result.observation.observation1m,
+                    isValidOhlcv: true
+                });
+                const mtfContext = alignMTFContext(
+                    candle.time + intervalMs,
+                    symbol,
+                    result.nextState.mtfState,
+                    mtfConfig
+                );
+                mtfContexts.push(Object.freeze({
+                    ...mtfContext,
+                    htf15mDiagnostic: result.nextState.mtfState.state15m.aggregation.lastDiagnostic,
+                    htf1hDiagnostic: result.nextState.mtfState.state1h.aggregation.lastDiagnostic
+                }));
+            } else {
+                const result = stepML1Features(candle, backboneInputs.length, state, featureConfig);
+                state = result.nextState;
+                backboneInputs.push({ candle, observation: result.observation, isValidOhlcv: true });
+            }
         }
 
         const dateRange = {
@@ -1136,7 +1423,10 @@ export class AIExporter {
         }
 
         params.onProgress?.('Generating and reconciling CSV artifacts...');
-        const continuousCsv = AIExporter.exportMLR1ContinuousObservationsCSV(backboneResult.acceptedRows);
+        const continuousCsv = AIExporter.exportMLR1ContinuousObservationsCSV(
+            backboneResult.acceptedRows,
+            mtfContexts
+        );
         const eventCsv = AIExporter.exportMLR1CSV(events, symbol, interval);
         if (!continuousCsv || !eventCsv) {
             throw new Error('CSV generation failed for one or more dataset tiers.');
@@ -1173,7 +1463,9 @@ export class AIExporter {
                 baseTimeframe: interval,
                 datasetVersion: 1,
                 sourceIntervalMs: intervalMs,
-                featureConfigVersion: ML1_CONFIG_B_VERSION,
+                featureConfigVersion: interval === '1m'
+                    ? `${ML1_CONFIG_B_VERSION}+${MLR1_MTF_CONTEXT_VERSION}`
+                    : ML1_CONFIG_B_VERSION,
                 teacherVersion: STRICT_CBC_ZIGZAG_TEACHER_VERSION,
                 outcomeConfigVersion: MLR1_OUTCOME_CONFIG_VERSION,
                 dateRange,
@@ -1195,8 +1487,10 @@ export class AIExporter {
                 inputOutcomeSeparationValid: auditResult.inputOutcomeSeparationValid,
                 remarks: [
                     `Artifact 1 (${continuousFileName}): Tier A continuous causal observations ` +
-                    `(${actualFileRowCounts[continuousFileName]} rows). Available for approved baseline ` +
-                    'model inputs; contains 1:1 feature values and validity masks.',
+                    `(${actualFileRowCounts[continuousFileName]} rows). Contains 1:1 feature values and validity masks` +
+                    (mtfContexts === undefined
+                        ? '.'
+                        : ' plus completed, causally aligned 15m/1h context and incomplete-window diagnostics.'),
                     `Artifact 2 (${representationFileName}): Tier A confirmed-event representation tensor ` +
                     `(${actualFileRowCounts[representationFileName]} rows). Authoritative model-input boundary ` +
                     'strictly whitelisted against MLR1_REPRESENTATION_FEATURE_ALLOWLIST.',
@@ -1273,6 +1567,10 @@ export class DatasetAuditor {
             console.error('DatasetAuditor Error: cachedPivots must be supplied as an array.');
             return failResult;
         }
+        if (!auditNativeConfirmedPivots(dataStore, cachedPivots).matches) {
+            console.error('DatasetAuditor Error: cached pivots differ from the native confirmed-pivot sequence.');
+            return failResult;
+        }
         if (typeof representationCsv !== 'string' || representationCsv.length === 0) {
             console.error('DatasetAuditor Error: the exported representation CSV is mandatory.');
             return failResult;
@@ -1335,17 +1633,19 @@ export class DatasetAuditor {
                 : (previousSameTypePrice === null || pivot.price <= previousSameTypePrice ? 'LL' : 'HL');
             if (pivot.time !== sourceRow.sourceTimestamp || pivot.price !== expectedPrice ||
                 pivot.label !== expectedLabel ||
-                (pivotIndex > 0 && (
-                    pivot.id <= cachedPivots[pivotIndex - 1].id ||
-                    pivot.type === cachedPivots[pivotIndex - 1].type ||
-                    pivot.barIndex <= cachedPivots[pivotIndex - 1].barIndex ||
-                    pivot.confirmedBarIndex <= cachedPivots[pivotIndex - 1].confirmedBarIndex
-                ))) {
+                (pivotIndex > 0 && pivot.id <= cachedPivots[pivotIndex - 1].id)) {
                 console.error(`DatasetAuditor Error: cached pivot ${pivotIndex} disagrees with source chronology.`);
                 return failResult;
             }
             if (pivot.type === 'high') lastHighPrice = pivot.price;
             else lastLowPrice = pivot.price;
+        }
+        const pivotSequenceAudit = auditConfirmedPivotSequence(cachedPivots, acceptedRows);
+        if (pivotSequenceAudit.firstViolation) {
+            console.error(
+                `DatasetAuditor Error: confirmed pivot sequence violation: ${formatPivotSequenceAudit(pivotSequenceAudit)}`
+            );
+            return failResult;
         }
 
         let timeFailures = 0;
@@ -1431,7 +1731,7 @@ export class DatasetAuditor {
                 ev.previous_pivot_bar_index < 0 ||
                 ev.previous_pivot_confirmed_bar_index < 0 ||
                 ev.previous_pivot_confirmed_bar_index < ev.previous_pivot_bar_index ||
-                ev.previous_pivot_bar_index >= ev.pivot_bar_index ||
+                ev.previous_pivot_bar_index > ev.pivot_bar_index ||
                 ev.previous_pivot_bar_index >= acceptedRows.length ||
                 ev.previous_pivot_confirmed_bar_index >= ev.confirmed_bar_index ||
                 ev.previous_pivot_confirmed_bar_index >= acceptedRows.length ||
@@ -1470,7 +1770,7 @@ export class DatasetAuditor {
                 ev.pivot_time_ms > ev.confirmation_time_ms ||
                 (i > 0 && (!previousEvent ||
                     !Number.isSafeInteger(previousEvent.pivot_bar_index) ||
-                    ev.pivot_bar_index <= previousEvent.pivot_bar_index))) {
+                    ev.pivot_bar_index < previousEvent.pivot_bar_index))) {
                 indexFailures++;
             }
             const currentTeacherIndex = cachedPivots.findIndex(

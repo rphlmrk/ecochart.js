@@ -69,10 +69,13 @@ export class BackgroundDataMiner {
 
         const intervalMs = this.intervalToMs(interval);
         const now = Date.now();
-        const startTarget = customStartMs !== undefined ? customStartMs : (now - totalDurationMs);
         const requestedEndTarget = customEndMs !== undefined ? customEndMs : now;
         const lastCompletedCandleOpenTime = Math.floor(now / intervalMs) * intervalMs - intervalMs;
         const endTarget = Math.min(requestedEndTarget, lastCompletedCandleOpenTime);
+        const requestedCandleCount = Math.max(1, Math.ceil(totalDurationMs / intervalMs));
+        const startTarget = customStartMs !== undefined
+            ? customStartMs
+            : endTarget - (requestedCandleCount - 1) * intervalMs;
         if (!Number.isSafeInteger(startTarget) || !Number.isSafeInteger(requestedEndTarget) ||
             startTarget < 0 || requestedEndTarget < startTarget) {
             throw new Error('Historical fetch requires ordered non-negative integer time boundaries.');

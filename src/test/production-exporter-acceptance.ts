@@ -1,6 +1,15 @@
 import JSZip from 'jszip';
-import { AIExporter, SourceIntegrityError } from '../data/AIExporter';
+import {
+    AIExporter,
+    DatasetAuditor,
+    HybridTokenBuilder,
+    SourceIntegrityError,
+    auditConfirmedPivotSequence,
+    auditNativeConfirmedPivots
+} from '../data/AIExporter';
 import { BackgroundDataMiner } from '../data/BackgroundDataMiner';
+import { DataStore } from '../data/DataStore';
+import { StrictCBCZigZagIndicator } from '../indicators/plugins/StrictCBCZigZagIndicator';
 
 function assert(condition: boolean, message: string): asserts condition {
     if (!condition) throw new Error(`[ProductionExporterAssertionFailed] ${message}`);
@@ -156,9 +165,14 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
                 'SOLUSDT',
                 '1m',
                 expectedCount * intervalMs,
-                () => {},
+                () => {}
+            );
+            AIExporter.assertCandleBufferMatchesExactRange(
+                buffer,
+                intervalMs,
                 expectedFirstOpen,
-                expectedLastOpen
+                expectedLastOpen,
+                expectedCount
             );
             assert(buffer.length / 6 === expectedCount, 'Complete inclusive seven-day range must contain 10,080 candles');
             assert(buffer[0] === expectedFirstOpen, 'First open timestamp must match the requested boundary');
@@ -167,10 +181,72 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
             assert(requests[0].searchParams.get('startTime') === String(expectedFirstOpen), 'First request start must be inclusive');
             assert(requests.every(url => url.searchParams.get('endTime') === String(expectedLastOpen)),
                 'Every page must preserve the inclusive end bound');
+            for (let index = 1; index < requests.length; index++) {
+                const previousPageLast = Math.min(
+                    expectedFirstOpen + index * 1000 * intervalMs - intervalMs,
+                    expectedLastOpen
+                );
+                assert(
+                    Number(requests[index].searchParams.get('startTime')) === previousPageLast + 1,
+                    `Page ${index + 1} must resume one millisecond after the prior returned open`
+                );
+            }
         } finally {
             Date.now = originalNow;
             globalThis.fetch = originalFetch;
         }
+    });
+
+    await runTest('Missing first or last seven-day candle fails exact boundary reconciliation', async () => {
+        const now = 1_800_000_000_000;
+        const intervalMs = 60000;
+        const expectedCount = 7 * 24 * 60;
+        const expectedLastOpen = Math.floor(now / intervalMs) * intervalMs - intervalMs;
+        const expectedFirstOpen = expectedLastOpen - (expectedCount - 1) * intervalMs;
+        const verifyMissingBoundary = async (missingTimestamp: number) => {
+            const opens = Array.from({ length: expectedCount }, (_, index) =>
+                expectedFirstOpen + index * intervalMs
+            ).filter(timestamp => timestamp !== missingTimestamp);
+            const rows = opens.map(timestamp => mockKline(timestamp, timestamp + intervalMs - 1));
+            const originalNow = Date.now;
+            const originalFetch = globalThis.fetch;
+            Date.now = () => now;
+            globalThis.fetch = (async input => {
+                const url = new URL(String(input));
+                const startTime = Number(url.searchParams.get('startTime'));
+                const endTime = Number(url.searchParams.get('endTime'));
+                const filtered = rows.filter(row => Number(row[0]) >= startTime && Number(row[0]) <= endTime);
+                return new Response(JSON.stringify(filtered.slice(0, 1000)), { status: 200 });
+            }) as typeof fetch;
+            try {
+                const buffer = await BackgroundDataMiner.mineHistoricalCandles(
+                    'SOLUSDT',
+                    '1m',
+                    expectedCount * intervalMs,
+                    () => {},
+                    expectedFirstOpen,
+                    expectedLastOpen
+                );
+                let rejected = false;
+                try {
+                    AIExporter.assertCandleBufferMatchesExactRange(
+                        buffer,
+                        intervalMs,
+                        expectedFirstOpen,
+                        expectedLastOpen,
+                        expectedCount
+                    );
+                } catch {
+                    rejected = true;
+                }
+                assert(rejected, `Missing boundary candle ${missingTimestamp} must fail reconciliation`);
+            } finally {
+                Date.now = originalNow;
+                globalThis.fetch = originalFetch;
+            }
+        };
+        await verifyMissingBoundary(expectedFirstOpen);
+        await verifyMissingBoundary(expectedLastOpen);
     });
 
     await runTest('Historical fetch preserves duplicates for source-quality accounting', async () => {
@@ -276,7 +352,7 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
     await runTest('500-candle production export is deterministic with a mature CBC outcome', async () => {
         const candleCount = 500;
         const intervalMs = 60000;
-        const start = 1_700_000_000_000;
+        const start = 1_700_000_040_000;
         const rawCandleBuffer = new Float64Array(candleCount * 6);
         for (let index = 0; index < candleCount; index++) {
             const close = index % 8 < 4
@@ -306,6 +382,160 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
         ), 'At least one confirmed event must have a complete 60-bar outcome horizon');
         assert(first.manifest.sourceRowCount === candleCount, 'Manifest raw count must match the source buffer');
         assert(first.manifest.auditResults.passed, 'Both production audits must pass');
+        const acceptedRows = first.backboneResult.acceptedRows;
+        const dataStore = new DataStore(acceptedRows.length);
+        dataStore.data = new Float64Array(acceptedRows.length * 6);
+        dataStore.length = acceptedRows.length;
+        acceptedRows.forEach((row, index) => {
+            dataStore.data.set([
+                row.candle.time,
+                row.candle.open,
+                row.candle.high,
+                row.candle.low,
+                row.candle.close,
+                row.candle.volume
+            ], index * 6);
+        });
+        const teacher = new StrictCBCZigZagIndicator();
+        teacher.calculate(dataStore);
+        const nativePivots = teacher.cachedPivots;
+        const nativeSequenceAudit = auditConfirmedPivotSequence(nativePivots, acceptedRows);
+        assert(nativeSequenceAudit.firstViolation === null,
+            'The native teacher confirmed sequence must satisfy occurrence and confirmation ordering');
+        assert(nativeSequenceAudit.pivotCount > 2, 'The fixture must exercise multiple confirmed teacher pivots');
+        assert(
+            DatasetAuditor.runCausalityAudit(
+                first.events,
+                dataStore,
+                acceptedRows,
+                intervalMs,
+                nativePivots,
+                first.representationCsv
+            ).passed,
+            'The auditor must accept the same native confirmed sequence used by event generation'
+        );
+
+        const sameTypeSequence = nativePivots.map(pivot => ({ ...pivot }));
+        const sameTypeIndex = 1;
+        const sameTypePivot = sameTypeSequence[sameTypeIndex];
+        const precedingPivot = sameTypeSequence[sameTypeIndex - 1];
+        const sameTypeRow = acceptedRows[sameTypePivot.barIndex];
+        sameTypePivot.type = precedingPivot.type;
+        sameTypePivot.price = precedingPivot.type === 'high'
+            ? sameTypeRow.candle.high
+            : sameTypeRow.candle.low;
+        const priorSameType = sameTypeSequence.slice(0, sameTypeIndex)
+            .reverse().find(pivot => pivot.type === sameTypePivot.type);
+        sameTypePivot.label = sameTypePivot.type === 'high'
+            ? (priorSameType === undefined || sameTypePivot.price >= priorSameType.price ? 'HH' : 'LH')
+            : (priorSameType === undefined || sameTypePivot.price <= priorSameType.price ? 'LL' : 'HL');
+        const sameTypeAudit = auditConfirmedPivotSequence(sameTypeSequence, acceptedRows);
+        assert(sameTypeAudit.sameTypeAdjacentPairCount > 0,
+            'Same-type pairs are invalid under the native StrictCBC state-transition contract');
+        let builderRejectedSameType = false;
+        try {
+            AIExporter.buildMLR1Dataset(dataStore, acceptedRows, sameTypeSequence, 'SOLUSDT', '1m', intervalMs);
+        } catch (error: unknown) {
+            builderRejectedSameType = error instanceof Error &&
+                (error.message.includes('same-type adjacent confirmed pivots') ||
+                    error.message.includes('Cached pivots differ from the native confirmed-pivot sequence'));
+        }
+        assert(builderRejectedSameType, 'Event builder must reject a same-type confirmed sequence');
+        assert(
+            !DatasetAuditor.runCausalityAudit(
+                first.events,
+                dataStore,
+                acceptedRows,
+                intervalMs,
+                sameTypeSequence,
+                first.representationCsv
+            ).passed,
+            'Auditor must reject the same invalid sequence contract as the event builder'
+        );
+
+        const sourceOrderSequence = nativePivots.map(pivot => ({ ...pivot }));
+        sourceOrderSequence[1].barIndex = sourceOrderSequence[0].barIndex - 1;
+        assert(
+            auditConfirmedPivotSequence(sourceOrderSequence, acceptedRows).sourceOrderViolationCount > 0,
+            'A decreasing source pivot bar must be classified as a source-order violation'
+        );
+        const confirmationOrderSequence = nativePivots.map(pivot => ({ ...pivot }));
+        confirmationOrderSequence[1].confirmedBarIndex = confirmationOrderSequence[0].confirmedBarIndex;
+        assert(
+            auditConfirmedPivotSequence(confirmationOrderSequence, acceptedRows)
+                .confirmationOrderViolationCount > 0,
+            'A non-increasing confirmation bar must be classified as a confirmation-order violation'
+        );
+        assert(
+            auditNativeConfirmedPivots(dataStore, nativePivots).matches,
+            'Cached pivots must independently match exact native teacher output fields'
+        );
+        const forgedCachedPivots = nativePivots.map(pivot => ({ ...pivot }));
+        forgedCachedPivots[0].price += 0.01;
+        assert(
+            !auditNativeConfirmedPivots(dataStore, forgedCachedPivots).matches,
+            'A forged cached pivot price must differ from independently recomputed native output'
+        );
+
+        const liveFailurePair = [
+            {
+                id: 1,
+                barIndex: 926,
+                time: 1_793_183_700_000,
+                price: 103.14,
+                type: 'low' as const,
+                label: 'LL' as const,
+                confirmedBarIndex: 926
+            },
+            {
+                id: 2,
+                barIndex: 926,
+                time: 1_793_183_700_000,
+                price: 103.23,
+                type: 'high' as const,
+                label: 'HH' as const,
+                confirmedBarIndex: 927
+            }
+        ];
+        const liveFailureAudit = auditConfirmedPivotSequence(liveFailurePair, []);
+        assert(liveFailureAudit.firstViolation === null,
+            'The exact live low/high same-source-bar pair is valid in native confirmation order');
+        assert(liveFailureAudit.sourceOrderViolationCount === 0,
+            'A same-source-bar opposite-extreme pair is not a source-order violation');
+        const paddedLiveRows = Array.from({ length: 928 }, (_, index) => {
+            const source = acceptedRows[Math.min(index, acceptedRows.length - 1)];
+            const offset = Math.max(0, index - (acceptedRows.length - 1)) * intervalMs;
+            const time = source.sourceTimestamp + offset;
+            const candle = { ...source.candle, time };
+            const observation = {
+                ...source.observation,
+                timestamp: time,
+                barIndex: index,
+                sourceOpen: candle.open,
+                sourceHigh: candle.high,
+                sourceLow: candle.low,
+                sourceClose: candle.close,
+                sourceVolume: candle.volume
+            };
+            return {
+                ...source,
+                candle,
+                sourceTimestamp: time,
+                observationTimestamp: time + intervalMs,
+                observation
+            };
+        });
+        const liveFailureToken = HybridTokenBuilder.build(
+            liveFailurePair[1],
+            liveFailurePair[0],
+            paddedLiveRows,
+            1
+        );
+        assert(liveFailureToken.bars_since_last_pivot === 1,
+            'The live same-source-bar pair must retain its one-bar confirmation delay');
+        assert(liveFailureToken.zigzag_next_leg_orientation === 'down',
+            'The live confirmed HIGH must retain native down-leg orientation');
+
         assert(
             JSON.stringify(first.events.map(event => event.event_id)) ===
                 JSON.stringify(second.events.map(event => event.event_id)),
@@ -313,6 +543,15 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
         );
         assert(first.events.length === second.events.length, 'Event counts must be deterministic');
         assert(first.continuousCsv === second.continuousCsv, 'Continuous CSV bytes must be deterministic');
+        const continuousHeader = first.continuousCsv.split('\r\n', 1)[0].split(',');
+        assert(continuousHeader.includes('context15m') && continuousHeader.includes('context1h'),
+            'M1 continuous observations must include existing M3 15m and 1h context columns');
+        assert(first.continuousCsv.includes('lastCompletedCloseTimestamp'),
+            'Serialized MTF context must include completed-candle availability timestamps');
+        assert(first.continuousCsv.includes('WARMING_UP') || first.continuousCsv.includes('AVAILABLE_VALID'),
+            'Serialized MTF context must preserve warmup or validity status');
+        assert(first.manifest.featureVersion.includes('M3A_3E_MTFv1'),
+            'Manifest must version the added MTF context fields');
         assert(first.representationCsv === second.representationCsv, 'Representation CSV bytes must be deterministic');
         assert(first.eventCsv === second.eventCsv, 'Event CSV bytes must be deterministic');
         assert(JSON.stringify(first.manifest) === JSON.stringify(second.manifest), 'Manifest contents must be deterministic');
@@ -327,16 +566,25 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
         'ZIP physical artifact bytes must be deterministic');
     });
 
-    await runTest('Live package UI exposes only the supported ZIP package', () => {
-        assert(
-            document.querySelector('[data-pack="csv"]') === null,
-            'Unsupported single-CSV mode must not be selectable'
-        );
-        assert(
-            document.querySelectorAll('.ai-pack-card[data-pack="zip"]').length === 1,
-            'The required ML-R1 ZIP package must be the sole visible package choice'
-        );
-    });
+    if (typeof document !== 'undefined') {
+        await runTest('Live package UI exposes only the supported ZIP package', () => {
+            assert(
+                document.querySelector('[data-pack="csv"]') === null,
+                'Unsupported single-CSV mode must not be selectable'
+            );
+            assert(
+                document.querySelectorAll('.ai-pack-card[data-pack="zip"]').length === 1,
+                'The required ML-R1 ZIP package must be the sole visible package choice'
+            );
+            assert(
+                document.querySelector('#ai-export-rr') === null &&
+                    document.querySelector('#ai-export-horizon') === null,
+                'Fixed outcome-contract settings must not be shown as configurable controls'
+            );
+        });
+    } else {
+        console.log('  ⏭️ Skipped: Live package UI check requires a browser DOM.');
+    }
 
     console.log(`Production Exporter Integrity: ${passed} passed, ${failed} failed.`);
     return failed === 0;

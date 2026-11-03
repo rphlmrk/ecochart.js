@@ -75,3 +75,5 @@ android/app/src/main/res/xml/file_paths.xml
 android/app/src/test/java/com/getcapacitor/myapp/ExampleUnitTest.java
 android/gradle/wrapper/gradle-wrapper.jar
 android/gradle/wrapper/gradle-wrapper.properties
+_live_export_inspection.zip
+_live_export_current.zip
