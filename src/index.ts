@@ -4858,6 +4858,8 @@ export class WorkspaceManager {
         btnAiExportStart?.addEventListener('click', async () => {
             const chart = WorkspaceManager.activeChart || WorkspaceManager.charts[0];
             if (!chart) return;
+            const exportSymbol = chart.currentSymbol;
+            const exportInterval = chart.currentInterval;
 
             const activeRange = document.querySelector('.ai-range-btn.active') as HTMLElement;
             const rangeKey = activeRange?.dataset.val || '1m';
@@ -4904,8 +4906,8 @@ export class WorkspaceManager {
             try {
                 // Step 1: Execute 500ms Paged Background Download from Binance
                 const rawCandleBuffer = await BackgroundDataMiner.mineHistoricalCandles(
-                    chart.currentSymbol,
-                    chart.currentInterval,
+                    exportSymbol,
+                    exportInterval,
                     durationMs,
                     (p) => {
                         setTopbarMiningState(p.percent);
@@ -4938,7 +4940,7 @@ export class WorkspaceManager {
 
                 // 2. Instantiate Headless Strict CBC ZigZag Indicator with user's chart settings
                 const headlessZigZag = new StrictCBCZigZagIndicator();
-                headlessZigZag.currentSymbol = chart.currentSymbol;
+                headlessZigZag.currentSymbol = exportSymbol;
                 const chartZigZag = chart.indicatorManager.activeIndicators.find(i => i instanceof StrictCBCZigZagIndicator) as StrictCBCZigZagIndicator | undefined;
                 if (chartZigZag) {
                     headlessZigZag.params.forEach(p => {
@@ -4959,9 +4961,9 @@ export class WorkspaceManager {
                         'Historical fetch returned empty or malformed data buffer (length not divisible by 6).'
                     );
                 }
-                const intervalMs = TimeframeResampler.parseMs(chart.currentInterval);
+                const intervalMs = TimeframeResampler.parseMs(exportInterval);
                 if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
-                    throw new Error(`Unsupported chart interval for M4B validation: ${chart.currentInterval}`);
+                    throw new Error(`Unsupported chart interval for M4B validation: ${exportInterval}`);
                 }
                 const strictPolicy = {
                     rejectInvalidSource: true,
@@ -4972,8 +4974,8 @@ export class WorkspaceManager {
                 };
                 const featureConfig = validateML1Config({
                     ...ML1_CONFIG_B,
-                    symbol: chart.currentSymbol,
-                    timeframe: chart.currentInterval,
+                    symbol: exportSymbol,
+                    timeframe: exportInterval,
                     expectedIntervalMs: intervalMs,
                     gapDiscontinuityThresholdMs: Math.max(
                         ML1_CONFIG_B.gapDiscontinuityThresholdMs,
@@ -5011,7 +5013,7 @@ export class WorkspaceManager {
                     }
                     if (candle.time % intervalMs !== 0) {
                         throw new Error(
-                            `Export aborted: timestamp ${candle.time} is not aligned to ${chart.currentInterval}.`
+                            `Export aborted: timestamp ${candle.time} is not aligned to ${exportInterval}.`
                         );
                     }
                     const isValidOhlcv = validateCandleOhlcv(candle);
@@ -5062,8 +5064,8 @@ export class WorkspaceManager {
                 };
                 const backboneResult = buildSourceBackbone(
                     backboneInputs,
-                    chart.currentSymbol,
-                    chart.currentInterval,
+                    exportSymbol,
+                    exportInterval,
                     1,
                     strictPolicy,
                     intervalMs,
@@ -5109,8 +5111,8 @@ export class WorkspaceManager {
                 headlessZigZag.calculate(cleanDs);
 
                 const manifestConfig = {
-                    symbol: chart.currentSymbol,
-                    baseTimeframe: chart.currentInterval,
+                    symbol: exportSymbol,
+                    baseTimeframe: exportInterval,
                     datasetVersion: 1,
                     sourceIntervalMs: intervalMs,
                     featureConfigVersion: 'ML1_CONFIG_B_v1',
@@ -5137,8 +5139,8 @@ export class WorkspaceManager {
                     cleanDs,
                     backboneResult.acceptedRows,
                     headlessZigZag.cachedPivots,
-                    chart.currentSymbol,
-                    chart.currentInterval
+                    exportSymbol,
+                    exportInterval
                 );
 
                 if (events.length === 0) {
@@ -5149,7 +5151,11 @@ export class WorkspaceManager {
                 }
 
                 // Step C: Run Pre-Flight Master Audit with Candle-Level Execution Replay
-                const auditResult = DatasetAuditor.runCausalityAudit(events, cleanDs);
+                const auditResult = DatasetAuditor.runCausalityAudit(
+                    events,
+                    cleanDs,
+                    backboneResult.acceptedRows
+                );
                 const backboneChronologyValid = backboneResult.stats.outOfOrderCount === 0;
                 const backboneIdentityUnique = new Set(
                     backboneResult.acceptedRows.map(row => row.observationId)
@@ -5186,7 +5192,7 @@ export class WorkspaceManager {
                 }
 
                 const manifest = createDatasetManifest(
-                    `DS_${chart.currentSymbol}_${chart.currentInterval}_V1`,
+                    `DS_${exportSymbol}_${exportInterval}_V1`,
                     'BINANCE_SPOT',
                     manifestConfig,
                     backboneResult.stats,
@@ -5207,19 +5213,6 @@ export class WorkspaceManager {
                     );
                 }
 
-                const manifestBlob = new Blob([JSON.stringify(manifest, null, 2)], {
-                    type: 'application/json'
-                });
-                const manifestUrl = URL.createObjectURL(manifestBlob);
-                const manifestLink = document.createElement('a');
-                manifestLink.href = manifestUrl;
-                manifestLink.download =
-                    `MLR1_${chart.currentSymbol}_${chart.currentInterval}_Manifest.json`;
-                document.body.appendChild(manifestLink);
-                manifestLink.click();
-                document.body.removeChild(manifestLink);
-                setTimeout(() => URL.revokeObjectURL(manifestUrl), 1000);
-
                 // Step D: Export ML-R1 Events CSV
                 if (loadingTitle) loadingTitle.textContent = "Exporting ML-R1 CSV...";
                 if (loadingDetail) loadingDetail.textContent = `Generated ${events.length.toLocaleString()} ML-R1 structural event records.`;
@@ -5227,20 +5220,50 @@ export class WorkspaceManager {
                 if (progressPct) progressPct.textContent = "100%";
                 await new Promise(r => setTimeout(r, 25));
 
-                AIExporter.exportMLR1RepresentationCSV(
+                const representationCsv = AIExporter.exportMLR1RepresentationCSV(
                     events,
-                    chart.currentSymbol,
-                    chart.currentInterval
+                    exportSymbol,
+                    exportInterval
                 );
-                const exported = AIExporter.exportMLR1CSV(events, chart.currentSymbol, chart.currentInterval);
-
-                if (exported) {
-                    resetTopbarButton();
-                    setTimeout(() => {
-                        if (loadingOverlay) loadingOverlay.style.display = 'none';
-                        modalAiExport?.close();
-                    }, 1400);
+                const eventCsv = AIExporter.exportMLR1CSV(events, exportSymbol, exportInterval);
+                if (!representationCsv || !eventCsv) {
+                    throw new Error('CSV generation failed; no export files were downloaded.');
                 }
+                const files = [
+                    {
+                        blob: new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' }),
+                        filename: `MLR1_${exportSymbol}_${exportInterval}_Manifest.json`
+                    },
+                    {
+                        blob: new Blob([representationCsv], { type: 'text/csv;charset=utf-8;' }),
+                        filename: `MLR1_${exportSymbol}_${exportInterval}_Representation_Features.csv`
+                    },
+                    {
+                        blob: new Blob([eventCsv], { type: 'text/csv;charset=utf-8;' }),
+                        filename: `MLR1_${exportSymbol}_${exportInterval}_Events.csv`
+                    }
+                ];
+                const triggerDownload = (blob: Blob, filename: string) => {
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = filename;
+                    document.body.appendChild(link);
+                    link.click();
+                    setTimeout(() => {
+                        document.body.removeChild(link);
+                        URL.revokeObjectURL(url);
+                    }, 1500);
+                };
+                for (const file of files) {
+                    triggerDownload(file.blob, file.filename);
+                }
+
+                resetTopbarButton();
+                setTimeout(() => {
+                    if (loadingOverlay) loadingOverlay.style.display = 'none';
+                    modalAiExport?.close();
+                }, 1400);
                 // =========================================================================
                 // --- END CHUNK B ---
                 // =========================================================================

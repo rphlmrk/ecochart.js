@@ -174,8 +174,8 @@ export class CandleContextAggregator {
 
         for (let i = startBar; i <= endBar; i++) {
             const observation = acceptedRows[i].observation;
-            if (observation.sourceHigh > maxH) maxH = observation.sourceHigh;
-            if (observation.sourceLow < minL) minL = observation.sourceLow;
+            if (acceptedRows[i].candle.high > maxH) maxH = acceptedRows[i].candle.high;
+            if (acceptedRows[i].candle.low < minL) minL = acceptedRows[i].candle.low;
 
             const relativeVolume = observation.features['RelativeVolume_20'];
             if (observation.validity['RelativeVolume_20'] === true &&
@@ -262,21 +262,32 @@ export class AIExporter {
         const TRADE_COST_R = 0.05; 
         // ==========================================
 
+        if (!dataStore || !dataStore.data) {
+            throw new Error('AIExporter Error: dataStore with candle data is required.');
+        }
         const len = dataStore.length;
-        if (!dataStore || !dataStore.data || !Number.isSafeInteger(len) || len < 0 ||
+        if (!Number.isSafeInteger(len) || len < 0 ||
             !Array.isArray(acceptedRows) || acceptedRows.length !== len) {
             throw new Error(
                 `AIExporter Error: acceptedRows length (${acceptedRows?.length ?? 'invalid'}) must match dataStore length (${len}).`
             );
         }
         for (let i = 0; i < len; i++) {
+            const base = i * 6;
+            const candle = acceptedRows[i]?.candle;
             if (!acceptedRows[i] || !acceptedRows[i].candle || !acceptedRows[i].observation ||
-                acceptedRows[i].candle.time !== dataStore.data[i * 6] ||
-                acceptedRows[i].observation.timestamp !== dataStore.data[i * 6]) {
+                !candle ||
+                candle.time !== dataStore.data[base] ||
+                candle.open !== dataStore.data[base + 1] ||
+                candle.high !== dataStore.data[base + 2] ||
+                candle.low !== dataStore.data[base + 3] ||
+                candle.close !== dataStore.data[base + 4] ||
+                candle.volume !== dataStore.data[base + 5] ||
+                acceptedRows[i].observation.timestamp !== dataStore.data[base] ||
+                acceptedRows[i].observation.barIndex !== i) {
                 throw new Error(`AIExporter Error: accepted row ${i} does not match the downstream dataStore timeline.`);
             }
         }
-        const atrRaw = MarketFeatureEngine.calculateATRArray(dataStore, ATR_PERIOD);
         const events: MLR1EventRow[] = [];
 
         const indVersion = `v2_ATR${ATR_PERIOD}_SL${STOP_ATR_MULT}_TP${TARGET_R_MULT}_HZ${MAX_HORIZON_BARS}`;
@@ -291,6 +302,11 @@ export class AIExporter {
             const pivot = cachedPivots[i];
             const prevPivot = cachedPivots[i - 1];
             const confBar = pivot.confirmedBarIndex;
+            if (!Number.isSafeInteger(confBar) || confBar < 0 || confBar >= len ||
+                !Number.isSafeInteger(prevPivot.confirmedBarIndex) || prevPivot.confirmedBarIndex < 0 ||
+                confBar <= prevPivot.confirmedBarIndex) {
+                throw new Error(`AIExporter Error: pivot confirmation index ${confBar} is invalid or out of order.`);
+            }
             const entryBar = confBar + 1; // Strict rule: next_open
 
             if (entryBar >= len) {
@@ -298,9 +314,10 @@ export class AIExporter {
                 continue;
             }
 
-            // Enforce validated confirmation ATR; zero fallback permitted
-            const currentAtr = atrRaw[confBar];
-            if (confBar < ATR_PERIOD - 1 || !Number.isFinite(currentAtr) || currentAtr <= 0) {
+            // Use the authoritative Tier A ATR and its validity marker.
+            const currentAtr = acceptedRows[confBar].observation.features['ATR_14'];
+            const isAtrValid = acceptedRows[confBar].observation.validity['ATR_14'];
+            if (isAtrValid !== true || !Number.isFinite(currentAtr) || currentAtr <= 0) {
                 excludedUnwarmedAtr++;
                 continue; 
             }
@@ -469,8 +486,10 @@ export class AIExporter {
         return raw;
     }
 
-    public static exportMLR1CSV(events: MLR1EventRow[], symbol: string, timeframe: string): boolean {
-        if (typeof document === 'undefined' || events.length === 0) return false;
+    public static exportMLR1CSV(events: MLR1EventRow[], symbol: string, timeframe: string): string | null {
+        void symbol;
+        void timeframe;
+        if (events.length === 0) return null;
 
         // RFC-4180 Key-driven serialization: Never rely on Object.values() property order
         const keys = Object.keys(events[0]) as (keyof MLR1EventRow)[];
@@ -486,28 +505,17 @@ export class AIExporter {
             }).join(',')
         );
 
-        // Standard RFC-4180 CRLF record separators
-        const csv = [headers, ...lines].join('\r\n');
-
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `MLR1_${symbol}_${timeframe}_Events.csv`;
-        a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        return true;
+        return [headers, ...lines].join('\r\n');
     }
 
     /**
      * Physical File Segregation: Exports ONLY the 12 representation features for Transformer input.
      * Guarantees zero outcome or execution metadata exists in the training file.
      */
-    public static exportMLR1RepresentationCSV(events: MLR1EventRow[], symbol: string, timeframe: string): boolean {
-        if (typeof document === 'undefined' || events.length === 0) return false;
+    public static exportMLR1RepresentationCSV(events: MLR1EventRow[], symbol: string, timeframe: string): string | null {
+        void symbol;
+        void timeframe;
+        if (events.length === 0) return null;
 
         const headers = MLR1_REPRESENTATION_FEATURE_ALLOWLIST.map(this.csvEscape).join(',');
         const lines = events.map(e => {
@@ -515,18 +523,7 @@ export class AIExporter {
             return MLR1_REPRESENTATION_FEATURE_ALLOWLIST.map(key => this.csvEscape(input[key])).join(',');
         });
 
-        const csv = [headers, ...lines].join('\r\n');
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `MLR1_${symbol}_${timeframe}_Representation_Features.csv`;
-        a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        return true;
+        return [headers, ...lines].join('\r\n');
     }
 }
 
@@ -536,10 +533,12 @@ export class DatasetAuditor {
      * 1. Row-level Contract & Numerical Integrity Audit
      * 2. Training Allowlist Leakage Audit
      * 3. Independent Candle-Level Execution Replay Audit (verifying entry/exit/outcomes against DataStore candles)
+     * 4. Tier A context provenance recomputation
      */
     public static runCausalityAudit(
         events: MLR1EventRow[],
-        dataStore: any
+        dataStore: any,
+        acceptedRows: readonly SourceBackboneAcceptedRow[]
     ): {
         passed: boolean;
         chronologyValid: boolean;
@@ -554,9 +553,29 @@ export class DatasetAuditor {
             identityUnique: false,
             inputOutcomeSeparationValid: false
         };
-        if (!dataStore || !dataStore.data || dataStore.length === 0) {
-            console.error("❌ DatasetAuditor Error: dataStore is mandatory for the 3-way verification pass.");
+        if (!dataStore || !dataStore.data || dataStore.length === 0 ||
+            !Array.isArray(acceptedRows) || acceptedRows.length === 0) {
+            console.error("❌ DatasetAuditor Error: dataStore and acceptedRows are mandatory for the 3-way verification pass.");
             return failResult;
+        }
+        if (dataStore.length !== acceptedRows.length) {
+            console.error("❌ DatasetAuditor Error: dataStore length does not match acceptedRows length.");
+            return failResult;
+        }
+        for (let rowIndex = 0; rowIndex < dataStore.length; rowIndex++) {
+            const row = acceptedRows[rowIndex];
+            const base = rowIndex * 6;
+            if (!row || row.candle.time !== dataStore.data[base] ||
+                row.candle.open !== dataStore.data[base + 1] ||
+                row.candle.high !== dataStore.data[base + 2] ||
+                row.candle.low !== dataStore.data[base + 3] ||
+                row.candle.close !== dataStore.data[base + 4] ||
+                row.candle.volume !== dataStore.data[base + 5] ||
+                row.observation.timestamp !== dataStore.data[base] ||
+                row.observation.barIndex !== rowIndex) {
+                console.error(`❌ DatasetAuditor Error: accepted row ${rowIndex} does not match the dataStore bar.`);
+                return failResult;
+            }
         }
 
         let timeFailures = 0;
@@ -570,6 +589,7 @@ export class DatasetAuditor {
         let outcomeMathFailures = 0;
         let timeoutClassFailures = 0;
         let allowlistFailures = 0;
+        let provenanceFailures = 0;
         let candleExecutionFailures = 0;
 
         const idSet = new Set<string>();
@@ -690,6 +710,24 @@ export class DatasetAuditor {
             if (inputKeys.length !== MLR1_REPRESENTATION_FEATURE_ALLOWLIST.length) allowlistFailures++;
             for (let k = 0; k < inputKeys.length; k++) {
                 if (!ALLOWLIST_SET.has(inputKeys[k])) allowlistFailures++;
+            }
+
+            // Recompute each causal context feature from its authoritative accepted rows.
+            const contextStart = ev.confirmed_bar_index - ev.bars_since_last_pivot + 1;
+            const context = CandleContextAggregator.summarize(
+                acceptedRows,
+                contextStart,
+                ev.confirmed_bar_index,
+                ev.atr_at_confirmation
+            );
+            const contextTolerance = 0.0001;
+            if (context.count !== ev.context_candle_count ||
+                Math.abs(context.netReturnAtr - ev.context_net_return_atr) > contextTolerance ||
+                Math.abs(context.maxFavorableAtr - ev.context_max_favorable_atr) > contextTolerance ||
+                Math.abs(context.maxAdverseAtr - ev.context_max_adverse_atr) > contextTolerance ||
+                Math.abs(context.relativeVolume - ev.context_relative_volume) > contextTolerance ||
+                Math.abs(context.validFraction - ev.context_relative_volume_valid_fraction) > contextTolerance) {
+                provenanceFailures++;
             }
 
             // 12. Independent Candle-Level Execution Replay (Tracking LONG and SHORT trajectories)
@@ -820,6 +858,7 @@ export class DatasetAuditor {
         console.log(`   ↳ Outcome Net R & Risk:  ${outcomeMathFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`   ↳ Timeout Net Classes:   ${timeoutClassFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`   ↳ Allowlist Enforcement: ${allowlistFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
+        console.log(`   ↳ Tier A Context Provenance: ${provenanceFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`   ↳ Candle Execution Replay:${candleExecutionFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`=======================================`);
 
@@ -828,7 +867,8 @@ export class DatasetAuditor {
             directionFailures === 0 && volumeFractionFailures === 0 &&
             barrierGeometryFailures === 0 && exitIntegrityFailures === 0 &&
             outcomeMathFailures === 0 && timeoutClassFailures === 0 &&
-            allowlistFailures === 0 && candleExecutionFailures === 0;
+            allowlistFailures === 0 && provenanceFailures === 0 &&
+            candleExecutionFailures === 0;
         if (!passed) {
             if (typeof alert !== 'undefined') alert(`⚠️ ML-R1 Audit Failed!\nCheck developer console.`);
         }
