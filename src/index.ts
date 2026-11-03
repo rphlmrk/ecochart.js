@@ -5183,6 +5183,13 @@ export class WorkspaceManager {
                 auditRemarks.push(`Final exported Tier B/C ML-R1 events: ${events.length}`);
                 auditRemarks.push(`Tier A continuous observations: ${backboneResult.acceptedRows.length}`);
 
+                const exportAccounting = {
+                    tierAContinuousObservationCount: backboneResult.acceptedRows.length,
+                    tierAEventRepresentationRowCount: events.length,
+                    tierBConfirmedTeacherEventCount: events.length,
+                    tierCOutcomeRowCount: events.length
+                };
+
                 if (!sourceIntegrityPassed || !auditResult.passed ||
                     !chronologyValid || !identityUnique ||
                     !auditResult.inputOutcomeSeparationValid) {
@@ -5205,7 +5212,8 @@ export class WorkspaceManager {
                         identityUnique,
                         inputOutcomeSeparationValid: auditResult.inputOutcomeSeparationValid,
                         remarks: auditRemarks
-                    }
+                    },
+                    exportAccounting
                 );
                 if (!manifest.auditResults.passed) {
                     throw new Error(

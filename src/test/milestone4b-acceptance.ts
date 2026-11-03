@@ -12,6 +12,7 @@ import {
     type SlotIntegrityContext,
     type SourceBackboneInputItem
 } from '../indicators/mlr1/dataset/ObservationBackbone';
+import { CandleContextAggregator } from '../data/AIExporter';
 import type { ML1Candle, ML1Observation } from '../indicators/mlr1/ML1FeatureTypes';
 import type { DatasetConfig, IntegrityPolicy } from '../indicators/mlr1/dataset/DatasetConfig';
 
@@ -578,7 +579,13 @@ export function runPhase4BTests(): boolean {
             mockConfig,
             result.stats,
             result.uptime,
-            { passed: true, chronologyValid: true, identityUnique: true, inputOutcomeSeparationValid: true, remarks: [] }
+            { passed: true, chronologyValid: true, identityUnique: true, inputOutcomeSeparationValid: true, remarks: [] },
+            {
+                tierAContinuousObservationCount: 3,
+                tierAEventRepresentationRowCount: 0,
+                tierBConfirmedTeacherEventCount: 0,
+                tierCOutcomeRowCount: 0
+            }
         );
         assert(manifest.sourceRowCount === 6, 'Manifest source row count mismatch');
         assert(manifest.acceptedObservationCount === 3, 'Manifest accepted count mismatch');
@@ -588,6 +595,24 @@ export function runPhase4BTests(): boolean {
         assert(Math.abs(manifest.usableObservationFraction - 3 / 7) < 1e-4, 'Manifest usable fraction mismatch');
         assert(manifest.missingDataStats.invalidSourceCount === 1, 'Manifest invalid source count mismatch');
         assert(manifest.missingDataStats.outOfOrderCount === 1, 'Manifest out-of-order count mismatch');
+        assert(manifest.exportAccounting.tierAContinuousObservationCount === 3, 'Manifest continuous observation count mismatch');
+        assert(manifest.exportAccounting.tierAEventRepresentationRowCount === 0, 'Manifest representation row count mismatch');
+        assert(manifest.exportAccounting.tierBConfirmedTeacherEventCount === 0, 'Manifest teacher event count mismatch');
+        assert(manifest.exportAccounting.tierCOutcomeRowCount === 0, 'Manifest outcome row count mismatch');
+        assert(Object.isFrozen(manifest.exportAccounting), 'Manifest export accounting must be immutable');
+    });
+
+    runTest('15a. Candle context uses authoritative observation OHLC', () => {
+        const result = buildSourceBackbone(
+            [{ candle: createCandle(100000), observation: createMockObservation(100000, qualityFeatures()) }],
+            'SOLUSDT',
+            '1m',
+            1,
+            strictPolicy,
+            60000
+        );
+        const context = CandleContextAggregator.summarize(result.acceptedRows, 0, 0, 1);
+        assert(context.maxAdverseAtr === 2, 'Context must use observation sourceLow rather than the candle copy');
     });
 
     runTest('16. Off-grid record preserves the build grid anchor', () => {

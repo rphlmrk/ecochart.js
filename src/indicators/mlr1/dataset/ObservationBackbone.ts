@@ -1,7 +1,12 @@
 import type { ML1Candle, ML1Observation } from '../ML1FeatureTypes';
 import type { DataQualityStatus } from './DatasetTypes';
 import type { DatasetConfig, DatasetDateRange, IntegrityPolicy } from './DatasetConfig';
-import type { DatasetManifest, IntegrityAuditResults, MissingDataStatistics } from './DatasetManifest';
+import type {
+    DatasetManifest,
+    ExportAccounting,
+    IntegrityAuditResults,
+    MissingDataStatistics
+} from './DatasetManifest';
 
 export interface BackboneStats {
     readonly sourceRowCount: number;
@@ -769,7 +774,7 @@ export function validateCandleOhlcv(candle: ML1Candle): boolean {
 }
 
 /**
- * Reconciles backbone accounting and uptime into the immutable dataset manifest.
+ * Reconciles backbone, uptime, and export counts into the immutable dataset manifest.
  */
 export function createDatasetManifest(
     datasetId: string,
@@ -778,10 +783,28 @@ export function createDatasetManifest(
     stats: BackboneStats,
     uptime: DatasetUptimeEvaluation,
     auditResults: IntegrityAuditResults,
+    exportAccounting: ExportAccounting,
     htfStatsOverhead?: Partial<MissingDataStatistics>
 ): DatasetManifest {
     if (!datasetId || !sourceIdentity) {
         throw new Error('DatasetManifest Error: datasetId and sourceIdentity must be non-empty strings.');
+    }
+    const exportAccountingFields: readonly (keyof ExportAccounting)[] = [
+        'tierAContinuousObservationCount',
+        'tierAEventRepresentationRowCount',
+        'tierBConfirmedTeacherEventCount',
+        'tierCOutcomeRowCount'
+    ];
+    if (!exportAccounting || typeof exportAccounting !== 'object' ||
+        exportAccountingFields.some(field =>
+            !Number.isSafeInteger(exportAccounting[field]) || exportAccounting[field] < 0
+        )) {
+        throw new Error('DatasetManifest Error: exportAccounting counts must be non-negative safe integers.');
+    }
+    if (exportAccounting.tierAContinuousObservationCount !== stats.acceptedObservationCount) {
+        throw new Error(
+            'DatasetManifest Error: Tier A continuous observation count must match accepted backbone rows.'
+        );
     }
     if (stats.sourceRowCount !== stats.acceptedObservationCount + stats.rejectedObservationCount) {
         throw new Error('DatasetManifest Error: source row accounting invariant failed.');
@@ -825,6 +848,12 @@ export function createDatasetManifest(
         missingDataStats,
         buildConfig,
         buildTimestamp: Date.now(),
-        auditResults
+        auditResults,
+        exportAccounting: Object.freeze({
+            tierAContinuousObservationCount: exportAccounting.tierAContinuousObservationCount,
+            tierAEventRepresentationRowCount: exportAccounting.tierAEventRepresentationRowCount,
+            tierBConfirmedTeacherEventCount: exportAccounting.tierBConfirmedTeacherEventCount,
+            tierCOutcomeRowCount: exportAccounting.tierCOutcomeRowCount
+        })
     });
 }

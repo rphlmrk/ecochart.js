@@ -165,8 +165,8 @@ export class CandleContextAggregator {
             return { netReturnAtr: 0, maxFavorableAtr: 0, maxAdverseAtr: 0, count: 0, relativeVolume: -1.0, validFraction: 0.0 };
         }
 
-        const startOpen = acceptedRows[startBar].candle.open;
-        const endClose = acceptedRows[endBar].candle.close;
+        const startOpen = acceptedRows[startBar].observation.sourceOpen;
+        const endClose = acceptedRows[endBar].observation.sourceClose;
         let maxH = -Infinity;
         let minL = Infinity;
         let matureCount = 0;
@@ -174,8 +174,8 @@ export class CandleContextAggregator {
 
         for (let i = startBar; i <= endBar; i++) {
             const observation = acceptedRows[i].observation;
-            if (acceptedRows[i].candle.high > maxH) maxH = acceptedRows[i].candle.high;
-            if (acceptedRows[i].candle.low < minL) minL = acceptedRows[i].candle.low;
+            if (observation.sourceHigh > maxH) maxH = observation.sourceHigh;
+            if (observation.sourceLow < minL) minL = observation.sourceLow;
 
             const relativeVolume = observation.features['RelativeVolume_20'];
             if (observation.validity['RelativeVolume_20'] === true &&

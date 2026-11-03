@@ -25,6 +25,13 @@ export interface IntegrityAuditResults {
     readonly remarks: readonly string[];
 }
 
+export interface ExportAccounting {
+    readonly tierAContinuousObservationCount: number;
+    readonly tierAEventRepresentationRowCount: number;
+    readonly tierBConfirmedTeacherEventCount: number;
+    readonly tierCOutcomeRowCount: number;
+}
+
 export interface DatasetManifest {
     readonly datasetId: string;
     readonly sourceIdentity: string;
@@ -48,4 +55,5 @@ export interface DatasetManifest {
     readonly buildConfig: DatasetConfig;
     readonly buildTimestamp: number;
     readonly auditResults: IntegrityAuditResults;
+    readonly exportAccounting: ExportAccounting;
 }
