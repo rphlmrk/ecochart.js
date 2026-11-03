@@ -536,12 +536,26 @@ export class DatasetAuditor {
      * 2. Training Allowlist Leakage Audit
      * 3. Independent Candle-Level Execution Replay Audit (verifying entry/exit/outcomes against DataStore candles)
      */
-    public static runCausalityAudit(events: MLR1EventRow[], dataStore: any): boolean {
+    public static runCausalityAudit(
+        events: MLR1EventRow[],
+        dataStore: any
+    ): {
+        passed: boolean;
+        chronologyValid: boolean;
+        identityUnique: boolean;
+        inputOutcomeSeparationValid: boolean;
+    } {
         console.log('🛡️ Running ML-R1 Comprehensive Contract & Integrity Audit...');
 
+        const failResult = {
+            passed: false,
+            chronologyValid: false,
+            identityUnique: false,
+            inputOutcomeSeparationValid: false
+        };
         if (!dataStore || !dataStore.data || dataStore.length === 0) {
             console.error("❌ DatasetAuditor Error: dataStore is mandatory for the 3-way verification pass.");
-            return false;
+            return failResult;
         }
 
         let timeFailures = 0;
@@ -808,13 +822,20 @@ export class DatasetAuditor {
         console.log(`   ↳ Candle Execution Replay:${candleExecutionFailures === 0 ? '✅ PASSED' : '❌ FAILED'}`);
         console.log(`=======================================`);
 
-        if (timeFailures > 0 || indexFailures > 0 || mathFailures > 0 || duplicateFailures > 0 || 
-            directionFailures > 0 || volumeFractionFailures > 0 || barrierGeometryFailures > 0 ||
-            exitIntegrityFailures > 0 || outcomeMathFailures > 0 || timeoutClassFailures > 0 ||
-            allowlistFailures > 0 || candleExecutionFailures > 0) {
+        const passed = timeFailures === 0 && indexFailures === 0 &&
+            mathFailures === 0 && duplicateFailures === 0 &&
+            directionFailures === 0 && volumeFractionFailures === 0 &&
+            barrierGeometryFailures === 0 && exitIntegrityFailures === 0 &&
+            outcomeMathFailures === 0 && timeoutClassFailures === 0 &&
+            allowlistFailures === 0 && candleExecutionFailures === 0;
+        if (!passed) {
             if (typeof alert !== 'undefined') alert(`⚠️ ML-R1 Audit Failed!\nCheck developer console.`);
-            return false;
         }
-        return true;
+        return {
+            passed,
+            chronologyValid: timeFailures === 0 && indexFailures === 0,
+            identityUnique: duplicateFailures === 0,
+            inputOutcomeSeparationValid: allowlistFailures === 0
+        };
     }
 }

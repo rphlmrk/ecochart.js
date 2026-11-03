@@ -67,11 +67,41 @@ import { runPhase4BTests } from './test/milestone4b-acceptance';
 
 import { runPhase2JTests } from './test/milestone2j-acceptance';
 import { generatePhase2JReports } from './analysis/ML1FeatureAuditGenerator';
+import { ML1_CONFIG_B } from './indicators/mlr1/ML1FeatureConfigs';
+import { createInitialML1FeatureState, stepML1Features, validateML1Config } from './indicators/mlr1/ML1FeatureEngine';
+import type { ML1Candle } from './indicators/mlr1/ML1FeatureTypes';
+import {
+    buildSourceBackbone,
+    createDatasetManifest,
+    evaluateAcceptance,
+    extractDataQuality,
+    validateCandleOhlcv
+} from './indicators/mlr1/dataset/ObservationBackbone';
 import { runMilestone2AcceptanceSuite } from './test/run-milestone2';
 export { runMilestone2AcceptanceSuite };
 export { runPhase2JTests, generatePhase2JReports };
 
 const auditBoundButtons = new WeakSet<HTMLElement>();
+
+function candlesFromFlatBuffer(buffer: Float64Array): ML1Candle[] {
+    if (buffer.length % 6 !== 0) {
+        throw new Error(`Candle data buffer length (${buffer.length}) is not divisible by six.`);
+    }
+
+    const candles: ML1Candle[] = [];
+    for (let offset = 0; offset < buffer.length; offset += 6) {
+        candles.push({
+            time: buffer[offset],
+            open: buffer[offset + 1],
+            high: buffer[offset + 2],
+            low: buffer[offset + 3],
+            close: buffer[offset + 4],
+            volume: buffer[offset + 5],
+            isSynthetic: false
+        });
+    }
+    return candles;
+}
 
 export interface SavedPaneState {
     symbol: string;
@@ -4674,21 +4704,99 @@ export class WorkspaceManager {
         const runAiExportAudit = async () => {
             if (loadingOverlay) loadingOverlay.style.display = 'flex';
             if (loadingTitle) loadingTitle.textContent = 'Running Milestones 1 to 4 Test Suites...';
-            if (loadingDetail) loadingDetail.textContent = 'Executing full M1, M2 (2A-2H, 2J), M3 (3A-3E), and M4B pipelines...';
+            if (loadingDetail) loadingDetail.textContent = 'Fetching real provenance data from Binance...';
             await new Promise(resolve => setTimeout(resolve, 50));
 
             try {
+                const chart = WorkspaceManager.activeChart || WorkspaceManager.charts[0];
+                if (!chart) {
+                    throw new Error('Historical provenance audit requires an active chart.');
+                }
+                if (chart.currentSymbol !== 'SOLUSDT' || chart.currentInterval !== '1m') {
+                    throw new Error(
+                        `Provenance Gate requires SOLUSDT 1m. Currently active: ${chart.currentSymbol} ${chart.currentInterval}`
+                    );
+                }
+                const realCandlesRaw = await BackgroundDataMiner.mineHistoricalCandles(
+                    chart.currentSymbol,
+                    chart.currentInterval,
+                    7 * 86_400_000,
+                    (progress) => {
+                        if (loadingDetail) {
+                            loadingDetail.textContent = `Fetching real provenance data: ${progress.percent}%`;
+                        }
+                    }
+                );
+                if (realCandlesRaw.length === 0 || realCandlesRaw.length % 6 !== 0) {
+                    throw new Error('Historical fetch returned empty or malformed data (not divisible by 6).');
+                }
+                const realCandles = candlesFromFlatBuffer(realCandlesRaw);
+                let lastTime = -1;
+                let firstTime = -1;
+                for (let index = 0; index < realCandles.length; index++) {
+                    const candle = realCandles[index];
+                    if (candle.time < 1e12) {
+                        throw new Error(
+                            `Timestamp ${candle.time} appears to be in seconds; milliseconds are required.`
+                        );
+                    }
+                    if (!Number.isSafeInteger(candle.time) ||
+                        !Number.isFinite(candle.open) || !Number.isFinite(candle.high) ||
+                        !Number.isFinite(candle.low) || !Number.isFinite(candle.close) ||
+                        !Number.isFinite(candle.volume)) {
+                        throw new Error(`Non-finite or unsafe OHLCV value at candle index ${index}.`);
+                    }
+                    if (candle.high < candle.low ||
+                        candle.high < Math.max(candle.open, candle.close) ||
+                        candle.low > Math.min(candle.open, candle.close) ||
+                        candle.volume < 0) {
+                        throw new Error(`Structurally invalid OHLCV geometry at candle index ${index}.`);
+                    }
+                    if (index === 0) {
+                        firstTime = candle.time;
+                    } else if ((candle.time - firstTime) % 60_000 !== 0) {
+                        throw new Error(
+                            `Timestamp ${candle.time} is not on the 1m interval grid anchored at ${firstTime}.`
+                        );
+                    }
+                    if (candle.time <= lastTime) {
+                        throw new Error(
+                            `Chronological anomaly detected in fetched data at index ${index}: ${candle.time} <= ${lastTime}`
+                        );
+                    }
+                    if (!validateCandleOhlcv(candle)) {
+                        throw new Error(`Structurally invalid OHLCV at candle index ${index}.`);
+                    }
+                    lastTime = candle.time;
+                }
+                if (realCandles.length < 9500) {
+                    throw new Error(
+                        `Provenance dataset too small. Expected approximately 10,080 candles for 7 days 1m, got ${realCandles.length}.`
+                    );
+                }
+                const actualCoverage = ((realCandles.length / 10_080) * 100).toFixed(2);
+                console.log(
+                    `Provenance Data Verified: ${realCandles.length} candles (${actualCoverage}% of 7 days) ` +
+                    `from ${new Date(firstTime).toISOString()} to ${new Date(lastTime).toISOString()}`
+                );
+
                 console.log('\n======================================================');
                 console.log('🚀 EXECUTING COMPLETE ML-R1 SUITE: MILESTONES 1 TO 4');
                 console.log('======================================================');
+                if (loadingDetail) {
+                    loadingDetail.textContent = 'Executing full M1, M2 (2A-2H, 2J), M3 (3A-3E), and M4B pipelines...';
+                }
+                await new Promise(resolve => setTimeout(resolve, 50));
 
                 // Milestone 1 (Causal StrictCBC Teacher)
                 if (!runMilestone1AcceptanceSuite()) throw new Error('Milestone 1 suite failed');
                 console.log('✅ Milestone 1: Passed (Causal StrictCBC Teacher)');
 
-                // Milestone 2 (2A–2H core, 2J schema, and quantitative audit)
-                if (!runMilestone2AcceptanceSuite()) throw new Error('Milestone 2 complete suite failed');
-                console.log('✅ Milestone 2: Passed (Complete 2A–2H, 2J & Quantitative Audit)');
+                // Milestone 2 (2A–2H core, 2J schema, quantitative audit, and real provenance)
+                if (!runMilestone2AcceptanceSuite(realCandles, chart.currentSymbol, chart.currentInterval)) {
+                    throw new Error('Milestone 2 complete suite or historical provenance validation failed');
+                }
+                console.log('✅ Milestone 2: Passed (Complete 2A–2H, 2J, Quantitative Audit & Historical Provenance)');
 
                 // Milestone 3 (All 77 Multi-Timeframe Integration Tests)
                 if (!runPhase3ATests()) throw new Error('Milestone 3A suite failed');
@@ -4807,14 +4915,13 @@ export class WorkspaceManager {
                 // =========================================================================
                 // --- START CHUNK B: HEADLESS MATH & DATASET GENERATION ---
                 // =========================================================================
+                if (rawCandleBuffer.length % 6 !== 0) {
+                    throw new Error('Historical fetch returned malformed candle data.');
+                }
                 const candleCount = Math.floor(rawCandleBuffer.length / 6);
-
-                // 1. Wrap mined buffer in a lightweight Headless DataStore
-                const headlessDs = {
-                    data: rawCandleBuffer,
-                    length: candleCount,
-                    clear: () => {}
-                } as unknown as DataStore;
+                if (candleCount === 0) {
+                    throw new Error('Historical fetch returned no candles.');
+                }
 
                 // 2. Instantiate Headless Strict CBC ZigZag Indicator with user's chart settings
                 const headlessZigZag = new StrictCBCZigZagIndicator();
@@ -4827,14 +4934,163 @@ export class WorkspaceManager {
                     });
                 }
 
-                // Step A: Calculate Strict CBC ZigZag Structure & Cached Pivots
+                // --- M4B Backbone Integration (filters invalid data before downstream processing) ---
+                if (loadingTitle) loadingTitle.textContent = "Validating Source Integrity (M4B Backbone)...";
+                if (loadingDetail) {
+                    loadingDetail.textContent = `Reconciling ${candleCount.toLocaleString()} candles through the M4B backbone...`;
+                }
+                await new Promise(r => setTimeout(r, 25));
+
+                if (rawCandleBuffer.length === 0 || rawCandleBuffer.length % 6 !== 0) {
+                    throw new Error(
+                        'Historical fetch returned empty or malformed data buffer (length not divisible by 6).'
+                    );
+                }
+                const intervalMs = TimeframeResampler.parseMs(chart.currentInterval);
+                if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
+                    throw new Error(`Unsupported chart interval for M4B validation: ${chart.currentInterval}`);
+                }
+                const strictPolicy = {
+                    rejectInvalidSource: true,
+                    rejectInvalidOhlcv: true,
+                    rejectDuplicateTimestamp: true,
+                    rejectOutOfOrder: true,
+                    requireMinimumUptimeFraction: 1.0
+                };
+                const featureConfig = validateML1Config({
+                    ...ML1_CONFIG_B,
+                    symbol: chart.currentSymbol,
+                    timeframe: chart.currentInterval,
+                    expectedIntervalMs: intervalMs,
+                    gapDiscontinuityThresholdMs: Math.max(
+                        ML1_CONFIG_B.gapDiscontinuityThresholdMs,
+                        intervalMs
+                    ),
+                    emaPeriods: [...ML1_CONFIG_B.emaPeriods],
+                    atrPeriods: [...ML1_CONFIG_B.atrPeriods],
+                    rollingRangePeriods: [...ML1_CONFIG_B.rollingRangePeriods],
+                    momentumPeriods: [...ML1_CONFIG_B.momentumPeriods],
+                    volumeSmaPeriods: [...ML1_CONFIG_B.volumeSmaPeriods]
+                });
+
+                const dsFirstTime = rawCandleBuffer[0];
+                let ml1State = createInitialML1FeatureState();
+                const backboneInputs: Array<{
+                    candle: ML1Candle;
+                    observation: ReturnType<typeof stepML1Features>['observation'];
+                    isValidOhlcv: boolean;
+                }> = [];
+                for (let i = 0; i < rawCandleBuffer.length; i += 6) {
+                    const candle: ML1Candle = {
+                        time: rawCandleBuffer[i],
+                        open: rawCandleBuffer[i + 1],
+                        high: rawCandleBuffer[i + 2],
+                        low: rawCandleBuffer[i + 3],
+                        close: rawCandleBuffer[i + 4],
+                        volume: rawCandleBuffer[i + 5],
+                        isSynthetic: false
+                    };
+                    if (!Number.isSafeInteger(candle.time) || candle.time < 1e12) {
+                        throw new Error(
+                            `Export aborted: candle timestamp ${candle.time} is invalid or is not in milliseconds.`
+                        );
+                    }
+                    const isValidOhlcv = validateCandleOhlcv(candle);
+                    const result = stepML1Features(candle, i / 6, ml1State, featureConfig);
+                    const quality = extractDataQuality(result.observation);
+                    const isOnGrid = (candle.time - dsFirstTime) % intervalMs === 0;
+                    const acceptance = evaluateAcceptance(quality, strictPolicy, isValidOhlcv, {
+                        gridAnchor: dsFirstTime,
+                        isOnGrid,
+                        isWithinRange: true
+                    });
+                    const continuityFailures = [
+                        quality.hasDataGap ? 'DATA_GAP' : '',
+                        quality.isDiscontinuity ? 'DISCONTINUITY' : '',
+                        quality.isUnexpectedInterval ? 'UNEXPECTED_INTERVAL' : ''
+                    ].filter(Boolean);
+                    if (!acceptance.isAccepted || continuityFailures.length > 0) {
+                        const rejectionReasons = [
+                            ...acceptance.rejectionReasons,
+                            ...continuityFailures
+                        ];
+                        throw new Error(
+                            `Export aborted: Candle at timestamp ${candle.time} rejected due to: ` +
+                            `${rejectionReasons.join(', ')}. A continuous timeline is required.`
+                        );
+                    }
+
+                    // The feature engine is immutable; commit its next state only after validation passes.
+                    ml1State = result.nextState;
+                    backboneInputs.push({ candle, observation: result.observation, isValidOhlcv });
+                }
+
+                const dateRange = {
+                    startTimestamp: backboneInputs[0].candle.time,
+                    endTimestamp: backboneInputs[backboneInputs.length - 1].candle.time
+                };
+                const backboneResult = buildSourceBackbone(
+                    backboneInputs,
+                    chart.currentSymbol,
+                    chart.currentInterval,
+                    1,
+                    strictPolicy,
+                    intervalMs,
+                    dateRange
+                );
+                if (!backboneResult.uptime.isUptimeValid || backboneResult.rejectedRows.length > 0) {
+                    throw new Error(
+                        `Dataset uptime requirement failed. 100% contiguous data is required. Usable fraction: ` +
+                        `${(backboneResult.uptime.usableObservationFraction * 100).toFixed(2)}%`
+                    );
+                }
+                const cleanLength = backboneResult.acceptedRows.length;
+                if (cleanLength === 0) {
+                    throw new Error('M4B backbone accepted no candles; export cannot continue.');
+                }
+                const cleanBuffer = new Float64Array(cleanLength * 6);
+                for (let i = 0; i < cleanLength; i++) {
+                    const candle = backboneResult.acceptedRows[i].candle;
+                    const offset = i * 6;
+                    cleanBuffer[offset] = candle.time;
+                    cleanBuffer[offset + 1] = candle.open;
+                    cleanBuffer[offset + 2] = candle.high;
+                    cleanBuffer[offset + 3] = candle.low;
+                    cleanBuffer[offset + 4] = candle.close;
+                    cleanBuffer[offset + 5] = candle.volume;
+                }
+                const cleanDs = {
+                    data: cleanBuffer,
+                    length: cleanLength,
+                    clear: () => {}
+                } as unknown as DataStore;
                 if (loadingTitle) loadingTitle.textContent = "Processing Structural Events...";
-                if (loadingDetail) loadingDetail.textContent = `Computing Strict CBC ZigZag pivots on ${candleCount.toLocaleString()} candles...`;
+                if (loadingDetail) {
+                    loadingDetail.textContent =
+                        `Computing Strict CBC ZigZag pivots on ${cleanLength.toLocaleString()} accepted candles...`;
+                }
                 if (progressFill) progressFill.style.width = "85%";
                 if (progressPct) progressPct.textContent = "85%";
-                await new Promise(r => setTimeout(r, 25)); // Allow UI repaint
+                await new Promise(r => setTimeout(r, 25));
+                headlessZigZag.calculate(cleanDs);
 
-                headlessZigZag.calculate(headlessDs);
+                const manifestConfig = {
+                    symbol: chart.currentSymbol,
+                    baseTimeframe: chart.currentInterval,
+                    datasetVersion: 1,
+                    sourceIntervalMs: intervalMs,
+                    featureConfigVersion: 'ML1_CONFIG_B_v1',
+                    teacherVersion: 'StrictCBCZigZag_v1',
+                    outcomeConfigVersion: 'MLR1_v1',
+                    dateRange,
+                    integrityPolicy: strictPolicy,
+                    exportConfig: {
+                        exportTierA: true,
+                        exportTierB: true,
+                        exportTierC: true,
+                        separateFiles: true
+                    }
+                };
 
                 // Step B: Build ML-R1 Dataset (Features, Context, and Frozen Outcome Engine)
                 if (loadingTitle) loadingTitle.textContent = "Building ML-R1 Dataset...";
@@ -4844,7 +5100,7 @@ export class WorkspaceManager {
                 await new Promise(r => setTimeout(r, 25));
 
                 const events = AIExporter.buildMLR1Dataset(
-                    headlessDs,
+                    cleanDs,
                     headlessZigZag.cachedPivots,
                     chart.currentSymbol,
                     chart.currentInterval
@@ -4858,12 +5114,74 @@ export class WorkspaceManager {
                 }
 
                 // Step C: Run Pre-Flight Master Audit with Candle-Level Execution Replay
-                const auditPassed = DatasetAuditor.runCausalityAudit(events, headlessDs);
-                if (!auditPassed) {
-                    if (loadingOverlay) loadingOverlay.style.display = 'none';
-                    resetTopbarButton();
-                    return;
+                const auditResult = DatasetAuditor.runCausalityAudit(events, cleanDs);
+                const backboneChronologyValid = backboneResult.stats.outOfOrderCount === 0;
+                const backboneIdentityUnique = new Set(
+                    backboneResult.acceptedRows.map(row => row.observationId)
+                ).size === backboneResult.acceptedRows.length;
+                const chronologyValid = auditResult.chronologyValid && backboneChronologyValid;
+                const identityUnique = auditResult.identityUnique && backboneIdentityUnique;
+                const sourceIntegrityPassed = backboneResult.uptime.isUptimeValid &&
+                    backboneResult.rejectedRows.length === 0;
+                const auditRemarks: string[] = [];
+                if (backboneResult.rejectedRows.length > 0) {
+                    auditRemarks.push(`${backboneResult.rejectedRows.length} source rows were rejected by the M4B backbone.`);
                 }
+                if (!backboneResult.uptime.isUptimeValid) {
+                    auditRemarks.push(
+                        `Usable observation fraction (${backboneResult.uptime.usableObservationFraction}) ` +
+                        'is below the configured minimum.'
+                    );
+                }
+                if (!chronologyValid) auditRemarks.push('Source chronology validation failed.');
+                if (!identityUnique) auditRemarks.push('Accepted observation identities are not unique.');
+                if (!auditResult.inputOutcomeSeparationValid) {
+                    auditRemarks.push('Representation allowlist validation failed.');
+                }
+                if (!auditResult.passed) auditRemarks.push('Causality audit failed during export.');
+
+                if (!sourceIntegrityPassed || !auditResult.passed ||
+                    !chronologyValid || !identityUnique ||
+                    !auditResult.inputOutcomeSeparationValid) {
+                    throw new Error(
+                        'Pre-flight Master Audit failed: source integrity, identity, chronology, or separation invariant broken.'
+                    );
+                }
+
+                const manifest = createDatasetManifest(
+                    `DS_${chart.currentSymbol}_${chart.currentInterval}_V1`,
+                    'BINANCE_SPOT',
+                    manifestConfig,
+                    backboneResult.stats,
+                    backboneResult.uptime,
+                    {
+                        passed: sourceIntegrityPassed && auditResult.passed &&
+                            chronologyValid && identityUnique &&
+                            auditResult.inputOutcomeSeparationValid,
+                        chronologyValid,
+                        identityUnique,
+                        inputOutcomeSeparationValid: auditResult.inputOutcomeSeparationValid,
+                        remarks: auditRemarks
+                    }
+                );
+                if (!manifest.auditResults.passed) {
+                    throw new Error(
+                        'Pre-flight integrity audit failed. Dataset is contaminated or invalid; review the console.'
+                    );
+                }
+
+                const manifestBlob = new Blob([JSON.stringify(manifest, null, 2)], {
+                    type: 'application/json'
+                });
+                const manifestUrl = URL.createObjectURL(manifestBlob);
+                const manifestLink = document.createElement('a');
+                manifestLink.href = manifestUrl;
+                manifestLink.download =
+                    `MLR1_${chart.currentSymbol}_${chart.currentInterval}_Manifest.json`;
+                document.body.appendChild(manifestLink);
+                manifestLink.click();
+                document.body.removeChild(manifestLink);
+                setTimeout(() => URL.revokeObjectURL(manifestUrl), 1000);
 
                 // Step D: Export ML-R1 Events CSV
                 if (loadingTitle) loadingTitle.textContent = "Exporting ML-R1 CSV...";
@@ -4872,6 +5190,11 @@ export class WorkspaceManager {
                 if (progressPct) progressPct.textContent = "100%";
                 await new Promise(r => setTimeout(r, 25));
 
+                AIExporter.exportMLR1RepresentationCSV(
+                    events,
+                    chart.currentSymbol,
+                    chart.currentInterval
+                );
                 const exported = AIExporter.exportMLR1CSV(events, chart.currentSymbol, chart.currentInterval);
 
                 if (exported) {
