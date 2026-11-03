@@ -860,10 +860,31 @@ export function runPhase4BTests(): boolean {
         const events = AIExporter.buildMLR1Dataset(dataStore, rows, pivots, 'SOLUSDT', '1m', 60000);
         assert(events.length === 1, 'A complete, eligible alternating pivot pair should produce one event');
         assert(events[0].previous_pivot_bar_index === 1, 'Event should retain the preceding pivot bar index');
+        assert(events[0].previous_pivot_confirmed_bar_index === 2,
+            'Event should retain the preceding pivot confirmation index');
+        assert(events[0].previous_pivot_confirmation_time_ms === rows[2].sourceTimestamp,
+            'Event should retain the preceding pivot confirmation timestamp');
         assert(events[0].previous_pivot_type === 'low', 'Event should retain the preceding pivot type');
         assert(
-            DatasetAuditor.runCausalityAudit(events, dataStore, rows, 60000).passed,
+            DatasetAuditor.runCausalityAudit(events, dataStore, rows, 60000, pivots).passed,
             'Auditor should accept event pivot provenance matching the accepted candles'
+        );
+
+        const incorrectPreviousConfirmation = [{
+            ...events[0],
+            previous_pivot_confirmed_bar_index: 1
+        }];
+        assert(
+            !DatasetAuditor.runCausalityAudit(incorrectPreviousConfirmation, dataStore, rows, 60000, pivots).passed,
+            'Auditor must reject incorrect preceding-pivot confirmation provenance'
+        );
+
+        const discontinuousRows = rows.map((row, index) => index === 3
+            ? { ...row, sourceTimestamp: row.sourceTimestamp + 60000 }
+            : row);
+        assert(
+            !DatasetAuditor.runCausalityAudit(events, dataStore, discontinuousRows, 60000, pivots).passed,
+            'Auditor must reject a non-contiguous accepted timeline'
         );
 
         const malformedPivots = [pivots[0], { ...pivots[1], time: pivots[1].time + 1 }];

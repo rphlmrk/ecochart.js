@@ -830,9 +830,15 @@ export function createDatasetManifest(
         throw new Error('DatasetManifest Error: actualFileRowCounts must include generated dataset files.');
     }
     for (const [fileName, rowCount] of fileRowCountEntries) {
-        if (!fileName.trim() || !Number.isSafeInteger(rowCount) || rowCount < 0) {
+        if (
+            typeof fileName !== 'string' ||
+            fileName.trim().length === 0 ||
+            !Number.isSafeInteger(rowCount) ||
+            rowCount < 0
+        ) {
             throw new Error(
-                `DatasetManifest Error: actualFileRowCounts[${JSON.stringify(fileName)}] must be a non-negative safe integer.`
+                `DatasetManifest Error: Invalid actual file row count entry for '${fileName}': ` +
+                `expected non-negative safe integer data row count excluding header, got ${rowCount}.`
             );
         }
     }

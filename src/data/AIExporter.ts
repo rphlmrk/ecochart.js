@@ -80,6 +80,8 @@ export interface MLR1EventRow {
     pivot_price: number;
     previous_pivot_price: number;                          // Retained for independent leg verification
     previous_pivot_bar_index: number;
+    previous_pivot_confirmed_bar_index: number;
+    previous_pivot_confirmation_time_ms: number;
     previous_pivot_type: 'high' | 'low';
     pivot_bar_index: number;
     pivot_time_ms: number;
@@ -581,6 +583,8 @@ export class AIExporter {
                 pivot_price: pivot.price,
                 previous_pivot_price: prevPivot.price,
                 previous_pivot_bar_index: prevPivot.barIndex,
+                previous_pivot_confirmed_bar_index: prevPivot.confirmedBarIndex,
+                previous_pivot_confirmation_time_ms: dataStore.data[prevPivot.confirmedBarIndex * 6],
                 previous_pivot_type: prevPivot.type,
                 pivot_bar_index: pivot.barIndex,
                 pivot_time_ms: pivot.time,
@@ -1006,7 +1010,8 @@ export class AIExporter {
             events,
             dataStore,
             backboneResult.acceptedRows,
-            intervalMs
+            intervalMs,
+            zigZag.cachedPivots
         );
         const chronologyValid = auditResult.chronologyValid &&
             backboneResult.stats.outOfOrderCount === 0;
@@ -1122,7 +1127,8 @@ export class DatasetAuditor {
         events: MLR1EventRow[],
         dataStore: any,
         acceptedRows: readonly SourceBackboneAcceptedRow[],
-        intervalMs: number
+        intervalMs: number,
+        cachedPivots?: readonly StrictZigZagPivot[]
     ): {
         passed: boolean;
         chronologyValid: boolean;
@@ -1146,9 +1152,13 @@ export class DatasetAuditor {
             return failResult;
         }
         if (!dataStore || !dataStore.data || !Number.isSafeInteger(dataStore.length) ||
-            dataStore.length === 0 || dataStore.data.length < dataStore.length * 6 ||
+            dataStore.length === 0 || dataStore.data.length !== dataStore.length * 6 ||
             !Array.isArray(acceptedRows) || acceptedRows.length === 0) {
             console.error("❌ DatasetAuditor Error: dataStore and acceptedRows are mandatory for the 3-way verification pass.");
+            return failResult;
+        }
+        if (cachedPivots !== undefined && !Array.isArray(cachedPivots)) {
+            console.error('DatasetAuditor Error: cachedPivots must be an array when supplied.');
             return failResult;
         }
         if (dataStore.length !== acceptedRows.length) {
@@ -1175,7 +1185,8 @@ export class DatasetAuditor {
                 row.observation.sourceClose !== row.candle.close ||
                 row.observation.sourceVolume !== row.candle.volume ||
                 row.observation.barIndex !== rowIndex ||
-                (rowIndex > 0 && row.sourceTimestamp <= acceptedRows[rowIndex - 1].sourceTimestamp)) {
+                (rowIndex > 0 &&
+                    row.sourceTimestamp !== acceptedRows[rowIndex - 1].sourceTimestamp + intervalMs)) {
                 console.error(`❌ DatasetAuditor Error: accepted row ${rowIndex} does not match the dataStore bar.`);
                 return failResult;
             }
@@ -1232,9 +1243,15 @@ export class DatasetAuditor {
                 !Number.isSafeInteger(ev.previous_pivot_bar_index) ||
                 !Number.isSafeInteger(ev.confirmed_bar_index) ||
                 !Number.isSafeInteger(ev.entry_bar_index) ||
+                !Number.isSafeInteger(ev.previous_pivot_confirmed_bar_index) ||
                 ev.pivot_bar_index < 0 ||
                 ev.previous_pivot_bar_index < 0 ||
+                ev.previous_pivot_confirmed_bar_index < 0 ||
+                ev.previous_pivot_confirmed_bar_index < ev.previous_pivot_bar_index ||
                 ev.previous_pivot_bar_index >= ev.pivot_bar_index ||
+                ev.previous_pivot_bar_index >= acceptedRows.length ||
+                ev.previous_pivot_confirmed_bar_index >= ev.confirmed_bar_index ||
+                ev.previous_pivot_confirmed_bar_index >= acceptedRows.length ||
                 ev.pivot_bar_index > ev.confirmed_bar_index ||
                 ev.confirmed_bar_index >= acceptedRows.length ||
                 ev.entry_bar_index !== ev.confirmed_bar_index + 1 ||
@@ -1249,6 +1266,7 @@ export class DatasetAuditor {
             const sourcePivotRow = acceptedRows[ev.pivot_bar_index];
             const sourcePreviousPivotRow = acceptedRows[ev.previous_pivot_bar_index];
             const sourceConfirmedRow = acceptedRows[ev.confirmed_bar_index];
+            const sourcePreviousConfirmedRow = acceptedRows[ev.previous_pivot_confirmed_bar_index];
             const expectedPivotPrice = ev.pivot_type === 'high'
                 ? sourcePivotRow.candle.high
                 : sourcePivotRow.candle.low;
@@ -1260,19 +1278,40 @@ export class DatasetAuditor {
                 ev.pivot_type === ev.previous_pivot_type ||
                 Math.abs(ev.pivot_price - expectedPivotPrice) > 0.0001 ||
                 Math.abs(ev.previous_pivot_price - expectedPreviousPivotPrice) > 0.0001 ||
+                ev.bars_since_last_pivot !==
+                    ev.confirmed_bar_index - ev.previous_pivot_confirmed_bar_index ||
                 ev.confirmation_time_ms !== sourceConfirmedRow.sourceTimestamp ||
                 ev.entry_time !== sourceConfirmedRow.observationTimestamp ||
                 ev.pivot_time_ms !== sourcePivotRow.sourceTimestamp ||
+                ev.previous_pivot_confirmation_time_ms !== sourcePreviousConfirmedRow.sourceTimestamp ||
                 ev.pivot_time_ms > ev.confirmation_time_ms ||
                 (i > 0 && (!previousEvent ||
                     !Number.isSafeInteger(previousEvent.pivot_bar_index) ||
                     ev.pivot_bar_index <= previousEvent.pivot_bar_index))) {
                 indexFailures++;
             }
+            if (cachedPivots) {
+                const currentTeacherIndex = cachedPivots.findIndex(
+                    pivot => pivot.barIndex === ev.pivot_bar_index &&
+                        pivot.confirmedBarIndex === ev.confirmed_bar_index
+                );
+                const previousTeacher = currentTeacherIndex > 0
+                    ? cachedPivots[currentTeacherIndex - 1]
+                    : undefined;
+                if (!previousTeacher ||
+                    previousTeacher.barIndex !== ev.previous_pivot_bar_index ||
+                    previousTeacher.confirmedBarIndex !== ev.previous_pivot_confirmed_bar_index ||
+                    previousTeacher.type !== ev.previous_pivot_type ||
+                    Math.abs(previousTeacher.price - ev.previous_pivot_price) > 0.0001) {
+                    provenanceFailures++;
+                }
+            }
 
             // 4. Exhaustive Anti-NaN Gate on all 25 numeric fields
             const requiredFiniteNumbers = [
-                ev.pivot_price, ev.previous_pivot_price, ev.previous_pivot_bar_index, ev.pivot_bar_index,
+                ev.pivot_price, ev.previous_pivot_price, ev.previous_pivot_bar_index,
+                ev.previous_pivot_confirmed_bar_index, ev.previous_pivot_confirmation_time_ms,
+                ev.pivot_bar_index,
                 ev.pivot_time_ms, ev.confirmed_bar_index, ev.confirmation_time_ms, ev.bars_since_last_pivot,
                 ev.leg_distance_atr, ev.context_net_return_atr, ev.context_max_favorable_atr,
                 ev.context_max_adverse_atr, ev.context_candle_count, ev.context_relative_volume,
@@ -1288,7 +1327,8 @@ export class DatasetAuditor {
 
             // Strict Integer Fields
             const requiredIntegerFields = [
-                ev.previous_pivot_bar_index, ev.pivot_bar_index, ev.pivot_time_ms,
+                ev.previous_pivot_bar_index, ev.previous_pivot_confirmed_bar_index,
+                ev.previous_pivot_confirmation_time_ms, ev.pivot_bar_index, ev.pivot_time_ms,
                 ev.confirmed_bar_index, ev.confirmation_time_ms,
                 ev.bars_since_last_pivot, ev.context_candle_count, ev.entry_bar_index, ev.entry_time
             ];
