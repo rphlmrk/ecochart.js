@@ -165,8 +165,8 @@ export class CandleContextAggregator {
             return { netReturnAtr: 0, maxFavorableAtr: 0, maxAdverseAtr: 0, count: 0, relativeVolume: -1.0, validFraction: 0.0 };
         }
 
-        const startOpen = acceptedRows[startBar].observation.sourceOpen;
-        const endClose = acceptedRows[endBar].observation.sourceClose;
+        const startOpen = acceptedRows[startBar].candle.open;
+        const endClose = acceptedRows[endBar].candle.close;
         if (!Number.isFinite(startOpen) || !Number.isFinite(endClose) || startOpen <= 0 || endClose <= 0) {
             return { netReturnAtr: 0, maxFavorableAtr: 0, maxAdverseAtr: 0, count: 0, relativeVolume: -1.0, validFraction: 0.0 };
         }
@@ -176,15 +176,17 @@ export class CandleContextAggregator {
         let sumRelativeVolume = 0;
 
         for (let i = startBar; i <= endBar; i++) {
-            const observation = acceptedRows[i].observation;
-            if (!Number.isFinite(observation.sourceHigh) || !Number.isFinite(observation.sourceLow)) {
+            const row = acceptedRows[i];
+            const candleHigh = row.candle.high;
+            const candleLow = row.candle.low;
+            if (!Number.isFinite(candleHigh) || !Number.isFinite(candleLow)) {
                 return { netReturnAtr: 0, maxFavorableAtr: 0, maxAdverseAtr: 0, count: 0, relativeVolume: -1.0, validFraction: 0.0 };
             }
-            if (observation.sourceHigh > maxH) maxH = observation.sourceHigh;
-            if (observation.sourceLow < minL) minL = observation.sourceLow;
+            if (candleHigh > maxH) maxH = candleHigh;
+            if (candleLow < minL) minL = candleLow;
 
-            const relativeVolume = observation.features['RelativeVolume_20'];
-            if (observation.validity['RelativeVolume_20'] === true &&
+            const relativeVolume = row.observation.features['RelativeVolume_20'];
+            if (row.observation.validity['RelativeVolume_20'] === true &&
                 Number.isFinite(relativeVolume) && relativeVolume >= 0) {
                 matureCount++;
                 sumRelativeVolume += relativeVolume;
@@ -221,6 +223,16 @@ export class HybridTokenBuilder {
         }
         const confBar = event.confirmedBarIndex;
         const prevConfBar = prevEvent.confirmedBarIndex;
+        if (!Number.isSafeInteger(confBar) || !Number.isSafeInteger(prevConfBar) ||
+            confBar < 0 || confBar >= acceptedRows.length ||
+            prevConfBar < 0 || prevConfBar >= confBar) {
+            throw new Error(
+                `HybridTokenBuilder Error: invalid confirmed-bar indices: previous=${prevConfBar}, current=${confBar}.`
+            );
+        }
+        if (!Number.isFinite(event.price) || !Number.isFinite(prevEvent.price)) {
+            throw new Error('HybridTokenBuilder Error: pivot prices must be finite.');
+        }
         
         const barsSinceLast = confBar - prevConfBar;
         const legDistAtr = (event.price - prevEvent.price) / currentAtr;
@@ -512,15 +524,22 @@ export class AIExporter {
         const keys = Object.keys(events[0]) as (keyof MLR1EventRow)[];
         const headers = keys.map(k => this.csvEscape(k)).join(',');
 
-        const lines = events.map(e =>
-            keys.map(key => {
-                const val = e[key];
+        const schemaKey = keys.join(',');
+        const lines = events.map((event, rowIndex) => {
+            if (Object.keys(event).join(',') !== schemaKey) {
+                throw new Error(`CSV Schema Consistency Error: event row ${rowIndex} fields do not match header schema.`);
+            }
+            return keys.map(key => {
+                const val = event[key];
                 if (typeof val === 'number') {
-                    return String(val); // Preserve full 64-bit float precision
+                    if (!Number.isFinite(val)) {
+                        throw new Error(`Non-finite numeric export value on key ${String(key)} in event row ${rowIndex}.`);
+                    }
+                    return String(val);
                 }
                 return this.csvEscape(val);
-            }).join(',')
-        );
+            }).join(',');
+        });
 
         return [headers, ...lines].join('\r\n');
     }
@@ -538,6 +557,66 @@ export class AIExporter {
         const lines = events.map(e => {
             const input = buildRepresentationInput(e);
             return MLR1_REPRESENTATION_FEATURE_ALLOWLIST.map(key => this.csvEscape(input[key])).join(',');
+        });
+
+        return [headers, ...lines].join('\r\n');
+    }
+
+    public static exportMLR1ContinuousObservationsCSV(
+        acceptedRows: readonly SourceBackboneAcceptedRow[]
+    ): string | null {
+        if (acceptedRows.length === 0) return null;
+
+        const featureKeys = Object.keys(acceptedRows[0].observation.features).sort();
+        const headers = [
+            'observation_id',
+            'source_timestamp',
+            'observation_timestamp',
+            'open',
+            'high',
+            'low',
+            'close',
+            'volume',
+            ...featureKeys
+        ].map(this.csvEscape).join(',');
+        const lines = acceptedRows.map((row, index) => {
+            const currentFeatureKeys = Object.keys(row.observation.features).sort();
+            if (currentFeatureKeys.length !== featureKeys.length ||
+                currentFeatureKeys.some((key, keyIndex) => key !== featureKeys[keyIndex])) {
+                throw new Error(`Continuous Observation Schema Error: row ${index} feature keys differ from the schema.`);
+            }
+            if (!row.observationId ||
+                !Number.isSafeInteger(row.sourceTimestamp) ||
+                !Number.isSafeInteger(row.observationTimestamp) ||
+                row.sourceTimestamp !== row.candle.time ||
+                row.sourceTimestamp !== row.observation.timestamp ||
+                row.observationTimestamp <= row.sourceTimestamp ||
+                !Number.isFinite(row.candle.open) ||
+                !Number.isFinite(row.candle.high) ||
+                !Number.isFinite(row.candle.low) ||
+                !Number.isFinite(row.candle.close) ||
+                !Number.isFinite(row.candle.volume)) {
+                throw new Error(`Continuous Observation Schema Error: row ${index} has invalid identity, timestamps, or OHLCV.`);
+            }
+
+            const values = [
+                this.csvEscape(row.observationId),
+                String(row.sourceTimestamp),
+                String(row.observationTimestamp),
+                String(row.candle.open),
+                String(row.candle.high),
+                String(row.candle.low),
+                String(row.candle.close),
+                String(row.candle.volume),
+                ...featureKeys.map(key => {
+                    const featureValue = row.observation.features[key];
+                    if (!Number.isFinite(featureValue)) {
+                        throw new Error(`Non-finite feature ${key} in continuous row ${index}.`);
+                    }
+                    return String(featureValue);
+                })
+            ];
+            return values.join(',');
         });
 
         return [headers, ...lines].join('\r\n');
@@ -571,8 +650,12 @@ export class DatasetAuditor {
             identityUnique: false,
             inputOutcomeSeparationValid: false
         };
-        if (!dataStore || !dataStore.data || dataStore.length === 0 ||
-            !Number.isSafeInteger(intervalMs) || intervalMs <= 0 ||
+        if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
+            console.error('DatasetAuditor Error: intervalMs must be a positive safe integer.');
+            return failResult;
+        }
+        if (!dataStore || !dataStore.data || !Number.isSafeInteger(dataStore.length) ||
+            dataStore.length === 0 || dataStore.data.length < dataStore.length * 6 ||
             !Array.isArray(acceptedRows) || acceptedRows.length === 0) {
             console.error("❌ DatasetAuditor Error: dataStore and acceptedRows are mandatory for the 3-way verification pass.");
             return failResult;
@@ -590,6 +673,7 @@ export class DatasetAuditor {
                 row.candle.low !== dataStore.data[base + 3] ||
                 row.candle.close !== dataStore.data[base + 4] ||
                 row.candle.volume !== dataStore.data[base + 5] ||
+                row.sourceTimestamp !== dataStore.data[base] ||
                 row.observation.timestamp !== dataStore.data[base] ||
                 row.observationTimestamp !== row.sourceTimestamp + intervalMs ||
                 row.observation.sourceOpen !== row.candle.open ||
@@ -750,30 +834,33 @@ export class DatasetAuditor {
                 let sumRelativeVolume = 0;
                 let maxHigh = -Infinity;
                 let minLow = Infinity;
-                const startOpen = acceptedRows[contextStart].observation.sourceOpen;
-                const endClose = acceptedRows[contextEnd].observation.sourceClose;
+                const startOpen = acceptedRows[contextStart].candle.open;
+                const endClose = acceptedRows[contextEnd].candle.close;
                 let validContext = Number.isFinite(startOpen) && Number.isFinite(endClose) &&
                     startOpen > 0 && endClose > 0;
 
                 for (let bar = contextStart; bar <= contextEnd; bar++) {
-                    const observation = acceptedRows[bar].observation;
-                    if (!Number.isFinite(observation.sourceHigh) ||
-                        !Number.isFinite(observation.sourceLow)) {
+                    const row = acceptedRows[bar];
+                    const candleHigh = row.candle.high;
+                    const candleLow = row.candle.low;
+                    if (!Number.isFinite(candleHigh) || !Number.isFinite(candleLow)) {
                         validContext = false;
                         break;
                     }
-                    maxHigh = Math.max(maxHigh, observation.sourceHigh);
-                    minLow = Math.min(minLow, observation.sourceLow);
+                    maxHigh = Math.max(maxHigh, candleHigh);
+                    minLow = Math.min(minLow, candleLow);
 
-                    const relativeVolume = observation.features['RelativeVolume_20'];
-                    if (observation.validity['RelativeVolume_20'] === true &&
+                    const relativeVolume = row.observation.features['RelativeVolume_20'];
+                    if (row.observation.validity['RelativeVolume_20'] === true &&
                         Number.isFinite(relativeVolume) && relativeVolume >= 0) {
                         matureCount++;
                         sumRelativeVolume += relativeVolume;
                     }
                 }
 
-                if (!validContext) {
+                if (!validContext || maxHigh < minLow ||
+                    maxHigh < Math.max(startOpen, endClose) ||
+                    minLow > Math.min(startOpen, endClose)) {
                     provenanceFailures++;
                 } else {
                     const contextCount = contextEnd - contextStart + 1;
@@ -798,6 +885,15 @@ export class DatasetAuditor {
             }
 
             // 12. Independent Candle-Level Execution Replay (Tracking LONG and SHORT trajectories)
+            if (!Number.isSafeInteger(ev.confirmed_bar_index) ||
+                !Number.isSafeInteger(ev.entry_bar_index) ||
+                ev.confirmed_bar_index < 0 ||
+                ev.confirmed_bar_index >= dataStore.length ||
+                ev.entry_bar_index !== ev.confirmed_bar_index + 1 ||
+                ev.entry_bar_index >= dataStore.length) {
+                candleExecutionFailures++;
+                continue;
+            }
             const entryBar = ev.entry_bar_index;
             const horizonEnd = entryBar + 60 - 1;
 

@@ -5187,6 +5187,22 @@ export class WorkspaceManager {
                 auditRemarks.push(`Final exported Tier B/C ML-R1 events: ${events.length}`);
                 auditRemarks.push(`Tier A continuous observations: ${backboneResult.acceptedRows.length}`);
 
+                const continuousCsv = AIExporter.exportMLR1ContinuousObservationsCSV(
+                    backboneResult.acceptedRows
+                );
+                const representationCsv = AIExporter.exportMLR1RepresentationCSV(
+                    events,
+                    exportSymbol,
+                    exportInterval
+                );
+                const eventCsv = AIExporter.exportMLR1CSV(events, exportSymbol, exportInterval);
+                if (!continuousCsv || !representationCsv || !eventCsv) {
+                    throw new Error('CSV generation failed for one or more dataset tiers.');
+                }
+
+                const continuousFileName = `MLR1_${exportSymbol}_${exportInterval}_Continuous_Observations.csv`;
+                const representationFileName = `MLR1_${exportSymbol}_${exportInterval}_Representation_Features.csv`;
+                const eventFileName = `MLR1_${exportSymbol}_${exportInterval}_Events.csv`;
                 const exportAccounting: ExportAccounting = {
                     rawSourceCandleCount: candleCount,
                     acceptedSourceObservationCount: backboneResult.acceptedRows.length,
@@ -5194,7 +5210,12 @@ export class WorkspaceManager {
                     tierAContinuousObservationCount: backboneResult.acceptedRows.length,
                     tierAEventRepresentationRowCount: events.length,
                     tierBConfirmedTeacherEventCount: events.length,
-                    tierCOutcomeRowCount: events.length
+                    tierCOutcomeRowCount: events.length,
+                    actualFileRowCounts: {
+                        [continuousFileName]: backboneResult.acceptedRows.length,
+                        [representationFileName]: events.length,
+                        [eventFileName]: events.length
+                    }
                 };
 
                 if (!sourceIntegrityPassed || !auditResult.passed ||
@@ -5235,19 +5256,11 @@ export class WorkspaceManager {
                 if (progressPct) progressPct.textContent = "100%";
                 await new Promise(r => setTimeout(r, 25));
 
-                const representationCsv = AIExporter.exportMLR1RepresentationCSV(
-                    events,
-                    exportSymbol,
-                    exportInterval
-                );
-                const eventCsv = AIExporter.exportMLR1CSV(events, exportSymbol, exportInterval);
-                if (!representationCsv || !eventCsv) {
-                    throw new Error('CSV generation failed; no export files were downloaded.');
-                }
                 const zip = new JSZip();
                 zip.file(`MLR1_${exportSymbol}_${exportInterval}_Manifest.json`, JSON.stringify(manifest, null, 2));
-                zip.file(`MLR1_${exportSymbol}_${exportInterval}_Representation_Features.csv`, representationCsv);
-                zip.file(`MLR1_${exportSymbol}_${exportInterval}_Events.csv`, eventCsv);
+                zip.file(continuousFileName, continuousCsv);
+                zip.file(representationFileName, representationCsv);
+                zip.file(eventFileName, eventCsv);
 
                 const zipBlob = await zip.generateAsync({ type: 'blob' });
                 const zipUrl = URL.createObjectURL(zipBlob);

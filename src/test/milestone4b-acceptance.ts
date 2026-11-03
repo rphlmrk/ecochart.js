@@ -12,7 +12,7 @@ import {
     type SlotIntegrityContext,
     type SourceBackboneInputItem
 } from '../indicators/mlr1/dataset/ObservationBackbone';
-import { CandleContextAggregator } from '../data/AIExporter';
+import { AIExporter, CandleContextAggregator } from '../data/AIExporter';
 import type { ML1Candle, ML1Observation } from '../indicators/mlr1/ML1FeatureTypes';
 import type { DatasetConfig, IntegrityPolicy } from '../indicators/mlr1/dataset/DatasetConfig';
 
@@ -587,7 +587,12 @@ export function runPhase4BTests(): boolean {
                 tierAContinuousObservationCount: 3,
                 tierAEventRepresentationRowCount: 0,
                 tierBConfirmedTeacherEventCount: 0,
-                tierCOutcomeRowCount: 0
+                tierCOutcomeRowCount: 0,
+                actualFileRowCounts: {
+                    'continuous.csv': 3,
+                    'representation.csv': 0,
+                    'events.csv': 0
+                }
             }
         );
         assert(manifest.sourceRowCount === 6, 'Manifest source row count mismatch');
@@ -606,6 +611,8 @@ export function runPhase4BTests(): boolean {
         assert(manifest.exportAccounting.tierBConfirmedTeacherEventCount === 0, 'Manifest teacher event count mismatch');
         assert(manifest.exportAccounting.tierCOutcomeRowCount === 0, 'Manifest outcome row count mismatch');
         assert(Object.isFrozen(manifest.exportAccounting), 'Manifest export accounting must be immutable');
+        assert(Object.isFrozen(manifest.exportAccounting.actualFileRowCounts), 'Manifest file row counts must be immutable');
+        assert(manifest.exportAccounting.actualFileRowCounts['continuous.csv'] === 3, 'Manifest continuous file row count mismatch');
 
         let accountingMismatchRejected = false;
         try {
@@ -625,9 +632,28 @@ export function runPhase4BTests(): boolean {
             accountingMismatchRejected = true;
         }
         assert(accountingMismatchRejected, 'Manifest must reject inconsistent raw/accepted/rejected accounting');
+
+        let invalidFileRowCountRejected = false;
+        try {
+            createDatasetManifest(
+                'DS_SOLUSDT_1M_INVALID_ROWS',
+                'BINANCE_SPOT',
+                mockConfig,
+                result.stats,
+                result.uptime,
+                { passed: true, chronologyValid: true, identityUnique: true, inputOutcomeSeparationValid: true, remarks: [] },
+                {
+                    ...manifest.exportAccounting,
+                    actualFileRowCounts: { 'continuous.csv': -1 }
+                }
+            );
+        } catch {
+            invalidFileRowCountRejected = true;
+        }
+        assert(invalidFileRowCountRejected, 'Manifest must reject negative actual file row counts');
     });
 
-    runTest('15a. Candle context uses authoritative observation OHLC', () => {
+    runTest('15a. Candle context and continuous CSV use accepted candle OHLC', () => {
         const result = buildSourceBackbone(
             [{ candle: createCandle(100000), observation: createMockObservation(100000, qualityFeatures()) }],
             'SOLUSDT',
@@ -637,7 +663,13 @@ export function runPhase4BTests(): boolean {
             60000
         );
         const context = CandleContextAggregator.summarize(result.acceptedRows, 0, 0, 1);
-        assert(context.maxAdverseAtr === 2, 'Context must use observation sourceLow rather than the candle copy');
+        assert(context.maxAdverseAtr === 1, 'Context must use the accepted candle low');
+        const continuousCsv = AIExporter.exportMLR1ContinuousObservationsCSV(result.acceptedRows);
+        assert(continuousCsv !== null, 'Continuous observation CSV should be generated');
+        const lines = continuousCsv.split('\r\n');
+        assert(lines.length === 2, 'Continuous observation CSV must contain one header and one data row');
+        assert(lines[1].split(',').slice(3, 8).join(',') === '10,12,9,11,100',
+            'Continuous CSV OHLCV must come from the accepted candle');
     });
 
     runTest('16. Off-grid record preserves the build grid anchor', () => {

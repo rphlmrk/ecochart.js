@@ -789,7 +789,7 @@ export function createDatasetManifest(
     if (!datasetId || !sourceIdentity) {
         throw new Error('DatasetManifest Error: datasetId and sourceIdentity must be non-empty strings.');
     }
-    const exportAccountingFields: readonly (keyof ExportAccounting)[] = [
+    const exportAccountingFields: readonly (keyof Omit<ExportAccounting, 'actualFileRowCounts'>)[] = [
         'rawSourceCandleCount',
         'acceptedSourceObservationCount',
         'rejectedSourceObservationCount',
@@ -820,6 +820,20 @@ export function createDatasetManifest(
             'DatasetManifest Error: Tier A continuous observation count must match accepted backbone rows.'
         );
     }
+    if (typeof exportAccounting.actualFileRowCounts !== 'object' ||
+        exportAccounting.actualFileRowCounts === null ||
+        Array.isArray(exportAccounting.actualFileRowCounts)) {
+        throw new Error('DatasetManifest Error: actualFileRowCounts must be a non-null record.');
+    }
+    const fileRowCountEntries = Object.entries(exportAccounting.actualFileRowCounts);
+    for (const [fileName, rowCount] of fileRowCountEntries) {
+        if (!fileName.trim() || !Number.isSafeInteger(rowCount) || rowCount < 0) {
+            throw new Error(
+                `DatasetManifest Error: actualFileRowCounts[${JSON.stringify(fileName)}] must be a non-negative safe integer.`
+            );
+        }
+    }
+    const actualFileRowCounts = Object.fromEntries(fileRowCountEntries);
     if (stats.sourceRowCount !== stats.acceptedObservationCount + stats.rejectedObservationCount) {
         throw new Error('DatasetManifest Error: source row accounting invariant failed.');
     }
@@ -870,7 +884,8 @@ export function createDatasetManifest(
             tierAContinuousObservationCount: exportAccounting.tierAContinuousObservationCount,
             tierAEventRepresentationRowCount: exportAccounting.tierAEventRepresentationRowCount,
             tierBConfirmedTeacherEventCount: exportAccounting.tierBConfirmedTeacherEventCount,
-            tierCOutcomeRowCount: exportAccounting.tierCOutcomeRowCount
+            tierCOutcomeRowCount: exportAccounting.tierCOutcomeRowCount,
+            actualFileRowCounts: Object.freeze(actualFileRowCounts)
         })
     });
 }

@@ -33,6 +33,7 @@ export interface ExportAccounting {
     readonly tierAEventRepresentationRowCount: number;
     readonly tierBConfirmedTeacherEventCount: number;
     readonly tierCOutcomeRowCount: number;
+    readonly actualFileRowCounts: Readonly<Record<string, number>>;
 }
 
 export interface DatasetManifest {
