@@ -37,7 +37,6 @@ import { AIExporter } from './data/AIExporter';
 export { AIExporter };
 export {
     DatasetAuditor,
-    MarketFeatureEngine,
     CandleContextAggregator,
     HybridTokenBuilder,
     MLR1_MODEL_INPUT_SCHEMA,
@@ -4601,7 +4600,7 @@ export class WorkspaceManager {
         // ==========================================================
         // 🧠 COMPREHENSIVE AI EXPORTER MODAL INTEGRATION
         // ==========================================================
-        const btnOpenAiExportModal = document.getElementById('btn-open-ai-export-modal');
+        const btnOpenTrainingExport = document.getElementById('btn-open-ai-export-modal');
         const btnTopbarAiExport = document.getElementById('btn-topbar-ai-export'); 
         const modalAiExport = document.getElementById('ai-export-modal') as HTMLDialogElement | null;
         const btnAiExportClose = document.getElementById('btn-ai-export-close');
@@ -4619,7 +4618,7 @@ export class WorkspaceManager {
             modalAiExport?.showModal();
         };
 
-        btnOpenAiExportModal?.addEventListener('click', openModalAndSync);
+        btnOpenTrainingExport?.addEventListener('click', openModalAndSync);
         btnTopbarAiExport?.addEventListener('click', openModalAndSync);
 
         btnAiExportClose?.addEventListener('click', () => modalAiExport?.close());
@@ -4917,7 +4916,7 @@ export class WorkspaceManager {
                 }, 1400);
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
-                console.error('[AiExportModal] Test suite execution error:', error);
+                console.error('[AI Export] Test suite execution error:', error);
                 if (loadingDetail) loadingDetail.textContent = `❌ ${message}. Check DevTools console.`;
                 setTimeout(() => {
                     if (loadingOverlay) loadingOverlay.style.display = 'none';

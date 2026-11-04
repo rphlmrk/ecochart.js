@@ -370,62 +370,6 @@ export interface MLR1EventRow {
     short_outcome: 'full_target' | 'hard_stop' | 'timeout_net_gain' | 'timeout_net_loss';
 }
 
-export class MarketFeatureEngine {
-    public static calculateATRArray(dataStore: any, period: number = 14): Float64Array {
-        const len = dataStore.length;
-        const atr = new Float64Array(len);
-        const tr = new Float64Array(len);
-        if (len === 0) return atr;
-
-        tr[0] = dataStore.data[2] - dataStore.data[3]; 
-        for (let i = 1; i < len; i++) {
-            const base = i * 6;
-            const prevC = dataStore.data[(i - 1) * 6 + 4]; 
-            const h = dataStore.data[base + 2];
-            const l = dataStore.data[base + 3];
-            tr[i] = Math.max(h - l, Math.abs(h - prevC), Math.abs(l - prevC));
-        }
-
-        let sum = 0;
-        for (let i = 0; i < period && i < len; i++) {
-            sum += tr[i];
-        }
-        if (len >= period) {
-            atr[period - 1] = sum / period;
-        }
-
-        for (let i = period; i < len; i++) {
-            atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period;
-        }
-
-        for (let i = 0; i < period - 1 && i < len; i++) {
-            atr[i] = 0; 
-        }
-        return atr;
-    }
-
-    public static calculateVolumeSMA(dataStore: any, period: number = 20): { sma: Float64Array; validMask: Uint8Array } {
-        const len = dataStore.length;
-        const sma = new Float64Array(len).fill(0);
-        const validMask = new Uint8Array(len).fill(0);
-        if (len < period) return { sma, validMask };
-
-        let sum = 0;
-        for (let i = 0; i < period; i++) {
-            sum += dataStore.data[i * 6 + 5];
-        }
-        sma[period - 1] = sum / period;
-        validMask[period - 1] = 1;
-
-        for (let i = period; i < len; i++) {
-            sum += dataStore.data[i * 6 + 5] - dataStore.data[(i - period) * 6 + 5];
-            sma[i] = sum / period;
-            validMask[i] = 1;
-        }
-        return { sma, validMask };
-    }
-}
-
 export class CandleContextAggregator {
     public static summarize(
         acceptedRows: readonly SourceBackboneAcceptedRow[],
