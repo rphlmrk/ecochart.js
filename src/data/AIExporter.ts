@@ -1257,7 +1257,7 @@ export class AIExporter {
             }
         }
 
-        const zip = new JSZip();
+        let zip: JSZip | null = new JSZip();
         const fixedEntryDate = new Date(artifacts.manifest.buildTimestamp);
         if (!Number.isFinite(fixedEntryDate.getTime())) {
             throw new Error('Dataset archive manifest has an invalid fixed build timestamp.');
@@ -1266,6 +1266,8 @@ export class AIExporter {
             zip.file(entry.name, entry.content, { date: fixedEntryDate });
         }
         const archiveBytes = await zip.generateAsync({ type: 'uint8array' });
+        zip = null;
+
         const reopened = await JSZip.loadAsync(archiveBytes);
         const actualNames = Object.keys(reopened.files)
             .filter(name => !reopened.files[name].dir)
@@ -1281,7 +1283,7 @@ export class AIExporter {
             if (!physicalEntry) {
                 throw new Error(`Generated dataset archive is missing '${expected.name}'.`);
             }
-            const physicalContent = await physicalEntry.async('string');
+            let physicalContent: string | null = await physicalEntry.async('string');
             if (physicalContent !== expected.content) {
                 throw new Error(`Generated dataset archive bytes differ from artifact '${expected.name}'.`);
             }
@@ -1292,7 +1294,10 @@ export class AIExporter {
                     `Generated archive CSV row count does not match manifest for '${expected.name}'.`
                 );
             }
+            physicalContent = null;
         }
+        (reopened as any).files = {};
+        entries.length = 0;
         return archiveBytes;
     }
 
@@ -1458,6 +1463,10 @@ export class AIExporter {
                 `accepted ${backboneResult.acceptedRows.length}, rejected ${backboneResult.rejectedRows.length}.`
             );
         }
+
+        // Release intermediate ingestion arrays once backbone observations are accepted
+        rawCandles.length = 0;
+        backboneInputs.length = 0;
 
         const cleanData = new Float64Array(backboneResult.acceptedRows.length * 6);
         for (let index = 0; index < backboneResult.acceptedRows.length; index++) {

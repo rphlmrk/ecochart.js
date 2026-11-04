@@ -4983,7 +4983,7 @@ export class WorkspaceManager {
 
             try {
                 // Step 1: Execute 500ms Paged Background Download from Binance
-                const rawCandleBuffer = await BackgroundDataMiner.mineHistoricalCandles(
+                let rawCandleBuffer: Float64Array | null = await BackgroundDataMiner.mineHistoricalCandles(
                     exportSymbol,
                     exportInterval,
                     durationMs,
@@ -5033,7 +5033,7 @@ export class WorkspaceManager {
                 if (loadingTitle) loadingTitle.textContent = 'Validating Source Integrity and Building Dataset...';
                 if (loadingDetail) loadingDetail.textContent = 'Running the unified export pipeline...';
                 await new Promise(resolve => setTimeout(resolve, 25));
-                const artifacts = await AIExporter.buildExportArtifacts({
+                let artifacts: Awaited<ReturnType<typeof AIExporter.buildExportArtifacts>> | null = await AIExporter.buildExportArtifacts({
                     rawCandleBuffer,
                     symbol: exportSymbol,
                     interval: exportInterval,
@@ -5046,28 +5046,37 @@ export class WorkspaceManager {
                         if (loadingDetail) loadingDetail.textContent = detail;
                     }
                 });
-                const { events } = artifacts;
+                rawCandleBuffer = null;
+                const eventCount = artifacts.events.length;
                 if (loadingTitle) loadingTitle.textContent = 'Packaging ML-R1 Dataset...';
-                if (loadingDetail) loadingDetail.textContent = `Generated ${events.length.toLocaleString()} ML-R1 event records.`;
+                if (loadingDetail) loadingDetail.textContent = `Generated ${eventCount.toLocaleString()} ML-R1 event records.`;
                 if (progressFill) progressFill.style.width = '100%';
                 if (progressPct) progressPct.textContent = '100%';
                 await new Promise(resolve => setTimeout(resolve, 25));
 
                 // Build the package only after the shared pipeline passes all audits.
-                const archiveBytes = await AIExporter.createVerifiedDatasetArchive(artifacts);
-                const archiveBuffer = new ArrayBuffer(archiveBytes.byteLength);
-                new Uint8Array(archiveBuffer).set(archiveBytes);
-                const zipBlob = new Blob([archiveBuffer], { type: 'application/zip' });
+                let archiveBytes: Uint8Array | null = await AIExporter.createVerifiedDatasetArchive(artifacts);
+                // Immediately release uncompressed CSV strings, backbone accepted rows, and MTF contexts
+                artifacts = null;
+
+                let zipBlob: Blob | null = new Blob([archiveBytes as unknown as BlobPart], { type: 'application/zip' });
+                // Immediately release Uint8Array archive bytes once Blob reference is created
+                archiveBytes = null;
+
                 const zipUrl = URL.createObjectURL(zipBlob);
+                zipBlob = null;
+
                 const downloadLink = document.createElement('a');
                 downloadLink.href = zipUrl;
                 downloadLink.download = `MLR1_${exportSymbol}_${exportInterval}_Dataset_Package.zip`;
                 document.body.appendChild(downloadLink);
                 downloadLink.click();
                 setTimeout(() => {
-                    document.body.removeChild(downloadLink);
+                    if (downloadLink.parentNode) {
+                        document.body.removeChild(downloadLink);
+                    }
                     URL.revokeObjectURL(zipUrl);
-                }, 1500);
+                }, 1000);
 
                 resetTopbarButton();
                 setTimeout(() => {
