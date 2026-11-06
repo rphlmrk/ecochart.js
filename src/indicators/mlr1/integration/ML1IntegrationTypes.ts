@@ -200,6 +200,13 @@ export function validateML1ExportRequest(request: ML1ExportRequest): void {
     }
 }
 
+export interface ML1SourceCoverage {
+    readonly expectedCandles: number;
+    readonly actualCandles: number;
+    readonly missingCandles: number;
+    readonly isComplete: boolean;
+}
+
 export interface ML1ProcessingJob {
     readonly jobId: string;
     readonly datasetId: string;
@@ -217,6 +224,7 @@ export interface ML1ProcessingJob {
         readonly statusText: string;
     };
     readonly errorInfo: string | null;
+    readonly coverageInfo?: ML1SourceCoverage; // 🔒 Structured coverage report (Set on completion)
 }
 
 export interface ML1IntegrationResult {
