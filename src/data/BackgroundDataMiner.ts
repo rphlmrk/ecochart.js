@@ -63,7 +63,7 @@ export class BackgroundDataMiner {
         const intervalMs = this.intervalToMs(interval);
         const now = Date.now();
         
-        // 🔒 Boundary contract: UTC half-open [startTimestamp, endTimestamp) - Validated FIRST
+        // 🔒 1. Validate custom start/end boundary alignment
         if (customStartMs !== undefined && customStartMs % intervalMs !== 0) {
             throw new Error('Start timestamp must be aligned to the requested interval.');
         }
@@ -71,17 +71,7 @@ export class BackgroundDataMiner {
             throw new Error('End timestamp must be aligned to the requested interval.');
         }
 
-        let signal = jobSignal;
-        let localController: AbortController | null = null;
-        
-        // 🔒 Safe Legacy Controller Assignment (Fixes Race Condition)
-        if (!signal) {
-            this.abort();
-            localController = new AbortController();
-            this.globalAbortController = localController;
-            signal = localController.signal;
-        }
-
+        // 🔒 2. Calculate and clamp boundaries
         const requestedEndTarget = customEndMs !== undefined ? customEndMs : now;
         const lastRequestedCandleOpenTime = requestedEndTarget - intervalMs; // Shift for exclusive end boundary
         const lastCompletedCandleOpenTime = Math.floor(now / intervalMs) * intervalMs - intervalMs;
@@ -92,13 +82,24 @@ export class BackgroundDataMiner {
             ? customStartMs
             : endTarget - (requestedCandleCount - 1) * intervalMs;
             
+        // 🔒 3. Validate calculated boundaries BEFORE allocating any abort controller
         if (!Number.isSafeInteger(startTarget) || !Number.isSafeInteger(endTarget) || startTarget < 0 || endTarget < startTarget) {
             throw new Error('Historical fetch requires ordered non-negative integer time boundaries.');
         }
-        const effectiveDuration = Math.max(intervalMs, endTarget - startTarget);
 
+        const effectiveDuration = Math.max(intervalMs, endTarget - startTarget);
         const estimatedTotalCandles = Math.ceil(effectiveDuration / intervalMs) + 1;
         const totalBatches = Math.max(1, Math.ceil(estimatedTotalCandles / 1000));
+
+        // 🔒 4. Allocate controller only AFTER all boundary validations pass
+        let signal = jobSignal;
+        let localController: AbortController | null = null;
+        if (!signal) {
+            this.abort();
+            localController = new AbortController();
+            this.globalAbortController = localController;
+            signal = localController.signal;
+        }
 
         const collectedCandles: number[][] = [];
         let fetchStart = startTarget;

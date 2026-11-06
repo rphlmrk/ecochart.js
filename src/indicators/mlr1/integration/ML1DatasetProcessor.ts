@@ -89,8 +89,8 @@ export class ML1DatasetProcessor {
     }
 
     /**
-     * 🔒 INDEPENDENT TIMESTAMP-LEVEL COVERAGE AUDIT
-     * Audits every 6-value record in the flat buffer to prove true chronological completeness.
+     * 🔒 DEFENSIVE INDEPENDENT TIMESTAMP-LEVEL COVERAGE AUDIT
+     * Validates flat buffer structure and verifies every individual record timestamp.
      */
     private static evaluateCoverage(
         buffer: Float64Array,
@@ -98,6 +98,13 @@ export class ML1DatasetProcessor {
         endTimestamp: number,
         intervalMs: number
     ): ML1SourceCoverage {
+        if (buffer.length % 6 !== 0) {
+            throw new Error('Invalid source artifact: buffer length is not divisible by six.');
+        }
+        if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
+            throw new Error('Invalid interval supplied to coverage evaluator.');
+        }
+
         const expectedCandles = (endTimestamp - startTimestamp) / intervalMs;
         const actualCandles = buffer.length / 6;
 
@@ -105,38 +112,40 @@ export class ML1DatasetProcessor {
             return { expectedCandles, actualCandles: 0, missingCandles: expectedCandles, isComplete: false };
         }
 
-        let isContiguous = true;
-        let missingCandles = 0;
-        const firstTs = buffer[0];
         const lastExpectedTs = endTimestamp - intervalMs;
+        const firstTs = buffer[0];
         const lastActualTs = buffer[(actualCandles - 1) * 6];
 
-        // Boundary checks
-        if (firstTs !== startTimestamp || lastActualTs !== lastExpectedTs) {
-            isContiguous = false;
-        }
+        let isContiguous = true;
+        let prevTs = -1;
 
-        // Internal timestamp step and gap audit
-        let prevTs = firstTs;
-        for (let i = 1; i < actualCandles; i++) {
+        for (let i = 0; i < actualCandles; i++) {
             const currentTs = buffer[i * 6];
-            const delta = currentTs - prevTs;
-            if (delta <= 0 || delta % intervalMs !== 0) {
-                isContiguous = false;
-            } else if (delta > intervalMs) {
-                missingCandles += (delta / intervalMs) - 1;
-                isContiguous = false;
+
+            // 🔒 Validate every individual timestamp record
+            if (
+                !Number.isSafeInteger(currentTs) ||
+                currentTs < startTimestamp ||
+                currentTs >= endTimestamp ||
+                currentTs % intervalMs !== 0
+            ) {
+                throw new Error(`Invalid source timestamp ${currentTs} at record ${i}.`);
+            }
+
+            if (i > 0) {
+                const delta = currentTs - prevTs;
+                if (delta !== intervalMs) {
+                    isContiguous = false;
+                }
             }
             prevTs = currentTs;
         }
 
-        if (firstTs > startTimestamp) {
-            missingCandles += (firstTs - startTimestamp) / intervalMs;
-        }
-        if (lastActualTs < lastExpectedTs) {
-            missingCandles += (lastExpectedTs - lastActualTs) / intervalMs;
+        if (firstTs !== startTimestamp || lastActualTs !== lastExpectedTs) {
+            isContiguous = false;
         }
 
+        const missingCandles = Math.max(0, expectedCandles - actualCandles);
         const isComplete = isContiguous && actualCandles === expectedCandles && missingCandles === 0;
 
         return { expectedCandles, actualCandles, missingCandles, isComplete };
@@ -158,6 +167,14 @@ export class ML1DatasetProcessor {
         configVersion: string,
         idempotencyKey: string
     ): Promise<ML1ProcessingJob> {
+        // 🔒 Validate identifier strings before inspecting registries
+        if (typeof jobId !== 'string' || !jobId.trim()) {
+            throw new Error('ML1 Dataset Processor Error: jobId must be a non-empty string.');
+        }
+        if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim()) {
+            throw new Error('ML1 Dataset Processor Error: idempotencyKey must be a non-empty string.');
+        }
+
         if (this.jobs.has(jobId)) {
             throw new Error(`ML1 Dataset Processor Error: Job ID '${jobId}' already exists.`);
         }
