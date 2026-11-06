@@ -4853,6 +4853,12 @@ export class WorkspaceManager {
                     throw new Error('Production exporter integrity suite failed');
                 }
 
+                // Milestone 5C (BackgroundDataMiner & Job Processor Integration)
+                if (!await runPhase5CAcceptanceSuite()) {
+                    throw new Error('Milestone 5C suite failed');
+                }
+                console.log('✅ Milestone 5C: Passed (18/18 Acceptance Tests)');
+
                 // Deterministic Reconstruction Verification
                 if (loadingDetail) loadingDetail.textContent = 'Verifying Deterministic Reconstruction parity...';
                 await new Promise(resolve => setTimeout(resolve, 50));

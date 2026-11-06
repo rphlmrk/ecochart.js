@@ -76,12 +76,12 @@ export class BackgroundDataMiner {
             throw new Error('End timestamp must be aligned to the requested interval.');
         }
 
-        // 🔒 2. Calculate and clamp boundaries
-        const requestedEndTarget = customEndMs !== undefined ? customEndMs : now;
-        const lastRequestedCandleOpenTime = requestedEndTarget - intervalMs; // Shift for exclusive end boundary
+        // 🔒 2. Calculate and clamp boundaries (customEndMs is the exact open timestamp of the final candle)
         const lastCompletedCandleOpenTime = Math.floor(now / intervalMs) * intervalMs - intervalMs;
+        const endTarget = customEndMs !== undefined
+            ? Math.min(customEndMs, lastCompletedCandleOpenTime)
+            : lastCompletedCandleOpenTime;
 
-        const endTarget = Math.min(lastRequestedCandleOpenTime, lastCompletedCandleOpenTime);
         const requestedCandleCount = Math.max(1, Math.ceil(totalDurationMs / intervalMs));
         const startTarget = customStartMs !== undefined
             ? customStartMs

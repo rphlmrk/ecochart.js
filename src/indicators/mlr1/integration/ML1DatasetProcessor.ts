@@ -344,6 +344,9 @@ export class ML1DatasetProcessor {
             const intervalMs = BackgroundDataMiner.intervalToMs(timeframe);
             const durationMs = dateRange.endTimestamp - dateRange.startTimestamp;
 
+            // 🔒 Convert exclusive endTimestamp to the open timestamp of the final candle
+            const lastCandleOpenTime = dateRange.endTimestamp - intervalMs;
+
             const rawCandles = await BackgroundDataMiner.mineHistoricalCandles(
                 symbol,
                 timeframe,
@@ -357,7 +360,7 @@ export class ML1DatasetProcessor {
                     updateStatus('IN_PROGRESS', scaledPercent, `Mining: ${progress.statusText}`);
                 },
                 dateRange.startTimestamp,
-                dateRange.endTimestamp,
+                lastCandleOpenTime,
                 signal
             );
 
