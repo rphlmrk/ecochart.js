@@ -85,6 +85,9 @@ export * from './indicators/mlr1/dataset/DatasetSchema';
 
 // Milestone 4: Backbone & Integrity
 export * from './indicators/mlr1/dataset/ObservationBackbone';
+
+// Milestone 5: Integration Contracts
+export * from './indicators/mlr1/integration/ML1IntegrationTypes';
 import { runPhase4BTests } from './test/milestone4b-acceptance';
 import { runProductionExporterAcceptanceSuite } from './test/production-exporter-acceptance';
 
