@@ -68,7 +68,8 @@ import { runPhase3BTests } from './test/milestone3b-acceptance';
 import { runPhase3CTests } from './test/milestone3c-acceptance';
 import { runPhase3DTests } from './test/milestone3d-acceptance';
 import { runPhase3ETests } from './test/milestone3e-acceptance';
-export { runPhase3ATests, runPhase3BTests, runPhase3CTests, runPhase3DTests, runPhase3ETests };
+import { runPhase5CAcceptanceSuite } from './test/milestone5c-acceptance';
+export { runPhase3ATests, runPhase3BTests, runPhase3CTests, runPhase3DTests, runPhase3ETests, runPhase5CAcceptanceSuite };
 export * from './indicators/mlr1/mtf/MTFTypes';
 export * from './indicators/mlr1/mtf/MTFConfig';
 export * from './indicators/mlr1/mtf/MTFState';
@@ -6034,5 +6035,6 @@ export class WorkspaceManager {
         (window as any).runPhase4BTests = runPhase4BTests;
         (window as any).runPhase2JTests = runPhase2JTests;
         (window as any).generatePhase2JReports = generatePhase2JReports;
+        (window as any).runPhase5CAcceptanceSuite = runPhase5CAcceptanceSuite;
     }
 }

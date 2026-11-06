@@ -59,10 +59,15 @@ export class BackgroundDataMiner {
         customEndMs?: number,
         jobSignal?: AbortSignal
     ): Promise<Float64Array> {
-        
+
+        // 🔒 Validate totalDurationMs before performing any calculations
+        if (!Number.isSafeInteger(totalDurationMs) || totalDurationMs <= 0) {
+            throw new Error('totalDurationMs must be a positive safe integer.');
+        }
+
         const intervalMs = this.intervalToMs(interval);
         const now = Date.now();
-        
+
         // 🔒 1. Validate custom start/end boundary alignment
         if (customStartMs !== undefined && customStartMs % intervalMs !== 0) {
             throw new Error('Start timestamp must be aligned to the requested interval.');
@@ -75,13 +80,13 @@ export class BackgroundDataMiner {
         const requestedEndTarget = customEndMs !== undefined ? customEndMs : now;
         const lastRequestedCandleOpenTime = requestedEndTarget - intervalMs; // Shift for exclusive end boundary
         const lastCompletedCandleOpenTime = Math.floor(now / intervalMs) * intervalMs - intervalMs;
-        
+
         const endTarget = Math.min(lastRequestedCandleOpenTime, lastCompletedCandleOpenTime);
         const requestedCandleCount = Math.max(1, Math.ceil(totalDurationMs / intervalMs));
         const startTarget = customStartMs !== undefined
             ? customStartMs
             : endTarget - (requestedCandleCount - 1) * intervalMs;
-            
+
         // 🔒 3. Validate calculated boundaries BEFORE allocating any abort controller
         if (!Number.isSafeInteger(startTarget) || !Number.isSafeInteger(endTarget) || startTarget < 0 || endTarget < startTarget) {
             throw new Error('Historical fetch requires ordered non-negative integer time boundaries.');
@@ -150,7 +155,7 @@ export class BackgroundDataMiner {
 
                 const rawKlines: unknown = await res.json();
                 if (!Array.isArray(rawKlines) || rawKlines.length === 0) {
-                    break; 
+                    break;
                 }
 
                 for (let i = 0; i < rawKlines.length; i++) {
@@ -160,7 +165,7 @@ export class BackgroundDataMiner {
                     }
                     const candleTime = Number(k[0]);
                     const closeTime = Number(k[6]);
-                    
+
                     if (!Number.isSafeInteger(candleTime) || !Number.isSafeInteger(closeTime)) {
                         throw new Error(`Binance returned an invalid kline timestamp at response index ${i}.`);
                     }
@@ -173,17 +178,17 @@ export class BackgroundDataMiner {
                     if (lastCandleTime !== -1 && candleTime <= lastCandleTime) {
                         throw new Error(`Binance returned non-increasing timestamp ${candleTime} after ${lastCandleTime}.`);
                     }
-                    
+
                     if (closeTime >= now) {
-                        continue; 
+                        continue;
                     }
-                    
+
                     const o = parseFloat(k[1]);
                     const h = parseFloat(k[2]);
                     const l = parseFloat(k[3]);
                     const c = parseFloat(k[4]);
                     const v = parseFloat(k[5]);
-                    
+
                     // 🔒 Strict Pre-Ingestion Integrity Check
                     if (!Number.isFinite(o) || !Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(c) || !Number.isFinite(v)) {
                         throw new Error(`Binance returned non-finite OHLCV values at timestamp ${candleTime}.`);
@@ -203,7 +208,7 @@ export class BackgroundDataMiner {
                 if (!Number.isSafeInteger(pageLastCandleTime) || pageLastCandleTime + 1 <= fetchStart) {
                     throw new Error('Binance pagination did not advance beyond the previous candle boundary.');
                 }
-                fetchStart = pageLastCandleTime + 1; 
+                fetchStart = pageLastCandleTime + 1;
 
                 if (rawKlines.length < 1000) {
                     break;
@@ -223,7 +228,7 @@ export class BackgroundDataMiner {
         for (let i = 0; i < len; i++) {
             const c = collectedCandles[i];
             const base = i * 6;
-            flatBuffer[base]     = c[0];
+            flatBuffer[base] = c[0];
             flatBuffer[base + 1] = c[1];
             flatBuffer[base + 2] = c[2];
             flatBuffer[base + 3] = c[3];

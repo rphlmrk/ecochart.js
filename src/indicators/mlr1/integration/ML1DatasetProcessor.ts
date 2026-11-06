@@ -10,12 +10,13 @@ interface InternalJobRecord {
 /**
  * 🔒 PHASE 5C: BACKGROUND DATA MINER INTEGRATION
  * Orchestrates background processing jobs, ensuring in-process job tracking,
- * safe idempotency (via request fingerprinting), and coverage calculations.
+ * safe idempotency (via canonical request fingerprinting), and independent
+ * timestamp-level coverage verification.
  * 
  * Retains acquired source artifacts for the M1-M4 pipeline without bypassing it.
  */
 export class ML1DatasetProcessor {
-    // In-memory registries (Note: In-process tracking only, not durable recovery)
+    // In-memory registries (In-process job tracking only, not durable restart recovery)
     private static jobs: Map<string, InternalJobRecord> = new Map();
     private static artifacts: Map<string, Float64Array> = new Map();
     private static controllers: Map<string, AbortController> = new Map();
@@ -34,18 +35,31 @@ export class ML1DatasetProcessor {
         };
     }
 
+    /**
+     * Retrieves a defensive copy of the acquired source artifact (Float64Array).
+     */
     public static getSourceArtifact(jobId: string): Float64Array | undefined {
         const artifact = this.artifacts.get(jobId);
-        return artifact ? artifact.slice() : undefined; // 🔒 Defensive copy
+        return artifact ? artifact.slice() : undefined;
     }
 
     /**
      * 🔒 ARTIFACT LIFECYCLE RELEASE
      * Explicitly releases the heavy Float64Array artifact from memory
-     * once downstream pipeline (M1-M4) has consumed it.
+     * once the downstream pipeline (M1-M4) has finished consuming it.
      */
     public static releaseSourceArtifact(jobId: string): boolean {
         return this.artifacts.delete(jobId);
+    }
+
+    /**
+     * Cancels an active job via its specific AbortController.
+     */
+    public static cancelJob(jobId: string): void {
+        const controller = this.controllers.get(jobId);
+        if (controller) {
+            controller.abort();
+        }
     }
 
     /**
@@ -60,39 +74,43 @@ export class ML1DatasetProcessor {
         configVersion: string,
         intervalMs: number
     ): string {
-        if (typeof datasetId !== 'string' || !datasetId.trim()) throw new Error('Invalid datasetId.');
-        if (typeof symbol !== 'string' || !symbol.trim()) throw new Error('Invalid symbol.');
-        if (typeof timeframe !== 'string' || !timeframe.trim()) throw new Error('Invalid timeframe.');
-        if (typeof configVersion !== 'string' || !configVersion.trim()) throw new Error('Invalid configVersion.');
-
-        if (!dateRange || typeof dateRange !== 'object') throw new Error('Invalid dateRange object.');
+        if (!dateRange || typeof dateRange !== 'object') {
+            throw new Error('ML1 Dataset Processor Error: Invalid dateRange object.');
+        }
         const { startTimestamp, endTimestamp } = dateRange;
         if (!Number.isSafeInteger(startTimestamp) || startTimestamp < 0) {
-            throw new Error(`Invalid dateRange.startTimestamp: must be a non-negative safe integer, got ${startTimestamp}`);
+            throw new Error(`ML1 Dataset Processor Error: Invalid dateRange.startTimestamp: must be a non-negative safe integer, got ${startTimestamp}`);
         }
         if (!Number.isSafeInteger(endTimestamp) || endTimestamp <= startTimestamp) {
-            throw new Error(`Invalid dateRange.endTimestamp: must be greater than startTimestamp, got ${endTimestamp}`);
+            throw new Error(`ML1 Dataset Processor Error: Invalid dateRange.endTimestamp: must be greater than startTimestamp, got ${endTimestamp}`);
         }
         const durationMs = endTimestamp - startTimestamp;
+        if (!Number.isSafeInteger(durationMs)) {
+            throw new Error('ML1 Dataset Processor Error: Duration exceeds safe integer range.');
+        }
         if (durationMs % intervalMs !== 0) {
-            throw new Error(`Invalid dateRange: duration (${durationMs}ms) must be an exact multiple of timeframe interval (${intervalMs}ms).`);
+            throw new Error(`ML1 Dataset Processor Error: Invalid dateRange: duration (${durationMs}ms) must be an exact multiple of timeframe interval (${intervalMs}ms).`);
+        }
+        if (startTimestamp % intervalMs !== 0 || endTimestamp % intervalMs !== 0) {
+            throw new Error('ML1 Dataset Processor Error: Date range boundaries must align with the timeframe interval.');
         }
 
         return JSON.stringify({
-            datasetId: datasetId.trim(),
-            symbol: symbol.trim().toUpperCase(),
-            timeframe: timeframe.trim(),
+            datasetId,
+            symbol,
+            timeframe,
             rangeStart: startTimestamp,
             rangeEnd: endTimestamp,
-            configVersion: configVersion.trim()
+            configVersion
         });
     }
 
     /**
      * 🔒 DEFENSIVE INDEPENDENT TIMESTAMP-LEVEL COVERAGE AUDIT
-     * Validates flat buffer structure and verifies every individual record timestamp.
+     * Validates flat buffer structure, safe duration bounds, individual timestamps,
+     * rejects duplicates/out-of-order data, and accounts for leading/trailing gaps.
      */
-    private static evaluateCoverage(
+    public static evaluateCoverage(
         buffer: Float64Array,
         startTimestamp: number,
         endTimestamp: number,
@@ -105,9 +123,30 @@ export class ML1DatasetProcessor {
             throw new Error('Invalid interval supplied to coverage evaluator.');
         }
 
-        const expectedCandles = (endTimestamp - startTimestamp) / intervalMs;
-        const actualCandles = buffer.length / 6;
+        // 🔒 Defensive validation of requested boundaries
+        if (
+            !Number.isSafeInteger(startTimestamp) ||
+            !Number.isSafeInteger(endTimestamp) ||
+            startTimestamp < 0 ||
+            endTimestamp <= startTimestamp ||
+            startTimestamp % intervalMs !== 0 ||
+            endTimestamp % intervalMs !== 0 ||
+            (endTimestamp - startTimestamp) % intervalMs !== 0
+        ) {
+            throw new Error('Invalid coverage evaluation boundaries.');
+        }
 
+        const durationMs = endTimestamp - startTimestamp;
+        if (!Number.isSafeInteger(durationMs)) {
+            throw new Error('Invalid coverage duration: duration exceeds safe integer range.');
+        }
+
+        const expectedCandles = durationMs / intervalMs;
+        if (!Number.isSafeInteger(expectedCandles) || expectedCandles <= 0) {
+            throw new Error('Invalid expected candle count.');
+        }
+
+        const actualCandles = buffer.length / 6;
         if (actualCandles === 0) {
             return { expectedCandles, actualCandles: 0, missingCandles: expectedCandles, isComplete: false };
         }
@@ -117,12 +156,13 @@ export class ML1DatasetProcessor {
         const lastActualTs = buffer[(actualCandles - 1) * 6];
 
         let isContiguous = true;
+        let missingCandles = 0;
         let prevTs = -1;
 
         for (let i = 0; i < actualCandles; i++) {
             const currentTs = buffer[i * 6];
 
-            // 🔒 Validate every individual timestamp record
+            // 🔒 Validate every individual timestamp record against boundaries and interval grid
             if (
                 !Number.isSafeInteger(currentTs) ||
                 currentTs < startTimestamp ||
@@ -134,30 +174,45 @@ export class ML1DatasetProcessor {
 
             if (i > 0) {
                 const delta = currentTs - prevTs;
-                if (delta !== intervalMs) {
+
+                // 🔒 Explicitly fail closed on duplicate or descending timestamps
+                if (delta <= 0) {
+                    throw new Error('Invalid source artifact: duplicate or out-of-order timestamps.');
+                }
+                if (delta % intervalMs !== 0) {
+                    throw new Error('Invalid source artifact: timestamp gap is not interval-aligned.');
+                }
+                if (delta > intervalMs) {
                     isContiguous = false;
+                    missingCandles += (delta / intervalMs) - 1;
                 }
             }
             prevTs = currentTs;
         }
 
-        if (firstTs !== startTimestamp || lastActualTs !== lastExpectedTs) {
+        // 🔒 Accurate missing-candle accounting for leading and trailing gaps
+        if (firstTs > startTimestamp) {
             isContiguous = false;
+            missingCandles += (firstTs - startTimestamp) / intervalMs;
+        }
+        if (lastActualTs < lastExpectedTs) {
+            isContiguous = false;
+            missingCandles += (lastExpectedTs - lastActualTs) / intervalMs;
         }
 
-        const missingCandles = Math.max(0, expectedCandles - actualCandles);
+        // 🔒 Defensive arithmetic guard on missing candles
+        if (!Number.isSafeInteger(missingCandles) || missingCandles < 0) {
+            throw new Error('Invalid source artifact: missing candle count is unsafe.');
+        }
+
         const isComplete = isContiguous && actualCandles === expectedCandles && missingCandles === 0;
 
         return { expectedCandles, actualCandles, missingCandles, isComplete };
     }
-    
-    public static cancelJob(jobId: string): void {
-        const controller = this.controllers.get(jobId);
-        if (controller) {
-            controller.abort();
-        }
-    }
 
+    /**
+     * Initializes and starts a background dataset acquisition job.
+     */
     public static async startDatasetBuild(
         jobId: string,
         datasetId: string,
@@ -167,37 +222,55 @@ export class ML1DatasetProcessor {
         configVersion: string,
         idempotencyKey: string
     ): Promise<ML1ProcessingJob> {
-        // 🔒 Validate identifier strings before inspecting registries
-        if (typeof jobId !== 'string' || !jobId.trim()) {
-            throw new Error('ML1 Dataset Processor Error: jobId must be a non-empty string.');
-        }
-        if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim()) {
-            throw new Error('ML1 Dataset Processor Error: idempotencyKey must be a non-empty string.');
+        // 🔒 Controlled pre-trimming type guards
+        const stringInputs: Array<[string, unknown]> = [
+            ['jobId', jobId],
+            ['idempotencyKey', idempotencyKey],
+            ['datasetId', datasetId],
+            ['symbol', symbol],
+            ['timeframe', timeframe],
+            ['configVersion', configVersion]
+        ];
+
+        for (const [name, value] of stringInputs) {
+            if (typeof value !== 'string' || !value.trim()) {
+                throw new Error(
+                    `ML1 Dataset Processor Error: ${name} must be a non-empty string.`
+                );
+            }
         }
 
-        if (this.jobs.has(jobId)) {
-            throw new Error(`ML1 Dataset Processor Error: Job ID '${jobId}' already exists.`);
+        const cleanJobId = jobId.trim();
+        const cleanIdempotencyKey = idempotencyKey.trim();
+        const cleanDatasetId = datasetId.trim();
+        const cleanSymbol = symbol.trim().toUpperCase();
+        const cleanTimeframe = timeframe.trim();
+        const cleanConfigVersion = configVersion.trim();
+
+        if (this.jobs.has(cleanJobId)) {
+            throw new Error(`ML1 Dataset Processor Error: Job ID '${cleanJobId}' already exists.`);
         }
 
-        const intervalMs = BackgroundDataMiner.intervalToMs(timeframe);
+        const intervalMs = BackgroundDataMiner.intervalToMs(cleanTimeframe);
 
-        // 🔒 Pre-flight request validation and canonical fingerprinting
+        // 🔒 Canonical fingerprinting using the exact trimmed values
         const requestFingerprint = this.validateAndFingerprint(
-            datasetId,
-            symbol,
-            timeframe,
+            cleanDatasetId,
+            cleanSymbol,
+            cleanTimeframe,
             dateRange,
-            configVersion,
+            cleanConfigVersion,
             intervalMs
         );
 
-        const existingRecord = Array.from(this.jobs.values()).find(
-            r => r.job.idempotencyKey === idempotencyKey
-        );
+        // 🔒 Idempotency lookup: Search in REVERSE order to always find the most recent attempt
+        const existingRecord = Array.from(this.jobs.values())
+            .reverse()
+            .find(r => r.job.idempotencyKey === cleanIdempotencyKey);
 
         if (existingRecord) {
             if (existingRecord.requestFingerprint !== requestFingerprint) {
-                throw new Error(`ML1 Dataset Processor Error: Idempotency key '${idempotencyKey}' reused with conflicting request parameters.`);
+                throw new Error(`ML1 Dataset Processor Error: Idempotency key '${cleanIdempotencyKey}' reused with conflicting request parameters.`);
             }
             if (existingRecord.job.status === 'COMPLETED' || existingRecord.job.status === 'IN_PROGRESS') {
                 return this.getJob(existingRecord.job.jobId)!;
@@ -208,11 +281,11 @@ export class ML1DatasetProcessor {
         const abortController = new AbortController();
 
         const job: ML1ProcessingJob = {
-            jobId,
-            datasetId,
+            jobId: cleanJobId,
+            datasetId: cleanDatasetId,
             processingType: 'ACQUIRE_SOURCE',
-            configVersion,
-            idempotencyKey,
+            configVersion: cleanConfigVersion,
+            idempotencyKey: cleanIdempotencyKey,
             attempt,
             status: 'PENDING',
             startTimeMs: Date.now(),
@@ -220,15 +293,15 @@ export class ML1DatasetProcessor {
             progressInfo: { percent: 0, statusText: 'Initializing background processing...' },
             errorInfo: null
         };
-        
-        this.jobs.set(jobId, { job, requestFingerprint });
-        this.controllers.set(jobId, abortController);
 
-        this.executeBuild(job, symbol, timeframe, dateRange, abortController.signal).catch(err => {
-            console.error(`[ML1DatasetProcessor] Unhandled exception in job ${jobId}`, err);
+        this.jobs.set(cleanJobId, { job, requestFingerprint });
+        this.controllers.set(cleanJobId, abortController);
+
+        this.executeBuild(job, cleanSymbol, cleanTimeframe, dateRange, abortController).catch(err => {
+            console.error(`[ML1DatasetProcessor] Unhandled exception in job ${cleanJobId}`, err);
         });
 
-        return this.getJob(jobId)!;
+        return this.getJob(cleanJobId)!;
     }
 
     private static async executeBuild(
@@ -236,12 +309,13 @@ export class ML1DatasetProcessor {
         symbol: string,
         timeframe: string,
         dateRange: DatasetDateRange,
-        signal: AbortSignal
+        abortController: AbortController
     ): Promise<void> {
+        const signal = abortController.signal;
         const updateStatus = (
-            status: ML1ProcessingStatus, 
-            percent: number, 
-            text: string, 
+            status: ML1ProcessingStatus,
+            percent: number,
+            text: string,
             error: string | null = null,
             coverage?: ML1SourceCoverage
         ) => {
@@ -269,7 +343,7 @@ export class ML1DatasetProcessor {
 
             const intervalMs = BackgroundDataMiner.intervalToMs(timeframe);
             const durationMs = dateRange.endTimestamp - dateRange.startTimestamp;
-            
+
             const rawCandles = await BackgroundDataMiner.mineHistoricalCandles(
                 symbol,
                 timeframe,
@@ -291,6 +365,11 @@ export class ML1DatasetProcessor {
                 throw new Error('BackgroundDataMiner returned empty data for the requested range.');
             }
 
+            // 🔒 Guard: verify cancellation before storing the artifact
+            if (signal.aborted) {
+                throw new Error('Mining cancelled by user.');
+            }
+
             // 🔒 True timestamp-level coverage evaluation (inspecting all 6-value records)
             const coverageInfo = this.evaluateCoverage(
                 rawCandles,
@@ -302,15 +381,16 @@ export class ML1DatasetProcessor {
             this.artifacts.set(job.jobId, rawCandles);
 
             // 🔒 Distinguish finished attempt vs true completeness for downstream M4 gating
-            const completionText = coverageInfo.isComplete 
-                ? 'Source acquisition completed with 100% full coverage.' 
+            const completionText = coverageInfo.isComplete
+                ? 'Source acquisition completed with 100% full coverage.'
                 : `Source acquisition completed with incomplete coverage (Expected: ${coverageInfo.expectedCandles}, Actual: ${coverageInfo.actualCandles}, Missing: ${coverageInfo.missingCandles}). Downstream M4 pipeline requires complete coverage.`;
 
             updateStatus('COMPLETED', 100, completionText, null, coverageInfo);
 
         } catch (error: unknown) {
             const errorMessage = error instanceof Error ? error.message : String(error);
-            const isInterrupted = /cancel|abort/i.test(errorMessage);
+            // 🔒 Use the signal as primary authority for interruption classification
+            const isInterrupted = signal.aborted || /cancel|abort/i.test(errorMessage);
 
             updateStatus(
                 isInterrupted ? 'INTERRUPTED' : 'FAILED',
@@ -319,7 +399,10 @@ export class ML1DatasetProcessor {
                 errorMessage
             );
         } finally {
-            this.controllers.delete(job.jobId);
+            // 🔒 Controlled cleanup: only delete controller if it matches this specific attempt
+            if (this.controllers.get(job.jobId) === abortController) {
+                this.controllers.delete(job.jobId);
+            }
         }
     }
 }
