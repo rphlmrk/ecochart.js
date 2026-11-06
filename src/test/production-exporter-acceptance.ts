@@ -47,7 +47,7 @@ async function mineWithMockedResponse(
         const buffer = await BackgroundDataMiner.mineHistoricalCandles(
             'SOLUSDT',
             '1m',
-            endTime - startTime,
+            (endTime - startTime) + 60000,
             () => {},
             startTime,
             endTime

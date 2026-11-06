@@ -175,8 +175,8 @@ export class BackgroundDataMiner {
                     if (candleTime % intervalMs !== 0) {
                         throw new Error(`Binance returned unaligned candle timestamp ${candleTime}.`);
                     }
-                    if (lastCandleTime !== -1 && candleTime <= lastCandleTime) {
-                        throw new Error(`Binance returned non-increasing timestamp ${candleTime} after ${lastCandleTime}.`);
+                    if (lastCandleTime !== -1 && candleTime < lastCandleTime) {
+                        throw new Error(`Binance returned out-of-order timestamp ${candleTime} after ${lastCandleTime}.`);
                     }
 
                     if (closeTime >= now) {

@@ -4960,13 +4960,14 @@ export class WorkspaceManager {
                     return;
                 }
                 customStartMs = new Date(`${customStartDate.value}T00:00:00Z`).getTime();
-                customEndMs = new Date(`${customEndDate.value}T23:59:59.999Z`).getTime();
+                const exclusiveEndMs = new Date(`${customEndDate.value}T00:00:00Z`).getTime() + 86_400_000;
 
-                if (isNaN(customStartMs) || isNaN(customEndMs) || customStartMs >= customEndMs) {
+                if (isNaN(customStartMs) || isNaN(exclusiveEndMs) || customStartMs >= exclusiveEndMs) {
                     alert('Invalid custom date range. The start date must precede the end date.');
                     return;
                 }
-                durationMs = customEndMs - customStartMs;
+                durationMs = exclusiveEndMs - customStartMs;
+                customEndMs = exclusiveEndMs - intervalMs;
             }
             if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
                 alert(`Unsupported chart interval for export: ${exportInterval}`);
