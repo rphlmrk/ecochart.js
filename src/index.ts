@@ -34,6 +34,7 @@ import { DataWorkerClient } from './workers/DataWorkerClient';
 import { TimeframeResampler } from './data/TimeframeResampler';
 export { alertManager } from './alerts/AlertManager';
 import { AIExporter } from './data/AIExporter';
+import { createML1ZipExportRequest } from './indicators/mlr1/integration/ML1IntegrationTypes';
 export { AIExporter };
 export {
     DatasetAuditor,
@@ -69,7 +70,16 @@ import { runPhase3CTests } from './test/milestone3c-acceptance';
 import { runPhase3DTests } from './test/milestone3d-acceptance';
 import { runPhase3ETests } from './test/milestone3e-acceptance';
 import { runPhase5CAcceptanceSuite } from './test/milestone5c-acceptance';
-export { runPhase3ATests, runPhase3BTests, runPhase3CTests, runPhase3DTests, runPhase3ETests, runPhase5CAcceptanceSuite };
+import { runPhase5BAcceptanceSuite } from './test/milestone5b-acceptance';
+export {
+    runPhase3ATests,
+    runPhase3BTests,
+    runPhase3CTests,
+    runPhase3DTests,
+    runPhase3ETests,
+    runPhase5BAcceptanceSuite,
+    runPhase5CAcceptanceSuite
+};
 export * from './indicators/mlr1/mtf/MTFTypes';
 export * from './indicators/mlr1/mtf/MTFConfig';
 export * from './indicators/mlr1/mtf/MTFState';
@@ -4853,6 +4863,12 @@ export class WorkspaceManager {
                     throw new Error('Production exporter integrity suite failed');
                 }
 
+                // Milestone 5B (Export request contract & pre-ZIP enforcement)
+                if (!await runPhase5BAcceptanceSuite()) {
+                    throw new Error('Milestone 5B suite failed');
+                }
+                console.log('✅ Milestone 5B: Passed');
+
                 // Milestone 5C (BackgroundDataMiner & Job Processor Integration)
                 if (!await runPhase5CAcceptanceSuite()) {
                     throw new Error('Milestone 5C suite failed');
@@ -4890,8 +4906,14 @@ export class WorkspaceManager {
                 }
                 const pass1EventIds = pass1.events.map(event => event.event_id);
                 const pass2EventIds = pass2.events.map(event => event.event_id);
-                const pass1Archive = await AIExporter.createVerifiedDatasetArchive(pass1);
-                const pass2Archive = await AIExporter.createVerifiedDatasetArchive(pass2);
+                const pass1Archive = await AIExporter.createVerifiedDatasetArchive(
+                    pass1,
+                    createML1ZipExportRequest(pass1.manifest)
+                );
+                const pass2Archive = await AIExporter.createVerifiedDatasetArchive(
+                    pass2,
+                    createML1ZipExportRequest(pass2.manifest)
+                );
                 const archiveBytesMatch = pass1Archive.length === pass2Archive.length &&
                     pass1Archive.every((byte, index) => byte === pass2Archive[index]);
                 if (pass1.continuousCsv !== pass2.continuousCsv ||
@@ -5066,7 +5088,11 @@ export class WorkspaceManager {
                 await new Promise(resolve => setTimeout(resolve, 25));
 
                 // Build the package only after the shared pipeline passes all audits.
-                let archiveBytes: Uint8Array | null = await AIExporter.createVerifiedDatasetArchive(artifacts);
+                const exportRequest = createML1ZipExportRequest(artifacts.manifest);
+                let archiveBytes: Uint8Array | null = await AIExporter.createVerifiedDatasetArchive(
+                    artifacts,
+                    exportRequest
+                );
                 // Immediately release uncompressed CSV strings, backbone accepted rows, and MTF contexts
                 artifacts = null;
 
@@ -6039,6 +6065,7 @@ export class WorkspaceManager {
         (window as any).runPhase3CTests = runPhase3CTests;
         (window as any).runPhase3DTests = runPhase3DTests;
         (window as any).runPhase3ETests = runPhase3ETests;
+        (window as any).runPhase5BAcceptanceSuite = runPhase5BAcceptanceSuite;
         (window as any).runPhase4BTests = runPhase4BTests;
         (window as any).runPhase2JTests = runPhase2JTests;
         (window as any).generatePhase2JReports = generatePhase2JReports;

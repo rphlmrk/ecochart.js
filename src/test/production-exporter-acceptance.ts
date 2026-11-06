@@ -12,10 +12,12 @@ import {
     MLR1_DATASET_VERSION,
     validateMLR1ModelInput
 } from '../data/AIExporter';
+import { createML1ZipExportRequest } from '../indicators/mlr1/integration/ML1IntegrationTypes';
 import {
     MLR1_MODEL_INPUT_SCHEMA_VERSION,
     MLR1_REPRESENTATION_SCHEMA_VERSION
 } from '../indicators/mlr1/dataset/DatasetSchema';
+import type { DatasetManifest } from '../indicators/mlr1/dataset/DatasetManifest';
 import { BackgroundDataMiner } from '../data/BackgroundDataMiner';
 import { DataStore } from '../data/DataStore';
 import { StrictCBCZigZagIndicator } from '../indicators/plugins/StrictCBCZigZagIndicator';
@@ -62,6 +64,111 @@ async function mineWithMockedResponse(
 
 function mockKline(openTime: number, closeTime: number): unknown[] {
     return [openTime, '10', '12', '9', '11', '100', closeTime];
+}
+
+function createArchiveFixture() {
+    const symbol = 'SOLUSDT';
+    const timeframe = '1m';
+    const continuousFileName = `MLR1_${symbol}_${timeframe}_Continuous_Observations.csv`;
+    const representationFileName = `MLR1_${symbol}_${timeframe}_Representation_Features.csv`;
+    const eventFileName = `MLR1_${symbol}_${timeframe}_Events.csv`;
+    const dateRange = { startTimestamp: 1_800_000_000_000, endTimestamp: 1_800_000_060_000 };
+    const buildConfig = {
+        symbol,
+        baseTimeframe: timeframe,
+        datasetVersion: 2,
+        representationSchemaVersion: MLR1_REPRESENTATION_SCHEMA_VERSION,
+        modelInputSchemaVersion: MLR1_MODEL_INPUT_SCHEMA_VERSION,
+        sourceIntervalMs: 60_000,
+        featureConfigVersion: 'ML1_CONFIG_B_TEST',
+        teacherVersion: 'STRICT_CBC_TEST',
+        outcomeConfigVersion: 'MLR1_TEST',
+        dateRange,
+        integrityPolicy: {
+            rejectInvalidSource: true,
+            rejectInvalidOhlcv: true,
+            rejectDuplicateTimestamp: true,
+            rejectOutOfOrder: true,
+            requireMinimumUptimeFraction: 1
+        },
+        exportConfig: {
+            exportTierA: true,
+            exportTierB: true,
+            exportTierC: true,
+            separateFiles: false
+        }
+    };
+    const manifest: DatasetManifest = {
+        datasetId: 'DS_SOLUSDT_1m_V2',
+        sourceIdentity: 'BINANCE_SPOT',
+        datasetVersion: 2,
+        representationSchemaVersion: MLR1_REPRESENTATION_SCHEMA_VERSION,
+        modelInputSchemaVersion: MLR1_MODEL_INPUT_SCHEMA_VERSION,
+        symbol,
+        timeframe,
+        startTimestamp: dateRange.startTimestamp,
+        endTimestamp: dateRange.endTimestamp,
+        sourceRowCount: 1,
+        acceptedObservationCount: 1,
+        rejectedObservationCount: 0,
+        totalExpectedObservations: 1,
+        sourceAvailabilityFraction: 1,
+        usableObservationFraction: 1,
+        isUptimeValid: true,
+        featureVersion: buildConfig.featureConfigVersion,
+        teacherVersion: buildConfig.teacherVersion,
+        outcomeVersion: buildConfig.outcomeConfigVersion,
+        missingDataStats: {
+            missingIntervalCount: 0,
+            unexpectedIntervalCount: 0,
+            duplicateTimestampCount: 0,
+            outOfOrderCount: 0,
+            invalidOhlcvCount: 0,
+            invalidSourceCount: 0,
+            offGridTimestampCount: 0,
+            outOfRangeTimestampCount: 0,
+            htf15mGapCount: 0,
+            htf1hGapCount: 0,
+            htf15mResetCount: 0,
+            htf1hResetCount: 0,
+            htf15mIncompleteWindowCount: 0,
+            htf1hIncompleteWindowCount: 0
+        },
+        buildConfig,
+        buildTimestamp: 1_800_000_000_000,
+        auditResults: {
+            passed: true,
+            chronologyValid: true,
+            identityUnique: true,
+            inputOutcomeSeparationValid: true,
+            remarks: []
+        },
+        exportAccounting: {
+            rawSourceCandleCount: 1,
+            acceptedSourceObservationCount: 1,
+            rejectedSourceObservationCount: 0,
+            tierAContinuousObservationCount: 1,
+            tierAEventRepresentationRowCount: 1,
+            tierBConfirmedTeacherEventCount: 1,
+            tierCOutcomeRowCount: 1,
+            actualFileRowCounts: {
+                [continuousFileName]: 1,
+                [representationFileName]: 1,
+                [eventFileName]: 1
+            }
+        }
+    };
+    const representationRow = ['OBS_SOLUSDT_1m_V1_1800000000000', ...Array(12).fill('0')].join(',');
+    const artifacts = {
+        manifest,
+        continuousCsv: 'source_timestamp\r\n1800000000000',
+        representationCsv: `${MLR1_REPRESENTATION_COLUMNS.join(',')}\r\n${representationRow}`,
+        eventCsv: 'event_id\r\nEVENT_1',
+        continuousFileName,
+        representationFileName,
+        eventFileName
+    };
+    return { artifacts, request: createML1ZipExportRequest(manifest) };
 }
 
 export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
@@ -303,46 +410,16 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
     });
 
     await runTest('Generated archive has exact physical entries, bytes, and row counts', async () => {
-        const continuousFileName = 'continuous.csv';
-        const representationFileName = 'representation.csv';
-        const eventFileName = 'events.csv';
-        const actualFileRowCounts = {
-            [continuousFileName]: 1,
-            [representationFileName]: 1,
-            [eventFileName]: 1
-        };
-        const artifacts = {
-            manifest: {
-                symbol: 'SOLUSDT',
-                timeframe: '1m',
-                buildTimestamp: 1_800_000_000_000,
-                exportAccounting: {
-                    rawSourceCandleCount: 1,
-                    acceptedSourceObservationCount: 1,
-                    rejectedSourceObservationCount: 0,
-                    tierAContinuousObservationCount: 1,
-                    tierAEventRepresentationRowCount: 1,
-                    tierBConfirmedTeacherEventCount: 1,
-                    tierCOutcomeRowCount: 1,
-                    actualFileRowCounts
-                }
-            },
-            continuousCsv: 'source_timestamp\r\n1',
-            representationCsv: 'tierB_pivot_type\r\nlow',
-            eventCsv: 'long_outcome\r\nhard_stop',
-            continuousFileName,
-            representationFileName,
-            eventFileName
-        };
-        const bytes = await AIExporter.createVerifiedDatasetArchive(artifacts);
+        const { artifacts, request } = createArchiveFixture();
+        const bytes = await AIExporter.createVerifiedDatasetArchive(artifacts, request);
         const reopened = await JSZip.loadAsync(bytes);
         const names = Object.keys(reopened.files).filter(name => !reopened.files[name].dir).sort();
         assert(names.length === 4, 'Archive must contain the manifest and all three CSVs');
-        assert(names.includes(continuousFileName), 'Continuous observations CSV is missing');
-        assert(names.includes(representationFileName), 'Representation CSV is missing');
-        assert(names.includes(eventFileName), 'Event outcomes CSV is missing');
+        assert(names.includes(artifacts.continuousFileName), 'Continuous observations CSV is missing');
+        assert(names.includes(artifacts.representationFileName), 'Representation CSV is missing');
+        assert(names.includes(artifacts.eventFileName), 'Event outcomes CSV is missing');
         assert(
-            await reopened.file(eventFileName)!.async('string') === artifacts.eventCsv,
+            await reopened.file(artifacts.eventFileName)!.async('string') === artifacts.eventCsv,
             'Physical event CSV bytes must equal deterministic artifact bytes'
         );
 
@@ -350,8 +427,8 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
         try {
             await AIExporter.createVerifiedDatasetArchive({
                 ...artifacts,
-                eventFileName: continuousFileName
-            });
+                eventFileName: artifacts.continuousFileName
+            }, request);
         } catch {
             duplicateNameThrew = true;
         }
@@ -719,8 +796,14 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
             'Export accounting must be deterministic');
         assert(JSON.stringify(first.auditResult) === JSON.stringify(second.auditResult),
             'Audit results must be deterministic');
-        const firstArchive = await AIExporter.createVerifiedDatasetArchive(first);
-        const secondArchive = await AIExporter.createVerifiedDatasetArchive(second);
+        const firstArchive = await AIExporter.createVerifiedDatasetArchive(
+            first,
+            createML1ZipExportRequest(first.manifest)
+        );
+        const secondArchive = await AIExporter.createVerifiedDatasetArchive(
+            second,
+            createML1ZipExportRequest(second.manifest)
+        );
         assert(firstArchive.length === secondArchive.length &&
             firstArchive.every((byte, index) => byte === secondArchive[index]),
         'ZIP physical artifact bytes must be deterministic');

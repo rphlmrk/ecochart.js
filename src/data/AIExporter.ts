@@ -5,6 +5,9 @@ import JSZip from 'jszip';
 import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
 import type { SourceBackboneAcceptedRow } from '../indicators/mlr1/dataset/ObservationBackbone';
 import type { DatasetManifest, ExportAccounting } from '../indicators/mlr1/dataset/DatasetManifest';
+import {
+    validateML1ExportRequestAgainstManifest,
+} from '../indicators/mlr1/integration/ML1IntegrationTypes';
 import type { StrictZigZagPivot } from '../indicators/plugins/StrictCBCZigZagIndicator';
 import {
     MLR1_MODEL_INPUT_SCHEMA_VERSION,
@@ -1153,17 +1156,51 @@ export class AIExporter {
         }
     }
 
-    public static async createVerifiedDatasetArchive(artifacts: {
-        manifest: Pick<DatasetManifest, 'symbol' | 'timeframe' | 'buildTimestamp' | 'exportAccounting'>;
-        continuousCsv: string;
-        representationCsv: string;
-        eventCsv: string;
-        continuousFileName: string;
-        representationFileName: string;
-        eventFileName: string;
-    }): Promise<Uint8Array> {
+    public static async createVerifiedDatasetArchive(
+        artifacts: {
+            manifest: DatasetManifest;
+            continuousCsv: string;
+            representationCsv: string;
+            eventCsv: string;
+            continuousFileName: string;
+            representationFileName: string;
+            eventFileName: string;
+        },
+        request: unknown
+    ): Promise<Uint8Array> {
+        validateML1ExportRequestAgainstManifest(request, artifacts.manifest);
+        if (request.requestedOutputType !== 'ZIP' ||
+            request.exportProfile !== 'MODEL_INPUTS' ||
+            request.requestedDataTiers.length !== 2 ||
+            request.requestedDataTiers[0] !== 'A' ||
+            request.requestedDataTiers[1] !== 'B') {
+            throw new Error('ML1 Export Request Error: The M4 package supports the canonical ZIP model-input request only.');
+        }
+        if (request.exportConfig.includeHeaders === false ||
+            request.exportConfig.compressionLevel !== undefined ||
+            request.destinationConfig.targetDirectory !== undefined ||
+            request.destinationConfig.overwriteExisting !== undefined) {
+            throw new Error('ML1 Export Request Error: The M4 ZIP package does not support export or destination overrides.');
+        }
+
         const manifestFileName =
             `MLR1_${artifacts.manifest.symbol}_${artifacts.manifest.timeframe}_Manifest.json`;
+        const expectedContinuousFileName =
+            `MLR1_${artifacts.manifest.symbol}_${artifacts.manifest.timeframe}_Continuous_Observations.csv`;
+        const expectedRepresentationFileName =
+            `MLR1_${artifacts.manifest.symbol}_${artifacts.manifest.timeframe}_Representation_Features.csv`;
+        const expectedEventFileName =
+            `MLR1_${artifacts.manifest.symbol}_${artifacts.manifest.timeframe}_Events.csv`;
+        if (artifacts.continuousFileName !== expectedContinuousFileName ||
+            artifacts.representationFileName !== expectedRepresentationFileName ||
+            artifacts.eventFileName !== expectedEventFileName) {
+            throw new Error('Dataset archive filenames do not match the frozen M4 ZIP contract.');
+        }
+        const representationHeader = artifacts.representationCsv.split(/\r?\n/, 1)[0]?.split(',') ?? [];
+        if (representationHeader.length !== MLR1_REPRESENTATION_COLUMNS.length ||
+            representationHeader.some((column, index) => column !== MLR1_REPRESENTATION_COLUMNS[index])) {
+            throw new Error('Dataset archive model-input representation does not match the approved Tier A/B allowlists.');
+        }
         const entries = [
             { name: manifestFileName, content: JSON.stringify(artifacts.manifest, null, 2) },
             { name: artifacts.continuousFileName, content: artifacts.continuousCsv },
