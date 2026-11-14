@@ -34,6 +34,11 @@ import { DataWorkerClient } from './workers/DataWorkerClient';
 import { TimeframeResampler } from './data/TimeframeResampler';
 export { alertManager } from './alerts/AlertManager';
 import { AIExporter } from './data/AIExporter';
+import {
+    StreamingDatasetExporter,
+    runPhase0ExportBaseline,
+    runStreamingExportParityTest
+} from './data/StreamingDatasetExporter';
 import { createML1ZipExportRequest } from './indicators/mlr1/integration/ML1IntegrationTypes';
 export { AIExporter };
 export {
@@ -4669,6 +4674,25 @@ export class WorkspaceManager {
             });
         });
 
+        document.querySelectorAll('.ai-pack-card').forEach(card => {
+            card.addEventListener('click', (e) => {
+                const target = e.currentTarget as HTMLElement;
+                document.querySelectorAll('.ai-pack-card').forEach(c => {
+                    c.classList.remove('active');
+                    (c as HTMLElement).style.borderColor = 'var(--chart-grid, #363A45)';
+                    (c as HTMLElement).style.background = 'rgba(120, 123, 134, 0.04)';
+                });
+                target.classList.add('active');
+                target.style.borderColor = '#EF5350';
+                target.style.background = 'rgba(120, 123, 134, 0.08)';
+                if (btnAiExportStart) {
+                    btnAiExportStart.textContent = target.dataset.pack === 'stream_folder'
+                        ? 'Export Streaming Dataset Folder'
+                        : 'Download ZIP Dataset Package';
+                }
+            });
+        });
+
         // Top-Bar Button State Management for Background Mining
         let isMiningActive = false;
         const resetTopbarButton = () => {
@@ -4875,6 +4899,12 @@ export class WorkspaceManager {
                 }
                 console.log('✅ Milestone 5C: Passed (18/18 Acceptance Tests)');
 
+                // Phase 0 Baseline & Streaming Parity Verification
+                await runPhase0ExportBaseline(1440);
+                if (!await runStreamingExportParityTest(1440)) {
+                    throw new Error('Streaming M4 Parity test failed');
+                }
+
                 // Deterministic Reconstruction Verification
                 if (loadingDetail) loadingDetail.textContent = 'Verifying Deterministic Reconstruction parity...';
                 await new Promise(resolve => setTimeout(resolve, 50));
@@ -5002,6 +5032,19 @@ export class WorkspaceManager {
             const fetchStartTimestamp = customStartMs ?? expectedStartOpenTimestamp;
             const fetchEndTimestamp = customEndMs ?? expectedEndOpenTimestamp;
 
+            const activePack = (document.querySelector('.ai-pack-card.active') as HTMLElement)?.dataset.pack || 'stream_folder';
+            let selectedDirHandle: any = null;
+            if (activePack === 'stream_folder') {
+                try {
+                    selectedDirHandle = await StreamingDatasetExporter.promptDirectoryHandle();
+                } catch (pickerErr: any) {
+                    if (pickerErr?.name === 'AbortError') return; // User closed folder dialog
+                    console.warn('Directory picker unavailable, falling back to OPFS:', pickerErr);
+                }
+            }
+
+            const exportAbortController = new AbortController();
+
             // 1. NON-BLOCKING: Close modal immediately so the chart is 100% usable!
             modalAiExport?.close();
             setTopbarMiningState(0);
@@ -5052,6 +5095,38 @@ export class WorkspaceManager {
                         expectedCandleCount
                     );
                 }
+                if (activePack === 'stream_folder') {
+                    if (loadingTitle) loadingTitle.textContent = 'Streaming 4-File M4 Dataset...';
+                    if (loadingDetail) loadingDetail.textContent = 'Processing rolling features & writing chunks...';
+                    const streamResult = await StreamingDatasetExporter.exportToFolderOrOpfs({
+                        rawCandleBuffer,
+                        symbol: exportSymbol,
+                        interval: exportInterval,
+                        intervalMs,
+                        rootDirHandle: selectedDirHandle,
+                        sourceTimestampBounds: customStartMs !== undefined && customEndMs !== undefined
+                            ? { startTimestamp: customStartMs, endTimestamp: customEndMs }
+                            : undefined,
+                        signal: exportAbortController.signal,
+                        onProgress: (pct, detail) => {
+                            if (progressFill) progressFill.style.width = `${pct}%`;
+                            if (progressPct) progressPct.textContent = `${pct}%`;
+                            if (loadingDetail) loadingDetail.textContent = detail;
+                        }
+                    });
+                    rawCandleBuffer = null;
+                    console.log('✅ Streaming M4 Export Complete:', streamResult);
+                    if (loadingDetail) {
+                        loadingDetail.textContent = `Exported ${streamResult.telemetry.totalEvents} events (${streamResult.telemetry.durationMs}ms, peak heap ${streamResult.telemetry.peakHeapMB ?? 'N/A'} MB).`;
+                    }
+                    resetTopbarButton();
+                    setTimeout(() => {
+                        if (loadingOverlay) loadingOverlay.style.display = 'none';
+                        modalAiExport?.close();
+                    }, 1600);
+                    return;
+                }
+
                 const chartZigZag = chart.indicatorManager.activeIndicators.find(
                     indicator => indicator instanceof StrictCBCZigZagIndicator
                 ) as StrictCBCZigZagIndicator | undefined;
@@ -6070,5 +6145,7 @@ export class WorkspaceManager {
         (window as any).runPhase2JTests = runPhase2JTests;
         (window as any).generatePhase2JReports = generatePhase2JReports;
         (window as any).runPhase5CAcceptanceSuite = runPhase5CAcceptanceSuite;
+        (window as any).runPhase0ExportBaseline = runPhase0ExportBaseline;
+        (window as any).runStreamingExportParityTest = runStreamingExportParityTest;
     }
 }

@@ -106,7 +106,8 @@ export class BackgroundDataMiner {
             signal = localController.signal;
         }
 
-        const collectedCandles: number[][] = [];
+        let flatBuffer = new Float64Array(estimatedTotalCandles * 6);
+        let collectedCount = 0;
         let fetchStart = startTarget;
         let batchIndex = 0;
         let lastCandleTime = -1;
@@ -132,7 +133,7 @@ export class BackgroundDataMiner {
                     totalBatches,
                     percent: pct,
                     etaSeconds,
-                    candlesFetched: collectedCandles.length,
+                    candlesFetched: collectedCount,
                     statusText: `Fetching 1,000 ${interval} candles from Binance...`
                 });
 
@@ -200,7 +201,19 @@ export class BackgroundDataMiner {
                         throw new Error(`Binance returned structurally invalid OHLC geometry at timestamp ${candleTime}.`);
                     }
 
-                    collectedCandles.push([candleTime, o, h, l, c, v]);
+                    if ((collectedCount + 1) * 6 > flatBuffer.length) {
+                        const grown = new Float64Array(Math.max(flatBuffer.length * 2, (collectedCount + 1000) * 6));
+                        grown.set(flatBuffer);
+                        flatBuffer = grown;
+                    }
+                    const offset = collectedCount * 6;
+                    flatBuffer[offset] = candleTime;
+                    flatBuffer[offset + 1] = o;
+                    flatBuffer[offset + 2] = h;
+                    flatBuffer[offset + 3] = l;
+                    flatBuffer[offset + 4] = c;
+                    flatBuffer[offset + 5] = v;
+                    collectedCount++;
                     lastCandleTime = candleTime;
                 }
 
@@ -223,19 +236,8 @@ export class BackgroundDataMiner {
             }
         }
 
-        const len = collectedCandles.length;
-        const flatBuffer = new Float64Array(len * 6);
-        for (let i = 0; i < len; i++) {
-            const c = collectedCandles[i];
-            const base = i * 6;
-            flatBuffer[base] = c[0];
-            flatBuffer[base + 1] = c[1];
-            flatBuffer[base + 2] = c[2];
-            flatBuffer[base + 3] = c[3];
-            flatBuffer[base + 4] = c[4];
-            flatBuffer[base + 5] = c[5];
-        }
-
-        return flatBuffer;
+        return collectedCount * 6 === flatBuffer.length
+            ? flatBuffer
+            : flatBuffer.slice(0, collectedCount * 6);
     }
 }

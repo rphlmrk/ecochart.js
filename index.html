@@ -2314,6 +2314,7 @@
           <button class="ai-range-btn" data-val="2w" style="flex: 1; background: transparent; border: none; color: #787B86; padding: 6px 0; font-size: 12px; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.2s;">2 Weeks</button>
           <button class="ai-range-btn active" data-val="1m" style="flex: 1; background: var(--chart-bg, #131722); border: none; color: #EF5350; padding: 6px 0; font-size: 12px; font-weight: 600; cursor: pointer; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); transition: all 0.2s;">1 Month</button>
           <button class="ai-range-btn" data-val="3m" style="flex: 1; background: transparent; border: none; color: #787B86; padding: 6px 0; font-size: 12px; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.2s;">3 Months</button>
+          <button class="ai-range-btn" data-val="6m" style="flex: 1; background: transparent; border: none; color: #787B86; padding: 6px 0; font-size: 12px; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.2s;">6 Months</button>
           <button class="ai-range-btn" data-val="custom" style="flex: 1; background: transparent; border: none; color: #787B86; padding: 6px 0; font-size: 12px; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.2s;">Custom</button>
         </div>
 
@@ -2332,10 +2333,16 @@
 
       <!-- Required ML-R1 Dataset Package -->
       <div>
-        <div style="font-size: 10px; font-weight: 700; color: #787B86; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">Package Format</div>
-        <div class="ai-pack-card active" data-pack="zip" style="background: rgba(120, 123, 134, 0.08); border: 1.5px solid #EF5350; border-radius: 6px; padding: 10px 12px;">
-          <div style="font-size: 12px; font-weight: 700; color: var(--chart-text, #D1D4DC); display: flex; align-items: center; gap: 6px;"><span style="font-size: 14px;">📦</span> ML-R1 Dataset Package (.zip)</div>
-          <div style="font-size: 10px; color: #787B86; margin-top: 4px; margin-left: 20px;">Manifest, continuous observations, representation features, and event outcomes</div>
+        <div style="font-size: 10px; font-weight: 700; color: #787B86; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">Export Mode (Preserves M4 4-File Contract)</div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <button type="button" class="ai-pack-card active" data-pack="stream_folder" style="text-align: left; cursor: pointer; background: rgba(120, 123, 134, 0.08); border: 1.5px solid #EF5350; border-radius: 6px; padding: 10px 12px;">
+            <div style="font-size: 12px; font-weight: 700; color: var(--chart-text, #D1D4DC); display: flex; align-items: center; gap: 6px;"><span>⚡</span> Streaming Folder (Large Data)</div>
+            <div style="font-size: 10px; color: #787B86; margin-top: 4px;">Streams 4 M4 files directly to disk / OPFS with bounded RAM</div>
+          </button>
+          <button type="button" class="ai-pack-card" data-pack="zip" style="text-align: left; cursor: pointer; background: rgba(120, 123, 134, 0.04); border: 1.5px solid var(--chart-grid, #363A45); border-radius: 6px; padding: 10px 12px;">
+            <div style="font-size: 12px; font-weight: 700; color: var(--chart-text, #D1D4DC); display: flex; align-items: center; gap: 6px;"><span>📦</span> Legacy ZIP Package (≤ 7 Days)</div>
+            <div style="font-size: 10px; color: #787B86; margin-top: 4px;">Original in-memory M4 ZIP archive</div>
+          </button>
         </div>
       </div>
 
@@ -2353,7 +2360,7 @@
         </button>
         <div style="display: flex; gap: 10px;">
           <button id="btn-ai-export-cancel" style="background: transparent; border: 1px solid var(--chart-grid, #434651); color: var(--chart-text, #D1D4DC); padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; transition: background 0.15s;">Cancel</button>
-          <button id="btn-ai-export-start" style="background: #EF5350; color: white; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 6px rgba(239, 83, 80, 0.4); transition: transform 0.1s ease;">Download ZIP Dataset Package</button>
+          <button id="btn-ai-export-start" style="background: #EF5350; color: white; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 6px rgba(239, 83, 80, 0.4); transition: transform 0.1s ease;">Export Streaming Dataset Folder</button>
         </div>
       </div>
       
