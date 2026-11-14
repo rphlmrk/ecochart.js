@@ -810,14 +810,15 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
     });
 
     if (typeof document !== 'undefined') {
-        await runTest('Live package UI exposes only the supported ZIP package', () => {
+        await runTest('Live package UI exposes only the supported streaming M4 folder export', () => {
             assert(
-                document.querySelector('[data-pack="csv"]') === null,
-                'Unsupported single-CSV mode must not be selectable'
+                document.querySelector('[data-pack="csv"]') === null &&
+                    document.querySelector('[data-pack="zip"]') === null,
+                'Unsupported single-CSV and legacy ZIP modes must not be selectable'
             );
             assert(
-                document.querySelectorAll('.ai-pack-card[data-pack="zip"]').length === 1,
-                'The required ML-R1 ZIP package must be the sole visible package choice'
+                document.querySelectorAll('.ai-pack-card[data-pack="stream_folder"]').length === 1,
+                'The streaming ML-R1 4-file folder export must be the sole visible package choice'
             );
             assert(
                 document.querySelector('#ai-export-rr') === null &&
