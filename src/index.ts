@@ -3707,10 +3707,11 @@ export class WorkspaceManager {
             Object.values(THEME_PRESETS).forEach((p) => {
                 const card = document.createElement('button');
                 card.type = 'button';
-                card.style.cssText = 'background:#1e222d;border:1px solid #363a45;border-radius:4px;padding:6px 10px;display:flex;align-items:center;gap:8px;cursor:pointer;color:#D1D4DC;font-size:12px;text-align:left;';
+                card.dataset.themeId = p.id;
+                card.style.cssText = 'background:var(--chart-bg, #1e222d);border:1px solid var(--chart-grid, #363a45);border-radius:4px;padding:6px 10px;display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--chart-text, #D1D4DC);font-size:12px;text-align:left;transition:border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;';
                 card.innerHTML = `
-                    <span style="width:12px;height:12px;border-radius:2px;background:${p.bullBody};display:inline-block;"></span>
-                    <span style="width:12px;height:12px;border-radius:2px;background:${p.bearBody};display:inline-block;"></span>
+                    <span style="width:12px;height:12px;border-radius:2px;background:${p.bullBody};border:1px solid rgba(128,128,128,0.3);display:inline-block;flex-shrink:0;"></span>
+                    <span style="width:12px;height:12px;border-radius:2px;background:${p.bearBody};border:1px solid rgba(128,128,128,0.3);display:inline-block;flex-shrink:0;"></span>
                     <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.name}</span>
                 `;
                 card.onclick = () => {
@@ -3819,6 +3820,17 @@ export class WorkspaceManager {
             if (checkSync) checkSync.checked = WorkspaceManager.isCrosshairSyncEnabled;
 
             const current = themeManager.getTheme();
+            if (presetGrid) {
+                presetGrid.querySelectorAll<HTMLButtonElement>('button[data-theme-id]').forEach((card) => {
+                    const isActive = card.dataset.themeId === current.id;
+                    card.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+                    card.style.background = 'var(--chart-bg, #1e222d)';
+                    card.style.color = 'var(--chart-text, #D1D4DC)';
+                    card.style.borderColor = isActive ? 'var(--chart-accent, #2962FF)' : 'var(--chart-grid, #363a45)';
+                    card.style.boxShadow = isActive ? '0 0 0 1px var(--chart-accent, #2962FF) inset' : 'none';
+                    card.style.fontWeight = isActive ? '700' : '400';
+                });
+            }
             const setSwatch = (id: string, color: string) => {
                 const el = document.getElementById(id);
                 if (el) {
@@ -4338,17 +4350,20 @@ export class WorkspaceManager {
         document.getElementById('select-day-theme')?.addEventListener('change', (e) => {
             const dayThemeId = (e.target as HTMLSelectElement).value;
             themeManager.setDynamicConfig({ dayThemeId });
+            syncModalInputs();
         });
 
         document.getElementById('select-night-theme')?.addEventListener('change', (e) => {
             const nightThemeId = (e.target as HTMLSelectElement).value;
             themeManager.setDynamicConfig({ nightThemeId });
+            syncModalInputs();
         });
 
         document.getElementById('input-day-start-hour')?.addEventListener('change', (e) => {
             const val = parseInt((e.target as HTMLInputElement).value, 10);
             if (!isNaN(val) && val >= 0 && val <= 23) {
                 themeManager.setDynamicConfig({ dayStartHour: val });
+                syncModalInputs();
             }
         });
 
@@ -4356,6 +4371,7 @@ export class WorkspaceManager {
             const val = parseInt((e.target as HTMLInputElement).value, 10);
             if (!isNaN(val) && val >= 0 && val <= 23) {
                 themeManager.setDynamicConfig({ nightStartHour: val });
+                syncModalInputs();
             }
         });
 
