@@ -1,8 +1,10 @@
 # ML-R1 Phase 5D (v3) Frozen Contract
 
-**Status:** FROZEN FOR PHASE 1 IMPLEMENTATION  
+**Contract Status:** FROZEN (Phase 1 Verdict: `CONDITIONAL ACCEPTANCE` — see `docs/MLR1_PHASE5D_PHASE1_ACCEPTANCE.md`)  
 **Canonical Instrument & Timeframe:** `SOLUSDT` `1m`  
-**Legacy Compatibility:** `ML1FeatureEngine` `stateVersion: 4` (`ML1_CONFIG_A`, `ML1_CONFIG_B`) and `MLR1_DATASET_VERSION = 2` remain untouched and default until all v3 audits pass.
+**Legacy Compatibility:** `ML1FeatureEngine` `stateVersion: 4` (`ML1_CONFIG_A`, `ML1_CONFIG_B`) and `MLR1_DATASET_VERSION = 2` remain untouched and default until all v3 audits pass.  
+**Historical V4 Compatibility Status:** `NOT PROVEN — NO INDEPENDENT PRE-CHANGE BASELINE AVAILABLE` (current-build regression hashes are current-build drift checks only, not historical proof).  
+**Deferred Runtime Scope:** `StrategyEvent` runtime implementation, discriminator collision checks, final-bar (`entryTimestamp: null`) runtime handling, and `v3` export exclusion/censoring are contract-specified here and deferred to Phase 2 (Gate 1) and Phase 4.
 
 ---
 
