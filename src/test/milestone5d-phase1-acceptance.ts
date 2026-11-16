@@ -249,19 +249,55 @@ export function runPhase5DPhase1Tests(): boolean {
             assert(matched, `${label}: expected State Integrity Error containing '${substr}'`);
         };
 
-        // V5 VAM checks
+        // V5 VAM negative checks
         expectIntegrityError({ ...s, vamState: { ...s.vamState!, adaptive: Infinity } }, 'adaptive must be finite', 'adaptive=Infinity');
         expectIntegrityError({ ...s, configFingerprint: 'MISMATCHED_CONFIG' }, 'configFingerprint', 'configFingerprint');
         expectIntegrityError({ ...s, vamState: { ...s.vamState!, centerSeedCount: 2, center: null, centerHistory: null as any } }, 'Invalid centerHistory', 'centerHistory=null (must not TypeError)');
+        expectIntegrityError({ ...s, vamState: { ...s.vamState!, centerSeedCount: 2, center: null, centerHistory: undefined as any } }, 'Invalid centerHistory', 'centerHistory=undefined');
+        expectIntegrityError({ ...s, vamState: { ...s.vamState!, centerSeedCount: 2, center: null, centerHistory: { length: 1 } as any } }, 'Invalid centerHistory', 'centerHistory=malformed object');
         expectIntegrityError({ ...s, vamState: { ...s.vamState!, centerHistory: [1, 2, 3, 4, 5] } }, 'Invalid centerHistory', 'oversized centerHistory');
         expectIntegrityError({ ...s, vamState: { ...s.vamState!, adx: 101 } }, '[0, 100]', 'adx=101');
+        expectIntegrityError({ ...s, vamState: { ...s.vamState!, adx: -1 } }, '[0, 100]', 'adx=-1');
         expectIntegrityError({ ...s, vamState: { ...s.vamState!, dmiCount: s.vamState!.dmiCount + 1 } }, 'Corrupted DMI count', 'inconsistent dmiCount');
+        expectIntegrityError({ ...s, vamState: { ...s.vamState!, rsiCount: s.vamState!.rsiCount + 1 } }, 'Corrupted RSI count', 'inconsistent rsiCount');
+        expectIntegrityError({ ...s, vamState: { ...s.vamState!, dxHistoryCount: s.vamState!.dxHistoryCount + 1 } }, 'Corrupted ADX count', 'inconsistent dxHistoryCount');
+        expectIntegrityError({ ...s, vamState: { ...s.vamState!, atrState: { ...s.vamState!.atrState, count: s.vamState!.atrState.count + 1 } } }, 'Corrupted atrState', 'inconsistent atrState.count');
+        expectIntegrityError({ ...s, vamState: { ...s.vamState!, centerSeedCount: 4 } }, 'centerSeedCount', 'inconsistent centerSeedCount');
         expectIntegrityError({ ...s, vamState: { ...s.vamState!, buyStreak: 1, sellStreak: 1 } }, 'mutually exclusive streaks', 'simultaneous streaks');
 
-        // Embedded V4 baseState checks
+        // Embedded V4 baseState negative checks
         expectIntegrityError({ ...s, baseState: { ...s.baseState, stateVersion: 3 as any } }, 'Incompatible state version', 'baseState.stateVersion=3');
         expectIntegrityError({ ...s, baseState: { ...s.baseState, lastBarIndex: 5, lastClose: null } }, 'Partial state detected', 'baseState partial state');
         expectIntegrityError({ ...s, baseState: { ...s.baseState, atrState: { ...s.baseState.atrState, 14: { count: 14, seedMean: 1, atr: -5, isSeeded: true } } } }, 'Inconsistent seeded ATR', 'baseState negative atr');
+
+        // Legitimate V5 + VAM states at bars 0, 4, 7, 13, 14, 27 & after discontinuity (direct + JSON round-trip restoration)
+        const checkpointBars = new Set([0, 4, 7, 13, 14, 27]);
+        let legState = createInitialML1FeatureStateV5(ML1_CONFIG_C);
+        // Also verify initial pre-bar-0 state round-trips cleanly
+        const restoredInit = JSON.parse(JSON.stringify(legState));
+        const directBar0 = stepML1FeaturesV5(makeCandle(t0, 100, 102, 98, 101, 100), 0, legState, ML1_CONFIG_C);
+        const restoredBar0 = stepML1FeaturesV5(makeCandle(t0, 100, 102, 98, 101, 100), 0, restoredInit, ML1_CONFIG_C);
+        assert(JSON.stringify(directBar0.observation) === JSON.stringify(restoredBar0.observation), 'Initial pre-bar-0 JSON round-trip mismatch');
+
+        for (let i = 0; i <= 32; i++) {
+            const ts = i === 29 ? t0 + i * 60_000 + 600_000 : t0 + (i >= 29 ? i * 60_000 + 600_000 : i * 60_000);
+            const c = makeCandle(ts, 100 + i, 102 + i, 98 + i, 101 + i, 100);
+            const res = stepML1FeaturesV5(c, i, legState, ML1_CONFIG_C);
+            legState = res.nextState;
+
+            if (checkpointBars.has(i) || i === 29) {
+                const nextTs = (i >= 29 ? (i + 1) * 60_000 + 600_000 : (i + 1 === 29 ? (i + 1) * 60_000 + 600_000 : (i + 1) * 60_000)) + t0;
+                const nextCandle = makeCandle(nextTs, 101 + i, 103 + i, 99 + i, 102 + i, 100);
+                const directNext = stepML1FeaturesV5(nextCandle, i + 1, legState, ML1_CONFIG_C);
+                const roundTripped = JSON.parse(JSON.stringify(legState));
+                const restoredNext = stepML1FeaturesV5(nextCandle, i + 1, roundTripped, ML1_CONFIG_C);
+                assert(
+                    JSON.stringify(directNext.observation) === JSON.stringify(restoredNext.observation) &&
+                    JSON.stringify(directNext.nextState) === JSON.stringify(restoredNext.nextState),
+                    `Legitimate V5/VAM JSON round-trip failed at bar ${i}`
+                );
+            }
+        }
     });
 
     // 5. 750-Bar Serialization & Restoration with Active Cooldown at 260, Rejections, VCS(360) @ 513 & Post-Restore Reset
@@ -273,8 +309,8 @@ export function runPhase5DPhase1Tests(): boolean {
             // Drive an uptrend (200..251) then sharp reversal at 252..260 so sellSignal fires right before bar 260
             if (i >= 200 && i <= 251) p = 100 + (i - 200) * 1.2;
             if (i >= 252 && i <= 260) p = 161.2 - (i - 251) * 4.5;
-            // Immediate post-restore jump (261..270) to exercise active cooldown across checkpoint 260
-            if (i >= 261 && i <= 270) p = 165 + (i - 261) * 2.0;
+            // Immediate post-restore jump (261..270) so buyStreak >= 2 by delta = 6 (bar 265), proving restored cooldown blocks delta=6 & releases at delta=7 (bar 266)
+            if (i >= 261 && i <= 270) p = 195 + (i - 261) * 5.0;
 
             if (i === 150 || i === 700) ts += 600_000; // Discontinuities before & after restore
             if (i === 180) {
@@ -334,10 +370,15 @@ export function runPhase5DPhase1Tests(): boolean {
             restored = res.nextState;
             splitObs.push(res.observation);
 
-            // While delta <= 6 post-restore, cooldown must stay active and block VAM_Signal
+            // While delta <= 6 post-restore, cooldown must stay active and block VAM_Signal even when buyStreak >= 2 (bar 265)
             const curAcceptedIdx = restored.vamState!.unbrokenRun - 1;
-            if (i <= 264 && curAcceptedIdx - checkpointSigIdx <= 6) {
-                assert(res.observation.features['VAM_Signal'] === 0, `Cooldown failed immediately after restore at bar ${i}`);
+            const postDelta = curAcceptedIdx - checkpointSigIdx;
+            if (i === 265) {
+                assert(postDelta === 6 && res.observation.features['VAM_BuyStreak'] >= 2, `Expected buyStreak >= 2 at post-restore delta=6 (bar 265)`);
+                assert(res.observation.features['VAM_Signal'] === 0, `Restored cooldown failed to block VAM_Signal at bar 265 (delta=6)`);
+            }
+            if (i === 266) {
+                assert(postDelta === 7 && res.observation.features['VAM_Signal'] === 1, `Expected VAM_Signal=1 at post-restore delta=7 (bar 266)`);
             }
         }
 
@@ -366,6 +407,12 @@ export function runPhase5DPhase1Tests(): boolean {
 
     // 6. V4 Rejected-Row Identity, Closed-Form Non-Flat V4 Reference Fixture & V4-vs-V5 Delegation Parity
     runTest('6. V4 rejected identity, non-flat analytical V4 fixture, hashes & V4-vs-V5 parity', () => {
+        // Current-build deterministic regression hashes (NOT historical pre-change baseline; no pre-change snapshot exists in non-git workspace)
+        const PINNED_CURRENT_OBS_A_SHA256 = 'cbe1d7f400a159f98dba57e5bcc83ebdb6fc45c43b54977640b22cdc8afae4bf';
+        const PINNED_CURRENT_OBS_B_SHA256 = '14e0834da10b631a4f450c5e6ce8aa148975a3ebd9acf96f987e124503737908';
+        const PINNED_CURRENT_STATE_A_SHA256 = '43f8e26418ae6a1470f3e39ddda002febed09b1439ee8404f2779901532c3a48';
+        const PINNED_CURRENT_STATE_B_SHA256 = '4b81371d1ee8f89337e87bc086f065ba87c4b1ffacac1737006edfdbd151d29e';
+
         const s0 = createInitialML1FeatureState();
         const r0 = stepML1Features(makeCandle(t0, 100, 105, 95, 102, 100), 0, s0, ML1_CONFIG_B);
         const rDup = stepML1Features(makeCandle(t0, 100, 105, 95, 102, 100), 1, r0.nextState, ML1_CONFIG_B);
@@ -436,9 +483,21 @@ export function runPhase5DPhase1Tests(): boolean {
             }
         }
 
+        const stateHashA = new IncrementalSha256();
+        stateHashA.update(enc.encode(JSON.stringify(sA)));
+        const stateHashB = new IncrementalSha256();
+        stateHashB.update(enc.encode(JSON.stringify(sB)));
+
         const obsAHash = hashA.digestHex();
         const obsBHash = hashB.digestHex();
-        console.log(`  📌 V4 Non-Flat 210-Bar SHA-256 (pin after pre-change check): obsA=${obsAHash}, obsB=${obsBHash}`);
+        const stAHash = stateHashA.digestHex();
+        const stBHash = stateHashB.digestHex();
+
+        assert(obsAHash === PINNED_CURRENT_OBS_A_SHA256, `obsA hash mismatch: ${obsAHash}`);
+        assert(obsBHash === PINNED_CURRENT_OBS_B_SHA256, `obsB hash mismatch: ${obsBHash}`);
+        assert(stAHash === PINNED_CURRENT_STATE_A_SHA256, `stateA hash mismatch: ${stAHash}`);
+        assert(stBHash === PINNED_CURRENT_STATE_B_SHA256, `stateB hash mismatch: ${stBHash}`);
+        console.log(`  📌 Pinned Current-Build V4 Non-Flat 210-Bar SHA-256: obsA=${obsAHash}, obsB=${obsBHash}, stateA=${stAHash}, stateB=${stBHash}`);
     });
 
     console.log(`\nPhase 5D Phase 1 Acceptance: ${passed} passed, ${failed} failed.`);
