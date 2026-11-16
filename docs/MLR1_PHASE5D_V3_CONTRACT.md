@@ -142,7 +142,12 @@ export interface StrategyEvent {
        - If `!isCurrentlyInZone` (first touch or a fresh revisit after price previously exited `[bot, top]` on an earlier bar), increment `retestCount` (`1, 2, ...`), set `status = 'RETESTED'`, `isCurrentlyInZone = true`, and emit `DTFX_DEMAND_RETEST` / `DTFX_SUPPLY_RETEST` with `eventDiscriminator = `${zoneId}_R${retestCount}``.
        - If `isCurrentlyInZone === true` (consecutive bars lingering inside `[bot, top]`), emit no duplicate retest event.
     3. Else (`[low, high]` does not touch `[bot, top]`) → set `isCurrentlyInZone = false`.
-  - **Resource Bound & BOS Consumption:** `activeZones` is bounded by `maxActiveZones` (default `256`, pruning oldest active zone on overflow). Consistent with `dtfx.txt`, `bosUpCheck`/`bosDownCheck` clears on `mssUp`/`mssDown` even if a degenerate candidate (`zoneTop <= zoneBot || zoneBot <= 0`) is skipped by the geometry guard.
+  - **BOS Consumption & Geometry Guard (Amended):** `bosUpCheck` / `bosDownCheck` is consumed (`= false`) **only after** the candidate passes geometry validation (`zoneTop > zoneBot && zoneBot > 0`) and creates a valid zone, so degenerate candidates cannot suppress future valid opportunities.
+  - **Resource Bound (`maxActiveZones`, default `256`):**
+    - Oldest-created zones are evicted first; newest zones are retained.
+    - Eviction is **not** an invalidation and emits **no** invalidation event.
+    - `nextZoneId` remains strictly monotonic across evictions and discontinuities.
+    - Newly created zones emit `DTFX_*_CREATED` and appear in `createdZones`; if `maxActiveZones === 1` and two zones are created on the same bar, the earlier zone is evicted from `activeZones` at end-of-step (without invalidation).
 
 ---
 

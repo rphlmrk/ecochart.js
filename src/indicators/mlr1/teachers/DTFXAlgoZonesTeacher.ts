@@ -140,7 +140,12 @@ export function validateDTFXConfig(config: DTFXConfig): void {
     }
 }
 
-function validateDTFXState(state: DTFXState, maxWin: number, maxActiveZones: number): void {
+function validateDTFXState(
+    state: DTFXState,
+    maxWin: number,
+    maxActiveZones: number,
+    intervalMs: number
+): void {
     if (!state || typeof state !== 'object' || state.stateVersion !== 1) {
         throw new Error('DTFX State Integrity Error: invalid DTFX state or stateVersion.');
     }
@@ -156,6 +161,9 @@ function validateDTFXState(state: DTFXState, maxWin: number, maxActiveZones: num
     }
     if (!Array.isArray(state.window) || state.window.length > maxWin) {
         throw new Error('DTFX State Integrity Error: invalid window container or length.');
+    }
+    if (!Array.isArray(state.activeZones) || state.activeZones.length > maxActiveZones) {
+        throw new Error(`DTFX State Integrity Error: activeZones must be an array with length <= ${maxActiveZones}.`);
     }
 
     let prevIdx = -1;
@@ -175,28 +183,67 @@ function validateDTFXState(state: DTFXState, maxWin: number, maxActiveZones: num
             w.low > Math.min(w.open, w.close)) {
             throw new Error('DTFX State Integrity Error: malformed OHLCV bar in window.');
         }
-        if (prevIdx !== -1 && (w.barIndex <= prevIdx || w.time <= prevTime)) {
-            throw new Error('DTFX State Integrity Error: window bars must be strictly chronological.');
+        if (prevIdx !== -1) {
+            if (w.barIndex <= prevIdx || w.time <= prevTime) {
+                throw new Error('DTFX State Integrity Error: window bars must be strictly chronological.');
+            }
+            const delta = w.time - prevTime;
+            if (delta < intervalMs || delta % intervalMs !== 0) {
+                throw new Error('DTFX State Integrity Error: window timestamps must align to intervalMs grid.');
+            }
         }
         windowByIdx.set(w.barIndex, w);
         prevIdx = w.barIndex;
         prevTime = w.time;
     }
 
+    const minBarIdx = state.window.length > 0 ? state.window[0].barIndex : null;
+    const minTime = state.window.length > 0 ? state.window[0].time : null;
     const maxBarIdx = prevIdx === -1 ? null : prevIdx;
     const maxTime = prevTime === -1 ? null : prevTime;
+    const latestBar = state.window.length > 0 ? state.window[state.window.length - 1] : null;
+
+    if (state.window.length === 0 &&
+        (state.t !== null ||
+            state.b !== null ||
+            state.prevTPrice !== null ||
+            state.prevBPrice !== null ||
+            state.prevClose !== null ||
+            state.activeZones.length > 0)) {
+        throw new Error('DTFX State Integrity Error: non-empty swing/zone references with empty window.');
+    }
+
+    const verifyClockRef = (barIndex: number, timestamp: number, label: string) => {
+        if (!Number.isSafeInteger(barIndex) || barIndex < 0 ||
+            !Number.isSafeInteger(timestamp) || timestamp < 0) {
+            throw new Error(`DTFX State Integrity Error: malformed ${label} clock reference.`);
+        }
+        if (minBarIdx === null || maxBarIdx === null || minTime === null || maxTime === null) {
+            throw new Error(`DTFX State Integrity Error: ${label} cannot exist with empty window.`);
+        }
+        if (barIndex > maxBarIdx || timestamp > maxTime) {
+            throw new Error(`DTFX State Integrity Error: ${label} exceeds latest window bar.`);
+        }
+        if (barIndex >= minBarIdx) {
+            const wb = windowByIdx.get(barIndex);
+            if (!wb || wb.time !== timestamp) {
+                throw new Error(`DTFX State Integrity Error: retained ${label} disagrees with window bar.`);
+            }
+        } else if (timestamp >= minTime || (minTime - timestamp) % intervalMs !== 0) {
+            throw new Error(
+                `DTFX State Integrity Error: expired ${label} timestamp (${timestamp}) must be < minTime (${minTime}) and aligned to intervalMs (${intervalMs}).`
+            );
+        }
+    };
 
     for (const [label, pt, field] of [['t', state.t, 'high'], ['b', state.b, 'low']] as const) {
         if (pt !== null) {
-            if (typeof pt !== 'object' || !Number.isFinite(pt.price) || pt.price <= 0 ||
-                !Number.isSafeInteger(pt.barIndex) || pt.barIndex < 0 ||
-                !Number.isSafeInteger(pt.time) || pt.time < 0 ||
-                (maxBarIdx !== null && pt.barIndex > maxBarIdx) ||
-                (maxTime !== null && pt.time > maxTime)) {
+            if (typeof pt !== 'object' || !Number.isFinite(pt.price) || pt.price <= 0) {
                 throw new Error(`DTFX State Integrity Error: corrupted swing point '${label}'.`);
             }
+            verifyClockRef(pt.barIndex, pt.time, `swing '${label}'`);
             const wb = windowByIdx.get(pt.barIndex);
-            if (wb !== undefined && (wb.time !== pt.time || wb[field] !== pt.price)) {
+            if (wb !== undefined && wb[field] !== pt.price) {
                 throw new Error(`DTFX State Integrity Error: swing point '${label}' disagrees with window bar.`);
             }
         }
@@ -212,9 +259,6 @@ function validateDTFXState(state: DTFXState, maxWin: number, maxActiveZones: num
         }
     }
 
-    if (!Array.isArray(state.activeZones) || state.activeZones.length > maxActiveZones) {
-        throw new Error(`DTFX State Integrity Error: activeZones must be an array with length <= ${maxActiveZones}.`);
-    }
     const seenZoneIds = new Set<number>();
     for (const z of state.activeZones) {
         if (!z || typeof z !== 'object' ||
@@ -238,55 +282,91 @@ function validateDTFXState(state: DTFXState, maxWin: number, maxActiveZones: num
                 throw new Error(`DTFX State Integrity Error: fib level out of bounds for zone ${z.zoneId}.`);
             }
         }
-        if (!Number.isSafeInteger(z.createdSourceBarIndex) || z.createdSourceBarIndex < 0 ||
-            !Number.isSafeInteger(z.createdConfirmationBarIndex) ||
-            z.createdConfirmationBarIndex < z.createdSourceBarIndex ||
-            !Number.isSafeInteger(z.createdSourceTimestamp) || z.createdSourceTimestamp < 0 ||
-            !Number.isSafeInteger(z.createdConfirmationTimestamp) ||
+        verifyClockRef(z.createdSourceBarIndex, z.createdSourceTimestamp, `zone ${z.zoneId} createdSource`);
+        verifyClockRef(z.createdConfirmationBarIndex, z.createdConfirmationTimestamp, `zone ${z.zoneId} createdConfirmation`);
+
+        if (z.createdConfirmationBarIndex < z.createdSourceBarIndex ||
             z.createdConfirmationTimestamp < z.createdSourceTimestamp ||
-            (maxBarIdx !== null && z.createdConfirmationBarIndex > maxBarIdx)) {
+            (z.createdConfirmationBarIndex === z.createdSourceBarIndex &&
+                z.createdConfirmationTimestamp !== z.createdSourceTimestamp) ||
+            (z.createdConfirmationBarIndex > z.createdSourceBarIndex &&
+                (z.createdConfirmationTimestamp <= z.createdSourceTimestamp ||
+                    (z.createdConfirmationTimestamp - z.createdSourceTimestamp) % intervalMs !== 0))) {
             throw new Error(`DTFX State Integrity Error: corrupted creation provenance for zone ${z.zoneId}.`);
         }
-        const srcWb = windowByIdx.get(z.createdSourceBarIndex);
-        if (srcWb !== undefined && srcWb.time !== z.createdSourceTimestamp) {
-            throw new Error(`DTFX State Integrity Error: zone ${z.zoneId} createdSourceTimestamp disagrees with window bar.`);
-        }
-        const confWb = windowByIdx.get(z.createdConfirmationBarIndex);
-        if (confWb !== undefined && confWb.time !== z.createdConfirmationTimestamp) {
-            throw new Error(`DTFX State Integrity Error: zone ${z.zoneId} createdConfirmationTimestamp disagrees with window bar.`);
+
+        const latestInvalidatesZone =
+            latestBar !== null &&
+            (z.direction === 'bull' ? latestBar.close < z.bot : latestBar.close > z.top);
+        const latestTouchesZone =
+            latestBar !== null && latestBar.low <= z.top && latestBar.high >= z.bot;
+
+        if (latestBar !== null && z.createdConfirmationBarIndex < latestBar.barIndex && latestInvalidatesZone) {
+            throw new Error(`DTFX State Integrity Error: active zone ${z.zoneId} was invalidated on latest window bar.`);
         }
 
-        if (z.status === 'ACTIVE' &&
-            (z.retestCount !== 0 ||
+        if (z.status === 'ACTIVE') {
+            if (z.retestCount !== 0 ||
                 z.firstRetestBarIndex !== null ||
                 z.firstRetestTimestamp !== null ||
                 z.lastRetestBarIndex !== null ||
                 z.lastRetestTimestamp !== null ||
-                z.isCurrentlyInZone)) {
-            throw new Error(`DTFX State Integrity Error: ACTIVE zone ${z.zoneId} cannot have retest metadata.`);
-        }
-        if (z.status === 'RETESTED') {
+                z.isCurrentlyInZone) {
+                throw new Error(`DTFX State Integrity Error: ACTIVE zone ${z.zoneId} cannot have retest metadata.`);
+            }
+            if (latestBar !== null && z.createdConfirmationBarIndex < latestBar.barIndex && latestTouchesZone) {
+                throw new Error(
+                    `DTFX State Integrity Error: ACTIVE zone ${z.zoneId} overlaps latest window bar without RETESTED transition.`
+                );
+            }
+        } else {
             if (!Number.isSafeInteger(z.retestCount) || z.retestCount < 1 ||
                 z.firstRetestBarIndex === null || z.firstRetestTimestamp === null ||
-                z.lastRetestBarIndex === null || z.lastRetestTimestamp === null ||
-                !Number.isSafeInteger(z.firstRetestBarIndex) || !Number.isSafeInteger(z.firstRetestTimestamp) ||
-                !Number.isSafeInteger(z.lastRetestBarIndex) || !Number.isSafeInteger(z.lastRetestTimestamp) ||
-                z.firstRetestBarIndex <= z.createdConfirmationBarIndex ||
+                z.lastRetestBarIndex === null || z.lastRetestTimestamp === null) {
+                throw new Error(`DTFX State Integrity Error: missing RETESTED metadata for zone ${z.zoneId}.`);
+            }
+            verifyClockRef(z.firstRetestBarIndex, z.firstRetestTimestamp, `zone ${z.zoneId} firstRetest`);
+            verifyClockRef(z.lastRetestBarIndex, z.lastRetestTimestamp, `zone ${z.zoneId} lastRetest`);
+
+            if (z.firstRetestBarIndex <= z.createdConfirmationBarIndex ||
                 z.firstRetestTimestamp <= z.createdConfirmationTimestamp ||
+                (z.firstRetestTimestamp - z.createdConfirmationTimestamp) % intervalMs !== 0 ||
                 z.lastRetestBarIndex < z.firstRetestBarIndex ||
                 z.lastRetestTimestamp < z.firstRetestTimestamp ||
-                (z.retestCount === 1 && (z.lastRetestBarIndex !== z.firstRetestBarIndex || z.lastRetestTimestamp !== z.firstRetestTimestamp)) ||
-                (z.retestCount > 1 && (z.lastRetestBarIndex <= z.firstRetestBarIndex || z.lastRetestTimestamp <= z.firstRetestTimestamp)) ||
-                (maxBarIdx !== null && z.lastRetestBarIndex > maxBarIdx)) {
+                (z.lastRetestTimestamp - z.firstRetestTimestamp) % intervalMs !== 0 ||
+                (z.retestCount === 1 &&
+                    (z.lastRetestBarIndex !== z.firstRetestBarIndex || z.lastRetestTimestamp !== z.firstRetestTimestamp)) ||
+                (z.retestCount > 1 &&
+                    (z.lastRetestBarIndex <= z.firstRetestBarIndex || z.lastRetestTimestamp <= z.firstRetestTimestamp))) {
                 throw new Error(`DTFX State Integrity Error: corrupted RETESTED metadata for zone ${z.zoneId}.`);
             }
+
             const firstRW = windowByIdx.get(z.firstRetestBarIndex);
-            if (firstRW && (firstRW.time !== z.firstRetestTimestamp || firstRW.low > z.top || firstRW.high < z.bot)) {
+            if (firstRW &&
+                (firstRW.low > z.top || firstRW.high < z.bot ||
+                    (z.direction === 'bull' ? firstRW.close < z.bot : firstRW.close > z.top))) {
                 throw new Error(`DTFX State Integrity Error: zone ${z.zoneId} firstRetest disagrees with stored window bar.`);
             }
             const lastRW = windowByIdx.get(z.lastRetestBarIndex);
-            if (lastRW && (lastRW.time !== z.lastRetestTimestamp || lastRW.low > z.top || lastRW.high < z.bot)) {
+            if (lastRW &&
+                (lastRW.low > z.top || lastRW.high < z.bot ||
+                    (z.direction === 'bull' ? lastRW.close < z.bot : lastRW.close > z.top))) {
                 throw new Error(`DTFX State Integrity Error: zone ${z.zoneId} lastRetest disagrees with stored window bar.`);
+            }
+            if (latestBar !== null) {
+                if (z.createdConfirmationBarIndex >= latestBar.barIndex) {
+                    throw new Error(`DTFX State Integrity Error: zone ${z.zoneId} cannot be RETESTED on creation bar.`);
+                }
+                if (z.isCurrentlyInZone !== latestTouchesZone) {
+                    throw new Error(
+                        `DTFX State Integrity Error: zone ${z.zoneId} isCurrentlyInZone disagrees with latest window bar overlap.`
+                    );
+                }
+                if (!latestTouchesZone && z.lastRetestBarIndex === latestBar.barIndex) {
+                    throw new Error(
+                        `DTFX State Integrity Error: zone ${z.zoneId} lastRetestBarIndex cannot equal non-overlapping latest window bar.`
+                    );
+                }
             }
         }
     }
@@ -314,7 +394,7 @@ export function stepDTFX(
 ): DTFXStepResult {
     validateDTFXConfig(config);
     const len = config.structureLen;
-    validateDTFXState(previousState, len + 1, config.maxActiveZones);
+    validateDTFXState(previousState, len + 1, config.maxActiveZones, config.intervalMs);
 
     // 1. Validate discontinuity flag.
     if (typeof isDiscontinuity !== 'boolean') {
@@ -531,10 +611,10 @@ export function stepDTFX(
     const mssDown = bosDown || chochDown;
 
     if (mssUp && t !== null) {
-        bosUpCheck = false;
         const zTop = t.price;
         const zBot = dir === -1 ? lower : dir === 1 && b !== null ? b.price : lower;
         if (Number.isFinite(zTop) && Number.isFinite(zBot) && zBot > 0 && zTop > zBot) {
+            bosUpCheck = false;
             const [fib03, fib05, fib07] = computeFibs(zTop, zBot, 1, config.fibLevels);
 
             const zone: DTFXZoneRecord = Object.freeze({
@@ -597,10 +677,10 @@ export function stepDTFX(
     }
 
     if (mssDown && b !== null) {
-        bosDownCheck = false;
         const zTop = dir === 1 ? upper : dir === -1 && t !== null ? t.price : upper;
         const zBot = b.price;
         if (Number.isFinite(zTop) && Number.isFinite(zBot) && zBot > 0 && zTop > zBot) {
+            bosDownCheck = false;
             const [fib03, fib05, fib07] = computeFibs(zTop, zBot, -1, config.fibLevels);
 
             const zone: DTFXZoneRecord = Object.freeze({

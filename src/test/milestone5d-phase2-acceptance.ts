@@ -77,6 +77,13 @@ export function runPhase5DPhase2Gate1Tests(): boolean {
         });
         assert(idPipe1 !== idPipe2, 'Pipe/length delimiter injection must never collide');
 
+        const evEarlierBar = createStrategyEvent({
+            strategyId: 'VAM_REVERSAL', strategyVersion: 'VAM_v1', symbol: 'SOLUSDT', timeframe: '1m',
+            intervalMs: interval, eventType: 'VAM_BUY', eventDirection: 'bull',
+            eventDiscriminator: 'BUY', sourceBarIndex: 29, sourceTimestamp: t0 + 29 * interval,
+            confirmationBarIndex: 29, confirmationTimestamp: t0 + 29 * interval,
+            entryTimestamp: t0 + 30 * interval, structuralContext: {}
+        });
         const evDtfxR2 = createStrategyEvent({
             strategyId: 'DTFX_ZONES', strategyVersion: 'DTFX_ZONES_v1', symbol: 'SOLUSDT', timeframe: '1m',
             intervalMs: interval, eventType: 'DTFX_DEMAND_RETEST', eventDirection: 'bull',
@@ -113,14 +120,15 @@ export function runPhase5DPhase2Gate1Tests(): boolean {
             entryTimestamp: t0 + 31 * interval, structuralContext: {}
         });
 
-        const sorted = sortAndVerifyUniqueStrategyEvents([evVam, evDtfxR2, evCbc, evDtfxR1, evDtfxCreate]);
+        const sorted = sortAndVerifyUniqueStrategyEvents([evVam, evDtfxR2, evCbc, evEarlierBar, evDtfxR1, evDtfxCreate]);
         assert(
-            sorted[0] === evDtfxCreate &&
-            sorted[1] === evDtfxR1 &&
-            sorted[2] === evDtfxR2 &&
-            sorted[3] === evCbc &&
-            sorted[4] === evVam,
-            'Canonical tie-breaking sort order failed'
+            sorted[0] === evEarlierBar &&
+            sorted[1] === evDtfxCreate &&
+            sorted[2] === evDtfxR1 &&
+            sorted[3] === evDtfxR2 &&
+            sorted[4] === evCbc &&
+            sorted[5] === evVam,
+            'Canonical 4-key tie-breaking sort order failed'
         );
 
         const expectDupReject = (arr: StrategyEvent[], label: string) => {
@@ -481,7 +489,50 @@ export function runPhase5DPhase2Tests(): boolean {
         expectPHLInputErr(() => stepPHL(validNext, 26, st, cfgValid, false, -1, null), 'atr14 = -1');
         expectPHLInputErr(() => stepPHL(makeCandle(t0 + 26 * interval, 90, 92, 88, 91, -1), 26, st, cfgValid), 'negative volume');
         expectPHLInputErr(() => stepPHL(makeCandle(t0 + 25 * interval + 30_000, 90, 92, 88, 91, 100), 26, st, cfgValid), 'off-grid delta');
-        expectPHLInputErr(() => stepPHL(validNext, 26, { ...st, ph: { price: 999, barIndex: 25, time: t0 + 25 * interval } }, cfgValid), 'ph disagrees with window');
+        expectPHLInputErr(() => stepPHL(validNext, 26, { ...st, ph: { price: 999, barIndex: 25, time: t0 + 25 * interval } }, cfgValid), 'retained ph disagrees with window');
+
+        // Retained missing barIndex & expired-window clock alignment checks
+        const minW = st.window[0];
+        expectPHLInputErr(() => stepPHL(validNext, 26, {
+            ...st,
+            window: st.window.filter(w => w.barIndex !== minW.barIndex + 2),
+            ph: { price: st.window[2].high, barIndex: st.window[2].barIndex, time: st.window[2].time }
+        }, cfgValid), 'retained ph missing from window');
+        expectPHLInputErr(() => stepPHL(validNext, 26, {
+            ...st,
+            ph: { price: 125, barIndex: minW.barIndex - 1, time: minW.time }
+        }, cfgValid), 'expired ph time >= minTime');
+        expectPHLInputErr(() => stepPHL(validNext, 26, {
+            ...st,
+            ph: { price: 125, barIndex: minW.barIndex - 1, time: minW.time - 30_000 }
+        }, cfgValid), 'expired ph off-grid time');
+        expectPHLInputErr(() => stepPHL(validNext, 26, {
+            ...st,
+            pl: { price: 85, barIndex: minW.barIndex - 1, time: minW.time - 15_000 }
+        }, cfgValid), 'expired pl off-grid time');
+        expectPHLInputErr(() => stepPHL(validNext, 26, {
+            ...st,
+            trackHigh: 125,
+            trackHighIdx: minW.barIndex - 1,
+            trackHighTime: minW.time + interval
+        }, cfgValid), 'expired trackHigh time >= minTime');
+        expectPHLInputErr(() => stepPHL(validNext, 26, {
+            ...st,
+            trackLow: 85,
+            trackLowIdx: minW.barIndex - 1,
+            trackLowTime: minW.time - 30_000
+        }, cfgValid), 'expired trackLow off-grid time');
+        expectPHLInputErr(() => stepPHL(validNext, 26, {
+            ...st,
+            window: st.window.map((w, idx) => idx === st.window.length - 1 ? { ...w, time: w.time + 1_000 } : w)
+        }, cfgValid), 'window timestamps off-grid');
+
+        // Valid expired ph on intervalMs grid (< minTime) must be accepted
+        const expiredValidRes = stepPHL(validNext, 26, {
+            ...st,
+            ph: { price: 125, barIndex: minW.barIndex - 2, time: minW.time - 2 * interval }
+        }, cfgValid);
+        assert(expiredValidRes.nextState.ph?.price === 125, 'Valid grid-aligned expired ph must be accepted');
     });
 
     // 3. DTFX Teacher: exact bar-by-bar lifecycle (_R1 -> linger -> exit -> _R2 -> INVALIDATED -> post-invalidation), maxActiveZones eviction, real-progression geometry guards, & full negative checks
@@ -573,6 +624,7 @@ export function runPhase5DPhase2Tests(): boolean {
         );
 
         // Degenerate geometry guard tests (valid state passing validateDTFXState where zTop === zBot)
+        // Amended contract: bosUpCheck / bosDownCheck MUST be preserved when degenerate candidate is skipped!
         const degBullWindow = Array.from({ length: cfg.structureLen }, (_, k) => ({
             barIndex: 10 + k,
             time: t0 + (10 + k) * interval,
@@ -595,8 +647,48 @@ export function runPhase5DPhase2Tests(): boolean {
             bosUpCheck: true
         };
         const degBullRes = stepDTFX(makeCandle(t0 + 20 * interval, 112, 115, 112, 114, 100), 20, degBullState, cfg, false, 2.0, null);
-        assert(degBullRes.createdZones.length === 0 && degBullRes.events.length === 0 && !degBullRes.nextState.bosUpCheck,
-            'Bull degenerate zero-height zone must be skipped and bosUpCheck cleared per contract');
+        assert(
+            degBullRes.createdZones.length === 0 &&
+            degBullRes.events.length === 0 &&
+            degBullRes.nextState.bosUpCheck === true,
+            'Bull degenerate zero-height zone must be skipped while PRESERVING bosUpCheck'
+        );
+
+        // Verify preserved bosUpCheck can subsequently fire a valid demand zone & consume bosUpCheck=false
+        const degBullRecoverWindow = Array.from({ length: cfg.structureLen }, (_, k) => ({
+            barIndex: 10 + k,
+            time: t0 + (10 + k) * interval,
+            open: 110,
+            high: 112,
+            low: 108,
+            close: 111,
+            volume: 100
+        }));
+        const degBullValidFollow = stepDTFX(
+            makeCandle(t0 + 20 * interval, 111, 115, 111, 114, 100),
+            20,
+            {
+                ...createInitialDTFXState(2),
+                window: Object.freeze(degBullRecoverWindow),
+                dir: 1 as const,
+                tDir: 1 as const,
+                t: Object.freeze({ price: 112, barIndex: 18, time: t0 + 18 * interval }),
+                b: Object.freeze({ price: 108, barIndex: 19, time: t0 + 19 * interval }),
+                prevTPrice: 112,
+                prevBPrice: 108,
+                prevClose: 111,
+                bosUpCheck: degBullRes.nextState.bosUpCheck
+            },
+            cfg,
+            false,
+            2.0,
+            null
+        );
+        assert(
+            degBullValidFollow.createdZones.length === 1 &&
+            degBullValidFollow.nextState.bosUpCheck === false,
+            'Preserved bosUpCheck must create valid demand zone and then consume bosUpCheck=false'
+        );
 
         const degBearWindow = Array.from({ length: cfg.structureLen }, (_, k) => ({
             barIndex: 10 + k,
@@ -620,8 +712,12 @@ export function runPhase5DPhase2Tests(): boolean {
             bosDownCheck: true
         };
         const degBearRes = stepDTFX(makeCandle(t0 + 20 * interval, 98, 98, 95, 96, 100), 20, degBearState, cfg, false, 2.0, null);
-        assert(degBearRes.createdZones.length === 0 && degBearRes.events.length === 0 && !degBearRes.nextState.bosDownCheck,
-            'Bear degenerate zero-height zone must be skipped and bosDownCheck cleared per contract');
+        assert(
+            degBearRes.createdZones.length === 0 &&
+            degBearRes.events.length === 0 &&
+            degBearRes.nextState.bosDownCheck === true,
+            'Bear degenerate zero-height zone must be skipped while PRESERVING bosDownCheck'
+        );
 
         // Discontinuity preserves nextZoneId while clearing activeZones & swings
         const preResetZoneCount = lcCandles.slice(0, 17).reduce((stAcc: DTFXState, c, idx) => stepDTFX(c, idx, stAcc, cfg).nextState, createInitialDTFXState());
@@ -630,7 +726,7 @@ export function runPhase5DPhase2Tests(): boolean {
         assert(postReset.nextState.nextZoneId === 2 && postReset.nextState.activeZones.length === 0 && postReset.nextState.dir === 0 && postReset.nextState.t === null,
             'Discontinuity must clear DTFX swings/zones and preserve monotonic nextZoneId');
 
-        // Negative validation checks (null candle + non-null entryTimestamp, bad fibs, corrupt zoneId/provenance/retest metadata)
+        // Negative validation checks (null candle + non-null entryTimestamp, bad fibs, clock alignment, ACTIVE/RETESTED consistency)
         const expectDTFXErr = (fn: () => void, label: string) => {
             let matched = false;
             try { fn(); } catch (e: any) { matched = e instanceof Error && !(e instanceof TypeError) && e.message.includes('DTFX '); }
@@ -648,31 +744,118 @@ export function runPhase5DPhase2Tests(): boolean {
             ...preResetZoneCount,
             activeZones: [{ ...preResetZoneCount.activeZones[0], createdConfirmationTimestamp: 1 }]
         }, cfg), 'corrupt createdConfirmationTimestamp vs window');
-        const at18 = stepDTFX(lcCandles[18], 18, preResetZoneCount, cfg).nextState;
+        expectDTFXErr(() => stepDTFX(lcCandles[17], 17, {
+            ...preResetZoneCount,
+            window: preResetZoneCount.window.map((w, idx) => idx === preResetZoneCount.window.length - 1 ? { ...w, time: w.time + 1_000 } : w)
+        }, cfg), 'off-grid window bar timestamp');
+        expectDTFXErr(() => stepDTFX(lcCandles[17], 17, {
+            ...preResetZoneCount,
+            t: { price: 115, barIndex: 0, time: preResetZoneCount.window[0].time - 15_000 }
+        }, cfg), 'expired swing t off-grid timestamp');
+        expectDTFXErr(() => stepDTFX(lcCandles[17], 17, {
+            ...preResetZoneCount,
+            t: { price: 115, barIndex: 0, time: preResetZoneCount.window[0].time }
+        }, cfg), 'expired swing t >= minTime');
+
+        const at17 = stepDTFX(lcCandles[17], 17, preResetZoneCount, cfg).nextState;
+        const at18 = stepDTFX(lcCandles[18], 18, at17, cfg).nextState;
+        const at19 = stepDTFX(lcCandles[19], 19, at18, cfg).nextState;
+        const at20 = stepDTFX(lcCandles[20], 20, at19, cfg).nextState;
+        const at21 = stepDTFX(lcCandles[21], 21, at20, cfg).nextState;
+
         expectDTFXErr(() => stepDTFX(lcCandles[19], 19, {
             ...at18,
             activeZones: [{ ...at18.activeZones[0], firstRetestTimestamp: 1 }]
         }, cfg), 'corrupt firstRetestTimestamp vs window');
+        expectDTFXErr(() => stepDTFX(lcCandles[19], 19, {
+            ...at18,
+            activeZones: [{ ...at17.activeZones[0] }]
+        }, cfg), 'ACTIVE zone overlapping latestBar without RETESTED');
+        expectDTFXErr(() => stepDTFX(lcCandles[19], 19, {
+            ...at18,
+            activeZones: [{ ...at18.activeZones[0], isCurrentlyInZone: false }]
+        }, cfg), 'RETESTED zone isCurrentlyInZone=false despite latestBar overlap');
+        expectDTFXErr(() => stepDTFX(lcCandles[21], 21, {
+            ...at20,
+            activeZones: [{ ...at20.activeZones[0], isCurrentlyInZone: true }]
+        }, cfg), 'RETESTED zone isCurrentlyInZone=true despite latestBar outside zone');
+        expectDTFXErr(() => stepDTFX(lcCandles[19], 19, {
+            ...at18,
+            activeZones: [{
+                ...at18.activeZones[0],
+                retestCount: 1,
+                lastRetestBarIndex: 17,
+                lastRetestTimestamp: t0 + 17 * interval
+            }]
+        }, cfg), 'retestCount=1 with lastRetest !== firstRetest');
+        expectDTFXErr(() => stepDTFX(lcCandles[22], 22, {
+            ...at21,
+            activeZones: [{
+                ...at21.activeZones[0],
+                retestCount: 2,
+                lastRetestBarIndex: at21.activeZones[0].firstRetestBarIndex,
+                lastRetestTimestamp: at21.activeZones[0].firstRetestTimestamp
+            }]
+        }, cfg), 'retestCount>1 with lastRetest <= firstRetest');
+        expectDTFXErr(() => stepDTFX(lcCandles[23], 23, {
+            ...at21,
+            window: [...at21.window.slice(1), {
+                barIndex: 22,
+                time: lcCandles[22].time,
+                open: lcCandles[22].open,
+                high: lcCandles[22].high,
+                low: lcCandles[22].low,
+                close: lcCandles[22].close,
+                volume: lcCandles[22].volume
+            }]
+        }, cfg), 'active zone already invalidated on latest window bar');
     });
 
-    // 4. VAM Adapter Standalone Check (BUY, SELL, No-Signal & Invalid Non-Zero Signal Rejection)
-    runTest('4. VAM Adapter: BUY, SELL, no-signal & invalid signal rejection', () => {
+    // 4. VAM Adapter: Multi-bar engine progression (real BUY/SELL signals), no-signal & invalid signal rejection
+    runTest('4. VAM Adapter: multi-bar real signals, no-signal & invalid signal rejection', () => {
         const baseOut = stepVolatilityAdjustedMean(102, 98, 100, createInitialVAMState(), false);
         assert(adaptVAMtoStrategyEvent({
             vamOutput: { ...baseOut, signal: 0 }, confirmationBarIndex: 10, confirmationTimestamp: t0 + 10 * interval,
             entryTimestamp: null, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
         }) === null, 'signal=0 must return null');
 
-        const evBuy = adaptVAMtoStrategyEvent({
-            vamOutput: { ...baseOut, signal: 1, trend: 1, buyStreak: 2 }, confirmationBarIndex: 30, confirmationTimestamp: t0 + 30 * interval,
-            entryTimestamp: null, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
-        });
-        const evSell = adaptVAMtoStrategyEvent({
-            vamOutput: { ...baseOut, signal: -1, trend: -1, sellStreak: 2 }, confirmationBarIndex: 40, confirmationTimestamp: t0 + 40 * interval,
-            entryTimestamp: null, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
-        });
-        assert(evBuy?.eventType === 'VAM_BUY' && evBuy.eventDiscriminator === 'BUY' && evBuy.sourceBarIndex === 30 && evBuy.confirmationLagBars === 0, 'VAM_BUY check');
-        assert(evSell?.eventType === 'VAM_SELL' && evSell.eventDiscriminator === 'SELL' && evSell.sourceBarIndex === 40 && evSell.confirmationLagBars === 0, 'VAM_SELL check');
+        // Multi-bar real progression: initial downtrend -> sustained uptrend (VAM_BUY) -> sustained downtrend (VAM_SELL)
+        let vamSt = createInitialVAMState();
+        const vamEvents: StrategyEvent[] = [];
+        let px = 150;
+        for (let i = 0; i < 120; i++) {
+            const delta = i < 40 ? -0.8 : i < 80 ? 1.5 : -1.5;
+            px = Math.max(20, px + delta);
+            const h = px + 0.5;
+            const l = px - 0.5;
+            const out = stepVolatilityAdjustedMean(h, l, px, vamSt, false);
+            vamSt = out.nextState;
+            const ev = adaptVAMtoStrategyEvent({
+                vamOutput: out,
+                confirmationBarIndex: i,
+                confirmationTimestamp: t0 + i * interval,
+                entryTimestamp: null,
+                symbol: 'SOLUSDT',
+                timeframe: '1m',
+                intervalMs: interval
+            });
+            if (ev) {
+                assert(
+                    ev.sourceBarIndex === i &&
+                    ev.confirmationBarIndex === i &&
+                    ev.confirmationLagBars === 0 &&
+                    ev.sourceTimestamp === ev.confirmationTimestamp &&
+                    Number.isFinite(ev.structuralContext['adx14'] as number),
+                    'Real VAM event must satisfy lag=0 and finite structuralContext'
+                );
+                vamEvents.push(ev);
+            }
+        }
+        assert(
+            vamEvents.some(e => e.eventType === 'VAM_BUY' && e.eventDiscriminator === 'BUY') &&
+            vamEvents.some(e => e.eventType === 'VAM_SELL' && e.eventDiscriminator === 'SELL'),
+            `Multi-bar VAM progression must produce real VAM_BUY and VAM_SELL events (got ${vamEvents.map(e => e.eventType).join(',')})`
+        );
 
         for (const badSig of [2, -2, Number.NaN] as any[]) {
             let threw = false;
@@ -694,10 +877,10 @@ export function runPhase5DPhase2Tests(): boolean {
         for (let i = 0; i < 300; i++) {
             if (i === 110) ts += 600_000;
 
-            // Engineer bars 106..109 so StrictCBC is bullish at bar 108 and guaranteed to flip bearish on bar 109!
-            if (i >= 106 && i <= 108) {
+            // Engineer bars 105..109 so StrictCBC reaches a new cycle HH (>149.4) at 108 and confirms CBC_HIGH_HH at bar 109!
+            if (i >= 105 && i <= 108) {
                 const o = p;
-                const c = p + 3.0;
+                const c = p + 12.0;
                 stream.push(makeCandle(ts, o, c + 0.5, o - 0.5, c, 150));
                 p = c;
                 ts += interval;
@@ -705,7 +888,7 @@ export function runPhase5DPhase2Tests(): boolean {
             }
             if (i === 109) {
                 const o = p - 0.5;
-                const c = p - 8.0; // Breaks well below bar 108 anchorLow -> guaranteed real STRICT_CBC event @109
+                const c = p - 16.0; // Breaks well below bar 108 anchorLow -> guaranteed CBC_HIGH_HH @109
                 stream.push(makeCandle(ts, o, o + 0.3, c - 0.5, c, 200));
                 p = c;
                 ts += interval;
@@ -723,20 +906,31 @@ export function runPhase5DPhase2Tests(): boolean {
             ts += interval;
         }
 
-        const runCombined = () => {
-            const phlCfg = createDefaultPHLConfig('SOLUSDT', '1m', interval);
-            const dtfxCfg = createDefaultDTFXConfig('SOLUSDT', '1m', interval);
+        const phlCfg = createDefaultPHLConfig('SOLUSDT', '1m', interval);
+        const dtfxCfg = createDefaultDTFXConfig('SOLUSDT', '1m', interval);
 
-            let cbcState: StrictCBCState | null = null;
-            let lastCbcPivot: StrictZigZagPivot | null = null;
-            let phlState = createInitialPHLState();
-            let dtfxState = createInitialDTFXState();
-            let vamState = createInitialVAMState();
+        const runCombined = (stopAtBar?: number, resumeFrom?: {
+            startIndex: number;
+            cbcState: StrictCBCState;
+            lastCbcPivot: StrictZigZagPivot | null;
+            phlState: ReturnType<typeof createInitialPHLState>;
+            dtfxState: DTFXState;
+            vamState: ReturnType<typeof createInitialVAMState>;
+            rawEvents: StrategyEvent[];
+            acceptedTimestamps: number[];
+        }) => {
+            let cbcState: StrictCBCState | null = resumeFrom ? resumeFrom.cbcState : null;
+            let lastCbcPivot: StrictZigZagPivot | null = resumeFrom ? resumeFrom.lastCbcPivot : null;
+            let phlState = resumeFrom ? resumeFrom.phlState : createInitialPHLState();
+            let dtfxState = resumeFrom ? resumeFrom.dtfxState : createInitialDTFXState();
+            let vamState = resumeFrom ? resumeFrom.vamState : createInitialVAMState();
 
-            const rawEvents: StrategyEvent[] = [];
-            const acceptedTimestamps: number[] = [];
+            const rawEvents: StrategyEvent[] = resumeFrom ? [...resumeFrom.rawEvents] : [];
+            const acceptedTimestamps: number[] = resumeFrom ? [...resumeFrom.acceptedTimestamps] : [];
+            const startIdx = resumeFrom ? resumeFrom.startIndex : 0;
+            const endIdx = stopAtBar !== undefined ? stopAtBar : stream.length - 1;
 
-            for (let i = 0; i < stream.length; i++) {
+            for (let i = startIdx; i <= endIdx; i++) {
                 const c = stream[i];
                 acceptedTimestamps.push(c.time);
                 const isDisc = i > 0 && c.time - stream[i - 1].time >= 300_000;
@@ -771,7 +965,6 @@ export function runPhase5DPhase2Tests(): boolean {
                 dtfxState = dtfxRes.nextState;
                 rawEvents.push(...dtfxRes.events);
 
-                // Exhaustive reset assertions for ALL 4 teachers at bar 110 discontinuity
                 if (i === 110) {
                     assert(lastCbcPivot === null && cbcState.anchorHigh === c.high && cbcState.anchorLow === c.low &&
                         cbcState.phaseHighIdx === 110 && cbcState.phaseLowIdx === 110 && cbcState.lastHighPrice === null && cbcState.lastLowPrice === null,
@@ -791,6 +984,21 @@ export function runPhase5DPhase2Tests(): boolean {
                 }
             }
 
+            if (stopAtBar !== undefined) {
+                return {
+                    checkpoint: {
+                        startIndex: stopAtBar + 1,
+                        cbcState: JSON.parse(JSON.stringify(cbcState!)) as StrictCBCState,
+                        lastCbcPivot: JSON.parse(JSON.stringify(lastCbcPivot)) as StrictZigZagPivot | null,
+                        phlState: JSON.parse(JSON.stringify(phlState)) as ReturnType<typeof createInitialPHLState>,
+                        dtfxState: JSON.parse(JSON.stringify(dtfxState)) as DTFXState,
+                        vamState: JSON.parse(JSON.stringify(vamState)) as ReturnType<typeof createInitialVAMState>,
+                        rawEvents: JSON.parse(JSON.stringify(rawEvents)) as StrategyEvent[],
+                        acceptedTimestamps: [...acceptedTimestamps]
+                    }
+                };
+            }
+
             const resolved = resolveStrategyEventsEntryTimestamps(rawEvents, acceptedTimestamps, interval);
             const verified = sortAndVerifyUniqueStrategyEvents(resolved);
             return { verified, acceptedTimestamps, finalStates: { cbcState, lastCbcPivot, phlState, dtfxState, vamState } };
@@ -801,24 +1009,31 @@ export function runPhase5DPhase2Tests(): boolean {
         assert(JSON.stringify(run1.verified) === JSON.stringify(run2.verified), 'Serialized determinism failed on events');
         assert(JSON.stringify(run1.finalStates) === JSON.stringify(run2.finalStates), 'Serialized determinism failed on final states');
 
+        // Bar-120 checkpoint serialization & restoration parity
+        const snap120 = runCombined(120).checkpoint!;
+        const resumed = runCombined(undefined, snap120);
+        assert(JSON.stringify(resumed.verified) === JSON.stringify(run1.verified), 'Bar-120 checkpoint restoration failed event parity');
+        assert(JSON.stringify(resumed.finalStates) === JSON.stringify(run1.finalStates), 'Bar-120 checkpoint restoration failed state parity');
+
         const byStrategy: Record<string, number> = { STRICT_CBC: 0, PHL_BOS_MSS: 0, DTFX_ZONES: 0, VAM_REVERSAL: 0 };
         const byType: Record<string, number> = {};
         let preGapCount = 0;
         let postGapCount = 0;
-        let realBar109Checked = false;
+        let realBar109CbcHH = false;
 
-        for (const ev of run1.verified) {
+        for (const ev of run1.verified!) {
             byStrategy[ev.strategyId] = (byStrategy[ev.strategyId] || 0) + 1;
             byType[ev.eventType] = (byType[ev.eventType] || 0) + 1;
             if (ev.confirmationBarIndex < 110) preGapCount++;
             if (ev.confirmationBarIndex > 110) {
                 postGapCount++;
-                // Post-gap events must not reference pre-gap source bar indices
                 assert(ev.sourceBarIndex >= 110, `Post-gap event ${ev.eventId} referenced pre-gap sourceBarIndex ${ev.sourceBarIndex}`);
             }
             if (ev.confirmationBarIndex === 109) {
-                assert(ev.entryTimestamp === run1.acceptedTimestamps[110], 'Real bar 109 event must resolve actual post-gap bar 110 timestamp');
-                realBar109Checked = true;
+                assert(ev.entryTimestamp === run1.acceptedTimestamps![110], 'Real bar 109 event must resolve actual post-gap bar 110 timestamp');
+                if (ev.strategyId === 'STRICT_CBC' && ev.eventType === 'CBC_HIGH_HH') {
+                    realBar109CbcHH = true;
+                }
             }
             if (ev.confirmationBarIndex === stream.length - 1) {
                 assert(ev.entryTimestamp === null, 'Final bar event must keep entryTimestamp === null');
@@ -827,7 +1042,7 @@ export function runPhase5DPhase2Tests(): boolean {
         }
 
         console.log('  📊 Combined 4-Teacher Counts:', JSON.stringify({ byStrategy, byType, preGapCount, postGapCount }));
-        assert(realBar109Checked, 'Combined stream must produce at least one REAL teacher event at bar 109 to test gap entry resolution');
+        assert(realBar109CbcHH, 'Combined stream must emit real CBC_HIGH_HH at bar 109 to verify gap entry resolution');
         assert(byStrategy.STRICT_CBC > 0 && byStrategy.PHL_BOS_MSS > 0 && byStrategy.DTFX_ZONES > 0 && byStrategy.VAM_REVERSAL > 0,
             'All 4 strategies must emit events');
         assert(preGapCount > 0 && postGapCount > 0, 'Events must emit on both sides of bar 110 discontinuity');
