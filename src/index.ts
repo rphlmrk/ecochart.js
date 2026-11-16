@@ -116,6 +116,8 @@ export { runMilestone2AcceptanceSuite };
 export { runPhase2JTests, generatePhase2JReports };
 import { runPhase5DPhase1Tests } from './test/milestone5d-phase1-acceptance';
 export { runPhase5DPhase1Tests };
+import { runPhase5DPhase2Gate1Tests, runPhase5DPhase2Tests } from './test/milestone5d-phase2-acceptance';
+export { runPhase5DPhase2Gate1Tests, runPhase5DPhase2Tests };
 
 const auditBoundButtons = new WeakSet<HTMLElement>();
 
@@ -6073,5 +6075,7 @@ export class WorkspaceManager {
         (window as any).runPhase0ExportBaseline = runPhase0ExportBaseline;
         (window as any).runStreamingExportParityTest = runStreamingExportParityTest;
         (window as any).runPhase5DPhase1Tests = runPhase5DPhase1Tests;
+        (window as any).runPhase5DPhase2Gate1Tests = runPhase5DPhase2Gate1Tests;
+        (window as any).runPhase5DPhase2Tests = runPhase5DPhase2Tests;
     }
 }
