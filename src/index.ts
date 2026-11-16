@@ -114,6 +114,8 @@ import type { ML1Candle } from './indicators/mlr1/ML1FeatureTypes';
 import { runMilestone2AcceptanceSuite } from './test/run-milestone2';
 export { runMilestone2AcceptanceSuite };
 export { runPhase2JTests, generatePhase2JReports };
+import { runPhase5DPhase1Tests } from './test/milestone5d-phase1-acceptance';
+export { runPhase5DPhase1Tests };
 
 const auditBoundButtons = new WeakSet<HTMLElement>();
 
@@ -6069,5 +6071,6 @@ export class WorkspaceManager {
         (window as any).runPhase5CAcceptanceSuite = runPhase5CAcceptanceSuite;
         (window as any).runPhase0ExportBaseline = runPhase0ExportBaseline;
         (window as any).runStreamingExportParityTest = runStreamingExportParityTest;
+        (window as any).runPhase5DPhase1Tests = runPhase5DPhase1Tests;
     }
 }

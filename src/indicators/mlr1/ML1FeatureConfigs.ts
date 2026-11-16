@@ -1,5 +1,5 @@
-import { validateML1Config } from './ML1FeatureEngine';
-import type { ValidatedML1FeatureConfig } from './ML1FeatureTypes';
+import { validateML1Config, validateML1ConfigV5 } from './ML1FeatureEngine';
+import type { ValidatedML1FeatureConfig, ValidatedML1FeatureConfigV5 } from './ML1FeatureTypes';
 
 export const ML1_CONFIG_B_VERSION = 'ML1_CONFIG_B_v1';
 
@@ -67,3 +67,22 @@ export const ML1_FEATURE_CONFIGS = Object.freeze({
     A: ML1_CONFIG_A,
     B: ML1_CONFIG_B
 });
+
+export const ML1_CONFIG_C_VERSION = 'ML1_CONFIG_C_v1';
+
+/**
+ * CONFIGURATION C — Phase 5D Full 1m Context (stateVersion: 5)
+ *
+ * Preserves all Configuration B features and adds:
+ *   - Exhaustion CCI (20)
+ *   - Volume / Candle Size Prior-Window Baseline (360, 1m only)
+ *   - Volatility Adjusted Mean (VAM adaptive center, ADX, RSI, trend, streaks)
+ */
+export const ML1_CONFIG_C: ValidatedML1FeatureConfigV5 = validateML1ConfigV5({
+    ...COMMON_CONFIG,
+    emaPeriods: [9, 20, 50, 100, 200],
+    cciPeriods: [20],
+    volumeCandleSizePeriods: [360],
+    enableVAM: true
+});
+

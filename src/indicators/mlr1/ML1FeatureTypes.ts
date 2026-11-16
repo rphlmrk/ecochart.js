@@ -82,6 +82,49 @@ export interface VolumeState {
     readonly unbrokenRun: number;             // Consecutive observations without discontinuity
 }
 
+export interface ExhaustionPeriodState {
+    readonly tpHistory: readonly number[];
+    readonly unbrokenRun: number;
+}
+
+export interface VolumeCandleSizeState {
+    readonly jamHistory: readonly number[];
+    readonly unbrokenRun: number;
+}
+
+export interface VAMState {
+    readonly unbrokenRun: number;
+    readonly prevHigh: number | null;
+    readonly prevLow: number | null;
+    readonly prevClose: number | null;
+    readonly hlc3History: readonly number[];
+    readonly adaptive: number | null;
+    readonly centerSeedCount: number;
+    readonly centerSeedMean: number;
+    readonly center: number | null;
+    readonly centerHistory: readonly number[];
+    readonly atrState: ATRPeriodState;
+    readonly dmiCount: number;
+    readonly trSeedMean: number;
+    readonly plusDmSeedMean: number;
+    readonly minusDmSeedMean: number;
+    readonly trRma: number | null;
+    readonly plusDmRma: number | null;
+    readonly minusDmRma: number | null;
+    readonly dxHistoryCount: number;
+    readonly dxSeedMean: number;
+    readonly adx: number | null;
+    readonly rsiCount: number;
+    readonly avgGainSeedMean: number;
+    readonly avgLossSeedMean: number;
+    readonly avgGain: number | null;
+    readonly avgLoss: number | null;
+    readonly trend: -1 | 0 | 1;
+    readonly buyStreak: number;
+    readonly sellStreak: number;
+    readonly lastSignalAcceptedIndex: number | null;
+}
+
 export interface ML1FeatureState {
     readonly stateVersion: number;
     readonly lastBarIndex: number | null;
@@ -116,3 +159,37 @@ export interface ML1Observation {
     features: ML1FeatureValues;
     validity: ML1FeatureValidity;
 }
+
+export interface ML1FeatureConfigV5 extends ML1FeatureConfig {
+    cciPeriods: number[];
+    volumeCandleSizePeriods: number[];
+    enableVAM: boolean;
+}
+
+declare const validatedConfigV5Brand: unique symbol;
+
+export type ValidatedML1FeatureConfigV5 = {
+    readonly symbol: string;
+    readonly timeframe: string;
+    readonly expectedIntervalMs: number;
+    readonly gapDiscontinuityThresholdMs: number;
+    readonly emaPeriods: readonly number[];
+    readonly atrPeriods: readonly number[];
+    readonly rollingRangePeriods: readonly number[];
+    readonly momentumPeriods: readonly number[];
+    readonly volumeSmaPeriods: readonly number[];
+    readonly cciPeriods: readonly number[];
+    readonly volumeCandleSizePeriods: readonly number[];
+    readonly enableVAM: boolean;
+    readonly [validatedConfigV5Brand]: true;
+};
+
+export interface ML1FeatureStateV5 {
+    readonly stateVersion: 5;
+    readonly configFingerprint: string;
+    readonly baseState: ML1FeatureState; // Isolates frozen v4 state cleanly
+    readonly exhaustionState: Readonly<Record<number, ExhaustionPeriodState>>;
+    readonly volumeCandleSizeState: Readonly<Record<number, VolumeCandleSizeState>>;
+    readonly vamState: VAMState | null;
+}
+

@@ -27,6 +27,16 @@ import {
 } from './volume/VolumeFeatures';
 import { calculateTemporalFeatures } from './temporal/TimeFeatures';
 import type { EMAPeriodState, MomentumState, VolumeState } from './ML1FeatureTypes';
+import { updateExhaustionCCI } from './momentum/Exhaustion';
+import { updateVolumeCandleSize } from './volume/VolumeCandleSize';
+import { createInitialVAMState, stepVolatilityAdjustedMean } from './trend/VolatilityAdjustedMean';
+import type {
+    ExhaustionPeriodState,
+    VolumeCandleSizeState,
+    VAMState,
+    ML1FeatureStateV5,
+    ValidatedML1FeatureConfigV5
+} from './ML1FeatureTypes';
 
 /**
  * Validates the global configuration and returns a frozen, immutable defensive copy.
@@ -780,3 +790,401 @@ export function stepML1Features(
 
     return { observation, nextState };
 }
+
+// =========================================================================
+// ML-R1 Phase 5D (stateVersion: 5) — Isolated CONFIG_C Engine
+// =========================================================================
+
+export function validateML1ConfigV5(config: any): ValidatedML1FeatureConfigV5 {
+    const baseValidated = validateML1Config(config);
+
+    const validateExtraPeriods = (arr: any, name: string, minPeriod: number): readonly number[] => {
+        if (!Array.isArray(arr)) {
+            throw new Error(`Configuration V5 Error: ${name} must be an array.`);
+        }
+        const seen = new Set<number>();
+        for (const p of arr) {
+            if (!Number.isSafeInteger(p) || p < minPeriod) {
+                throw new Error(`Configuration V5 Error: ${name} periods must be integers >= ${minPeriod}, got ${p}.`);
+            }
+            if (seen.has(p)) {
+                throw new Error(`Configuration V5 Error: ${name} contains duplicate periods.`);
+            }
+            seen.add(p);
+        }
+        return Object.freeze([...arr]);
+    };
+
+    if (typeof config.enableVAM !== 'boolean') {
+        throw new Error('Configuration V5 Error: enableVAM must be a boolean.');
+    }
+
+    const validatedCciPeriods = validateExtraPeriods(config.cciPeriods, 'cciPeriods', 2);
+    const validatedVcsPeriods = validateExtraPeriods(config.volumeCandleSizePeriods, 'volumeCandleSizePeriods', 2);
+
+    if (validatedVcsPeriods.length > 0 && baseValidated.timeframe !== '1m') {
+        throw new Error(
+            `Configuration V5 Error: Volume Candle Size is supported on '1m' only, got '${baseValidated.timeframe}'.`
+        );
+    }
+
+    return Object.freeze({
+        symbol: baseValidated.symbol,
+        timeframe: baseValidated.timeframe,
+        expectedIntervalMs: baseValidated.expectedIntervalMs,
+        gapDiscontinuityThresholdMs: baseValidated.gapDiscontinuityThresholdMs,
+        emaPeriods: baseValidated.emaPeriods,
+        atrPeriods: baseValidated.atrPeriods,
+        rollingRangePeriods: baseValidated.rollingRangePeriods,
+        momentumPeriods: baseValidated.momentumPeriods,
+        volumeSmaPeriods: baseValidated.volumeSmaPeriods,
+        cciPeriods: validatedCciPeriods,
+        volumeCandleSizePeriods: validatedVcsPeriods,
+        enableVAM: config.enableVAM
+    }) as ValidatedML1FeatureConfigV5;
+}
+
+export function computeML1ConfigV5Fingerprint(config: ValidatedML1FeatureConfigV5): string {
+    return JSON.stringify({
+        symbol: config.symbol,
+        timeframe: config.timeframe,
+        expectedIntervalMs: config.expectedIntervalMs,
+        gapDiscontinuityThresholdMs: config.gapDiscontinuityThresholdMs,
+        emaPeriods: config.emaPeriods,
+        atrPeriods: config.atrPeriods,
+        rollingRangePeriods: config.rollingRangePeriods,
+        momentumPeriods: config.momentumPeriods,
+        volumeSmaPeriods: config.volumeSmaPeriods,
+        cciPeriods: config.cciPeriods,
+        volumeCandleSizePeriods: config.volumeCandleSizePeriods,
+        enableVAM: config.enableVAM
+    });
+}
+
+export function createInitialML1FeatureStateV5(config: ValidatedML1FeatureConfigV5): ML1FeatureStateV5 {
+    return Object.freeze({
+        stateVersion: 5 as const,
+        configFingerprint: computeML1ConfigV5Fingerprint(config),
+        baseState: createInitialML1FeatureState(),
+        exhaustionState: Object.freeze({}),
+        volumeCandleSizeState: Object.freeze({}),
+        vamState: config.enableVAM ? createInitialVAMState() : null
+    });
+}
+
+function validateVAMState(vs: VAMState): void {
+    if (!vs || typeof vs !== 'object') {
+        throw new Error('State Integrity Error: Missing or malformed vamState.');
+    }
+    if (!Number.isSafeInteger(vs.unbrokenRun) || vs.unbrokenRun < 0) {
+        throw new Error('State Integrity Error: Invalid unbrokenRun in vamState.');
+    }
+    if (!Array.isArray(vs.hlc3History) || vs.hlc3History.length > 19 ||
+        vs.hlc3History.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
+        throw new Error('State Integrity Error: Invalid hlc3History in vamState (max length 19).');
+    }
+    if (vs.unbrokenRun === 0) {
+        if (vs.prevHigh !== null || vs.prevLow !== null || vs.prevClose !== null ||
+            vs.adaptive !== null || vs.center !== null ||
+            vs.hlc3History.length !== 0 || vs.centerHistory.length !== 0 ||
+            vs.centerSeedCount !== 0 || vs.dmiCount !== 0 || vs.rsiCount !== 0 ||
+            vs.dxHistoryCount !== 0 || vs.trend !== 0 || vs.lastSignalAcceptedIndex !== null) {
+            throw new Error('State Integrity Error: Initial vamState with unbrokenRun=0 must be empty.');
+        }
+    } else {
+        if (vs.prevHigh === null || !Number.isFinite(vs.prevHigh) ||
+            vs.prevLow === null || !Number.isFinite(vs.prevLow) ||
+            vs.prevClose === null || !Number.isFinite(vs.prevClose) ||
+            vs.prevHigh < vs.prevLow || vs.prevHigh < vs.prevClose || vs.prevLow > vs.prevClose) {
+            throw new Error('State Integrity Error: Corrupted prevHigh/prevLow/prevClose in vamState.');
+        }
+        if (vs.adaptive === null || !Number.isFinite(vs.adaptive)) {
+            throw new Error('State Integrity Error: adaptive must be finite when unbrokenRun > 0.');
+        }
+        const expectedHlc3Len = Math.min(19, vs.unbrokenRun);
+        if (vs.hlc3History.length !== expectedHlc3Len) {
+            throw new Error(`State Integrity Error: hlc3History length mismatch (${vs.hlc3History.length} !== ${expectedHlc3Len}).`);
+        }
+    }
+
+    if (!Number.isSafeInteger(vs.centerSeedCount) || vs.centerSeedCount < 0 || vs.centerSeedCount > 5 ||
+        !Number.isFinite(vs.centerSeedMean)) {
+        throw new Error('State Integrity Error: Invalid center seed state in vamState.');
+    }
+    if (vs.centerSeedCount < 5) {
+        if (vs.center !== null || vs.centerHistory.length !== 0) {
+            throw new Error('State Integrity Error: Unseeded VAM center must have center=null and empty centerHistory.');
+        }
+    } else {
+        if (vs.center === null || !Number.isFinite(vs.center)) {
+            throw new Error('State Integrity Error: Seeded VAM center must be finite.');
+        }
+    }
+    if (!Array.isArray(vs.centerHistory) || vs.centerHistory.length > 4 ||
+        vs.centerHistory.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
+        throw new Error('State Integrity Error: Invalid centerHistory in vamState (max length 4).');
+    }
+
+    // Validate nested ATR state
+    const atr = vs.atrState;
+    if (!atr || typeof atr !== 'object' || !Number.isSafeInteger(atr.count) || atr.count < 0 ||
+        !Number.isFinite(atr.seedMean) || atr.seedMean < 0 || typeof atr.isSeeded !== 'boolean' ||
+        (atr.isSeeded
+            ? (atr.count < 14 || atr.atr === null || !Number.isFinite(atr.atr) || atr.atr < 0)
+            : (atr.count >= 14 || atr.atr !== null))) {
+        throw new Error('State Integrity Error: Corrupted atrState inside vamState.');
+    }
+
+    // Validate DMI / ADX accumulators
+    if (!Number.isSafeInteger(vs.dmiCount) || vs.dmiCount < 0 ||
+        !Number.isFinite(vs.trSeedMean) || vs.trSeedMean < 0 ||
+        !Number.isFinite(vs.plusDmSeedMean) || vs.plusDmSeedMean < 0 ||
+        !Number.isFinite(vs.minusDmSeedMean) || vs.minusDmSeedMean < 0) {
+        throw new Error('State Integrity Error: Corrupted DMI seed accumulators in vamState.');
+    }
+    const rmas = [vs.trRma, vs.plusDmRma, vs.minusDmRma];
+    if (vs.dmiCount < 14) {
+        if (rmas.some(r => r !== null)) {
+            throw new Error('State Integrity Error: Unseeded DMI RMAs must be null.');
+        }
+    } else if (rmas.some(r => r === null || !Number.isFinite(r) || r < 0)) {
+        throw new Error('State Integrity Error: Seeded DMI RMAs must be finite >= 0.');
+    }
+    if (!Number.isSafeInteger(vs.dxHistoryCount) || vs.dxHistoryCount < 0 ||
+        !Number.isFinite(vs.dxSeedMean) || vs.dxSeedMean < 0) {
+        throw new Error('State Integrity Error: Corrupted ADX accumulators in vamState.');
+    }
+    if (vs.dxHistoryCount < 14) {
+        if (vs.adx !== null) throw new Error('State Integrity Error: Unseeded ADX must be null.');
+    } else if (vs.adx === null || !Number.isFinite(vs.adx) || vs.adx < 0) {
+        throw new Error('State Integrity Error: Seeded ADX must be finite >= 0.');
+    }
+
+    // Validate RSI accumulators
+    if (!Number.isSafeInteger(vs.rsiCount) || vs.rsiCount < 0 ||
+        !Number.isFinite(vs.avgGainSeedMean) || vs.avgGainSeedMean < 0 ||
+        !Number.isFinite(vs.avgLossSeedMean) || vs.avgLossSeedMean < 0) {
+        throw new Error('State Integrity Error: Corrupted RSI seed accumulators in vamState.');
+    }
+    if (vs.rsiCount < 14) {
+        if (vs.avgGain !== null || vs.avgLoss !== null) {
+            throw new Error('State Integrity Error: Unseeded RSI averages must be null.');
+        }
+    } else if (vs.avgGain === null || vs.avgLoss === null ||
+        !Number.isFinite(vs.avgGain) || vs.avgGain < 0 ||
+        !Number.isFinite(vs.avgLoss) || vs.avgLoss < 0) {
+        throw new Error('State Integrity Error: Seeded RSI averages must be finite >= 0.');
+    }
+
+    // Validate trend, streaks & cooldown index
+    if ((vs.trend !== -1 && vs.trend !== 0 && vs.trend !== 1) ||
+        !Number.isSafeInteger(vs.buyStreak) || vs.buyStreak < 0 ||
+        !Number.isSafeInteger(vs.sellStreak) || vs.sellStreak < 0) {
+        throw new Error('State Integrity Error: Corrupted trend or streaks in vamState.');
+    }
+    if (vs.lastSignalAcceptedIndex !== null &&
+        (!Number.isSafeInteger(vs.lastSignalAcceptedIndex) ||
+            vs.lastSignalAcceptedIndex < 0 ||
+            vs.lastSignalAcceptedIndex >= vs.unbrokenRun)) {
+        throw new Error('State Integrity Error: Corrupted lastSignalAcceptedIndex in vamState.');
+    }
+}
+
+function validateRestoredV5State(
+    previousState: ML1FeatureStateV5,
+    config: ValidatedML1FeatureConfigV5
+): void {
+    if (!previousState || previousState.stateVersion !== 5) {
+        throw new Error(`State Integrity Error: Incompatible V5 state version. Expected 5, got ${(previousState as any)?.stateVersion}.`);
+    }
+    const expectedFingerprint = computeML1ConfigV5Fingerprint(config);
+    if (previousState.configFingerprint !== expectedFingerprint) {
+        throw new Error('State Integrity Error: V5 state configFingerprint does not match provided configuration.');
+    }
+    if (!previousState.baseState || typeof previousState.baseState !== 'object' ||
+        previousState.baseState.stateVersion !== 4) {
+        throw new Error('State Integrity Error: Embedded V4 baseState is missing or has invalid stateVersion.');
+    }
+    if (!previousState.exhaustionState || typeof previousState.exhaustionState !== 'object') {
+        throw new Error('State Integrity Error: Missing or malformed exhaustionState container.');
+    }
+    for (const [periodStr, eState] of Object.entries(previousState.exhaustionState)) {
+        const period = Number(periodStr);
+        if (!Number.isSafeInteger(period) || !config.cciPeriods.includes(period)) {
+            throw new Error(`State Integrity Error: Unexpected cciPeriod key '${periodStr}' in exhaustionState.`);
+        }
+        if (!eState || !Array.isArray(eState.tpHistory) || eState.tpHistory.length > period ||
+            !Number.isSafeInteger(eState.unbrokenRun) || eState.unbrokenRun < eState.tpHistory.length ||
+            (eState.tpHistory.length < period && eState.unbrokenRun !== eState.tpHistory.length)) {
+            throw new Error(`State Integrity Error: Corrupted exhaustionState for period ${period}.`);
+        }
+        if (eState.tpHistory.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
+            throw new Error(`State Integrity Error: Non-finite tpHistory value for period ${period}.`);
+        }
+    }
+
+    if (!previousState.volumeCandleSizeState || typeof previousState.volumeCandleSizeState !== 'object') {
+        throw new Error('State Integrity Error: Missing or malformed volumeCandleSizeState container.');
+    }
+    for (const [periodStr, vcsState] of Object.entries(previousState.volumeCandleSizeState)) {
+        const period = Number(periodStr);
+        if (!Number.isSafeInteger(period) || !config.volumeCandleSizePeriods.includes(period)) {
+            throw new Error(`State Integrity Error: Unexpected volumeCandleSizePeriod key '${periodStr}'.`);
+        }
+        if (!vcsState || !Array.isArray(vcsState.jamHistory) || vcsState.jamHistory.length > period ||
+            !Number.isSafeInteger(vcsState.unbrokenRun) || vcsState.unbrokenRun < vcsState.jamHistory.length ||
+            (vcsState.jamHistory.length < period && vcsState.unbrokenRun !== vcsState.jamHistory.length)) {
+            throw new Error(`State Integrity Error: Corrupted volumeCandleSizeState for period ${period}.`);
+        }
+        if (vcsState.jamHistory.some(v => typeof v !== 'number' || !Number.isFinite(v) || v < 0)) {
+            throw new Error(`State Integrity Error: Invalid jamHistory value for period ${period}.`);
+        }
+    }
+
+    if (config.enableVAM) {
+        if (!previousState.vamState) {
+            throw new Error('State Integrity Error: vamState must be present when enableVAM is true.');
+        }
+        validateVAMState(previousState.vamState);
+    } else if (previousState.vamState !== null) {
+        throw new Error('State Integrity Error: vamState must be null when enableVAM is false.');
+    }
+}
+
+export function stepML1FeaturesV5(
+    candle: ML1Candle,
+    barIndex: number,
+    previousState: ML1FeatureStateV5,
+    config: ValidatedML1FeatureConfigV5
+): {
+    observation: ML1Observation;
+    nextState: ML1FeatureStateV5;
+} {
+    validateRestoredV5State(previousState, config);
+
+    // Delegate frozen v4 computation using branded base config view
+    const baseResult = stepML1Features(
+        candle,
+        barIndex,
+        previousState.baseState,
+        config as unknown as ValidatedML1FeatureConfig
+    );
+
+    const isRejected = baseResult.nextState === previousState.baseState;
+    const isDiscontinuity = baseResult.observation.features['IsDiscontinuity'] === 1;
+
+    const features: ML1FeatureValues = { ...baseResult.observation.features };
+    const validity: ML1FeatureValidity = { ...baseResult.observation.validity };
+
+    if (isRejected) {
+        // Populate schema keys cleanly with invalid fallback 0 without mutating state
+        for (const p of config.cciPeriods) {
+            features[`Exhaustion_${p}`] = 0;
+            validity[`Exhaustion_${p}`] = false;
+        }
+        for (const p of config.volumeCandleSizePeriods) {
+            features[`VolumeCandleSize_Ratio_${p}`] = 0;
+            validity[`VolumeCandleSize_Ratio_${p}`] = false;
+            features[`VolumeCandleSize_ZScore_${p}`] = 0;
+            validity[`VolumeCandleSize_ZScore_${p}`] = false;
+            features[`VolumeCandleSize_Regime_${p}`] = 0;
+            validity[`VolumeCandleSize_Regime_${p}`] = false;
+        }
+        if (config.enableVAM) {
+            const vamKeys = [
+                'VAM_Center_Dist_ATR', 'VAM_Slope_3_ATR', 'VAM_Efficiency',
+                'VAM_ADX_14', 'VAM_DI_Spread_14', 'VAM_RSI_14',
+                'VAM_Trend', 'VAM_BuyStreak', 'VAM_SellStreak', 'VAM_Signal'
+            ];
+            for (const k of vamKeys) {
+                features[k] = 0;
+                validity[k] = false;
+            }
+        }
+        return {
+            observation: { ...baseResult.observation, features, validity },
+            nextState: previousState
+        };
+    }
+
+    const nextExhaustionState: Record<number, ExhaustionPeriodState> = { ...previousState.exhaustionState };
+    for (const period of config.cciPeriods) {
+        const res = updateExhaustionCCI(
+            candle.high,
+            candle.low,
+            candle.close,
+            period,
+            previousState.exhaustionState[period],
+            isDiscontinuity
+        );
+        nextExhaustionState[period] = res.nextState;
+        features[`Exhaustion_${period}`] = res.isValid ? res.cciValue : 0;
+        validity[`Exhaustion_${period}`] = res.isValid;
+    }
+
+    const nextVolumeCandleSizeState: Record<number, VolumeCandleSizeState> = { ...previousState.volumeCandleSizeState };
+    for (const period of config.volumeCandleSizePeriods) {
+        const res = updateVolumeCandleSize(
+            candle.high,
+            candle.low,
+            candle.volume,
+            period,
+            previousState.volumeCandleSizeState[period],
+            isDiscontinuity
+        );
+        nextVolumeCandleSizeState[period] = res.nextState;
+        features[`VolumeCandleSize_Ratio_${period}`] = res.isRatioValid ? res.ratio : 0;
+        validity[`VolumeCandleSize_Ratio_${period}`] = res.isRatioValid;
+        features[`VolumeCandleSize_ZScore_${period}`] = res.isZScoreValid ? res.zScore : 0;
+        validity[`VolumeCandleSize_ZScore_${period}`] = res.isZScoreValid;
+        features[`VolumeCandleSize_Regime_${period}`] = res.isRegimeValid ? res.regime : 0;
+        validity[`VolumeCandleSize_Regime_${period}`] = res.isRegimeValid;
+    }
+
+    let nextVamState: VAMState | null = previousState.vamState;
+    if (config.enableVAM) {
+        const vamRes = stepVolatilityAdjustedMean(
+            candle.high,
+            candle.low,
+            candle.close,
+            previousState.vamState ?? undefined,
+            isDiscontinuity
+        );
+        nextVamState = vamRes.nextState;
+        features['VAM_Center_Dist_ATR'] = vamRes.isCenterDistValid ? vamRes.centerDistAtr : 0;
+        validity['VAM_Center_Dist_ATR'] = vamRes.isCenterDistValid;
+        features['VAM_Slope_3_ATR'] = vamRes.isSlopeValid ? vamRes.slope3Atr : 0;
+        validity['VAM_Slope_3_ATR'] = vamRes.isSlopeValid;
+        features['VAM_Efficiency'] = vamRes.isEfficiencyValid ? vamRes.efficiency : 0;
+        validity['VAM_Efficiency'] = vamRes.isEfficiencyValid;
+        features['VAM_ADX_14'] = vamRes.isAdxValid ? vamRes.adx14 : 0;
+        validity['VAM_ADX_14'] = vamRes.isAdxValid;
+        features['VAM_DI_Spread_14'] = vamRes.isDiSpreadValid ? vamRes.diSpread14 : 0;
+        validity['VAM_DI_Spread_14'] = vamRes.isDiSpreadValid;
+        features['VAM_RSI_14'] = vamRes.isRsiValid ? vamRes.rsi14 : 0;
+        validity['VAM_RSI_14'] = vamRes.isRsiValid;
+        features['VAM_Trend'] = vamRes.isTrendValid ? vamRes.trend : 0;
+        validity['VAM_Trend'] = vamRes.isTrendValid;
+        features['VAM_BuyStreak'] = vamRes.buyStreak;
+        validity['VAM_BuyStreak'] = true;
+        features['VAM_SellStreak'] = vamRes.sellStreak;
+        validity['VAM_SellStreak'] = true;
+        features['VAM_Signal'] = vamRes.signal;
+        validity['VAM_Signal'] = vamRes.isAdxValid && vamRes.isRsiValid && vamRes.isSlopeValid;
+    }
+
+    const nextState: ML1FeatureStateV5 = Object.freeze({
+        stateVersion: 5 as const,
+        configFingerprint: previousState.configFingerprint,
+        baseState: baseResult.nextState,
+        exhaustionState: Object.freeze(nextExhaustionState),
+        volumeCandleSizeState: Object.freeze(nextVolumeCandleSizeState),
+        vamState: nextVamState
+    });
+
+    return {
+        observation: { ...baseResult.observation, features, validity },
+        nextState
+    };
+}
+
