@@ -93,7 +93,7 @@ export type StrategyEventType =
     | 'VAM_BUY' | 'VAM_SELL';
 
 export interface StrategyEvent {
-    readonly eventId: string; // Deterministic: `${strategyId}_${strategyVersion}_${symbol}_${timeframe}_${eventType}_${sourceBarIndex}_${confirmationBarIndex}_${eventDiscriminator}`
+    readonly eventId: string; // Unambiguous length-prefixed encoding: `SE1|${len}:${strategyId}|${len}:${strategyVersion}|${len}:${symbol}|${len}:${timeframe}|${len}:${eventType}|${len}:${sourceBarIndex}|${len}:${confirmationBarIndex}|${len}:${eventDiscriminator}`
     readonly eventDiscriminator: string;
     readonly strategyId: StrategyId;
     readonly strategyVersion: string;
@@ -116,12 +116,13 @@ export interface StrategyEvent {
 ```
 
 ### Deterministic `eventDiscriminator` Derivation
-- **`STRICT_CBC`:** `String(pivot.id)` (monotonically increasing 1-based pivot ID; prevents collision even when opposite pivots confirm sequentially or share bar indices).
+- **`STRICT_CBC`:** `String(pivot.id)` (monotonically increasing 1-based pivot ID preserved across discontinuities). On `isDiscontinuity === true`, StrictCBC re-initializes anchor/phase state and clears `prevPivot` so no leg or pivot bridges a gap.
 - **`PHL_BOS_MSS`:** `'PH'` for `PHL_BOS_BULL` / `PHL_MSS_BULL` (break of protected high), `'PL'` for `PHL_BOS_BEAR` / `PHL_MSS_BEAR` (break of protected low); combined with `eventType` and `confirmationBarIndex` at most one break per level can occur per bar.
 - **`DTFX_ZONES`:**
   - `DTFX_DEMAND_CREATED` / `DTFX_SUPPLY_CREATED`: `String(zone.zoneId)` (monotonically increasing 1-based zone ID).
   - `DTFX_DEMAND_RETEST` / `DTFX_SUPPLY_RETEST`: `${zone.zoneId}_R${zone.retestCount}` (distinguishes simultaneous overlapping zones and sequential retests of the same zone).
-- **`VAM_REVERSAL`:** `'BUY'` for `VAM_BUY`, `'SELL'` for `VAM_SELL` (mutually exclusive per bar via trend guard).
+- **`VAM_REVERSAL`:** `'BUY'` for `VAM_BUY`, `'SELL'` for `VAM_SELL` (mutually exclusive per bar via `trend` guard). Because `VAM_REVERSAL` is a synchronous bar-close signal evaluated on bar `i`, `sourceBarIndex === confirmationBarIndex` (`confirmationLagBars === 0`) and `sourceTimestamp === confirmationTimestamp`.
+- **`DTFX_ZONES` Geometry Guard:** Only zones satisfying `zoneTop > zoneBot && zoneBot > 0` with strictly ascending `fibLevels` inside `(0, 1)` are created.
 
 ### Timestamp, Final-Bar & Ordering Rules
 - `sourceTimestamp`: Open timestamp of the originating candle (for `DTFX_*_RETEST`, `sourceBarIndex` / `sourceTimestamp` is the retest candle, while `zoneCreatedSourceBarIndex` and `zoneCreatedConfirmationBarIndex` stay in `structuralContext`).
@@ -133,7 +134,14 @@ export interface StrategyEvent {
 
 ### Teacher Edge-Case Rules (Frozen for Phase 2)
 - **PHL (`market structure.txt`):** `ps = 3`, single-slot `ph`/`pl`, no `change[1]` delay. When `bull === null`, first break emits `PHL_MSS_BULL` or `PHL_MSS_BEAR`. Same-bar newly created opposite `track_low`/`track_high` takes effect on `barIndex + 1`.
-- **DTFX (`dtfx.txt`):** Lifecycle `CREATED → ACTIVE → RETESTED → INVALIDATED`. Invalidation takes precedence over retest on the same candle.
+- **DTFX (`dtfx.txt`):** Lifecycle `CREATED → ACTIVE → RETESTED → INVALIDATED`.
+  - **Same-bar Precedence & Distinct-Visit Retests (Frozen):** **Invalidation takes precedence over retest.** On bar `j > createdBar`:
+    1. If bullish zone and `close < bot` (or bearish zone and `close > top`) → transition to `INVALIDATED` (set `invalidationBarIndex = j`); **no** retest event emitted on bar `j`.
+    2. Else if bar `[low, high]` overlaps `[bot, top]`:
+       - If `!isCurrentlyInZone` (first touch or a fresh revisit after price previously exited `[bot, top]` on an earlier bar), increment `retestCount` (`1, 2, ...`), set `status = 'RETESTED'`, `isCurrentlyInZone = true`, and emit `DTFX_DEMAND_RETEST` / `DTFX_SUPPLY_RETEST` with `eventDiscriminator = `${zoneId}_R${retestCount}``.
+       - If `isCurrentlyInZone === true` (consecutive bars lingering inside `[bot, top]`), emit no duplicate retest event.
+    3. Else (`[low, high]` does not touch `[bot, top]`) → set `isCurrentlyInZone = false`.
+  - **Resource Bound & BOS Consumption:** `activeZones` is bounded by `maxActiveZones` (default `256`, pruning oldest active zone on overflow). Consistent with `dtfx.txt`, `bosUpCheck`/`bosDownCheck` clears on `mssUp`/`mssDown` even if a degenerate candidate (`zoneTop <= zoneBot || zoneBot <= 0`) is skipped by the geometry guard.
 
 ---
 

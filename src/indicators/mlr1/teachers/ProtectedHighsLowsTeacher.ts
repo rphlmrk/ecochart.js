@@ -32,6 +32,7 @@ export interface PHLWindowBar {
     readonly high: number;
     readonly low: number;
     readonly close: number;
+    readonly volume: number;
 }
 
 export interface PHLState {
@@ -100,10 +101,145 @@ export function createInitialPHLState(): PHLState {
     });
 }
 
-function validatePHLState(state: PHLState, maxWin: number): void {
-    if (!state || state.stateVersion !== 1 || !Array.isArray(state.window) || state.window.length > maxWin) {
-        throw new Error('PHL State Integrity Error: invalid PHL state or window length.');
+export function validatePHLConfig(config: PHLConfig): void {
+    if (!config || typeof config !== 'object') {
+        throw new Error('PHL Config Error: config must be an object.');
     }
+    if (typeof config.symbol !== 'string' || config.symbol.trim() === '' ||
+        typeof config.timeframe !== 'string' || config.timeframe.trim() === '') {
+        throw new Error('PHL Config Error: symbol and timeframe must be non-empty strings.');
+    }
+    if (!Number.isSafeInteger(config.intervalMs) || config.intervalMs <= 0) {
+        throw new Error(`PHL Config Error: intervalMs must be a positive safe integer, got ${config.intervalMs}.`);
+    }
+    if (!Number.isSafeInteger(config.pivotStrength) || config.pivotStrength < 1) {
+        throw new Error(`PHL Config Error: pivotStrength must be >= 1, got ${config.pivotStrength}.`);
+    }
+    if (typeof config.useValidPullbacks !== 'boolean' || typeof config.extraValidPullbacks !== 'boolean') {
+        throw new Error('PHL Config Error: useValidPullbacks and extraValidPullbacks must be booleans.');
+    }
+}
+
+function isValidSlot(slot: PHLPivotSlot | null, maxBarIdx: number | null, maxTime: number | null): boolean {
+    if (slot === null) return true;
+    if (typeof slot !== 'object' ||
+        !Number.isFinite(slot.price) || slot.price <= 0 ||
+        !Number.isSafeInteger(slot.barIndex) || slot.barIndex < 0 ||
+        !Number.isSafeInteger(slot.time) || slot.time < 0) {
+        return false;
+    }
+    if (maxBarIdx !== null && slot.barIndex > maxBarIdx) return false;
+    if (maxTime !== null && slot.time > maxTime) return false;
+    return true;
+}
+
+function isValidTracker(
+    tracker: PHLPullbackTracker,
+    expectedBull: boolean,
+    maxBarIdx: number | null
+): boolean {
+    if (!tracker || typeof tracker !== 'object' ||
+        tracker.bull !== expectedBull || typeof tracker.valid !== 'boolean') {
+        return false;
+    }
+    if (tracker.price === null && tracker.idx === null) {
+        return !tracker.valid;
+    }
+    if (tracker.price === null || !Number.isFinite(tracker.price) || tracker.price <= 0 ||
+        tracker.idx === null || !Number.isSafeInteger(tracker.idx) || tracker.idx < 0) {
+        return false;
+    }
+    if (maxBarIdx !== null && tracker.idx > maxBarIdx) return false;
+    return true;
+}
+
+function validatePHLState(state: PHLState, maxWin: number): void {
+    if (!state || typeof state !== 'object' || state.stateVersion !== 1) {
+        throw new Error('PHL State Integrity Error: invalid PHL state or stateVersion.');
+    }
+    if (state.bull !== null && typeof state.bull !== 'boolean') {
+        throw new Error('PHL State Integrity Error: bull must be boolean or null.');
+    }
+    if (!Array.isArray(state.window) || state.window.length > maxWin) {
+        throw new Error('PHL State Integrity Error: invalid window container or length.');
+    }
+
+    let prevIdx = -1;
+    let prevTime = -1;
+    const windowByIdx = new Map<number, PHLWindowBar>();
+    for (const w of state.window) {
+        if (!w || typeof w !== 'object' ||
+            !Number.isSafeInteger(w.barIndex) || w.barIndex < 0 ||
+            !Number.isSafeInteger(w.time) || w.time < 0 ||
+            !Number.isFinite(w.open) || w.open <= 0 ||
+            !Number.isFinite(w.high) || w.high <= 0 ||
+            !Number.isFinite(w.low) || w.low <= 0 ||
+            !Number.isFinite(w.close) || w.close <= 0 ||
+            !Number.isFinite(w.volume) || w.volume < 0 ||
+            w.high < w.low || w.high < Math.max(w.open, w.close) || w.low > Math.min(w.open, w.close)) {
+            throw new Error('PHL State Integrity Error: malformed OHLCV/index/time in window.');
+        }
+        if (prevIdx !== -1 && (w.barIndex <= prevIdx || w.time <= prevTime)) {
+            throw new Error('PHL State Integrity Error: window bars must be strictly chronological.');
+        }
+        windowByIdx.set(w.barIndex, w);
+        prevIdx = w.barIndex;
+        prevTime = w.time;
+    }
+
+    const maxBarIdx = prevIdx === -1 ? null : prevIdx;
+    const maxTime = prevTime === -1 ? null : prevTime;
+
+    if (!isValidSlot(state.ph, maxBarIdx, maxTime) || !isValidSlot(state.pl, maxBarIdx, maxTime)) {
+        throw new Error('PHL State Integrity Error: corrupted ph/pl slot.');
+    }
+    if (state.ph !== null) {
+        const wb = windowByIdx.get(state.ph.barIndex);
+        if (wb !== undefined && (wb.time !== state.ph.time || wb.high !== state.ph.price)) {
+            throw new Error('PHL State Integrity Error: ph slot disagrees with window bar.');
+        }
+    }
+    if (state.pl !== null) {
+        const wb = windowByIdx.get(state.pl.barIndex);
+        if (wb !== undefined && (wb.time !== state.pl.time || wb.low !== state.pl.price)) {
+            throw new Error('PHL State Integrity Error: pl slot disagrees with window bar.');
+        }
+    }
+    if (!isValidTracker(state.pbFromHigh, true, maxBarIdx) || !isValidTracker(state.pbFromLow, false, maxBarIdx)) {
+        throw new Error('PHL State Integrity Error: corrupted pullback tracker.');
+    }
+
+    const checkPair = (price: number | null, idx: number | null, label: string, field: 'high' | 'low') => {
+        if (price === null && idx === null) return;
+        if (price === null || !Number.isFinite(price) || price <= 0 ||
+            idx === null || !Number.isSafeInteger(idx) || idx < 0 ||
+            (maxBarIdx !== null && idx > maxBarIdx)) {
+            throw new Error(`PHL State Integrity Error: inconsistent ${label} price/index pair.`);
+        }
+        const wb = windowByIdx.get(idx);
+        if (wb !== undefined && wb[field] !== price) {
+            throw new Error(`PHL State Integrity Error: ${label} disagrees with window bar.`);
+        }
+    };
+    checkPair(state.lastHigh, state.lastHighIdx, 'lastHigh', 'high');
+    checkPair(state.lastLow, state.lastLowIdx, 'lastLow', 'low');
+
+    const checkTriple = (price: number | null, idx: number | null, time: number | null, label: string, field: 'high' | 'low') => {
+        if (price === null && idx === null && time === null) return;
+        if (price === null || !Number.isFinite(price) || price <= 0 ||
+            idx === null || !Number.isSafeInteger(idx) || idx < 0 ||
+            time === null || !Number.isSafeInteger(time) || time < 0 ||
+            (maxBarIdx !== null && idx > maxBarIdx) ||
+            (maxTime !== null && time > maxTime)) {
+            throw new Error(`PHL State Integrity Error: inconsistent ${label} price/index/time triple.`);
+        }
+        const wb = windowByIdx.get(idx);
+        if (wb !== undefined && (wb.time !== time || wb[field] !== price)) {
+            throw new Error(`PHL State Integrity Error: ${label} disagrees with window bar.`);
+        }
+    };
+    checkTriple(state.trackHigh, state.trackHighIdx, state.trackHighTime, 'trackHigh', 'high');
+    checkTriple(state.trackLow, state.trackLowIdx, state.trackLowTime, 'trackLow', 'low');
 }
 
 export function stepPHL(
@@ -115,12 +251,49 @@ export function stepPHL(
     atr14AtConfirmation: number | null = null,
     entryTimestamp: number | null = null
 ): PHLStepResult {
+    validatePHLConfig(config);
     const ps = config.pivotStrength;
-    if (!Number.isSafeInteger(ps) || ps < 1) {
-        throw new Error(`PHL Config Error: pivotStrength must be >= 1, got ${ps}.`);
-    }
-    const maxWindowLen = 2 * ps + 4; // Extra 3 bars support extraValidPullbacks lookback
+    const maxWindowLen = 2 * ps + 4;
     validatePHLState(previousState, maxWindowLen);
+
+    if (typeof isDiscontinuity !== 'boolean') {
+        throw new Error('PHL Input Error: isDiscontinuity must be a boolean.');
+    }
+    if (atr14AtConfirmation !== null && (!Number.isFinite(atr14AtConfirmation) || atr14AtConfirmation <= 0)) {
+        throw new Error(`PHL Input Error: atr14AtConfirmation must be null or positive finite, got ${atr14AtConfirmation}.`);
+    }
+    if (entryTimestamp !== null && (!Number.isSafeInteger(entryTimestamp) || entryTimestamp <= candle.time)) {
+        throw new Error(`PHL Input Error: entryTimestamp must be null or strictly greater than candle.time.`);
+    }
+
+    if (!candle || typeof candle !== 'object' ||
+        !Number.isSafeInteger(barIndex) || barIndex < 0 ||
+        !Number.isSafeInteger(candle.time) || candle.time < 0 ||
+        !Number.isFinite(candle.open) || candle.open <= 0 ||
+        !Number.isFinite(candle.high) || candle.high <= 0 ||
+        !Number.isFinite(candle.low) || candle.low <= 0 ||
+        !Number.isFinite(candle.close) || candle.close <= 0 ||
+        !Number.isFinite(candle.volume) || candle.volume < 0 ||
+        candle.high < candle.low ||
+        candle.high < Math.max(candle.open, candle.close) ||
+        candle.low > Math.min(candle.open, candle.close)) {
+        throw new Error(`PHL Input Error: invalid candle or barIndex (${barIndex}).`);
+    }
+
+    if (previousState.window.length > 0) {
+        const prevBar = previousState.window[previousState.window.length - 1];
+        if (barIndex <= prevBar.barIndex || candle.time <= prevBar.time) {
+            throw new Error(
+                `PHL Chronology Error: incoming bar (${barIndex}, ${candle.time}) must strictly exceed previous (${prevBar.barIndex}, ${prevBar.time}).`
+            );
+        }
+        const deltaMs = candle.time - prevBar.time;
+        if (deltaMs < config.intervalMs || deltaMs % config.intervalMs !== 0) {
+            throw new Error(
+                `PHL Chronology Error: timestamp delta (${deltaMs}) must be a positive multiple of intervalMs (${config.intervalMs}).`
+            );
+        }
+    }
 
     const baseState = isDiscontinuity ? createInitialPHLState() : previousState;
     const bar: PHLWindowBar = Object.freeze({
@@ -129,7 +302,8 @@ export function stepPHL(
         open: candle.open,
         high: candle.high,
         low: candle.low,
-        close: candle.close
+        close: candle.close,
+        volume: candle.volume
     });
     const nextWindow = Object.freeze([...baseState.window, bar].slice(-maxWindowLen));
 
@@ -176,17 +350,17 @@ export function stepPHL(
             confirmedPivotLow = Object.freeze({ price: cand.low, barIndex: cand.barIndex, time: cand.time });
             if (pl === null) {
                 pl = confirmedPivotLow;
-                let pbPrice = cand.high;
                 if (config.extraValidPullbacks) {
                     for (let offset = 0; offset <= 3 && candPos - offset >= 0; offset++) {
                         const look = nextWindow[candPos - offset];
                         if (look.close < look.open) {
-                            pbPrice = look.high;
+                            pbFromLow = Object.freeze({ price: look.high, idx: barIndex, valid: false, bull: false });
                             break;
                         }
                     }
+                } else {
+                    pbFromLow = Object.freeze({ price: cand.high, idx: barIndex, valid: false, bull: false });
                 }
-                pbFromLow = Object.freeze({ price: pbPrice, idx: barIndex, valid: false, bull: false });
 
                 if (lastLow === null || cand.low < lastLow) {
                     lastLow = cand.low;
@@ -199,17 +373,17 @@ export function stepPHL(
             confirmedPivotHigh = Object.freeze({ price: cand.high, barIndex: cand.barIndex, time: cand.time });
             if (ph === null) {
                 ph = confirmedPivotHigh;
-                let pbPrice = cand.low;
                 if (config.extraValidPullbacks) {
                     for (let offset = 0; offset <= 3 && candPos - offset >= 0; offset++) {
                         const look = nextWindow[candPos - offset];
                         if (look.close > look.open) {
-                            pbPrice = look.low;
+                            pbFromHigh = Object.freeze({ price: look.low, idx: barIndex, valid: false, bull: true });
                             break;
                         }
                     }
+                } else {
+                    pbFromHigh = Object.freeze({ price: cand.low, idx: barIndex, valid: false, bull: true });
                 }
-                pbFromHigh = Object.freeze({ price: pbPrice, idx: barIndex, valid: false, bull: true });
 
                 if (lastHigh === null || cand.high > lastHigh) {
                     lastHigh = cand.high;
@@ -271,6 +445,7 @@ export function stepPHL(
         if (trackLow !== null && trackLowIdx !== null && trackLowTime !== null) {
             pl = Object.freeze({ price: trackLow, barIndex: trackLowIdx, time: trackLowTime });
             lastHigh = null;
+            lastHighIdx = null;
         }
 
         const distProtectedAtr =
@@ -313,6 +488,7 @@ export function stepPHL(
         if (trackHigh !== null && trackHighIdx !== null && trackHighTime !== null) {
             ph = Object.freeze({ price: trackHigh, barIndex: trackHighIdx, time: trackHighTime });
             lastLow = null;
+            lastLowIdx = null;
         }
 
         const distProtectedAtr =

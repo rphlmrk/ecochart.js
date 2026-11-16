@@ -1,5 +1,11 @@
-import type { StrictZigZagPivot } from '../../plugins/StrictCBCZigZagIndicator';
-import { STRICT_CBC_ZIGZAG_TEACHER_VERSION } from '../../plugins/StrictCBCZigZagIndicator';
+import {
+    createInitialStrictCBCState,
+    stepStrictCBC,
+    STRICT_CBC_ZIGZAG_TEACHER_VERSION,
+    type StrictCBCCandle,
+    type StrictCBCState,
+    type StrictZigZagPivot
+} from '../../plugins/StrictCBCZigZagIndicator';
 import type { VAMStepOutput } from '../trend/VolatilityAdjustedMean';
 
 export type StrategyId = 'STRICT_CBC' | 'PHL_BOS_MSS' | 'DTFX_ZONES' | 'VAM_REVERSAL';
@@ -59,6 +65,7 @@ export interface CreateStrategyEventParams {
     readonly confirmationTimestamp: number;
     readonly entryTimestamp: number | null;
     readonly structuralContext: Readonly<Record<string, StrategyContextValue>>;
+    readonly acceptedTimestampsByBarIndex?: readonly number[];
 }
 
 const STRATEGY_EVENT_ALLOWLIST: Readonly<Record<StrategyId, readonly StrategyEventType[]>> = Object.freeze({
@@ -73,6 +80,14 @@ const STRATEGY_EVENT_ALLOWLIST: Readonly<Record<StrategyId, readonly StrategyEve
     VAM_REVERSAL: Object.freeze(['VAM_BUY', 'VAM_SELL'] as const)
 });
 
+function encodeLengthPrefixedField(raw: string): string {
+    return `${raw.length}:${raw}`;
+}
+
+/**
+ * Unambiguous prefix-free canonical event identity encoding.
+ * Prevents collisions across delimiters ('_', '|', ':') or variable-length segments.
+ */
 export function buildStrategyEventId(params: {
     readonly strategyId: StrategyId;
     readonly strategyVersion: string;
@@ -83,7 +98,40 @@ export function buildStrategyEventId(params: {
     readonly confirmationBarIndex: number;
     readonly eventDiscriminator: string;
 }): string {
-    return `${params.strategyId}_${params.strategyVersion}_${params.symbol}_${params.timeframe}_${params.eventType}_${params.sourceBarIndex}_${params.confirmationBarIndex}_${params.eventDiscriminator}`;
+    const parts = [
+        params.strategyId,
+        params.strategyVersion,
+        params.symbol,
+        params.timeframe,
+        params.eventType,
+        String(params.sourceBarIndex),
+        String(params.confirmationBarIndex),
+        params.eventDiscriminator
+    ];
+    return `SE1|${parts.map(encodeLengthPrefixedField).join('|')}`;
+}
+
+export function validateAcceptedTimestampsSequence(
+    acceptedTimestampsByBarIndex: readonly number[]
+): void {
+    if (!Array.isArray(acceptedTimestampsByBarIndex)) {
+        throw new Error('StrategyEvent Chronology Error: acceptedTimestampsByBarIndex must be an array.');
+    }
+    let prev = -1;
+    for (let i = 0; i < acceptedTimestampsByBarIndex.length; i++) {
+        const ts = acceptedTimestampsByBarIndex[i];
+        if (!Number.isSafeInteger(ts) || ts < 0) {
+            throw new Error(
+                `StrategyEvent Chronology Error: invalid accepted timestamp at index ${i} (${ts}).`
+            );
+        }
+        if (i > 0 && ts <= prev) {
+            throw new Error(
+                `StrategyEvent Chronology Error: accepted timestamps must be strictly ascending (index ${i}: ${ts} <= ${prev}).`
+            );
+        }
+        prev = ts;
+    }
 }
 
 export function createStrategyEvent(params: CreateStrategyEventParams): StrategyEvent {
@@ -93,15 +141,20 @@ export function createStrategyEvent(params: CreateStrategyEventParams): Strategy
             `StrategyEvent Contract Error: eventType '${params.eventType}' is invalid for strategy '${params.strategyId}'.`
         );
     }
-    if (typeof params.strategyVersion !== 'string' || params.strategyVersion.trim() === '') {
-        throw new Error('StrategyEvent Contract Error: strategyVersion must be a non-empty string.');
+    if (params.eventDirection !== 'bull' && params.eventDirection !== 'bear') {
+        throw new Error(
+            `StrategyEvent Contract Error: eventDirection must be 'bull' or 'bear', got '${String(params.eventDirection)}'.`
+        );
     }
-    if (typeof params.symbol !== 'string' || params.symbol.trim() === '' ||
-        typeof params.timeframe !== 'string' || params.timeframe.trim() === '') {
-        throw new Error('StrategyEvent Contract Error: symbol and timeframe must be non-empty strings.');
-    }
-    if (typeof params.eventDiscriminator !== 'string' || params.eventDiscriminator.trim() === '') {
-        throw new Error('StrategyEvent Contract Error: eventDiscriminator must be a non-empty string.');
+    for (const [name, val] of [
+        ['strategyVersion', params.strategyVersion],
+        ['symbol', params.symbol],
+        ['timeframe', params.timeframe],
+        ['eventDiscriminator', params.eventDiscriminator]
+    ] as const) {
+        if (typeof val !== 'string' || val.trim() === '' || /[\r\n\0]/.test(val)) {
+            throw new Error(`StrategyEvent Contract Error: ${name} must be a valid non-empty single-line string.`);
+        }
     }
     if (!Number.isSafeInteger(params.intervalMs) || params.intervalMs <= 0) {
         throw new Error(`StrategyEvent Contract Error: intervalMs must be a positive safe integer, got ${params.intervalMs}.`);
@@ -119,6 +172,44 @@ export function createStrategyEvent(params: CreateStrategyEventParams): Strategy
         );
     }
 
+    if (params.strategyId === 'VAM_REVERSAL') {
+        if (params.sourceBarIndex !== params.confirmationBarIndex ||
+            params.sourceTimestamp !== params.confirmationTimestamp) {
+            throw new Error(
+                'StrategyEvent Chronology Error: VAM_REVERSAL must have sourceBarIndex === confirmationBarIndex and sourceTimestamp === confirmationTimestamp.'
+            );
+        }
+    }
+
+    const entryBarIndex = params.confirmationBarIndex + 1;
+    if (!Number.isSafeInteger(entryBarIndex)) {
+        throw new Error('StrategyEvent Contract Error: entryBarIndex exceeds safe integer range.');
+    }
+
+    if (params.acceptedTimestampsByBarIndex !== undefined) {
+        validateAcceptedTimestampsSequence(params.acceptedTimestampsByBarIndex);
+        if (params.confirmationBarIndex >= params.acceptedTimestampsByBarIndex.length) {
+            throw new Error('StrategyEvent Chronology Error: confirmationBarIndex out of accepted timestamps bounds.');
+        }
+        if (params.acceptedTimestampsByBarIndex[params.sourceBarIndex] !== params.sourceTimestamp) {
+            throw new Error('StrategyEvent Chronology Error: sourceTimestamp disagrees with accepted clock.');
+        }
+        if (params.acceptedTimestampsByBarIndex[params.confirmationBarIndex] !== params.confirmationTimestamp) {
+            throw new Error('StrategyEvent Chronology Error: confirmationTimestamp disagrees with accepted clock.');
+        }
+        if (params.entryTimestamp !== null) {
+            const expectedEntryTs =
+                entryBarIndex < params.acceptedTimestampsByBarIndex.length
+                    ? params.acceptedTimestampsByBarIndex[entryBarIndex]
+                    : null;
+            if (params.entryTimestamp !== expectedEntryTs) {
+                throw new Error(
+                    `StrategyEvent Chronology Error: entryTimestamp (${params.entryTimestamp}) disagrees with accepted clock at index ${entryBarIndex} (${String(expectedEntryTs)}).`
+                );
+            }
+        }
+    }
+
     const observationTimestamp = params.confirmationTimestamp + params.intervalMs;
     if (!Number.isSafeInteger(observationTimestamp)) {
         throw new Error('StrategyEvent Contract Error: observationTimestamp exceeds safe integer range.');
@@ -130,6 +221,15 @@ export function createStrategyEvent(params: CreateStrategyEventParams): Strategy
                 `StrategyEvent Contract Error: entryTimestamp (${params.entryTimestamp}) must be null or strictly greater than confirmationTimestamp (${params.confirmationTimestamp}).`
             );
         }
+    }
+
+    if (params.structuralContext === null || typeof params.structuralContext !== 'object' ||
+        Array.isArray(params.structuralContext)) {
+        throw new Error('StrategyEvent Contract Error: structuralContext must be a non-null plain object.');
+    }
+    const proto = Object.getPrototypeOf(params.structuralContext);
+    if (proto !== Object.prototype && proto !== null) {
+        throw new Error('StrategyEvent Contract Error: structuralContext must be a plain object.');
     }
 
     const frozenContext: Record<string, StrategyContextValue> = {};
@@ -168,7 +268,7 @@ export function createStrategyEvent(params: CreateStrategyEventParams): Strategy
         confirmationLagBars: params.confirmationBarIndex - params.sourceBarIndex,
         observationBarIndex: params.confirmationBarIndex,
         observationTimestamp,
-        entryBarIndex: params.confirmationBarIndex + 1,
+        entryBarIndex,
         entryTimestamp: params.entryTimestamp,
         structuralContext: Object.freeze(frozenContext)
     });
@@ -178,10 +278,6 @@ function compareAscii(a: string, b: string): number {
     return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/**
- * Deterministic ordering comparator: (confirmationBarIndex, strategyId, eventType, eventId).
- * Uses codepoint ordering to stay invariant across locales.
- */
 export function compareStrategyEvents(a: StrategyEvent, b: StrategyEvent): number {
     if (a.confirmationBarIndex !== b.confirmationBarIndex) {
         return a.confirmationBarIndex - b.confirmationBarIndex;
@@ -193,9 +289,6 @@ export function compareStrategyEvents(a: StrategyEvent, b: StrategyEvent): numbe
     return compareAscii(a.eventId, b.eventId);
 }
 
-/**
- * Validates global eventId uniqueness and returns a frozen array in canonical deterministic order.
- */
 export function sortAndVerifyUniqueStrategyEvents(
     events: readonly StrategyEvent[]
 ): readonly StrategyEvent[] {
@@ -213,24 +306,96 @@ export function sortAndVerifyUniqueStrategyEvents(
 }
 
 /**
- * Resolves actual next accepted candle open timestamps without fabricating confirmationTimestamp + intervalMs across gaps.
- * Sets entryTimestamp = null if confirmationBarIndex is the final accepted bar.
+ * Validates the complete accepted timestamp clock, checks each event's source & confirmation indices/timestamps,
+ * and resolves actual next accepted candle open timestamps (setting entryTimestamp = null on final bar).
  */
 export function resolveStrategyEventsEntryTimestamps(
     events: readonly StrategyEvent[],
-    acceptedTimestampsByBarIndex: readonly number[]
+    acceptedTimestampsByBarIndex: readonly number[],
+    expectedIntervalMs?: number
 ): readonly StrategyEvent[] {
+    validateAcceptedTimestampsSequence(acceptedTimestampsByBarIndex);
+
+    if (expectedIntervalMs !== undefined) {
+        if (!Number.isSafeInteger(expectedIntervalMs) || expectedIntervalMs <= 0) {
+            throw new Error(
+                `StrategyEvent Chronology Error: expectedIntervalMs must be a positive safe integer, got ${expectedIntervalMs}.`
+            );
+        }
+        for (let i = 1; i < acceptedTimestampsByBarIndex.length; i++) {
+            const deltaMs = acceptedTimestampsByBarIndex[i] - acceptedTimestampsByBarIndex[i - 1];
+            if (deltaMs < expectedIntervalMs || deltaMs % expectedIntervalMs !== 0) {
+                throw new Error(
+                    `StrategyEvent Chronology Error: timestamp delta (${deltaMs}) at index ${i} is not a positive multiple of intervalMs (${expectedIntervalMs}).`
+                );
+            }
+        }
+    }
+
     return Object.freeze(
         events.map(ev => {
+            if (!Number.isSafeInteger(ev.confirmationBarIndex) ||
+                ev.confirmationBarIndex < 0 ||
+                ev.confirmationBarIndex >= acceptedTimestampsByBarIndex.length) {
+                throw new Error(
+                    `StrategyEvent Chronology Error: confirmationBarIndex ${ev.confirmationBarIndex} out of bounds [0, ${acceptedTimestampsByBarIndex.length - 1}].`
+                );
+            }
+            if (!Number.isSafeInteger(ev.sourceBarIndex) ||
+                ev.sourceBarIndex < 0 ||
+                ev.sourceBarIndex > ev.confirmationBarIndex) {
+                throw new Error(
+                    `StrategyEvent Chronology Error: invalid sourceBarIndex ${ev.sourceBarIndex} for confirmationBarIndex ${ev.confirmationBarIndex}.`
+                );
+            }
+            if (acceptedTimestampsByBarIndex[ev.confirmationBarIndex] !== ev.confirmationTimestamp) {
+                throw new Error(
+                    `StrategyEvent Chronology Error: event confirmationTimestamp (${ev.confirmationTimestamp}) disagrees with accepted clock at index ${ev.confirmationBarIndex} (${acceptedTimestampsByBarIndex[ev.confirmationBarIndex]}).`
+                );
+            }
+            if (acceptedTimestampsByBarIndex[ev.sourceBarIndex] !== ev.sourceTimestamp) {
+                throw new Error(
+                    `StrategyEvent Chronology Error: event sourceTimestamp (${ev.sourceTimestamp}) disagrees with accepted clock at index ${ev.sourceBarIndex} (${acceptedTimestampsByBarIndex[ev.sourceBarIndex]}).`
+                );
+            }
+            if (ev.strategyId === 'VAM_REVERSAL' &&
+                (ev.sourceBarIndex !== ev.confirmationBarIndex || ev.sourceTimestamp !== ev.confirmationTimestamp)) {
+                throw new Error(
+                    'StrategyEvent Chronology Error: VAM_REVERSAL event must have source === confirmation bar/timestamp.'
+                );
+            }
+            if (ev.observationBarIndex !== ev.confirmationBarIndex) {
+                throw new Error(
+                    `StrategyEvent Chronology Error: invalid observationBarIndex ${ev.observationBarIndex} (expected ${ev.confirmationBarIndex}).`
+                );
+            }
+            if (ev.confirmationLagBars !== ev.confirmationBarIndex - ev.sourceBarIndex) {
+                throw new Error(
+                    `StrategyEvent Chronology Error: invalid confirmationLagBars ${ev.confirmationLagBars}.`
+                );
+            }
+            if (expectedIntervalMs !== undefined) {
+                const expectedObsTs = ev.confirmationTimestamp + expectedIntervalMs;
+                if (!Number.isSafeInteger(expectedObsTs) || ev.observationTimestamp !== expectedObsTs) {
+                    throw new Error(
+                        `StrategyEvent Chronology Error: observationTimestamp (${ev.observationTimestamp}) disagrees with confirmationTimestamp + expectedIntervalMs (${expectedObsTs}).`
+                    );
+                }
+            } else if (!Number.isSafeInteger(ev.observationTimestamp) || ev.observationTimestamp <= ev.confirmationTimestamp) {
+                throw new Error(
+                    `StrategyEvent Chronology Error: invalid observationTimestamp ${ev.observationTimestamp}.`
+                );
+            }
+            if (!Number.isSafeInteger(ev.entryBarIndex) || ev.entryBarIndex !== ev.confirmationBarIndex + 1) {
+                throw new Error(
+                    `StrategyEvent Chronology Error: invalid entryBarIndex ${ev.entryBarIndex} (expected ${ev.confirmationBarIndex + 1}).`
+                );
+            }
+
             const actualNextTs =
                 ev.entryBarIndex < acceptedTimestampsByBarIndex.length
                     ? acceptedTimestampsByBarIndex[ev.entryBarIndex]
                     : null;
-            if (actualNextTs !== null && (!Number.isSafeInteger(actualNextTs) || actualNextTs <= ev.confirmationTimestamp)) {
-                throw new Error(
-                    `StrategyEvent Chronology Error: resolved entryTimestamp (${actualNextTs}) invalid for confirmationTimestamp (${ev.confirmationTimestamp}).`
-                );
-            }
             if (ev.entryTimestamp === actualNextTs) return ev;
             return Object.freeze({
                 ...ev,
@@ -241,8 +406,48 @@ export function resolveStrategyEventsEntryTimestamps(
 }
 
 // =========================================================================
-// Adapter A: StrictCBCZigZag -> StrategyEvent
+// Adapter A: StrictCBCZigZag -> StrategyEvent (With Discontinuity Reset)
 // =========================================================================
+
+/**
+ * Pure discontinuity-aware StrictCBC wrapper.
+ * Does NOT modify frozen StrictCBCZigZagIndicator.ts; resets anchor/phase state and prevPivot
+ * on discontinuity while keeping nextPivotId strictly monotonic.
+ */
+export function stepStrictCBCWithReset(
+    candle: StrictCBCCandle,
+    barIndex: number,
+    previousState: StrictCBCState | null,
+    previousPivot: StrictZigZagPivot | null,
+    isDiscontinuity: boolean
+): {
+    readonly nextState: StrictCBCState;
+    readonly confirmedPivot: StrictZigZagPivot | null;
+    readonly prevPivotForEvent: StrictZigZagPivot | null;
+    readonly nextPrevPivot: StrictZigZagPivot | null;
+} {
+    if (barIndex === 0 || previousState === null || isDiscontinuity) {
+        const nextPivotId = previousState ? previousState.nextPivotId : 1;
+        const resetState: StrictCBCState = {
+            ...createInitialStrictCBCState(candle),
+            nextPivotId
+        };
+        return {
+            nextState: resetState,
+            confirmedPivot: null,
+            prevPivotForEvent: null,
+            nextPrevPivot: null
+        };
+    }
+
+    const stepRes = stepStrictCBC(candle, barIndex, previousState);
+    return {
+        nextState: stepRes.nextState,
+        confirmedPivot: stepRes.confirmedPivot,
+        prevPivotForEvent: previousPivot,
+        nextPrevPivot: stepRes.confirmedPivot ?? previousPivot
+    };
+}
 
 export function adaptStrictCBCtoStrategyEvent(params: {
     readonly pivot: StrictZigZagPivot;
@@ -255,18 +460,48 @@ export function adaptStrictCBCtoStrategyEvent(params: {
     readonly intervalMs: number;
 }): StrategyEvent {
     const { pivot, prevPivot, atr14AtConfirmation } = params;
-    const eventType: StrategyEventType =
-        pivot.type === 'high'
-            ? pivot.label === 'HH'
-                ? 'CBC_HIGH_HH'
-                : 'CBC_HIGH_LH'
-            : pivot.label === 'HL'
-              ? 'CBC_LOW_HL'
-              : 'CBC_LOW_LL';
 
-    const eventDirection: 'bull' | 'bear' = pivot.type === 'high' ? 'bear' : 'bull';
+    if (!pivot || typeof pivot !== 'object' ||
+        !Number.isSafeInteger(pivot.id) || pivot.id < 1 ||
+        !Number.isFinite(pivot.price) || pivot.price <= 0 ||
+        !Number.isSafeInteger(pivot.barIndex) || pivot.barIndex < 0 ||
+        !Number.isSafeInteger(pivot.confirmedBarIndex) || pivot.confirmedBarIndex < pivot.barIndex ||
+        !Number.isSafeInteger(pivot.time) || pivot.time < 0) {
+        throw new Error('StrictCBC Adapter Error: invalid pivot metadata.');
+    }
+    if (atr14AtConfirmation !== null &&
+        (!Number.isFinite(atr14AtConfirmation) || atr14AtConfirmation <= 0)) {
+        throw new Error(
+            `StrictCBC Adapter Error: atr14AtConfirmation must be null or a positive finite number, got ${atr14AtConfirmation}.`
+        );
+    }
+    if (prevPivot !== null) {
+        if (!Number.isFinite(prevPivot.price) || prevPivot.price <= 0 ||
+            !Number.isSafeInteger(prevPivot.confirmedBarIndex) || prevPivot.confirmedBarIndex < 0 ||
+            prevPivot.confirmedBarIndex > pivot.confirmedBarIndex) {
+            throw new Error('StrictCBC Adapter Error: invalid prevPivot metadata.');
+        }
+    }
+
+    let eventType: StrategyEventType;
+    let eventDirection: 'bull' | 'bear';
+
+    if (pivot.type === 'high') {
+        if (pivot.label === 'HH') eventType = 'CBC_HIGH_HH';
+        else if (pivot.label === 'LH') eventType = 'CBC_HIGH_LH';
+        else throw new Error(`StrictCBC Adapter Error: invalid label '${pivot.label}' for high pivot.`);
+        eventDirection = 'bear';
+    } else if (pivot.type === 'low') {
+        if (pivot.label === 'HL') eventType = 'CBC_LOW_HL';
+        else if (pivot.label === 'LL') eventType = 'CBC_LOW_LL';
+        else throw new Error(`StrictCBC Adapter Error: invalid label '${pivot.label}' for low pivot.`);
+        eventDirection = 'bull';
+    } else {
+        throw new Error(`StrictCBC Adapter Error: unsupported pivot.type '${String((pivot as any).type)}'.`);
+    }
+
     const legDistanceAtr =
-        prevPivot !== null && atr14AtConfirmation !== null && atr14AtConfirmation > 0
+        prevPivot !== null && atr14AtConfirmation !== null
             ? (pivot.price - prevPivot.price) / atr14AtConfirmation
             : 0;
 
@@ -303,12 +538,13 @@ export function adaptStrictCBCtoStrategyEvent(params: {
 
 export const VAM_TEACHER_VERSION = 'VAM_v1';
 
+/**
+ * Synchronous bar-close signal adapter: sourceBarIndex === confirmationBarIndex (lag 0).
+ */
 export function adaptVAMtoStrategyEvent(params: {
     readonly vamOutput: VAMStepOutput;
     readonly confirmationBarIndex: number;
     readonly confirmationTimestamp: number;
-    readonly sourceBarIndex: number;
-    readonly sourceTimestamp: number;
     readonly entryTimestamp: number | null;
     readonly symbol: string;
     readonly timeframe: string;
@@ -316,6 +552,9 @@ export function adaptVAMtoStrategyEvent(params: {
 }): StrategyEvent | null {
     const { vamOutput } = params;
     if (vamOutput.signal === 0) return null;
+    if (vamOutput.signal !== 1 && vamOutput.signal !== -1) {
+        throw new Error(`VAM Adapter Error: unexpected signal value ${String(vamOutput.signal)}.`);
+    }
 
     const isBuy = vamOutput.signal === 1;
     return createStrategyEvent({
@@ -327,8 +566,8 @@ export function adaptVAMtoStrategyEvent(params: {
         eventType: isBuy ? 'VAM_BUY' : 'VAM_SELL',
         eventDirection: isBuy ? 'bull' : 'bear',
         eventDiscriminator: isBuy ? 'BUY' : 'SELL',
-        sourceBarIndex: params.sourceBarIndex,
-        sourceTimestamp: params.sourceTimestamp,
+        sourceBarIndex: params.confirmationBarIndex,
+        sourceTimestamp: params.confirmationTimestamp,
         confirmationBarIndex: params.confirmationBarIndex,
         confirmationTimestamp: params.confirmationTimestamp,
         entryTimestamp: params.entryTimestamp,
