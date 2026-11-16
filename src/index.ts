@@ -6058,6 +6058,7 @@ export class WorkspaceManager {
 
         window.addEventListener('online', triggerAggressiveWakeup);
         (window as any).runMilestone1AcceptanceSuite = runMilestone1AcceptanceSuite;
+        (window as any).runMilestone2AcceptanceSuite = runMilestone2AcceptanceSuite;
         (window as any).runPhase2ATests = runPhase2ATests;
         (window as any).runPhase3ATests = runPhase3ATests;
         (window as any).runPhase3BTests = runPhase3BTests;

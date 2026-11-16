@@ -132,15 +132,10 @@ function isOhlcvValid(c: ML1Candle): boolean {
 /**
  * Pure Single-Bar Transition Function for Tier A Features.
  */
-export function stepML1Features(
-    candle: ML1Candle,
-    barIndex: number,
+function validateRestoredV4State(
     previousState: ML1FeatureState,
     config: ValidatedML1FeatureConfig
-): {
-    observation: ML1Observation;
-    nextState: ML1FeatureState;
-} {
+): void {
     // 1. Strict Contract Enforcements & Restored State Consistency
     if (!previousState || previousState.stateVersion !== 4) {
         throw new Error(`State Integrity Error: Incompatible state version. Expected 4, got ${previousState?.stateVersion}.`);
@@ -337,6 +332,18 @@ export function stepML1Features(
     if (vState.volumeHistory.length < 50 && vState.unbrokenRun !== vState.volumeHistory.length) {
         throw new Error(`State Integrity Error: Inconsistent volumeState history and unbrokenRun before capacity.`);
     }
+}
+
+export function stepML1Features(
+    candle: ML1Candle,
+    barIndex: number,
+    previousState: ML1FeatureState,
+    config: ValidatedML1FeatureConfig
+): {
+    observation: ML1Observation;
+    nextState: ML1FeatureState;
+} {
+    validateRestoredV4State(previousState, config);
 
     const features: ML1FeatureValues = {};
     const validity: ML1FeatureValidity = {};
@@ -883,12 +890,18 @@ function validateVAMState(vs: VAMState): void {
         vs.hlc3History.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
         throw new Error('State Integrity Error: Invalid hlc3History in vamState (max length 19).');
     }
+    if (!Array.isArray(vs.centerHistory) || vs.centerHistory.length > 4 ||
+        vs.centerHistory.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
+        throw new Error('State Integrity Error: Invalid centerHistory in vamState (max length 4).');
+    }
+
     if (vs.unbrokenRun === 0) {
         if (vs.prevHigh !== null || vs.prevLow !== null || vs.prevClose !== null ||
             vs.adaptive !== null || vs.center !== null ||
             vs.hlc3History.length !== 0 || vs.centerHistory.length !== 0 ||
             vs.centerSeedCount !== 0 || vs.dmiCount !== 0 || vs.rsiCount !== 0 ||
-            vs.dxHistoryCount !== 0 || vs.trend !== 0 || vs.lastSignalAcceptedIndex !== null) {
+            vs.dxHistoryCount !== 0 || vs.trend !== 0 || vs.lastSignalAcceptedIndex !== null ||
+            vs.buyStreak !== 0 || vs.sellStreak !== 0) {
             throw new Error('State Integrity Error: Initial vamState with unbrokenRun=0 must be empty.');
         }
     } else {
@@ -911,23 +924,25 @@ function validateVAMState(vs: VAMState): void {
         !Number.isFinite(vs.centerSeedMean)) {
         throw new Error('State Integrity Error: Invalid center seed state in vamState.');
     }
+    if (vs.centerSeedCount !== Math.min(5, vs.unbrokenRun)) {
+        throw new Error(`State Integrity Error: centerSeedCount (${vs.centerSeedCount}) inconsistent with unbrokenRun (${vs.unbrokenRun}).`);
+    }
+    const expectedCenterHistLen = vs.unbrokenRun < 5 ? 0 : Math.min(4, vs.unbrokenRun - 4);
+    if (vs.centerHistory.length !== expectedCenterHistLen) {
+        throw new Error(`State Integrity Error: centerHistory length (${vs.centerHistory.length}) inconsistent with unbrokenRun (${vs.unbrokenRun}).`);
+    }
     if (vs.centerSeedCount < 5) {
         if (vs.center !== null || vs.centerHistory.length !== 0) {
             throw new Error('State Integrity Error: Unseeded VAM center must have center=null and empty centerHistory.');
         }
-    } else {
-        if (vs.center === null || !Number.isFinite(vs.center)) {
-            throw new Error('State Integrity Error: Seeded VAM center must be finite.');
-        }
-    }
-    if (!Array.isArray(vs.centerHistory) || vs.centerHistory.length > 4 ||
-        vs.centerHistory.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
-        throw new Error('State Integrity Error: Invalid centerHistory in vamState (max length 4).');
+    } else if (vs.center === null || !Number.isFinite(vs.center)) {
+        throw new Error('State Integrity Error: Seeded VAM center must be finite.');
     }
 
-    // Validate nested ATR state
+    // Validate nested ATR state & counter parity
     const atr = vs.atrState;
     if (!atr || typeof atr !== 'object' || !Number.isSafeInteger(atr.count) || atr.count < 0 ||
+        atr.count !== vs.unbrokenRun ||
         !Number.isFinite(atr.seedMean) || atr.seedMean < 0 || typeof atr.isSeeded !== 'boolean' ||
         (atr.isSeeded
             ? (atr.count < 14 || atr.atr === null || !Number.isFinite(atr.atr) || atr.atr < 0)
@@ -935,12 +950,12 @@ function validateVAMState(vs: VAMState): void {
         throw new Error('State Integrity Error: Corrupted atrState inside vamState.');
     }
 
-    // Validate DMI / ADX accumulators
-    if (!Number.isSafeInteger(vs.dmiCount) || vs.dmiCount < 0 ||
+    // Validate DMI / ADX accumulators & counter invariants
+    if (!Number.isSafeInteger(vs.dmiCount) || vs.dmiCount !== Math.max(0, vs.unbrokenRun - 1) ||
         !Number.isFinite(vs.trSeedMean) || vs.trSeedMean < 0 ||
         !Number.isFinite(vs.plusDmSeedMean) || vs.plusDmSeedMean < 0 ||
         !Number.isFinite(vs.minusDmSeedMean) || vs.minusDmSeedMean < 0) {
-        throw new Error('State Integrity Error: Corrupted DMI seed accumulators in vamState.');
+        throw new Error('State Integrity Error: Corrupted DMI count or seed accumulators in vamState.');
     }
     const rmas = [vs.trRma, vs.plusDmRma, vs.minusDmRma];
     if (vs.dmiCount < 14) {
@@ -950,21 +965,21 @@ function validateVAMState(vs: VAMState): void {
     } else if (rmas.some(r => r === null || !Number.isFinite(r) || r < 0)) {
         throw new Error('State Integrity Error: Seeded DMI RMAs must be finite >= 0.');
     }
-    if (!Number.isSafeInteger(vs.dxHistoryCount) || vs.dxHistoryCount < 0 ||
+    if (!Number.isSafeInteger(vs.dxHistoryCount) || vs.dxHistoryCount !== Math.max(0, vs.dmiCount - 13) ||
         !Number.isFinite(vs.dxSeedMean) || vs.dxSeedMean < 0) {
-        throw new Error('State Integrity Error: Corrupted ADX accumulators in vamState.');
+        throw new Error('State Integrity Error: Corrupted ADX count or accumulators in vamState.');
     }
     if (vs.dxHistoryCount < 14) {
         if (vs.adx !== null) throw new Error('State Integrity Error: Unseeded ADX must be null.');
-    } else if (vs.adx === null || !Number.isFinite(vs.adx) || vs.adx < 0) {
-        throw new Error('State Integrity Error: Seeded ADX must be finite >= 0.');
+    } else if (vs.adx === null || !Number.isFinite(vs.adx) || vs.adx < 0 || vs.adx > 100) {
+        throw new Error('State Integrity Error: Seeded ADX must be finite within [0, 100].');
     }
 
-    // Validate RSI accumulators
-    if (!Number.isSafeInteger(vs.rsiCount) || vs.rsiCount < 0 ||
+    // Validate RSI accumulators & counter invariant
+    if (!Number.isSafeInteger(vs.rsiCount) || vs.rsiCount !== Math.max(0, vs.unbrokenRun - 1) ||
         !Number.isFinite(vs.avgGainSeedMean) || vs.avgGainSeedMean < 0 ||
         !Number.isFinite(vs.avgLossSeedMean) || vs.avgLossSeedMean < 0) {
-        throw new Error('State Integrity Error: Corrupted RSI seed accumulators in vamState.');
+        throw new Error('State Integrity Error: Corrupted RSI count or seed accumulators in vamState.');
     }
     if (vs.rsiCount < 14) {
         if (vs.avgGain !== null || vs.avgLoss !== null) {
@@ -976,11 +991,13 @@ function validateVAMState(vs: VAMState): void {
         throw new Error('State Integrity Error: Seeded RSI averages must be finite >= 0.');
     }
 
-    // Validate trend, streaks & cooldown index
+    // Validate trend, mutually exclusive streaks & cooldown index
     if ((vs.trend !== -1 && vs.trend !== 0 && vs.trend !== 1) ||
+        (vs.unbrokenRun < 8 ? vs.trend !== 0 : vs.trend === 0) ||
         !Number.isSafeInteger(vs.buyStreak) || vs.buyStreak < 0 ||
-        !Number.isSafeInteger(vs.sellStreak) || vs.sellStreak < 0) {
-        throw new Error('State Integrity Error: Corrupted trend or streaks in vamState.');
+        !Number.isSafeInteger(vs.sellStreak) || vs.sellStreak < 0 ||
+        (vs.buyStreak > 0 && vs.sellStreak > 0)) {
+        throw new Error('State Integrity Error: Corrupted trend or mutually exclusive streaks in vamState.');
     }
     if (vs.lastSignalAcceptedIndex !== null &&
         (!Number.isSafeInteger(vs.lastSignalAcceptedIndex) ||
@@ -1001,10 +1018,10 @@ function validateRestoredV5State(
     if (previousState.configFingerprint !== expectedFingerprint) {
         throw new Error('State Integrity Error: V5 state configFingerprint does not match provided configuration.');
     }
-    if (!previousState.baseState || typeof previousState.baseState !== 'object' ||
-        previousState.baseState.stateVersion !== 4) {
-        throw new Error('State Integrity Error: Embedded V4 baseState is missing or has invalid stateVersion.');
-    }
+    validateRestoredV4State(
+        previousState.baseState,
+        config as unknown as ValidatedML1FeatureConfig
+    );
     if (!previousState.exhaustionState || typeof previousState.exhaustionState !== 'object') {
         throw new Error('State Integrity Error: Missing or malformed exhaustionState container.');
     }

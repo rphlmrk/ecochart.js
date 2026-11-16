@@ -91,7 +91,8 @@ export type StrategyEventType =
     | 'VAM_BUY' | 'VAM_SELL';
 
 export interface StrategyEvent {
-    readonly eventId: string; // Deterministic: `${strategyId}_${strategyVersion}_${symbol}_${timeframe}_${eventType}_${sourceBarIndex}_${confirmationBarIndex}_${discriminator}`
+    readonly eventId: string; // Deterministic: `${strategyId}_${strategyVersion}_${symbol}_${timeframe}_${eventType}_${sourceBarIndex}_${confirmationBarIndex}_${eventDiscriminator}`
+    readonly eventDiscriminator: string;
     readonly strategyId: StrategyId;
     readonly strategyVersion: string;
     readonly eventType: StrategyEventType;
@@ -106,17 +107,26 @@ export interface StrategyEvent {
     readonly observationBarIndex: number;   // === confirmationBarIndex
     readonly observationTimestamp: number;  // === confirmationTimestamp + intervalMs (exclusive close)
     readonly entryBarIndex: number;         // === confirmationBarIndex + 1
-    readonly entryTimestamp: number;        // Actual next accepted candle's open timestamp
+    readonly entryTimestamp: number | null; // Actual next accepted candle's open timestamp; null if confirmationBarIndex is the final bar (no next accepted candle yet)
 
     readonly structuralContext: Readonly<Record<string, number | string | boolean>>;
 }
 ```
 
-### Timestamp & Ordering Rules
-- `sourceTimestamp`: Open timestamp of the originating candle (for `DTFX_*_RETEST`, `sourceBarIndex` / `sourceTimestamp` is the retest candle, while creation provenance stays in `structuralContext`).
+### Deterministic `eventDiscriminator` Derivation
+- **`STRICT_CBC`:** `String(pivot.id)` (monotonically increasing 1-based pivot ID; prevents collision even when opposite pivots confirm sequentially or share bar indices).
+- **`PHL_BOS_MSS`:** `'PH'` for `PHL_BOS_BULL` / `PHL_MSS_BULL` (break of protected high), `'PL'` for `PHL_BOS_BEAR` / `PHL_MSS_BEAR` (break of protected low); combined with `eventType` and `confirmationBarIndex` at most one break per level can occur per bar.
+- **`DTFX_ZONES`:**
+  - `DTFX_DEMAND_CREATED` / `DTFX_SUPPLY_CREATED`: `String(zone.zoneId)` (monotonically increasing 1-based zone ID).
+  - `DTFX_DEMAND_RETEST` / `DTFX_SUPPLY_RETEST`: `${zone.zoneId}_R${zone.retestCount}` (distinguishes simultaneous overlapping zones and sequential retests of the same zone).
+- **`VAM_REVERSAL`:** `'BUY'` for `VAM_BUY`, `'SELL'` for `VAM_SELL` (mutually exclusive per bar via trend guard).
+
+### Timestamp, Final-Bar & Ordering Rules
+- `sourceTimestamp`: Open timestamp of the originating candle (for `DTFX_*_RETEST`, `sourceBarIndex` / `sourceTimestamp` is the retest candle, while `zoneCreatedSourceBarIndex` and `zoneCreatedConfirmationBarIndex` stay in `structuralContext`).
 - `confirmationTimestamp`: Open timestamp of the confirmation candle.
 - `observationTimestamp`: `confirmationTimestamp + intervalMs` (exact bar close when event becomes observable).
 - `entryTimestamp`: Actual next accepted candle's open timestamp (`acceptedRows[entryBarIndex].sourceTimestamp`), never `confirmationTimestamp + intervalMs` blindly across gaps.
+- **Final-Bar Semantics:** When `confirmationBarIndex === acceptedRows.length - 1` (`entryBarIndex >= acceptedRows.length`), the live teacher sets `entryTimestamp = null`. In ML-R1 v3 dataset export, any event with `entryBarIndex >= acceptedRows.length` (`excludedMissingNextOpen`) or `entryBarIndex + 180 - 1 >= acceptedRows.length` (`excludedIncompleteHorizon`) is non-actionable/censored and excluded prior to CSV emission, with exact counts reconciled in `Manifest.json`.
 - **Deterministic Sort Key:** `(confirmationBarIndex, strategyId, eventType, eventId)`.
 
 ### Teacher Edge-Case Rules (Frozen for Phase 2)
