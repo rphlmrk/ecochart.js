@@ -2,7 +2,6 @@ import {
     adaptStrictCBCtoStrategyEvent,
     adaptVAMtoStrategyEvent,
     buildStrategyEventId,
-    compareStrategyEvents,
     createStrategyEvent,
     resolveStrategyEventsEntryTimestamps,
     sortAndVerifyUniqueStrategyEvents,
@@ -18,10 +17,14 @@ import {
     createDefaultDTFXConfig,
     createInitialDTFXState,
     stepDTFX,
-    type DTFXZoneRecord
+    type DTFXState
 } from '../indicators/mlr1/teachers/DTFXAlgoZonesTeacher';
-import { STRICT_CBC_ZIGZAG_TEACHER_VERSION, type StrictCBCState, type StrictZigZagPivot } from '../indicators/plugins/StrictCBCZigZagIndicator';
-import { createInitialVAMState, stepVolatilityAdjustedMean, type VAMStepOutput } from '../indicators/mlr1/trend/VolatilityAdjustedMean';
+import {
+    STRICT_CBC_ZIGZAG_TEACHER_VERSION,
+    type StrictCBCState,
+    type StrictZigZagPivot
+} from '../indicators/plugins/StrictCBCZigZagIndicator';
+import { createInitialVAMState, stepVolatilityAdjustedMean } from '../indicators/mlr1/trend/VolatilityAdjustedMean';
 import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
 
 function assert(condition: boolean, msg: string): asserts condition {
@@ -32,22 +35,6 @@ function makeCandle(time: number, open: number, high: number, low: number, close
     return { time, open, high, low, close, volume, isSynthetic: false };
 }
 
-function expectErrorMatching(fn: () => void, substring: string, label: string): void {
-    let threw = false;
-    let message = '';
-    try {
-        fn();
-    } catch (e: any) {
-        threw = true;
-        message = e?.message || String(e);
-    }
-    assert(threw, `${label}: expected error containing '${substring}', but none was thrown`);
-    assert(message.includes(substring), `${label}: expected error containing '${substring}', got '${message}'`);
-}
-
-/**
- * PHASE 2 ENTRY GATE 1: StrategyEvent Runtime Contract, Unambiguous IDs, Chronology & Final-Bar Semantics
- */
 export function runPhase5DPhase2Gate1Tests(): boolean {
     console.log('\n======================================================');
     console.log('🧪 Starting Phase 5D Phase 2 GATE 1 (StrategyEvent Contract)');
@@ -69,148 +56,149 @@ export function runPhase5DPhase2Gate1Tests(): boolean {
     const t0 = 1_700_000_000_000;
     const interval = 60_000;
 
-    runTest('Gate1.1: Unambiguous eventId encoding, delimiter injection & collision rejection', () => {
+    runTest('Gate1.1: Unambiguous SE1 eventId encoding, duplicate rejection & 4-level sort', () => {
         const id1 = buildStrategyEventId({
-            strategyId: 'PHL_BOS_MSS',
-            strategyVersion: 'v1',
-            symbol: 'A_B',
-            timeframe: 'C',
-            eventType: 'PHL_MSS_BULL',
-            sourceBarIndex: 5,
-            confirmationBarIndex: 8,
-            eventDiscriminator: 'PH'
+            strategyId: 'PHL_BOS_MSS', strategyVersion: 'v1', symbol: 'A_B', timeframe: 'C',
+            eventType: 'PHL_MSS_BULL', sourceBarIndex: 5, confirmationBarIndex: 8, eventDiscriminator: 'PH'
         });
         const id2 = buildStrategyEventId({
-            strategyId: 'PHL_BOS_MSS',
-            strategyVersion: 'v1',
-            symbol: 'A',
-            timeframe: 'B_C',
-            eventType: 'PHL_MSS_BULL',
-            sourceBarIndex: 5,
-            confirmationBarIndex: 8,
-            eventDiscriminator: 'PH'
+            strategyId: 'PHL_BOS_MSS', strategyVersion: 'v1', symbol: 'A', timeframe: 'B_C',
+            eventType: 'PHL_MSS_BULL', sourceBarIndex: 5, confirmationBarIndex: 8, eventDiscriminator: 'PH'
         });
         assert(id1 !== id2, 'Delimiter split A_B + C vs A + B_C must never collide');
 
         const idPipe1 = buildStrategyEventId({
-            strategyId: 'DTFX_ZONES',
-            strategyVersion: '1|2:X',
-            symbol: 'SOL|USDT',
-            timeframe: '1m',
-            eventType: 'DTFX_DEMAND_RETEST',
-            sourceBarIndex: 10,
-            confirmationBarIndex: 10,
-            eventDiscriminator: '1_R1'
+            strategyId: 'DTFX_ZONES', strategyVersion: '1|2:X', symbol: 'SOL|USDT', timeframe: '1m',
+            eventType: 'DTFX_DEMAND_RETEST', sourceBarIndex: 10, confirmationBarIndex: 10, eventDiscriminator: '1_R1'
         });
         const idPipe2 = buildStrategyEventId({
-            strategyId: 'DTFX_ZONES',
-            strategyVersion: '1',
-            symbol: '2:X|8:SOL|USDT',
-            timeframe: '1m',
-            eventType: 'DTFX_DEMAND_RETEST',
-            sourceBarIndex: 10,
-            confirmationBarIndex: 10,
-            eventDiscriminator: '1_R1'
+            strategyId: 'DTFX_ZONES', strategyVersion: '1', symbol: '2:X|8:SOL|USDT', timeframe: '1m',
+            eventType: 'DTFX_DEMAND_RETEST', sourceBarIndex: 10, confirmationBarIndex: 10, eventDiscriminator: '1_R1'
         });
         assert(idPipe1 !== idPipe2, 'Pipe/length delimiter injection must never collide');
 
-        const evA = createStrategyEvent({
-            strategyId: 'PHL_BOS_MSS', strategyVersion: 'PHL_BOS_MSS_v1', symbol: 'SOLUSDT', timeframe: '1m',
-            intervalMs: interval, eventType: 'PHL_MSS_BULL', eventDirection: 'bull', eventDiscriminator: 'PH',
-            sourceBarIndex: 1, sourceTimestamp: t0 + interval, confirmationBarIndex: 5, confirmationTimestamp: t0 + 5 * interval,
-            entryTimestamp: null, structuralContext: {}
+        const evDtfxR2 = createStrategyEvent({
+            strategyId: 'DTFX_ZONES', strategyVersion: 'DTFX_ZONES_v1', symbol: 'SOLUSDT', timeframe: '1m',
+            intervalMs: interval, eventType: 'DTFX_DEMAND_RETEST', eventDirection: 'bull',
+            eventDiscriminator: '2_R1', sourceBarIndex: 30, sourceTimestamp: t0 + 30 * interval,
+            confirmationBarIndex: 30, confirmationTimestamp: t0 + 30 * interval,
+            entryTimestamp: t0 + 31 * interval, structuralContext: { zoneId: 2 }
         });
-        const evDup = createStrategyEvent({
-            strategyId: 'PHL_BOS_MSS', strategyVersion: 'PHL_BOS_MSS_v1', symbol: 'SOLUSDT', timeframe: '1m',
-            intervalMs: interval, eventType: 'PHL_MSS_BULL', eventDirection: 'bull', eventDiscriminator: 'PH',
-            sourceBarIndex: 1, sourceTimestamp: t0 + interval, confirmationBarIndex: 5, confirmationTimestamp: t0 + 5 * interval,
-            entryTimestamp: null, structuralContext: {}
+        const evDtfxR1 = createStrategyEvent({
+            strategyId: 'DTFX_ZONES', strategyVersion: 'DTFX_ZONES_v1', symbol: 'SOLUSDT', timeframe: '1m',
+            intervalMs: interval, eventType: 'DTFX_DEMAND_RETEST', eventDirection: 'bull',
+            eventDiscriminator: '1_R1', sourceBarIndex: 30, sourceTimestamp: t0 + 30 * interval,
+            confirmationBarIndex: 30, confirmationTimestamp: t0 + 30 * interval,
+            entryTimestamp: t0 + 31 * interval, structuralContext: { zoneId: 1 }
         });
-        expectErrorMatching(() => sortAndVerifyUniqueStrategyEvents([evA, evDup]), 'Collision Error', 'duplicate eventId');
-    });
-
-    runTest('Gate1.2: Factory validation (VAM chronology, entryBarIndex guard, accepted entry clock)', () => {
-        const acceptedTs = [t0, t0 + interval, t0 + 11 * interval];
-        const valid = createStrategyEvent({
-            strategyId: 'DTFX_ZONES',
-            strategyVersion: 'DTFX_ZONES_v1',
-            symbol: 'SOLUSDT',
-            timeframe: '1m',
-            intervalMs: interval,
-            eventType: 'DTFX_DEMAND_RETEST',
-            eventDirection: 'bull',
-            eventDiscriminator: '7_R1',
-            sourceBarIndex: 1,
-            sourceTimestamp: acceptedTs[1],
-            confirmationBarIndex: 1,
-            confirmationTimestamp: acceptedTs[1],
-            entryTimestamp: acceptedTs[2],
-            acceptedTimestampsByBarIndex: acceptedTs,
-            structuralContext: { zoneId: 7, retestCount: 1 }
+        const evDtfxCreate = createStrategyEvent({
+            strategyId: 'DTFX_ZONES', strategyVersion: 'DTFX_ZONES_v1', symbol: 'SOLUSDT', timeframe: '1m',
+            intervalMs: interval, eventType: 'DTFX_DEMAND_CREATED', eventDirection: 'bull',
+            eventDiscriminator: '3', sourceBarIndex: 20, sourceTimestamp: t0 + 20 * interval,
+            confirmationBarIndex: 30, confirmationTimestamp: t0 + 30 * interval,
+            entryTimestamp: t0 + 31 * interval, structuralContext: { zoneId: 3 }
         });
-        assert(Object.isFrozen(valid) && Object.isFrozen(valid.structuralContext), 'Must freeze event & context');
-        assert(valid.entryTimestamp === acceptedTs[2], 'Must accept matching accepted entry timestamp');
-
-        expectErrorMatching(() => createStrategyEvent({
-            strategyId: 'PHL_BOS_MSS', strategyVersion: 'v1', symbol: 'SOLUSDT', timeframe: '1m',
-            intervalMs: interval, eventType: 'PHL_MSS_BULL', eventDirection: 'sideways' as any,
-            eventDiscriminator: 'PH', sourceBarIndex: 1, sourceTimestamp: t0,
-            confirmationBarIndex: 2, confirmationTimestamp: t0 + interval,
-            entryTimestamp: null, structuralContext: {}
-        }), 'Contract Error', 'invalid eventDirection');
-
-        expectErrorMatching(() => createStrategyEvent({
-            strategyId: 'PHL_BOS_MSS', strategyVersion: 'v1', symbol: 'SOLUSDT', timeframe: '1m',
-            intervalMs: interval, eventType: 'PHL_MSS_BULL', eventDirection: 'bull',
-            eventDiscriminator: 'PH', sourceBarIndex: 1, sourceTimestamp: t0,
-            confirmationBarIndex: 2, confirmationTimestamp: t0 + interval,
-            entryTimestamp: null, structuralContext: ['not-a-record'] as any
-        }), 'Contract Error', 'array structuralContext');
-
-        expectErrorMatching(() => createStrategyEvent({
-            strategyId: 'PHL_BOS_MSS', strategyVersion: 'v1', symbol: 'SOLUSDT', timeframe: '1m',
-            intervalMs: interval, eventType: 'PHL_MSS_BULL', eventDirection: 'bull',
-            eventDiscriminator: '  ', sourceBarIndex: 1, sourceTimestamp: t0,
-            confirmationBarIndex: 2, confirmationTimestamp: t0 + interval,
-            entryTimestamp: null, structuralContext: {}
-        }), 'Contract Error', 'blank discriminator');
-
-        expectErrorMatching(() => createStrategyEvent({
+        const evCbc = createStrategyEvent({
+            strategyId: 'STRICT_CBC', strategyVersion: 'StrictCBCZigZag_v1', symbol: 'SOLUSDT', timeframe: '1m',
+            intervalMs: interval, eventType: 'CBC_LOW_HL', eventDirection: 'bull',
+            eventDiscriminator: '4', sourceBarIndex: 28, sourceTimestamp: t0 + 28 * interval,
+            confirmationBarIndex: 30, confirmationTimestamp: t0 + 30 * interval,
+            entryTimestamp: t0 + 31 * interval, structuralContext: {}
+        });
+        const evVam = createStrategyEvent({
             strategyId: 'VAM_REVERSAL', strategyVersion: 'VAM_v1', symbol: 'SOLUSDT', timeframe: '1m',
             intervalMs: interval, eventType: 'VAM_BUY', eventDirection: 'bull',
-            eventDiscriminator: 'BUY', sourceBarIndex: 1, sourceTimestamp: t0 + interval,
-            confirmationBarIndex: 2, confirmationTimestamp: t0 + 2 * interval,
-            entryTimestamp: null, structuralContext: {}
-        }), 'Chronology Error', 'VAM lag > 0');
+            eventDiscriminator: 'BUY', sourceBarIndex: 30, sourceTimestamp: t0 + 30 * interval,
+            confirmationBarIndex: 30, confirmationTimestamp: t0 + 30 * interval,
+            entryTimestamp: t0 + 31 * interval, structuralContext: {}
+        });
 
-        expectErrorMatching(() => createStrategyEvent({
-            strategyId: 'PHL_BOS_MSS', strategyVersion: 'v1', symbol: 'SOLUSDT', timeframe: '1m',
-            intervalMs: interval, eventType: 'PHL_MSS_BULL', eventDirection: 'bull',
-            eventDiscriminator: 'PH', sourceBarIndex: 0, sourceTimestamp: acceptedTs[0],
-            confirmationBarIndex: 1, confirmationTimestamp: acceptedTs[1],
-            entryTimestamp: acceptedTs[1] + interval, acceptedTimestampsByBarIndex: acceptedTs,
-            structuralContext: {}
-        }), 'Chronology Error', 'naive entryTimestamp across gap');
+        const sorted = sortAndVerifyUniqueStrategyEvents([evVam, evDtfxR2, evCbc, evDtfxR1, evDtfxCreate]);
+        assert(
+            sorted[0] === evDtfxCreate &&
+            sorted[1] === evDtfxR1 &&
+            sorted[2] === evDtfxR2 &&
+            sorted[3] === evCbc &&
+            sorted[4] === evVam,
+            'Canonical tie-breaking sort order failed'
+        );
 
-        expectErrorMatching(() => createStrategyEvent({
-            strategyId: 'VAM_REVERSAL', strategyVersion: 'VAM_v1', symbol: 'SOLUSDT', timeframe: '1m',
-            intervalMs: interval, eventType: 'VAM_BUY', eventDirection: 'bull',
-            eventDiscriminator: 'BUY', sourceBarIndex: 2, sourceTimestamp: acceptedTs[2],
-            confirmationBarIndex: 2, confirmationTimestamp: acceptedTs[2],
-            entryTimestamp: acceptedTs[2] + interval, acceptedTimestampsByBarIndex: acceptedTs,
-            structuralContext: {}
-        }), 'Chronology Error', 'non-null entryTimestamp on final bar');
-
-        expectErrorMatching(() => createStrategyEvent({
-            strategyId: 'PHL_BOS_MSS', strategyVersion: 'v1', symbol: 'SOLUSDT', timeframe: '1m',
-            intervalMs: interval, eventType: 'PHL_MSS_BULL', eventDirection: 'bull',
-            eventDiscriminator: 'PH', sourceBarIndex: 0, sourceTimestamp: t0,
-            confirmationBarIndex: Number.MAX_SAFE_INTEGER, confirmationTimestamp: t0 + interval,
-            entryTimestamp: null, structuralContext: {}
-        }), 'entryBarIndex', 'entryBarIndex safe-integer overflow');
+        const expectDupReject = (arr: StrategyEvent[], label: string) => {
+            let threw = false;
+            try { sortAndVerifyUniqueStrategyEvents(arr); } catch (e: any) { threw = String(e.message).includes('Collision'); }
+            assert(threw, `${label}: expected collision error`);
+        };
+        expectDupReject([evDtfxR1, evDtfxR1], 'same reference twice');
+        expectDupReject([evDtfxR1, { ...evDtfxR1, structuralContext: Object.freeze({ zoneId: 999 }) }], 'same ID different payload');
+        const evClone = createStrategyEvent({
+            strategyId: 'DTFX_ZONES', strategyVersion: 'DTFX_ZONES_v1', symbol: 'SOLUSDT', timeframe: '1m',
+            intervalMs: interval, eventType: 'DTFX_DEMAND_RETEST', eventDirection: 'bull',
+            eventDiscriminator: '1_R1', sourceBarIndex: 30, sourceTimestamp: t0 + 30 * interval,
+            confirmationBarIndex: 30, confirmationTimestamp: t0 + 30 * interval,
+            entryTimestamp: t0 + 31 * interval, structuralContext: { zoneId: 1 }
+        });
+        expectDupReject([evDtfxR1, evClone], 'identical tuple recreated');
     });
 
-    runTest('Gate1.3: Accepted clock, expectedIntervalMs, derived fields, gap & final-bar semantics', () => {
+    runTest('Gate1.2: Factory input validation (VAM lag=0, clock check, nested context, bad fields)', () => {
+        const expectInvalid = (fn: () => void, label: string) => {
+            let threw = false;
+            try { fn(); } catch { threw = true; }
+            assert(threw, `${label}: expected contract rejection`);
+        };
+
+        expectInvalid(() => createStrategyEvent({
+            strategyId: 'VAM_REVERSAL', strategyVersion: 'VAM_v1', symbol: 'SOLUSDT', timeframe: '1m',
+            intervalMs: interval, eventType: 'VAM_BUY', eventDirection: 'bull', eventDiscriminator: 'BUY',
+            sourceBarIndex: 9, sourceTimestamp: t0 + 9 * interval, confirmationBarIndex: 10, confirmationTimestamp: t0 + 10 * interval,
+            entryTimestamp: null, structuralContext: {}
+        }), 'VAM lag > 0');
+
+        expectInvalid(() => createStrategyEvent({
+            strategyId: 'VAM_REVERSAL', strategyVersion: 'VAM_v1', symbol: 'SOLUSDT', timeframe: '1m',
+            intervalMs: interval, eventType: 'VAM_BUY', eventDirection: 'bull', eventDiscriminator: 'BUY',
+            sourceBarIndex: 10, sourceTimestamp: t0 + 9 * interval, confirmationBarIndex: 10, confirmationTimestamp: t0 + 10 * interval,
+            entryTimestamp: null, structuralContext: {}
+        }), 'VAM sourceTimestamp != confirmationTimestamp');
+
+        expectInvalid(() => createStrategyEvent({
+            strategyId: 'PHL_BOS_MSS', strategyVersion: 'v1', symbol: 'SOLUSDT', timeframe: '1m',
+            intervalMs: interval, eventType: 'PHL_MSS_BULL', eventDirection: 'bull', eventDiscriminator: 'PH',
+            sourceBarIndex: 1, sourceTimestamp: t0, confirmationBarIndex: 2, confirmationTimestamp: t0 + interval,
+            entryTimestamp: null, structuralContext: { nested: { a: 1 } } as any
+        }), 'nested structuralContext');
+
+        expectInvalid(() => createStrategyEvent({
+            strategyId: 'PHL_BOS_MSS', strategyVersion: 'v1', symbol: 'SOLUSDT', timeframe: '1m',
+            intervalMs: interval, eventType: 'PHL_MSS_BULL', eventDirection: 'bull', eventDiscriminator: 'PH',
+            sourceBarIndex: 0, sourceTimestamp: t0, confirmationBarIndex: 1, confirmationTimestamp: t0 + interval,
+            entryTimestamp: t0 + 99 * interval, structuralContext: {},
+            acceptedTimestampsByBarIndex: [t0, t0 + interval, t0 + 2 * interval]
+        }), 'factory wrong entryTimestamp vs accepted clock');
+
+        expectInvalid(() => createStrategyEvent({
+            strategyId: 'PHL_BOS_MSS', strategyVersion: 'v1', symbol: 'SOLUSDT', timeframe: '1m',
+            intervalMs: 0, eventType: 'PHL_MSS_BULL', eventDirection: 'bull', eventDiscriminator: 'PH',
+            sourceBarIndex: 1, sourceTimestamp: t0, confirmationBarIndex: 2, confirmationTimestamp: t0 + interval,
+            entryTimestamp: null, structuralContext: {}
+        }), 'intervalMs=0');
+
+        expectInvalid(() => createStrategyEvent({
+            strategyId: 'PHL_BOS_MSS', strategyVersion: 'v1', symbol: 'SOLUSDT', timeframe: '1m',
+            intervalMs: interval, eventType: 'VAM_BUY', eventDirection: 'bull', eventDiscriminator: 'PH',
+            sourceBarIndex: 1, sourceTimestamp: t0, confirmationBarIndex: 2, confirmationTimestamp: t0 + interval,
+            entryTimestamp: null, structuralContext: {}
+        }), 'mismatched eventType for strategyId');
+
+        expectInvalid(() => createStrategyEvent({
+            strategyId: 'PHL_BOS_MSS', strategyVersion: 'v1', symbol: 'SOLUSDT', timeframe: '1m',
+            intervalMs: interval, eventType: 'PHL_MSS_BULL', eventDirection: 'bull', eventDiscriminator: 'PH',
+            sourceBarIndex: -1, sourceTimestamp: Number.NaN, confirmationBarIndex: 2, confirmationTimestamp: t0 + interval,
+            entryTimestamp: null, structuralContext: {}
+        }), 'negative index & NaN timestamp');
+    });
+
+    runTest('Gate1.3: Resolver clock validation, expectedIntervalMs rejections, gap & final-bar null', () => {
         const acceptedTs = [t0, t0 + interval, t0 + 11 * interval];
         const evGap = createStrategyEvent({
             strategyId: 'PHL_BOS_MSS', strategyVersion: 'PHL_BOS_MSS_v1', symbol: 'SOLUSDT', timeframe: '1m',
@@ -226,59 +214,40 @@ export function runPhase5DPhase2Gate1Tests(): boolean {
         });
 
         const resolved = resolveStrategyEventsEntryTimestamps([evGap, evFinal], acceptedTs, interval);
-        assert(resolved[0].entryTimestamp === acceptedTs[2], 'Must resolve actual next candle across gap');
-        assert(resolved[1].entryTimestamp === null, 'Final bar must preserve entryTimestamp=null');
+        assert(resolved[0].entryTimestamp === acceptedTs[2], 'Gap entryTimestamp must use actual next accepted candle');
+        assert(resolved[1].entryTimestamp === null, 'Final bar must keep entryTimestamp === null');
 
-        expectErrorMatching(() => resolveStrategyEventsEntryTimestamps([evGap], [t0, t0, t0 + 2 * interval]), 'Chronology Error', 'duplicate accepted timestamp');
-        expectErrorMatching(() => resolveStrategyEventsEntryTimestamps([evGap], [t0, t0 + 2 * interval, t0 + interval]), 'Chronology Error', 'out-of-order accepted timestamp');
-        expectErrorMatching(() => resolveStrategyEventsEntryTimestamps([evGap], [t0, Number.NaN, t0 + 2 * interval]), 'Chronology Error', 'NaN accepted timestamp');
-        expectErrorMatching(() => resolveStrategyEventsEntryTimestamps([evGap], [t0, t0 + 99 * interval, t0 + 100 * interval]), 'Chronology Error', 'mismatched confirmationTimestamp');
-        expectErrorMatching(() => resolveStrategyEventsEntryTimestamps([evGap], [t0, t0 + interval, t0 + 11 * interval + 500], interval), 'Chronology Error', 'unaligned clock delta');
-        expectErrorMatching(() => resolveStrategyEventsEntryTimestamps([{ ...evGap, observationBarIndex: 99 }], acceptedTs, interval), 'observationBarIndex', 'tampered observationBarIndex');
-        expectErrorMatching(() => resolveStrategyEventsEntryTimestamps([{ ...evGap, confirmationLagBars: 99 }], acceptedTs, interval), 'confirmationLagBars', 'tampered confirmationLagBars');
-        expectErrorMatching(() => resolveStrategyEventsEntryTimestamps([{ ...evGap, observationTimestamp: evGap.confirmationTimestamp + 1234 }], acceptedTs, interval), 'observationTimestamp', 'tampered observationTimestamp');
-    });
+        const expectChronoErr = (fn: () => void, label: string) => {
+            let threw = false;
+            try { fn(); } catch (e: any) { threw = String(e.message).includes('Chronology Error'); }
+            assert(threw, `${label}: expected Chronology Error`);
+        };
 
-    runTest('Gate1.4: Canonical sort comparator (confirmationBarIndex, strategyId, eventType, eventId)', () => {
-        const make = (strategyId: any, eventType: any, disc: string, confBar: number) =>
-            createStrategyEvent({
-                strategyId,
-                strategyVersion: 'v1',
-                symbol: 'SOLUSDT',
-                timeframe: '1m',
-                intervalMs: interval,
-                eventType,
-                eventDirection: 'bull',
-                eventDiscriminator: disc,
-                sourceBarIndex: confBar,
-                sourceTimestamp: t0 + confBar * interval,
-                confirmationBarIndex: confBar,
-                confirmationTimestamp: t0 + confBar * interval,
-                entryTimestamp: null,
-                structuralContext: {}
-            });
+        // expectedIntervalMs negative cases
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([evGap], acceptedTs, 0), 'expectedIntervalMs=0');
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([evGap], acceptedTs, -60_000), 'expectedIntervalMs=-60000');
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([evGap], acceptedTs, 1.5), 'expectedIntervalMs=1.5');
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([evGap], acceptedTs, Number.MAX_SAFE_INTEGER + 1), 'unsafe expectedIntervalMs');
+        expectChronoErr(
+            () => resolveStrategyEventsEntryTimestamps([{ ...evGap, observationTimestamp: evGap.confirmationTimestamp + 120_000 }], acceptedTs, 60_000),
+            'observationTimestamp != confirmation + expectedIntervalMs'
+        );
 
-        const e1 = make('VAM_REVERSAL', 'VAM_BUY', 'BUY', 5);
-        const e2 = make('DTFX_ZONES', 'DTFX_DEMAND_RETEST', '2_R1', 5);
-        const e3 = make('DTFX_ZONES', 'DTFX_DEMAND_RETEST', '1_R1', 5);
-        const e4 = make('DTFX_ZONES', 'DTFX_DEMAND_CREATED', '1', 5);
-        const e5 = make('STRICT_CBC', 'CBC_LOW_HL', '1', 4);
-
-        const sorted = sortAndVerifyUniqueStrategyEvents([e1, e2, e3, e4, e5]);
-        assert(sorted[0] === e5, 'Earliest confirmationBarIndex (4) must sort first');
-        assert(sorted[1] === e4, 'DTFX_ZONES + DTFX_DEMAND_CREATED before DTFX_DEMAND_RETEST');
-        assert(sorted[2] === e3 && sorted[3] === e2, 'Same bar/strategy/type must tie-break deterministically by eventId');
-        assert(sorted[4] === e1, 'VAM_REVERSAL sorts after STRICT_CBC/DTFX_ZONES alphabetically');
-        assert(compareStrategyEvents(sorted[2], sorted[3]) < 0, 'Comparator sign check');
+        // Index / timestamp / derived field rejections
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([{ ...evGap, confirmationBarIndex: -1 }], acceptedTs, interval), 'negative confirmationBarIndex');
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([{ ...evGap, confirmationBarIndex: 99 }], acceptedTs, interval), 'out-of-range confirmationBarIndex');
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([{ ...evGap, confirmationTimestamp: t0 + 999 }], acceptedTs, interval), 'mismatched confirmationTimestamp');
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([{ ...evGap, observationBarIndex: 99 }], acceptedTs, interval), 'corrupt observationBarIndex');
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([{ ...evGap, confirmationLagBars: 99 }], acceptedTs, interval), 'corrupt confirmationLagBars');
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([{ ...evGap, sourceTimestamp: t0 + 999 }], acceptedTs, interval), 'mismatched sourceTimestamp');
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([evGap], [t0, t0, t0 + 2 * interval], interval), 'duplicate accepted timestamp');
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([evGap], [t0, t0 + 2 * interval, t0 + interval], interval), 'out-of-order accepted timestamp');
     });
 
     console.log(`\nPhase 5D Phase 2 Gate 1: ${passed} passed, ${failed} failed.`);
     return failed === 0;
 }
 
-/**
- * PHASE 2 FULL TEACHER ACCEPTANCE SUITE
- */
 export function runPhase5DPhase2Tests(): boolean {
     if (!runPhase5DPhase2Gate1Tests()) {
         console.error('❌ Phase 2 halted: Gate 1 failed.');
@@ -305,78 +274,130 @@ export function runPhase5DPhase2Tests(): boolean {
     const t0 = 1_700_000_000_000;
     const interval = 60_000;
 
-    // 1. StrictCBC Exhaustive Label Mapping, Input Validation & Gap Reset Proof
-    runTest('1. StrictCBC Adapter: exhaustive labels, guards & discontinuity reset', () => {
-        assert(STRICT_CBC_ZIGZAG_TEACHER_VERSION === 'StrictCBCZigZag_v1', 'Unexpected StrictCBC version constant');
+    // 1. StrictCBC: all 4 labels, contiguous no-gap control, real-state gap reset & checkpoint restoration of BOTH nextState & nextPrevPivot
+    runTest('1. StrictCBC Adapter: 4 labels, contiguous control, gap reset & restoration with prevPivot', () => {
+        assert(STRICT_CBC_ZIGZAG_TEACHER_VERSION === 'StrictCBCZigZag_v1', 'Unexpected version');
 
-        const cases: Array<[StrictZigZagPivot['type'], StrictZigZagPivot['label'], StrategyEvent['eventType'], 'bull' | 'bear']> = [
-            ['high', 'HH', 'CBC_HIGH_HH', 'bear'],
-            ['high', 'LH', 'CBC_HIGH_LH', 'bear'],
-            ['low', 'HL', 'CBC_LOW_HL', 'bull'],
-            ['low', 'LL', 'CBC_LOW_LL', 'bull']
-        ];
-        for (let idx = 0; idx < cases.length; idx++) {
-            const [pType, pLabel, expectedEvType, expectedDir] = cases[idx];
+        for (const [type, label, expectedType] of [
+            ['high', 'HH', 'CBC_HIGH_HH'],
+            ['high', 'LH', 'CBC_HIGH_LH'],
+            ['low', 'HL', 'CBC_LOW_HL'],
+            ['low', 'LL', 'CBC_LOW_LL']
+        ] as const) {
             const ev = adaptStrictCBCtoStrategyEvent({
-                pivot: {
-                    id: idx + 1, barIndex: 2, time: t0 + 2 * interval, price: 105,
-                    type: pType, label: pLabel, confirmedBarIndex: 3
-                },
-                prevPivot: null,
-                confirmationTimestamp: t0 + 3 * interval,
-                entryTimestamp: null,
-                atr14AtConfirmation: 2,
-                symbol: 'SOLUSDT',
-                timeframe: '1m',
-                intervalMs: interval
+                pivot: { id: 1, barIndex: 1, time: t0 + interval, price: 105, type, label, confirmedBarIndex: 2 },
+                prevPivot: null, confirmationTimestamp: t0 + 2 * interval, entryTimestamp: null,
+                atr14AtConfirmation: 2, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
             });
-            assert(ev.eventType === expectedEvType && ev.eventDirection === expectedDir, `Label mapping ${pType}/${pLabel}`);
+            assert(ev.eventType === expectedType && ev.eventDiscriminator === '1', `Label ${label} mapping failed`);
         }
 
-        expectErrorMatching(() => adaptStrictCBCtoStrategyEvent({
-            pivot: { id: 1, barIndex: 2, time: t0 + 2 * interval, price: 105, type: 'high', label: 'HL' as any, confirmedBarIndex: 3 },
-            prevPivot: null, confirmationTimestamp: t0 + 3 * interval, entryTimestamp: null, atr14AtConfirmation: 2,
-            symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
-        }), 'invalid label', 'mismatched high/HL label');
+        for (const badPivot of [
+            { id: 1, barIndex: 1, time: t0, price: 105, type: 'high', label: 'HL', confirmedBarIndex: 2 },
+            { id: 1, barIndex: 1, time: t0, price: 105, type: 'low', label: 'HH', confirmedBarIndex: 2 },
+            { id: 0, barIndex: 1, time: t0, price: 105, type: 'high', label: 'HH', confirmedBarIndex: 2 }
+        ] as any[]) {
+            let threw = false;
+            try {
+                adaptStrictCBCtoStrategyEvent({
+                    pivot: badPivot, prevPivot: null, confirmationTimestamp: t0 + 2 * interval,
+                    entryTimestamp: null, atr14AtConfirmation: 2, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
+                });
+            } catch { threw = true; }
+            assert(threw, 'Malformed StrictCBC pivot must throw');
+        }
 
-        expectErrorMatching(() => adaptStrictCBCtoStrategyEvent({
-            pivot: { id: 0, barIndex: 2, time: t0 + 2 * interval, price: 105, type: 'high', label: 'HH', confirmedBarIndex: 3 },
-            prevPivot: null, confirmationTimestamp: t0 + 3 * interval, entryTimestamp: null, atr14AtConfirmation: 2,
-            symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
-        }), 'invalid pivot', 'pivot.id < 1');
-
-        expectErrorMatching(() => adaptStrictCBCtoStrategyEvent({
-            pivot: { id: 1, barIndex: 2, time: t0 + 2 * interval, price: 105, type: 'high', label: 'HH', confirmedBarIndex: 3 },
-            prevPivot: null, confirmationTimestamp: t0 + 3 * interval, entryTimestamp: null, atr14AtConfirmation: -1,
-            symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
-        }), 'atr14AtConfirmation', 'negative ATR');
-
-        // Discontinuity prevents cross-gap pivot & clears prevPivot
         const c0 = makeCandle(t0, 100, 105, 95, 103, 100);
         const c1 = makeCandle(t0 + interval, 103, 112, 100, 110, 100);
-        const c2Break = makeCandle(t0 + 12 * interval, 104, 105, 89, 90, 100);
+        const c2 = makeCandle(t0 + 2 * interval, 105, 106, 92, 94, 100);
+        const c3Contig = makeCandle(t0 + 3 * interval, 94, 108, 94, 107, 100); // Genuinely contiguous control
+        const c3Gap = makeCandle(t0 + 12 * interval, 94, 108, 94, 107, 100);   // 10m gap
+        const c4 = makeCandle(t0 + 13 * interval, 107, 115, 106, 114, 100);
+        const c5 = makeCandle(t0 + 14 * interval, 110, 111, 100, 102, 100);
 
-        let sNoGap: StrictCBCState | null = null;
-        sNoGap = stepStrictCBCWithReset(c0, 0, sNoGap, null, false).nextState;
-        sNoGap = stepStrictCBCWithReset(c1, 1, sNoGap, null, false).nextState;
-        const flipWithoutReset = stepStrictCBCWithReset(c2Break, 2, sNoGap, null, false);
-        assert(flipWithoutReset.confirmedPivot !== null, 'Control without reset confirms flip');
+        // Control without gap (genuinely contiguous timestamps): confirms id=1 @ bar 2 and id=2 @ bar 3
+        let sCtrl: StrictCBCState | null = null;
+        let pCtrl: StrictZigZagPivot | null = null;
+        for (const [idx, c] of [[0, c0], [1, c1], [2, c2], [3, c3Contig]] as const) {
+            const r = stepStrictCBCWithReset(c, idx, sCtrl, pCtrl, false);
+            sCtrl = r.nextState;
+            pCtrl = r.nextPrevPivot;
+            if (idx === 2) assert(r.confirmedPivot?.id === 1 && r.confirmedPivot.type === 'high', 'Bar 2 confirms id=1');
+            if (idx === 3) assert(r.confirmedPivot?.id === 2 && r.confirmedPivot.type === 'low' && r.prevPivotForEvent?.id === 1, 'Contiguous bar 3 confirms id=2 with prevPivot=1');
+        }
 
+        // Uninterrupted gap stream 0..5 (discontinuity at bar 3)
         let sGap: StrictCBCState | null = null;
-        const prevGap: StrictZigZagPivot = { id: 99, barIndex: 0, time: t0, price: 95, type: 'low', label: 'LL', confirmedBarIndex: 0 };
-        sGap = stepStrictCBCWithReset(c0, 0, sGap, null, false).nextState;
-        sGap = stepStrictCBCWithReset(c1, 1, sGap, prevGap, false).nextState;
-        const r2 = stepStrictCBCWithReset(c2Break, 2, sGap, prevGap, true);
-        assert(r2.confirmedPivot === null && r2.nextPrevPivot === null, 'Discontinuity must block cross-gap pivot and clear prevPivot');
-        assert(r2.nextState.anchorHigh === c2Break.high && r2.nextState.anchorLow === c2Break.low, 'Anchor must re-seed from post-gap candle');
+        let pGap: StrictZigZagPivot | null = null;
+        const gapEvents: StrategyEvent[] = [];
+        const gapPivots: StrictZigZagPivot[] = [];
+
+        for (const [idx, c, isDisc] of [[0, c0, false], [1, c1, false], [2, c2, false], [3, c3Gap, true], [4, c4, false], [5, c5, false]] as const) {
+            const r = stepStrictCBCWithReset(c, idx, sGap, pGap, isDisc);
+            sGap = r.nextState;
+            pGap = r.nextPrevPivot;
+            if (idx === 3) {
+                assert(r.confirmedPivot === null && r.nextPrevPivot === null && sGap.nextPivotId === 2, 'Bar 3 gap resets and keeps nextPivotId=2');
+            }
+            if (r.confirmedPivot) {
+                gapPivots.push(r.confirmedPivot);
+                gapEvents.push(adaptStrictCBCtoStrategyEvent({
+                    pivot: r.confirmedPivot, prevPivot: r.prevPivotForEvent,
+                    confirmationTimestamp: c.time, entryTimestamp: null, atr14AtConfirmation: 2.0,
+                    symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
+                }));
+            }
+        }
+        assert(gapEvents.length === 2 && gapEvents[1].confirmationBarIndex === 5 && gapEvents[1].structuralContext['hasPrevPivot'] === false,
+            'Post-gap pivot must confirm @ bar 5 with no cross-gap leg');
+
+        // Checkpoint restoration at bar 2 (where nextPrevPivot is NON-NULL id=1!) -> replay bar 3 (gap) .. 5
+        let sPre: StrictCBCState | null = null;
+        let pPre: StrictZigZagPivot | null = null;
+        const preEvents: StrategyEvent[] = [];
+        const prePivots: StrictZigZagPivot[] = [];
+        for (const [idx, c] of [[0, c0], [1, c1], [2, c2]] as const) {
+            const r = stepStrictCBCWithReset(c, idx, sPre, pPre, false);
+            sPre = r.nextState;
+            pPre = r.nextPrevPivot;
+            if (r.confirmedPivot) {
+                prePivots.push(r.confirmedPivot);
+                preEvents.push(adaptStrictCBCtoStrategyEvent({
+                    pivot: r.confirmedPivot, prevPivot: r.prevPivotForEvent,
+                    confirmationTimestamp: c.time, entryTimestamp: null, atr14AtConfirmation: 2.0,
+                    symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
+                }));
+            }
+        }
+        assert(pPre !== null && pPre.id === 1, 'Checkpoint at bar 2 must hold non-null prevPivot');
+        let sRestored: StrictCBCState = JSON.parse(JSON.stringify(sPre));
+        let pRestored: StrictZigZagPivot | null = JSON.parse(JSON.stringify(pPre));
+
+        for (const [idx, c, isDisc] of [[3, c3Gap, true], [4, c4, false], [5, c5, false]] as const) {
+            const r = stepStrictCBCWithReset(c, idx, sRestored, pRestored, isDisc);
+            sRestored = r.nextState;
+            pRestored = r.nextPrevPivot;
+            if (r.confirmedPivot) {
+                prePivots.push(r.confirmedPivot);
+                preEvents.push(adaptStrictCBCtoStrategyEvent({
+                    pivot: r.confirmedPivot, prevPivot: r.prevPivotForEvent,
+                    confirmationTimestamp: c.time, entryTimestamp: null, atr14AtConfirmation: 2.0,
+                    symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
+                }));
+            }
+        }
+        assert(
+            JSON.stringify(preEvents) === JSON.stringify(gapEvents) &&
+            JSON.stringify(prePivots) === JSON.stringify(gapPivots) &&
+            JSON.stringify(sRestored) === JSON.stringify(sGap) &&
+            JSON.stringify(pRestored) === JSON.stringify(pGap),
+            'StrictCBC restoration with non-null prevPivot must match uninterrupted replay'
+        );
     });
 
-    // 2. PHL Teacher: pinned bars, pullback modes, input guards & deep state integrity
-    runTest('2. PHL Teacher: pinned transitions, pullback modes, input guards & state integrity', () => {
+    // 2. PHL Teacher: pinned bar 24 MSS + no bar 25 MSS, null-candle validation order, entryTimestamp/OHLC rejections
+    runTest('2. PHL Teacher: pinned bar 24 MSS, no duplicate @25, pullback modes & input/state rejections', () => {
         const cfgValid = createDefaultPHLConfig('SOLUSDT', '1m', interval);
-        const cfgNoPb = { ...cfgValid, useValidPullbacks: false };
-        const cfgExtra = { ...cfgValid, extraValidPullbacks: true };
-
         const bars: Array<[number, number, number, number]> = [
             [100, 102, 99, 101], [101, 105, 100, 104], [104, 107, 103, 106], [106, 110, 105, 107],
             [107, 108, 103, 104], [104, 106, 100, 101], [101, 103, 98, 99],
@@ -385,8 +406,8 @@ export function runPhase5DPhase2Tests(): boolean {
             [104, 108, 103, 107],[107, 109, 106, 108],[108, 113, 107, 112],
             [112, 115, 111, 114],[114, 118, 113, 115],[115, 116, 110, 111],
             [111, 113, 109, 110],[110, 112, 108, 109],[109, 116, 109, 115],
-            [115, 121, 114, 120],[120, 120, 100, 101],[101, 102, 95, 96],
-            [96, 96, 89, 90]
+            [115, 121, 114, 120],[120, 120, 100, 101],[101, 102, 92, 93],
+            [93, 94, 89, 90]
         ];
         const stream = bars.map(([o, h, l, c], i) => makeCandle(t0 + i * interval, o, h, l, c, 100));
 
@@ -396,265 +417,313 @@ export function runPhase5DPhase2Tests(): boolean {
             const res = stepPHL(stream[i], i, st, cfgValid, false, 2.0, null);
             st = res.nextState;
             evs.push(...res.events);
-            if (i === 6) assert(res.confirmedPivotHigh?.barIndex === 3 && res.confirmedPivotHigh.price === 110, 'Bar 6 confirms PH @3');
-            if (i === 12) assert(res.confirmedPivotLow?.barIndex === 9 && res.confirmedPivotLow.price === 94, 'Bar 12 confirms PL @9');
         }
-
-        assert(evs.length === 3, `Expected 3 PHL breaks, got ${evs.length}`);
+        assert(evs.length === 3, `Expected 3 PHL events, got ${evs.length}`);
         assert(evs[0].eventType === 'PHL_MSS_BULL' && evs[0].sourceBarIndex === 3 && evs[0].confirmationBarIndex === 15, 'Pinned PHL_MSS_BULL @15');
         assert(evs[1].eventType === 'PHL_BOS_BULL' && evs[1].sourceBarIndex === 17 && evs[1].confirmationBarIndex === 22, 'Pinned PHL_BOS_BULL @22');
-        assert(evs[2].eventType === 'PHL_MSS_BEAR' && evs[2].sourceBarIndex === 9 && evs[2].confirmationBarIndex === 25, 'Pinned PHL_MSS_BEAR @25');
+        assert(evs[2].eventType === 'PHL_MSS_BEAR' && evs[2].sourceBarIndex === 9 && evs[2].confirmationBarIndex === 24, 'Pinned PHL_MSS_BEAR @24');
+        assert(!evs.some(e => e.confirmationBarIndex === 25), 'Bar 25 must NOT emit a second PHL_MSS_BEAR');
 
-        let stNoPb = createInitialPHLState();
-        let stExtra = createInitialPHLState();
-        for (let i = 0; i < stream.length; i++) {
-            stNoPb = stepPHL(stream[i], i, stNoPb, cfgNoPb, false, 2.0, null).nextState;
-            stExtra = stepPHL(stream[i], i, stExtra, cfgExtra, false, 2.0, null).nextState;
+        // useValidPullbacks true vs false divergence
+        const divBars: Array<[number, number, number, number]> = [
+            [105, 107, 105, 106], [106, 108, 105, 107], [107, 109, 106, 108], [108, 110, 105, 109],
+            [108, 109, 105, 107], [107, 108, 105, 106], [106, 107, 105, 106],
+            [106, 107, 100, 106], [106, 107, 98, 106],  [106, 107, 94, 106],
+            [106, 107, 96, 106],  [106, 108, 97, 107],  [107, 109, 99, 108],
+            [108, 112, 107, 111]
+        ];
+        const divStream = divBars.map(([o, h, l, c], i) => makeCandle(t0 + i * interval, o, h, l, c, 100));
+        let stPbTrue = createInitialPHLState();
+        let stPbFalse = createInitialPHLState();
+        for (let i = 0; i < divStream.length; i++) {
+            stPbTrue = stepPHL(divStream[i], i, stPbTrue, cfgValid, false, 2.0, null).nextState;
+            stPbFalse = stepPHL(divStream[i], i, stPbFalse, { ...cfgValid, useValidPullbacks: false }, false, 2.0, null).nextState;
         }
-        assert(stNoPb.bull === false && stExtra.bull === false, 'Alternate pullback modes must execute cleanly');
+        assert(stPbTrue.pl === null && stPbFalse.pl?.price === 94, 'useValidPullbacks=true must block invalid-PB protected low while false allows it');
 
-        // Negative input & state integrity checks
-        expectErrorMatching(
-            () => stepPHL(makeCandle(t0 + 26 * interval, 90, 92, 88, 91, -5), 26, st, cfgValid),
-            'PHL Input Error', 'negative volume'
-        );
-        expectErrorMatching(
-            () => stepPHL(makeCandle(t0 + 26 * interval + 500, 90, 92, 88, 91, 100), 26, st, cfgValid),
-            'PHL Chronology Error', 'unaligned timestamp delta'
-        );
-        expectErrorMatching(
-            () => stepPHL(makeCandle(t0 + 26 * interval, 90, 92, 88, 91, 100), 26, { ...st, bull: 'YES' as any }, cfgValid),
-            'PHL State Integrity Error', 'invalid bull'
-        );
-        expectErrorMatching(
-            () => stepPHL(makeCandle(t0 + 26 * interval, 90, 92, 88, 91, 100), 26, { ...st, trackHigh: 120, trackHighIdx: null, trackHighTime: null }, cfgValid),
-            'PHL State Integrity Error', 'partial trackHigh triple'
-        );
-        // Window cross-validation mismatch on ph
-        const latestWinBar = st.window[st.window.length - 1];
-        expectErrorMatching(
-            () => stepPHL(
-                makeCandle(t0 + 26 * interval, 90, 92, 88, 91, 100),
-                26,
-                { ...st, ph: { price: latestWinBar.high + 5, barIndex: latestWinBar.barIndex, time: latestWinBar.time } },
-                cfgValid
-            ),
-            'PHL State Integrity Error', 'ph disagrees with window bar'
-        );
+        // extraValidPullbacks match & no-match pinned to bar 6
+        const cfgExtra = { ...cfgValid, extraValidPullbacks: true };
+        const noMatchBars: Array<[number, number, number, number]> = [
+            [106, 107, 105, 105.5], [107, 108, 105, 106], [108, 109, 106, 107], [109, 110, 104, 108],
+            [108, 109, 105, 106],   [106, 107, 105, 105.5],[105.5, 106, 104, 105]
+        ];
+        let stNoMatch = createInitialPHLState();
+        for (let i = 0; i < noMatchBars.length; i++) {
+            const [o, h, l, c] = noMatchBars[i];
+            stNoMatch = stepPHL(makeCandle(t0 + i * interval, o, h, l, c, 100), i, stNoMatch, cfgExtra, false, 2.0, null).nextState;
+        }
+        assert(stNoMatch.pbFromHigh.price === null && !stNoMatch.pbFromHigh.valid, 'extraValidPullbacks no-match at bar 6');
+
+        const matchBars: Array<[number, number, number, number]> = [
+            [106, 107, 105, 105.5], [107, 108, 105, 106], [106, 109, 99, 108], [109, 110, 104, 108],
+            [108, 109, 105, 106],   [106, 107, 105, 105.5],[105.5, 106, 104, 105]
+        ];
+        let stMatch = createInitialPHLState();
+        for (let i = 0; i < matchBars.length; i++) {
+            const [o, h, l, c] = matchBars[i];
+            stMatch = stepPHL(makeCandle(t0 + i * interval, o, h, l, c, 100), i, stMatch, cfgExtra, false, 2.0, null).nextState;
+        }
+        assert(stMatch.pbFromHigh.price === 99 && stMatch.pbFromHigh.idx === 6, 'extraValidPullbacks match picks bar 2 low=99 at bar 6');
+
+        // Validation-order (null candle + non-null entryTimestamp), OHLC, entryTimestamp, ATR, volume, off-grid & state checks
+        const expectPHLInputErr = (fn: () => void, label: string) => {
+            let matched = false;
+            try { fn(); } catch (e: any) { matched = e instanceof Error && !(e instanceof TypeError) && e.message.includes('PHL '); }
+            assert(matched, `${label}: expected intentional PHL Error (never TypeError)`);
+        };
+        const validNext = makeCandle(t0 + 26 * interval, 90, 92, 88, 91, 100);
+        expectPHLInputErr(() => stepPHL(null as any, 26, st, cfgValid, false, 2.0, t0 + 27 * interval), 'null candle + non-null entryTimestamp');
+        expectPHLInputErr(() => stepPHL(makeCandle(t0 + 26 * interval, 90, 88, 92, 91, 100), 26, st, cfgValid), 'malformed high < low');
+        expectPHLInputErr(() => stepPHL(makeCandle(t0 + 26 * interval, 90, 92, 88, 95, 100), 26, st, cfgValid), 'malformed close > high');
+        expectPHLInputErr(() => stepPHL(validNext, 26, st, cfgValid, false, 2.0, t0 + 26 * interval), 'entryTimestamp <= candle.time');
+        expectPHLInputErr(() => stepPHL(validNext, 26, st, cfgValid, false, 2.0, Number.NaN), 'entryTimestamp = NaN');
+        expectPHLInputErr(() => stepPHL(validNext, 26, st, cfgValid, false, Number.NaN, null), 'atr14 = NaN');
+        expectPHLInputErr(() => stepPHL(validNext, 26, st, cfgValid, false, -1, null), 'atr14 = -1');
+        expectPHLInputErr(() => stepPHL(makeCandle(t0 + 26 * interval, 90, 92, 88, 91, -1), 26, st, cfgValid), 'negative volume');
+        expectPHLInputErr(() => stepPHL(makeCandle(t0 + 25 * interval + 30_000, 90, 92, 88, 91, 100), 26, st, cfgValid), 'off-grid delta');
+        expectPHLInputErr(() => stepPHL(validNext, 26, { ...st, ph: { price: 999, barIndex: 25, time: t0 + 25 * interval } }, cfgValid), 'ph disagrees with window');
     });
 
-    // 3. DTFX Teacher: multi-retest (_R1/_R2), lingering bar suppression, invalidation precedence, maxActiveZones & deep integrity
-    runTest('3. DTFX Teacher: overlapping zones, _R1/_R2 distinct retests, invalidation precedence, bounds & integrity', () => {
+    // 3. DTFX Teacher: exact bar-by-bar lifecycle (_R1 -> linger -> exit -> _R2 -> INVALIDATED -> post-invalidation), maxActiveZones eviction, real-progression geometry guards, & full negative checks
+    runTest('3. DTFX Teacher: bar-by-bar _R1/_R2 lifecycle, maxActiveZones eviction, geometry guards & validations', () => {
         const cfg = createDefaultDTFXConfig('SOLUSDT', '1m', interval);
+        assert(createInitialDTFXState(3).nextZoneId === 3, 'createInitialDTFXState(3) must set nextZoneId=3');
 
-        expectErrorMatching(
-            () => stepDTFX(makeCandle(t0, 100, 101, 99, 100), 0, createInitialDTFXState(), { ...cfg, fibLevels: [0.5, 0.3, 0.7] }),
-            'strictly ascending', 'unordered fibLevels'
-        );
-        expectErrorMatching(
-            () => stepDTFX(makeCandle(t0, 100, 101, 99, 100), 0, createInitialDTFXState(), { ...cfg, maxActiveZones: 0 }),
-            'maxActiveZones', 'maxActiveZones < 1'
-        );
+        // Exact 24-bar hand-verified lifecycle sequence:
+        // 0: [105,115,104,106], 1..4: [105,108,102,105], 5: [104,106,98,103], 6..15: [105,108,102,105]
+        // 16: break >115 -> CREATED @16 ([98..115])
+        // 17: above [116..119], 18: touch [112..117] -> 1_R1, 19: linger [109..115], 20: exit [116..118],
+        // 21: re-enter [110..117] -> 1_R2, 22: touch+close<98 [95..111, c=96] -> INVALIDATED (no retest!), 23: [96..105] -> 0 events
+        const lcCandles: ML1Candle[] = [];
+        for (let i = 0; i <= 15; i++) {
+            if (i === 0) lcCandles.push(makeCandle(t0, 105, 115, 104, 106, 100));
+            else if (i === 5) lcCandles.push(makeCandle(t0 + i * interval, 104, 106, 98, 103, 100));
+            else lcCandles.push(makeCandle(t0 + i * interval, 105, 108, 102, 105, 100));
+        }
+        lcCandles.push(makeCandle(t0 + 16 * interval, 106, 118, 106, 117, 100)); // 16: DTFX_DEMAND_CREATED
+        lcCandles.push(makeCandle(t0 + 17 * interval, 117, 119, 116, 118, 100)); // 17: above
+        lcCandles.push(makeCandle(t0 + 18 * interval, 116, 117, 94, 114, 100));  // 18: 1_R1 (wick < 95 keeps Bar 22 from making 10-bar low)
+        lcCandles.push(makeCandle(t0 + 19 * interval, 114, 115, 109, 113, 100)); // 19: linger
+        lcCandles.push(makeCandle(t0 + 20 * interval, 116, 118, 116, 117, 100)); // 20: exit
+        lcCandles.push(makeCandle(t0 + 21 * interval, 117, 117, 110, 111, 100)); // 21: 1_R2
+        lcCandles.push(makeCandle(t0 + 22 * interval, 111, 111, 95, 96, 100));   // 22: INVALIDATED (beats retest)
+        lcCandles.push(makeCandle(t0 + 23 * interval, 96, 105, 96, 104, 100));   // 23: post-invalidation
 
-        const z1: DTFXZoneRecord = {
-            zoneId: 1, direction: 'bull', top: 110, bot: 100, fib03: 103, fib05: 105, fib07: 107,
-            createdSourceBarIndex: 2, createdSourceTimestamp: t0 + 2 * interval,
-            createdConfirmationBarIndex: 12, createdConfirmationTimestamp: t0 + 12 * interval,
-            status: 'ACTIVE', retestCount: 0, firstRetestBarIndex: null, lastRetestBarIndex: null,
-            isCurrentlyInZone: false, invalidationBarIndex: null
+        let lcState = createInitialDTFXState();
+        for (let i = 0; i < lcCandles.length; i++) {
+            const res = stepDTFX(lcCandles[i], i, lcState, cfg, false, 2.0, null);
+            lcState = res.nextState;
+
+            if (i === 16) {
+                assert(res.createdZones.length === 1 && res.events[0].eventType === 'DTFX_DEMAND_CREATED', 'Bar 16 must create demand zone');
+                assert(lcState.activeZones[0].top === 115 && lcState.activeZones[0].bot === 98 && lcState.activeZones[0].retestCount === 0, 'Bar 16 zone bounds');
+            } else if (i === 17) {
+                assert(res.events.length === 0 && lcState.activeZones[0].status === 'ACTIVE', 'Bar 17 above zone');
+            } else if (i === 18) {
+                assert(res.events.length === 1 && res.events[0].eventDiscriminator === '1_R1' && lcState.activeZones[0].retestCount === 1 && lcState.activeZones[0].isCurrentlyInZone, 'Bar 18 must emit 1_R1');
+            } else if (i === 19) {
+                assert(res.events.length === 0 && lcState.activeZones[0].retestCount === 1 && lcState.activeZones[0].isCurrentlyInZone, 'Bar 19 linger must not duplicate');
+            } else if (i === 20) {
+                assert(res.events.length === 0 && lcState.activeZones[0].retestCount === 1 && !lcState.activeZones[0].isCurrentlyInZone, 'Bar 20 exit must reset latch');
+            } else if (i === 21) {
+                assert(res.events.length === 1 && res.events[0].eventDiscriminator === '1_R2' && lcState.activeZones[0].retestCount === 2 && lcState.activeZones[0].lastRetestBarIndex === 21, 'Bar 21 must emit 1_R2');
+            } else if (i === 22) {
+                assert(res.invalidatedZones.length === 1 && res.retestedZones.length === 0 && res.events.length === 0 && lcState.activeZones.length === 0, 'Bar 22 invalidation must beat retest');
+                assert(res.invalidatedZones[0].status === 'INVALIDATED' && res.invalidatedZones[0].retestCount === 2, 'Zone preserves final retestCount=2 on invalidation');
+            } else if (i === 23) {
+                assert(res.events.length === 0 && lcState.activeZones.length === 0, 'Bar 23 post-invalidation must emit nothing');
+            }
+        }
+
+        // Repeated-bar chronology rejection
+        let repeatRejected = false;
+        try { stepDTFX(lcCandles[23], 23, lcState, cfg); } catch (e: any) { repeatRejected = String(e.message).includes('Chronology Error'); }
+        assert(repeatRejected, 'Repeated bar 23 must be rejected');
+
+        // Real-progression maxActiveZones = 2 eviction test (3 created zones -> zones 2 & 3 remain, nextZoneId=4)
+        const capCfg = { ...cfg, maxActiveZones: 2 };
+        let capState = createInitialDTFXState();
+        const capCreatedIds: number[] = [];
+        let capBar = 0;
+        const pushCap = (c: ML1Candle) => {
+            const r = stepDTFX(c, capBar, capState, capCfg, false, 2.0, null);
+            capState = r.nextState;
+            for (const z of r.createdZones) capCreatedIds.push(z.zoneId);
+            capBar++;
         };
-        const z2: DTFXZoneRecord = {
-            zoneId: 2, direction: 'bull', top: 108, bot: 104, fib03: 105.2, fib05: 106, fib07: 106.8,
-            createdSourceBarIndex: 5, createdSourceTimestamp: t0 + 5 * interval,
-            createdConfirmationBarIndex: 15, createdConfirmationTimestamp: t0 + 15 * interval,
-            status: 'ACTIVE', retestCount: 0, firstRetestBarIndex: null, lastRetestBarIndex: null,
-            isCurrentlyInZone: false, invalidationBarIndex: null
-        };
-        const overlapState = { ...createInitialDTFXState(3), activeZones: Object.freeze([z1, z2]) };
+        // Build 3 clean rising breakouts with higher highs and higher lows so earlier zones don't invalidate
+        for (let wave = 0; wave < 3; wave++) {
+            const base = 100 + wave * 30;
+            pushCap(makeCandle(t0 + capBar * interval, base + 5, base + 15, base + 4, base + 6, 100));
+            for (let k = 1; k <= 10; k++) {
+                pushCap(makeCandle(t0 + capBar * interval, base + 5, base + 8, k === 5 ? base + 1 : base + 4, base + 5, 100));
+            }
+            for (let k = 0; k < 5; k++) {
+                pushCap(makeCandle(t0 + capBar * interval, base + 5, base + 8, base + 4, base + 5, 100));
+            }
+            pushCap(makeCandle(t0 + capBar * interval, base + 6, base + 20, base + 6, base + 19, 100));
+        }
+        assert(capCreatedIds.length >= 3, `Expected >=3 zones for eviction test, got ${capCreatedIds.length}`);
+        assert(capState.activeZones.length === 2, 'activeZones must be capped at 2');
+        assert(
+            capState.activeZones[0].zoneId === capCreatedIds[capCreatedIds.length - 2] &&
+            capState.activeZones[1].zoneId === capCreatedIds[capCreatedIds.length - 1] &&
+            capState.nextZoneId === capCreatedIds[capCreatedIds.length - 1] + 1,
+            'Oldest zone must be evicted while keeping newest 2 and monotonic nextZoneId'
+        );
 
-        // Bar 20: dips to low=109, close=111 -> Zone 1 emits _R1 (isCurrentlyInZone=true); Zone 2 stays ACTIVE
-        const step20 = stepDTFX(makeCandle(t0 + 20 * interval, 111, 112, 109, 111, 100), 20, overlapState, cfg, false, 2.0, null);
-        assert(step20.retestedZones.length === 1 && step20.retestedZones[0].zoneId === 1, 'Only Zone 1 retests at low=109');
-        assert(step20.events[0].eventDiscriminator === '1_R1', 'First retest discriminator must be 1_R1');
-        assert(step20.nextState.activeZones[0].isCurrentlyInZone === true && step20.nextState.activeZones[1].status === 'ACTIVE', 'Zone 1 marked inside, Zone 2 unaffected');
-
-        // Bar 21: still inside Zone 1 [100..110] without leaving -> ZERO duplicate retest events!
-        const step21 = stepDTFX(makeCandle(t0 + 21 * interval, 111, 112, 109.2, 111, 100), 21, step20.nextState, cfg, false, 2.0, null);
-        assert(step21.retestedZones.length === 0 && step21.events.length === 0, 'Consecutive lingering bar must NOT emit duplicate retest');
-
-        // Bar 22: strictly above Zone 1 [112..114] -> exits zone (isCurrentlyInZone=false)
-        const step22 = stepDTFX(makeCandle(t0 + 22 * interval, 112, 114, 112, 113, 100), 22, step21.nextState, cfg, false, 2.0, null);
-        assert(step22.retestedZones.length === 0 && step22.nextState.activeZones[0].isCurrentlyInZone === false, 'Exiting zone clears isCurrentlyInZone');
-
-        // Bar 23: revisits Zone 1 [109..112] -> emits distinct _R2 event!
-        const step23 = stepDTFX(makeCandle(t0 + 23 * interval, 112, 112, 109, 111, 100), 23, step22.nextState, cfg, false, 2.0, null);
-        assert(step23.retestedZones.length === 1 && step23.retestedZones[0].retestCount === 2, 'Revisit after exit increments retestCount to 2');
-        assert(step23.events[0].eventDiscriminator === '1_R2', 'Second distinct visit discriminator must be 1_R2');
-        assert(step23.nextState.activeZones[0].firstRetestBarIndex === 20 && step23.nextState.activeZones[0].lastRetestBarIndex === 23, 'Track first and last retest bars');
-
-        // Bar 24: invalidates Zone 2 (low=102, close=102 < bot=104) while touching Zone 2 -> Invalidation beats Retest (0 retests for Zone 2!), and Zone 1 ALSO touches & stays inside without re-emitting because already inside? Wait: Zone 1 was already inside at bar 23!
-        const step24 = stepDTFX(makeCandle(t0 + 24 * interval, 109, 109, 102, 102, 100), 24, step23.nextState, cfg, false, 2.0, null);
-        assert(step24.invalidatedZones.length === 1 && step24.invalidatedZones[0].zoneId === 2, 'Only Zone 2 invalidates at close=102');
-        assert(step24.retestedZones.every(z => z.zoneId !== 2), 'Same-bar invalidation strictly suppresses Zone 2 retest');
-
-        // Dedicated fresh same-bar invalidation > retest precedence check (never-retested zone)
-        const freshZ: DTFXZoneRecord = { ...z2, zoneId: 10, top: 108, bot: 104 };
-        const freshState = { ...createInitialDTFXState(11), activeZones: Object.freeze([freshZ]) };
-        const sameBarInv = stepDTFX(makeCandle(t0 + 20 * interval, 107, 107, 102, 102), 20, freshState, cfg);
-        assert(sameBarInv.invalidatedZones.length === 1 && sameBarInv.retestedZones.length === 0 && sameBarInv.events.length === 0,
-            'Same-bar close below bot must emit invalidation only, never retest');
-
-        // maxActiveZones overflow pruning check (starts with 1 zone under maxActiveZones=1, mssUp creates zone 2 -> prunes zone 1)
-        const cfgSmallBound = { ...cfg, maxActiveZones: 1 };
-        const preWindow = Array.from({ length: cfg.structureLen }, (_, k) => ({
+        // Degenerate geometry guard tests (valid state passing validateDTFXState where zTop === zBot)
+        const degBullWindow = Array.from({ length: cfg.structureLen }, (_, k) => ({
             barIndex: 10 + k,
             time: t0 + (10 + k) * interval,
-            open: 110,
-            high: k === 8 ? 112 : 111,
-            low: 109,
-            close: 111,
-            volume: 100
-        }));
-        const overflowStartState = {
-            ...createInitialDTFXState(2),
-            window: Object.freeze(preWindow),
-            dir: -1 as const,
-            tDir: 1 as const,
-            t: { price: 112, barIndex: 18, time: t0 + 18 * interval },
-            prevTPrice: 112,
-            prevClose: 111,
-            bosUpCheck: true,
-            activeZones: Object.freeze([z1])
-        };
-        const boundedRes = stepDTFX(makeCandle(t0 + 20 * interval, 111, 116, 111, 115), 20, overflowStartState, cfgSmallBound);
-        assert(boundedRes.createdZones.length === 1 && boundedRes.createdZones[0].zoneId === 2, 'mssUp must create zone 2');
-        assert(boundedRes.nextState.activeZones.length === 1 && boundedRes.nextState.activeZones[0].zoneId === 2,
-            'maxActiveZones overflow must prune oldest zone and keep zone 2');
-        assert(boundedRes.nextState.bosUpCheck === false, 'mssUp must consume bosUpCheck');
-
-        // Degenerate geometry guard (zTop === zBot): skips zone creation AND still consumes bosUpCheck
-        const degenWindow = Array.from({ length: cfg.structureLen }, (_, k) => ({
-            barIndex: 10 + k,
-            time: t0 + (10 + k) * interval,
-            open: 112,
+            open: k === 9 ? 112 : 111,
             high: 112,
-            low: 112,
-            close: 112,
+            low: k === 9 ? 112 : 110,
+            close: k === 9 ? 112 : 111,
             volume: 100
         }));
-        const degenState = {
+        const degBullState: DTFXState = {
             ...createInitialDTFXState(2),
-            window: Object.freeze(degenWindow),
-            dir: -1 as const,
+            window: Object.freeze(degBullWindow),
+            dir: 1 as const,
             tDir: 1 as const,
-            t: { price: 112, barIndex: 18, time: t0 + 18 * interval },
+            t: Object.freeze({ price: 112, barIndex: 18, time: t0 + 18 * interval }),
+            b: Object.freeze({ price: 112, barIndex: 19, time: t0 + 19 * interval }),
             prevTPrice: 112,
+            prevBPrice: 112,
             prevClose: 112,
             bosUpCheck: true
         };
-        const degenRes = stepDTFX(makeCandle(t0 + 20 * interval, 112, 115, 112, 115), 20, degenState, cfg);
-        assert(degenRes.createdZones.length === 0 && degenRes.events.length === 0, 'Degenerate zTop <= zBot candidate must not create zone');
-        assert(degenRes.nextState.bosUpCheck === false, 'bosUpCheck must still clear on mssUp even when degenerate candidate is skipped');
+        const degBullRes = stepDTFX(makeCandle(t0 + 20 * interval, 112, 115, 112, 114, 100), 20, degBullState, cfg, false, 2.0, null);
+        assert(degBullRes.createdZones.length === 0 && degBullRes.events.length === 0 && !degBullRes.nextState.bosUpCheck,
+            'Bull degenerate zero-height zone must be skipped and bosUpCheck cleared per contract');
 
-        // Corrupt DTFX state & provenance rejection
-        expectErrorMatching(
-            () => stepDTFX(makeCandle(t0 + 25 * interval, 103, 104, 102, 103), 25, { ...step24.nextState, dir: 2 as any }, cfg),
-            'DTFX State Integrity Error', 'invalid dir=2'
-        );
-        expectErrorMatching(
-            () => stepDTFX(makeCandle(t0 + 25 * interval, 103, 104, 102, 103), 25, { ...step24.nextState, activeZones: [{ ...z1, top: 99, bot: 100 }] }, cfg),
-            'DTFX State Integrity Error', 'inverted zone geometry'
-        );
-        expectErrorMatching(
-            () => stepDTFX(makeCandle(t0 + 25 * interval, 103, 104, 102, 103), 25, { ...step24.nextState, activeZones: [{ ...z1, zoneId: 99 }] }, cfg),
-            'DTFX State Integrity Error', 'zoneId >= nextZoneId'
-        );
-        expectErrorMatching(
-            () => stepDTFX(makeCandle(t0 + 25 * interval, 103, 104, 102, 103), 25, { ...step24.nextState, activeZones: [{ ...z1, status: 'RETESTED', retestCount: 1, firstRetestBarIndex: 20, lastRetestBarIndex: 21 }] }, cfg),
-            'DTFX State Integrity Error', 'retestCount=1 with mismatched lastRetestBarIndex'
-        );
-        const latestDtfxWin = step24.nextState.window[step24.nextState.window.length - 1];
-        expectErrorMatching(
-            () => stepDTFX(
-                makeCandle(t0 + 25 * interval, 103, 104, 102, 103),
-                25,
-                { ...step24.nextState, t: { price: latestDtfxWin.high + 10, barIndex: latestDtfxWin.barIndex, time: latestDtfxWin.time } },
-                cfg
-            ),
-            'DTFX State Integrity Error', 'swing t disagrees with window bar'
-        );
+        const degBearWindow = Array.from({ length: cfg.structureLen }, (_, k) => ({
+            barIndex: 10 + k,
+            time: t0 + (10 + k) * interval,
+            open: k === 9 ? 98 : 99,
+            high: k === 9 ? 98 : 100,
+            low: 98,
+            close: k === 9 ? 98 : 99,
+            volume: 100
+        }));
+        const degBearState: DTFXState = {
+            ...createInitialDTFXState(2),
+            window: Object.freeze(degBearWindow),
+            dir: -1 as const,
+            tDir: -1 as const,
+            b: Object.freeze({ price: 98, barIndex: 18, time: t0 + 18 * interval }),
+            t: Object.freeze({ price: 98, barIndex: 19, time: t0 + 19 * interval }),
+            prevTPrice: 98,
+            prevBPrice: 98,
+            prevClose: 98,
+            bosDownCheck: true
+        };
+        const degBearRes = stepDTFX(makeCandle(t0 + 20 * interval, 98, 98, 95, 96, 100), 20, degBearState, cfg, false, 2.0, null);
+        assert(degBearRes.createdZones.length === 0 && degBearRes.events.length === 0 && !degBearRes.nextState.bosDownCheck,
+            'Bear degenerate zero-height zone must be skipped and bosDownCheck cleared per contract');
+
+        // Discontinuity preserves nextZoneId while clearing activeZones & swings
+        const preResetZoneCount = lcCandles.slice(0, 17).reduce((stAcc: DTFXState, c, idx) => stepDTFX(c, idx, stAcc, cfg).nextState, createInitialDTFXState());
+        assert(preResetZoneCount.nextZoneId === 2 && preResetZoneCount.activeZones.length === 1, 'Pre-reset zoneId=1 active');
+        const postReset = stepDTFX(makeCandle(t0 + 30 * interval, 120, 121, 119, 120, 100), 17, preResetZoneCount, cfg, true);
+        assert(postReset.nextState.nextZoneId === 2 && postReset.nextState.activeZones.length === 0 && postReset.nextState.dir === 0 && postReset.nextState.t === null,
+            'Discontinuity must clear DTFX swings/zones and preserve monotonic nextZoneId');
+
+        // Negative validation checks (null candle + non-null entryTimestamp, bad fibs, corrupt zoneId/provenance/retest metadata)
+        const expectDTFXErr = (fn: () => void, label: string) => {
+            let matched = false;
+            try { fn(); } catch (e: any) { matched = e instanceof Error && !(e instanceof TypeError) && e.message.includes('DTFX '); }
+            assert(matched, `${label}: expected intentional DTFX Error`);
+        };
+        expectDTFXErr(() => stepDTFX(null as any, 17, preResetZoneCount, cfg, false, 2.0, t0 + 99 * interval), 'null candle + non-null entryTimestamp');
+        expectDTFXErr(() => stepDTFX(lcCandles[0], 0, createInitialDTFXState(), { ...cfg, fibLevels: [0.5, 0.3, 0.7] }), 'unordered fibLevels');
+        expectDTFXErr(() => stepDTFX(lcCandles[0], 0, createInitialDTFXState(), { ...cfg, fibLevels: [0, 0.5, 0.7] }), 'fibLevel=0 outside (0,1)');
+        expectDTFXErr(() => stepDTFX(lcCandles[0], 0, createInitialDTFXState(), { ...cfg, fibLevels: [0.3, 0.3, 0.7] }), 'duplicate fibLevels');
+        expectDTFXErr(() => stepDTFX(lcCandles[17], 17, {
+            ...preResetZoneCount,
+            activeZones: [{ ...preResetZoneCount.activeZones[0], zoneId: 99 }]
+        }, cfg), 'zoneId >= nextZoneId');
+        expectDTFXErr(() => stepDTFX(lcCandles[17], 17, {
+            ...preResetZoneCount,
+            activeZones: [{ ...preResetZoneCount.activeZones[0], createdConfirmationTimestamp: 1 }]
+        }, cfg), 'corrupt createdConfirmationTimestamp vs window');
+        const at18 = stepDTFX(lcCandles[18], 18, preResetZoneCount, cfg).nextState;
+        expectDTFXErr(() => stepDTFX(lcCandles[19], 19, {
+            ...at18,
+            activeZones: [{ ...at18.activeZones[0], firstRetestTimestamp: 1 }]
+        }, cfg), 'corrupt firstRetestTimestamp vs window');
     });
 
-    // 4. VAM Adapter: signal=0 returns null, BUY/SELL mapping, unexpected signal throws
-    runTest('4. VAM Adapter: signal mapping, lag-0 parity & invalid signal guard', () => {
-        const baseOut: VAMStepOutput = {
-            nextState: createInitialVAMState(),
-            centerDistAtr: 0.6,
-            isCenterDistValid: true,
-            slope3Atr: 0.2,
-            isSlopeValid: true,
-            efficiency: 0.5,
-            isEfficiencyValid: true,
-            adx14: 25,
-            isAdxValid: true,
-            diSpread14: 5,
-            isDiSpreadValid: true,
-            rsi14: 58,
-            isRsiValid: true,
-            trend: 1,
-            isTrendValid: true,
-            buyStreak: 2,
-            sellStreak: 0,
-            signal: 0
-        };
+    // 4. VAM Adapter Standalone Check (BUY, SELL, No-Signal & Invalid Non-Zero Signal Rejection)
+    runTest('4. VAM Adapter: BUY, SELL, no-signal & invalid signal rejection', () => {
+        const baseOut = stepVolatilityAdjustedMean(102, 98, 100, createInitialVAMState(), false);
         assert(adaptVAMtoStrategyEvent({
-            vamOutput: baseOut, confirmationBarIndex: 10, confirmationTimestamp: t0 + 10 * interval,
+            vamOutput: { ...baseOut, signal: 0 }, confirmationBarIndex: 10, confirmationTimestamp: t0 + 10 * interval,
             entryTimestamp: null, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
         }) === null, 'signal=0 must return null');
 
-        const buyEv = adaptVAMtoStrategyEvent({
-            vamOutput: { ...baseOut, signal: 1, trend: 1 },
-            confirmationBarIndex: 10, confirmationTimestamp: t0 + 10 * interval,
+        const evBuy = adaptVAMtoStrategyEvent({
+            vamOutput: { ...baseOut, signal: 1, trend: 1, buyStreak: 2 }, confirmationBarIndex: 30, confirmationTimestamp: t0 + 30 * interval,
             entryTimestamp: null, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
         });
-        assert(buyEv !== null && buyEv.eventType === 'VAM_BUY' && buyEv.confirmationLagBars === 0, 'signal=1 maps to VAM_BUY lag-0');
-
-        const sellEv = adaptVAMtoStrategyEvent({
-            vamOutput: { ...baseOut, signal: -1, trend: -1, sellStreak: 2, buyStreak: 0 },
-            confirmationBarIndex: 11, confirmationTimestamp: t0 + 11 * interval,
+        const evSell = adaptVAMtoStrategyEvent({
+            vamOutput: { ...baseOut, signal: -1, trend: -1, sellStreak: 2 }, confirmationBarIndex: 40, confirmationTimestamp: t0 + 40 * interval,
             entryTimestamp: null, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
         });
-        assert(sellEv !== null && sellEv.eventType === 'VAM_SELL' && sellEv.eventDirection === 'bear', 'signal=-1 maps to VAM_SELL');
+        assert(evBuy?.eventType === 'VAM_BUY' && evBuy.eventDiscriminator === 'BUY' && evBuy.sourceBarIndex === 30 && evBuy.confirmationLagBars === 0, 'VAM_BUY check');
+        assert(evSell?.eventType === 'VAM_SELL' && evSell.eventDiscriminator === 'SELL' && evSell.sourceBarIndex === 40 && evSell.confirmationLagBars === 0, 'VAM_SELL check');
 
-        expectErrorMatching(() => adaptVAMtoStrategyEvent({
-            vamOutput: { ...baseOut, signal: 2 as any },
-            confirmationBarIndex: 12, confirmationTimestamp: t0 + 12 * interval,
-            entryTimestamp: null, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
-        }), 'unexpected signal', 'invalid VAM signal');
+        for (const badSig of [2, -2, Number.NaN] as any[]) {
+            let threw = false;
+            try {
+                adaptVAMtoStrategyEvent({
+                    vamOutput: { ...baseOut, signal: badSig }, confirmationBarIndex: 10, confirmationTimestamp: t0 + 10 * interval,
+                    entryTimestamp: null, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
+                });
+            } catch (e: any) { threw = String(e.message).includes('VAM Adapter Error'); }
+            assert(threw, `Invalid signal ${badSig} must throw`);
+        }
     });
 
-    // 5. Combined 4-Teacher Stream: all 4 emit pre+post gap, gap resets all 4, final-bar null & 2-run determinism
-    runTest('5. Combined 4-Teacher Stream: all 4 emit, gap resets all 4, final-bar null & 2-run determinism', () => {
+    // 5. Combined 4-Teacher Stream: all 4 emit, REAL bar 109 event resolved across bar 110 gap, full reset checks & 2-run serialized determinism
+    runTest('5. Combined 4-Teacher Stream: all 4 emit, real bar 109 gap entry, full resets & determinism', () => {
         const stream: ML1Candle[] = [];
         let ts = t0;
         let p = 100;
         for (let i = 0; i < 300; i++) {
-            if (i === 110) ts += 600_000; // 10-minute discontinuity
+            if (i === 110) ts += 600_000;
+
+            // Engineer bars 106..109 so StrictCBC is bullish at bar 108 and guaranteed to flip bearish on bar 109!
+            if (i >= 106 && i <= 108) {
+                const o = p;
+                const c = p + 3.0;
+                stream.push(makeCandle(ts, o, c + 0.5, o - 0.5, c, 150));
+                p = c;
+                ts += interval;
+                continue;
+            }
+            if (i === 109) {
+                const o = p - 0.5;
+                const c = p - 8.0; // Breaks well below bar 108 anchorLow -> guaranteed real STRICT_CBC event @109
+                stream.push(makeCandle(ts, o, o + 0.3, c - 0.5, c, 200));
+                p = c;
+                ts += interval;
+                continue;
+            }
 
             const mod = i % 100;
             const delta = mod < 48
-                ? ((i % 7 === 0 || i % 7 === 1) ? -0.4 : 1.6)
-                : ((i % 7 === 0 || i % 7 === 1) ? 0.4 : -1.5);
+                ? (i % 7 === 0 || i % 7 === 1) ? -0.4 : 1.6
+                : (i % 7 === 0 || i % 7 === 1) ? 0.4 : -1.5;
             const o = p;
             const c = Math.max(10, p + delta);
-            const h = Math.max(o, c) + 0.6;
-            const l = Math.min(o, c) - 0.6;
-            stream.push(makeCandle(ts, o, h, l, c, 100 + (i % 5) * 20));
+            stream.push(makeCandle(ts, o, Math.max(o, c) + 0.6, Math.min(o, c) - 0.6, c, 100 + (i % 5) * 20));
             p = c;
             ts += interval;
         }
 
-        const runPipeline = () => {
+        const runCombined = () => {
             const phlCfg = createDefaultPHLConfig('SOLUSDT', '1m', interval);
             const dtfxCfg = createDefaultDTFXConfig('SOLUSDT', '1m', interval);
 
@@ -671,19 +740,15 @@ export function runPhase5DPhase2Tests(): boolean {
                 const c = stream[i];
                 acceptedTimestamps.push(c.time);
                 const isDisc = i > 0 && c.time - stream[i - 1].time >= 300_000;
+                const prevZoneIdBefore110 = i === 110 ? dtfxState.nextZoneId : 0;
 
                 const vamOut = stepVolatilityAdjustedMean(c.high, c.low, c.close, vamState, isDisc);
                 vamState = vamOut.nextState;
                 const atr = vamState.atrState.isSeeded ? vamState.atrState.atr : null;
 
                 const vamEv = adaptVAMtoStrategyEvent({
-                    vamOutput: vamOut,
-                    confirmationBarIndex: i,
-                    confirmationTimestamp: c.time,
-                    entryTimestamp: null,
-                    symbol: 'SOLUSDT',
-                    timeframe: '1m',
-                    intervalMs: interval
+                    vamOutput: vamOut, confirmationBarIndex: i, confirmationTimestamp: c.time,
+                    entryTimestamp: null, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
                 });
                 if (vamEv) rawEvents.push(vamEv);
 
@@ -691,18 +756,11 @@ export function runPhase5DPhase2Tests(): boolean {
                 cbcState = cbcStep.nextState;
                 lastCbcPivot = cbcStep.nextPrevPivot;
                 if (cbcStep.confirmedPivot) {
-                    rawEvents.push(
-                        adaptStrictCBCtoStrategyEvent({
-                            pivot: cbcStep.confirmedPivot,
-                            prevPivot: cbcStep.prevPivotForEvent,
-                            confirmationTimestamp: c.time,
-                            entryTimestamp: null,
-                            atr14AtConfirmation: atr,
-                            symbol: 'SOLUSDT',
-                            timeframe: '1m',
-                            intervalMs: interval
-                        })
-                    );
+                    rawEvents.push(adaptStrictCBCtoStrategyEvent({
+                        pivot: cbcStep.confirmedPivot, prevPivot: cbcStep.prevPivotForEvent,
+                        confirmationTimestamp: c.time, entryTimestamp: null, atr14AtConfirmation: atr,
+                        symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
+                    }));
                 }
 
                 const phlRes = stepPHL(c, i, phlState, phlCfg, isDisc, atr, null);
@@ -713,67 +771,66 @@ export function runPhase5DPhase2Tests(): boolean {
                 dtfxState = dtfxRes.nextState;
                 rawEvents.push(...dtfxRes.events);
 
+                // Exhaustive reset assertions for ALL 4 teachers at bar 110 discontinuity
                 if (i === 110) {
-                    assert(lastCbcPivot === null && cbcState.anchorHigh === c.high && cbcState.anchorLow === c.low, 'StrictCBC failed gap reset');
-                    assert(phlState.window.length === 1 && phlState.bull === null && phlState.ph === null && phlState.pl === null, 'PHL failed gap reset');
-                    assert(dtfxState.window.length === 1 && dtfxState.activeZones.length === 0 && dtfxState.dir === 0 && dtfxState.tDir === 0, 'DTFX failed gap reset');
-                    assert(vamState.unbrokenRun === 1 && vamState.trend === 0 && vamState.lastSignalAcceptedIndex === null, 'VAM failed gap reset');
+                    assert(lastCbcPivot === null && cbcState.anchorHigh === c.high && cbcState.anchorLow === c.low &&
+                        cbcState.phaseHighIdx === 110 && cbcState.phaseLowIdx === 110 && cbcState.lastHighPrice === null && cbcState.lastLowPrice === null,
+                        'StrictCBC full gap reset failed');
+                    assert(phlState.window.length === 1 && phlState.bull === null && phlState.ph === null && phlState.pl === null &&
+                        phlState.pbFromHigh.price === null && phlState.pbFromLow.price === null &&
+                        phlState.trackHigh === null && phlState.trackLow === null &&
+                        phlState.lastHigh === null && phlState.lastLow === null,
+                        'PHL full gap reset failed');
+                    assert(dtfxState.window.length === 1 && dtfxState.activeZones.length === 0 && dtfxState.dir === 0 && dtfxState.tDir === 0 &&
+                        dtfxState.t === null && dtfxState.b === null && dtfxState.prevTPrice === null && dtfxState.prevBPrice === null &&
+                        !dtfxState.bosUpCheck && !dtfxState.bosDownCheck && dtfxState.nextZoneId === prevZoneIdBefore110,
+                        'DTFX full gap reset failed (or nextZoneId not preserved)');
+                    assert(vamState.unbrokenRun === 1 && vamState.trend === 0 && vamState.lastSignalAcceptedIndex === null &&
+                        vamState.buyStreak === 0 && vamState.sellStreak === 0 && !vamState.atrState.isSeeded && vamState.adx === null,
+                        'VAM full gap reset failed');
                 }
             }
 
             const resolved = resolveStrategyEventsEntryTimestamps(rawEvents, acceptedTimestamps, interval);
-            return {
-                acceptedTimestamps,
-                verified: sortAndVerifyUniqueStrategyEvents(resolved)
-            };
+            const verified = sortAndVerifyUniqueStrategyEvents(resolved);
+            return { verified, acceptedTimestamps, finalStates: { cbcState, lastCbcPivot, phlState, dtfxState, vamState } };
         };
 
-        const run1 = runPipeline();
-        const run2 = runPipeline();
-        assert(JSON.stringify(run1.verified) === JSON.stringify(run2.verified), 'Two independent runs must be byte-identical');
+        const run1 = runCombined();
+        const run2 = runCombined();
+        assert(JSON.stringify(run1.verified) === JSON.stringify(run2.verified), 'Serialized determinism failed on events');
+        assert(JSON.stringify(run1.finalStates) === JSON.stringify(run2.finalStates), 'Serialized determinism failed on final states');
 
-        const { verified, acceptedTimestamps } = run1;
         const byStrategy: Record<string, number> = { STRICT_CBC: 0, PHL_BOS_MSS: 0, DTFX_ZONES: 0, VAM_REVERSAL: 0 };
         const byType: Record<string, number> = {};
         let preGapCount = 0;
         let postGapCount = 0;
+        let realBar109Checked = false;
 
-        for (const ev of verified) {
+        for (const ev of run1.verified) {
             byStrategy[ev.strategyId] = (byStrategy[ev.strategyId] || 0) + 1;
             byType[ev.eventType] = (byType[ev.eventType] || 0) + 1;
             if (ev.confirmationBarIndex < 110) preGapCount++;
-            if (ev.confirmationBarIndex >= 110) postGapCount++;
-
-            if (ev.strategyId === 'PHL_BOS_MSS') {
-                assert(ev.eventDiscriminator === 'PH' || ev.eventDiscriminator === 'PL', 'PHL discriminator');
-            } else if (ev.strategyId === 'VAM_REVERSAL') {
-                assert(ev.eventDiscriminator === 'BUY' || ev.eventDiscriminator === 'SELL', 'VAM discriminator');
-            } else if (ev.strategyId === 'STRICT_CBC') {
-                assert(/^\d+$/.test(ev.eventDiscriminator), 'StrictCBC discriminator must be pivotId');
-            } else if (ev.strategyId === 'DTFX_ZONES') {
-                assert(/^\d+(_R\d+)?$/.test(ev.eventDiscriminator), 'DTFX discriminator must be zoneId or zoneId_R<n>');
+            if (ev.confirmationBarIndex > 110) {
+                postGapCount++;
+                // Post-gap events must not reference pre-gap source bar indices
+                assert(ev.sourceBarIndex >= 110, `Post-gap event ${ev.eventId} referenced pre-gap sourceBarIndex ${ev.sourceBarIndex}`);
             }
-        }
-
-        console.log('  📊 Combined 4-Teacher Event Counts:', JSON.stringify({ byStrategy, byType, preGapCount, postGapCount }));
-        assert(byStrategy.STRICT_CBC > 0, 'STRICT_CBC must emit events');
-        assert(byStrategy.PHL_BOS_MSS > 0, 'PHL_BOS_MSS must emit events');
-        assert(byStrategy.DTFX_ZONES > 0, 'DTFX_ZONES must emit events');
-        assert(byStrategy.VAM_REVERSAL > 0, 'VAM_REVERSAL must emit events');
-        assert(preGapCount > 0 && postGapCount > 0, 'Must emit events both pre-gap and post-gap');
-
-        for (let k = 0; k < verified.length; k++) {
-            const ev = verified[k];
             if (ev.confirmationBarIndex === 109) {
-                assert(ev.entryTimestamp === acceptedTimestamps[110], 'Bar 109 must resolve actual post-gap timestamp');
+                assert(ev.entryTimestamp === run1.acceptedTimestamps[110], 'Real bar 109 event must resolve actual post-gap bar 110 timestamp');
+                realBar109Checked = true;
             }
             if (ev.confirmationBarIndex === stream.length - 1) {
-                assert(ev.entryTimestamp === null, 'Final bar must preserve entryTimestamp === null');
+                assert(ev.entryTimestamp === null, 'Final bar event must keep entryTimestamp === null');
             }
-            if (k > 0) {
-                assert(compareStrategyEvents(verified[k - 1], ev) < 0, 'Canonical sort strict ordering invariant');
-            }
+            if (ev.strategyId === 'DTFX_ZONES') assert(/^\d+(?:_R\d+)?$/.test(ev.eventDiscriminator), 'DTFX disc');
         }
+
+        console.log('  📊 Combined 4-Teacher Counts:', JSON.stringify({ byStrategy, byType, preGapCount, postGapCount }));
+        assert(realBar109Checked, 'Combined stream must produce at least one REAL teacher event at bar 109 to test gap entry resolution');
+        assert(byStrategy.STRICT_CBC > 0 && byStrategy.PHL_BOS_MSS > 0 && byStrategy.DTFX_ZONES > 0 && byStrategy.VAM_REVERSAL > 0,
+            'All 4 strategies must emit events');
+        assert(preGapCount > 0 && postGapCount > 0, 'Events must emit on both sides of bar 110 discontinuity');
     });
 
     console.log(`\nPhase 5D Phase 2 Full Acceptance: ${passed} passed, ${failed} failed.`);

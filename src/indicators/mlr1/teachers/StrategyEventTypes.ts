@@ -430,6 +430,8 @@ export function stepStrictCBCWithReset(
         const nextPivotId = previousState ? previousState.nextPivotId : 1;
         const resetState: StrictCBCState = {
             ...createInitialStrictCBCState(candle),
+            phaseHighIdx: barIndex,
+            phaseLowIdx: barIndex,
             nextPivotId
         };
         return {

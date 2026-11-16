@@ -129,6 +129,7 @@ export interface StrategyEvent {
 - `confirmationTimestamp`: Open timestamp of the confirmation candle.
 - `observationTimestamp`: `confirmationTimestamp + intervalMs` (exact bar close when event becomes observable).
 - `entryTimestamp`: Actual next accepted candle's open timestamp (`acceptedRows[entryBarIndex].sourceTimestamp`), never `confirmationTimestamp + intervalMs` blindly across gaps.
+- **Factory vs. Resolver Authority:** When `acceptedTimestampsByBarIndex` is passed to `createStrategyEvent()`, a mismatched `entryTimestamp` is rejected as a contract error. Separately, `resolveStrategyEventsEntryTimestamps()` acts as the authoritative clock-binding pass: it rejects any malformed `sourceTimestamp`, `confirmationTimestamp`, `observationBarIndex`, `observationTimestamp`, or `confirmationLagBars`, and deterministically binds `entryTimestamp` to the actual next accepted candle (or `null` on the final bar).
 - **Final-Bar Semantics:** When `confirmationBarIndex === acceptedRows.length - 1` (`entryBarIndex >= acceptedRows.length`), the live teacher sets `entryTimestamp = null`. In ML-R1 v3 dataset export, any event with `entryBarIndex >= acceptedRows.length` (`excludedMissingNextOpen`) or `entryBarIndex + 180 - 1 >= acceptedRows.length` (`excludedIncompleteHorizon`) is non-actionable/censored and excluded prior to CSV emission, with exact counts reconciled in `Manifest.json`.
 - **Deterministic Sort Key:** `(confirmationBarIndex, strategyId, eventType, eventId)`.
 

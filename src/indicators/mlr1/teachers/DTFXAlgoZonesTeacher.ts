@@ -29,7 +29,9 @@ export interface DTFXZoneRecord {
     readonly status: DTFXZoneStatus;
     readonly retestCount: number;
     readonly firstRetestBarIndex: number | null;
+    readonly firstRetestTimestamp: number | null;
     readonly lastRetestBarIndex: number | null;
+    readonly lastRetestTimestamp: number | null;
     readonly isCurrentlyInZone: boolean;
     readonly invalidationBarIndex: number | null;
 }
@@ -255,19 +257,36 @@ function validateDTFXState(state: DTFXState, maxWin: number, maxActiveZones: num
         }
 
         if (z.status === 'ACTIVE' &&
-            (z.retestCount !== 0 || z.firstRetestBarIndex !== null || z.lastRetestBarIndex !== null || z.isCurrentlyInZone)) {
+            (z.retestCount !== 0 ||
+                z.firstRetestBarIndex !== null ||
+                z.firstRetestTimestamp !== null ||
+                z.lastRetestBarIndex !== null ||
+                z.lastRetestTimestamp !== null ||
+                z.isCurrentlyInZone)) {
             throw new Error(`DTFX State Integrity Error: ACTIVE zone ${z.zoneId} cannot have retest metadata.`);
         }
         if (z.status === 'RETESTED') {
             if (!Number.isSafeInteger(z.retestCount) || z.retestCount < 1 ||
-                z.firstRetestBarIndex === null || !Number.isSafeInteger(z.firstRetestBarIndex) ||
+                z.firstRetestBarIndex === null || z.firstRetestTimestamp === null ||
+                z.lastRetestBarIndex === null || z.lastRetestTimestamp === null ||
+                !Number.isSafeInteger(z.firstRetestBarIndex) || !Number.isSafeInteger(z.firstRetestTimestamp) ||
+                !Number.isSafeInteger(z.lastRetestBarIndex) || !Number.isSafeInteger(z.lastRetestTimestamp) ||
                 z.firstRetestBarIndex <= z.createdConfirmationBarIndex ||
-                z.lastRetestBarIndex === null || !Number.isSafeInteger(z.lastRetestBarIndex) ||
+                z.firstRetestTimestamp <= z.createdConfirmationTimestamp ||
                 z.lastRetestBarIndex < z.firstRetestBarIndex ||
-                (z.retestCount === 1 && z.lastRetestBarIndex !== z.firstRetestBarIndex) ||
-                (z.retestCount > 1 && z.lastRetestBarIndex <= z.firstRetestBarIndex) ||
+                z.lastRetestTimestamp < z.firstRetestTimestamp ||
+                (z.retestCount === 1 && (z.lastRetestBarIndex !== z.firstRetestBarIndex || z.lastRetestTimestamp !== z.firstRetestTimestamp)) ||
+                (z.retestCount > 1 && (z.lastRetestBarIndex <= z.firstRetestBarIndex || z.lastRetestTimestamp <= z.firstRetestTimestamp)) ||
                 (maxBarIdx !== null && z.lastRetestBarIndex > maxBarIdx)) {
                 throw new Error(`DTFX State Integrity Error: corrupted RETESTED metadata for zone ${z.zoneId}.`);
+            }
+            const firstRW = windowByIdx.get(z.firstRetestBarIndex);
+            if (firstRW && (firstRW.time !== z.firstRetestTimestamp || firstRW.low > z.top || firstRW.high < z.bot)) {
+                throw new Error(`DTFX State Integrity Error: zone ${z.zoneId} firstRetest disagrees with stored window bar.`);
+            }
+            const lastRW = windowByIdx.get(z.lastRetestBarIndex);
+            if (lastRW && (lastRW.time !== z.lastRetestTimestamp || lastRW.low > z.top || lastRW.high < z.bot)) {
+                throw new Error(`DTFX State Integrity Error: zone ${z.zoneId} lastRetest disagrees with stored window bar.`);
             }
         }
     }
@@ -297,16 +316,18 @@ export function stepDTFX(
     const len = config.structureLen;
     validateDTFXState(previousState, len + 1, config.maxActiveZones);
 
+    // 1. Validate discontinuity flag.
     if (typeof isDiscontinuity !== 'boolean') {
         throw new Error('DTFX Input Error: isDiscontinuity must be a boolean.');
     }
-    if (atr14AtConfirmation !== null && (!Number.isFinite(atr14AtConfirmation) || atr14AtConfirmation <= 0)) {
-        throw new Error(`DTFX Input Error: atr14AtConfirmation must be null or positive finite, got ${atr14AtConfirmation}.`);
-    }
-    if (entryTimestamp !== null && (!Number.isSafeInteger(entryTimestamp) || entryTimestamp <= candle.time)) {
-        throw new Error(`DTFX Input Error: entryTimestamp must be null or strictly greater than candle.time.`);
+
+    // 2. Validate ATR.
+    if (atr14AtConfirmation !== null &&
+        (typeof atr14AtConfirmation !== 'number' || !Number.isFinite(atr14AtConfirmation) || atr14AtConfirmation <= 0)) {
+        throw new Error('DTFX Input Error: atr14AtConfirmation must be null or a positive finite number.');
     }
 
+    // 3. Validate candle and barIndex completely.
     if (!candle || typeof candle !== 'object' ||
         !Number.isSafeInteger(barIndex) || barIndex < 0 ||
         !Number.isSafeInteger(candle.time) || candle.time < 0 ||
@@ -318,7 +339,13 @@ export function stepDTFX(
         candle.high < candle.low ||
         candle.high < Math.max(candle.open, candle.close) ||
         candle.low > Math.min(candle.open, candle.close)) {
-        throw new Error(`DTFX Input Error: invalid candle or barIndex (${barIndex}).`);
+        throw new Error(`DTFX Input Error: invalid candle OHLCV or barIndex (${barIndex}).`);
+    }
+
+    // 4. Only now is candle.time safe to access.
+    if (entryTimestamp !== null &&
+        (!Number.isSafeInteger(entryTimestamp) || entryTimestamp <= candle.time)) {
+        throw new Error('DTFX Input Error: entryTimestamp must be null or a safe integer > candle.time.');
     }
 
     if (previousState.window.length > 0) {
@@ -386,9 +413,11 @@ export function stepDTFX(
                     ...zone,
                     status: 'RETESTED' as const,
                     retestCount: nextRetestCount,
+                    isCurrentlyInZone: true,
                     firstRetestBarIndex: zone.firstRetestBarIndex ?? barIndex,
+                    firstRetestTimestamp: zone.firstRetestTimestamp ?? candle.time,
                     lastRetestBarIndex: barIndex,
-                    isCurrentlyInZone: true
+                    lastRetestTimestamp: candle.time
                 });
                 retestedZones.push(retested);
                 remainingZones.push(retested);
@@ -522,9 +551,11 @@ export function stepDTFX(
                 createdConfirmationTimestamp: candle.time,
                 status: 'ACTIVE',
                 retestCount: 0,
-                firstRetestBarIndex: null,
-                lastRetestBarIndex: null,
                 isCurrentlyInZone: false,
+                firstRetestBarIndex: null,
+                firstRetestTimestamp: null,
+                lastRetestBarIndex: null,
+                lastRetestTimestamp: null,
                 invalidationBarIndex: null
             });
             remainingZones.push(zone);
@@ -586,9 +617,11 @@ export function stepDTFX(
                 createdConfirmationTimestamp: candle.time,
                 status: 'ACTIVE',
                 retestCount: 0,
-                firstRetestBarIndex: null,
-                lastRetestBarIndex: null,
                 isCurrentlyInZone: false,
+                firstRetestBarIndex: null,
+                firstRetestTimestamp: null,
+                lastRetestBarIndex: null,
+                lastRetestTimestamp: null,
                 invalidationBarIndex: null
             });
             remainingZones.push(zone);

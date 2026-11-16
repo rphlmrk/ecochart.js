@@ -256,16 +256,18 @@ export function stepPHL(
     const maxWindowLen = 2 * ps + 4;
     validatePHLState(previousState, maxWindowLen);
 
+    // 1. Validate discontinuity flag.
     if (typeof isDiscontinuity !== 'boolean') {
         throw new Error('PHL Input Error: isDiscontinuity must be a boolean.');
     }
-    if (atr14AtConfirmation !== null && (!Number.isFinite(atr14AtConfirmation) || atr14AtConfirmation <= 0)) {
-        throw new Error(`PHL Input Error: atr14AtConfirmation must be null or positive finite, got ${atr14AtConfirmation}.`);
-    }
-    if (entryTimestamp !== null && (!Number.isSafeInteger(entryTimestamp) || entryTimestamp <= candle.time)) {
-        throw new Error(`PHL Input Error: entryTimestamp must be null or strictly greater than candle.time.`);
+
+    // 2. Validate ATR.
+    if (atr14AtConfirmation !== null &&
+        (typeof atr14AtConfirmation !== 'number' || !Number.isFinite(atr14AtConfirmation) || atr14AtConfirmation <= 0)) {
+        throw new Error('PHL Input Error: atr14AtConfirmation must be null or a positive finite number.');
     }
 
+    // 3. Validate candle and barIndex completely.
     if (!candle || typeof candle !== 'object' ||
         !Number.isSafeInteger(barIndex) || barIndex < 0 ||
         !Number.isSafeInteger(candle.time) || candle.time < 0 ||
@@ -277,7 +279,13 @@ export function stepPHL(
         candle.high < candle.low ||
         candle.high < Math.max(candle.open, candle.close) ||
         candle.low > Math.min(candle.open, candle.close)) {
-        throw new Error(`PHL Input Error: invalid candle or barIndex (${barIndex}).`);
+        throw new Error(`PHL Input Error: invalid candle OHLCV or barIndex (${barIndex}).`);
+    }
+
+    // 4. Only now is candle.time safe to access.
+    if (entryTimestamp !== null &&
+        (!Number.isSafeInteger(entryTimestamp) || entryTimestamp <= candle.time)) {
+        throw new Error('PHL Input Error: entryTimestamp must be null or a safe integer > candle.time.');
     }
 
     if (previousState.window.length > 0) {
