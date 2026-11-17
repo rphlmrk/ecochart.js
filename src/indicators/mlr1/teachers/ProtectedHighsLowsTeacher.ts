@@ -35,8 +35,14 @@ export interface PHLWindowBar {
     readonly volume: number;
 }
 
+export interface PHLClockCheckpoint {
+    readonly barIndex: number;
+    readonly time: number;
+}
+
 export interface PHLState {
     readonly stateVersion: 1;
+    readonly clockCheckpoints: readonly PHLClockCheckpoint[];
     readonly window: readonly PHLWindowBar[];
     readonly bull: boolean | null; // null until first break
     readonly ph: PHLPivotSlot | null;
@@ -45,8 +51,10 @@ export interface PHLState {
     readonly pbFromLow: PHLPullbackTracker;
     readonly lastHigh: number | null;
     readonly lastHighIdx: number | null;
+    readonly lastHighTime: number | null;
     readonly lastLow: number | null;
     readonly lastLowIdx: number | null;
+    readonly lastLowTime: number | null;
     readonly trackHigh: number | null;
     readonly trackHighIdx: number | null;
     readonly trackHighTime: number | null;
@@ -82,6 +90,7 @@ export function createDefaultPHLConfig(
 export function createInitialPHLState(): PHLState {
     return Object.freeze({
         stateVersion: 1 as const,
+        clockCheckpoints: Object.freeze([]),
         window: Object.freeze([]),
         bull: null,
         ph: null,
@@ -90,8 +99,10 @@ export function createInitialPHLState(): PHLState {
         pbFromLow: Object.freeze({ price: null, idx: null, valid: false, bull: false }),
         lastHigh: null,
         lastHighIdx: null,
+        lastHighTime: null,
         lastLow: null,
         lastLowIdx: null,
+        lastLowTime: null,
         trackHigh: null,
         trackHighIdx: null,
         trackHighTime: null,
@@ -153,9 +164,33 @@ function isValidTracker(
     return true;
 }
 
-function validatePHLState(state: PHLState, maxWin: number, intervalMs: number): void {
-    if (!state || typeof state !== 'object' || state.stateVersion !== 1) {
-        throw new Error('PHL State Integrity Error: invalid PHL state or stateVersion.');
+function resolveExpectedPHLTime(
+    barIndex: number,
+    checkpoints: readonly PHLClockCheckpoint[],
+    intervalMs: number
+): number | null {
+    if (checkpoints.length === 0 || barIndex < checkpoints[0].barIndex) return null;
+    let activeCp = checkpoints[0];
+    for (let i = 1; i < checkpoints.length; i++) {
+        if (checkpoints[i].barIndex <= barIndex) {
+            activeCp = checkpoints[i];
+        } else {
+            break;
+        }
+    }
+    return activeCp.time + (barIndex - activeCp.barIndex) * intervalMs;
+}
+
+export function validatePHLState(state: PHLState, maxWin: number, intervalMs: number): void {
+    if (!Number.isSafeInteger(maxWin) || maxWin < 1) {
+        throw new Error(`PHL State Integrity Error: maxWin must be a positive safe integer, got ${maxWin}.`);
+    }
+    if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
+        throw new Error(`PHL State Integrity Error: intervalMs must be a positive safe integer, got ${intervalMs}.`);
+    }
+    if (!state || typeof state !== 'object' || state.stateVersion !== 1 ||
+        !Array.isArray(state.clockCheckpoints)) {
+        throw new Error('PHL State Integrity Error: invalid PHL state, stateVersion, or clockCheckpoints.');
     }
     if (state.bull !== null && typeof state.bull !== 'boolean') {
         throw new Error('PHL State Integrity Error: bull must be boolean or null.');
@@ -164,9 +199,44 @@ function validatePHLState(state: PHLState, maxWin: number, intervalMs: number): 
         throw new Error('PHL State Integrity Error: invalid window container or length.');
     }
 
+    if (state.window.length === 0) {
+        if (state.clockCheckpoints.length !== 0 ||
+            state.bull !== null ||
+            state.ph !== null ||
+            state.pl !== null ||
+            state.lastHigh !== null || state.lastHighIdx !== null || state.lastHighTime !== null ||
+            state.lastLow !== null || state.lastLowIdx !== null || state.lastLowTime !== null ||
+            state.trackHigh !== null || state.trackHighIdx !== null || state.trackHighTime !== null ||
+            state.trackLow !== null || state.trackLowIdx !== null || state.trackLowTime !== null ||
+            state.pbFromHigh.price !== null || state.pbFromHigh.idx !== null || state.pbFromHigh.valid ||
+            state.pbFromLow.price !== null || state.pbFromLow.idx !== null || state.pbFromLow.valid) {
+            throw new Error('PHL State Integrity Error: empty window must have null historical references and initial state.');
+        }
+    } else if (state.clockCheckpoints.length === 0) {
+        throw new Error('PHL State Integrity Error: non-empty window requires clockCheckpoints.');
+    }
+
+    let prevCpIdx = -1;
+    let prevCpTime = -1;
+    for (const cp of state.clockCheckpoints) {
+        if (!cp || typeof cp !== 'object' ||
+            !Number.isSafeInteger(cp.barIndex) || cp.barIndex < 0 ||
+            !Number.isSafeInteger(cp.time) || cp.time < 0) {
+            throw new Error('PHL State Integrity Error: malformed clockCheckpoint.');
+        }
+        if (prevCpIdx !== -1) {
+            const dBar = cp.barIndex - prevCpIdx;
+            const dTime = cp.time - prevCpTime;
+            if (dBar <= 0 || dTime <= 0 || dTime % intervalMs !== 0 || dTime < dBar * intervalMs) {
+                throw new Error('PHL State Integrity Error: non-monotonic or invalid clockCheckpoints.');
+            }
+        }
+        prevCpIdx = cp.barIndex;
+        prevCpTime = cp.time;
+    }
+
     let prevIdx = -1;
     let prevTime = -1;
-    const windowByIdx = new Map<number, PHLWindowBar>();
     for (const w of state.window) {
         if (!w || typeof w !== 'object' ||
             !Number.isSafeInteger(w.barIndex) || w.barIndex < 0 ||
@@ -179,16 +249,12 @@ function validatePHLState(state: PHLState, maxWin: number, intervalMs: number): 
             w.high < w.low || w.high < Math.max(w.open, w.close) || w.low > Math.min(w.open, w.close)) {
             throw new Error('PHL State Integrity Error: malformed OHLCV/index/time in window.');
         }
-        if (prevIdx !== -1) {
-            if (w.barIndex <= prevIdx || w.time <= prevTime) {
-                throw new Error('PHL State Integrity Error: window bars must be strictly chronological.');
-            }
-            const delta = w.time - prevTime;
-            if (delta < intervalMs || delta % intervalMs !== 0) {
-                throw new Error('PHL State Integrity Error: window timestamps must align to intervalMs grid.');
-            }
+        if (prevIdx !== -1 && (w.barIndex <= prevIdx || w.time <= prevTime || (w.time - prevTime) % intervalMs !== 0)) {
+            throw new Error('PHL State Integrity Error: window bars must be strictly chronological.');
         }
-        windowByIdx.set(w.barIndex, w);
+        if (resolveExpectedPHLTime(w.barIndex, state.clockCheckpoints, intervalMs) !== w.time) {
+            throw new Error(`PHL State Integrity Error: window bar ${w.barIndex} disagrees with clockCheckpoints.`);
+        }
         prevIdx = w.barIndex;
         prevTime = w.time;
     }
@@ -198,71 +264,19 @@ function validatePHLState(state: PHLState, maxWin: number, intervalMs: number): 
     const maxBarIdx = prevIdx === -1 ? null : prevIdx;
     const maxTime = prevTime === -1 ? null : prevTime;
 
-    const checkWindowRef = (
-        idx: number,
-        time: number | null,
-        price: number,
-        label: string,
-        field: 'high' | 'low' | null
-    ) => {
-        if (minBarIdx === null || maxBarIdx === null || minTime === null || maxTime === null) {
-            throw new Error(`PHL State Integrity Error: ${label} cannot be non-null when window is empty.`);
-        }
-        if (idx > maxBarIdx || (time !== null && time > maxTime)) {
-            throw new Error(`PHL State Integrity Error: ${label} exceeds latest window bar.`);
-        }
-        if (idx >= minBarIdx) {
-            const wb = windowByIdx.get(idx);
-            if (wb === undefined) {
-                throw new Error(`PHL State Integrity Error: retained ${label} barIndex ${idx} missing from window.`);
-            }
-            if (time !== null && wb.time !== time) {
-                throw new Error(`PHL State Integrity Error: ${label} disagrees with window bar time.`);
-            }
-            if (field !== null && wb[field] !== price) {
-                throw new Error(`PHL State Integrity Error: ${label} disagrees with window bar ${field}.`);
-            }
-        } else if (time !== null) {
-            if (time >= minTime || (minTime - time) % intervalMs !== 0) {
-                throw new Error(
-                    `PHL State Integrity Error: expired ${label} time (${time}) must be < minTime (${minTime}) and aligned to intervalMs (${intervalMs}).`
-                );
-            }
-        }
-    };
+    if (prevCpIdx !== -1 && maxBarIdx !== null && maxTime !== null &&
+        (prevCpIdx > maxBarIdx || prevCpTime > maxTime)) {
+        throw new Error('PHL State Integrity Error: clockCheckpoint exceeds latest retained window bar.');
+    }
 
     if (!isValidSlot(state.ph, maxBarIdx, maxTime) || !isValidSlot(state.pl, maxBarIdx, maxTime)) {
         throw new Error('PHL State Integrity Error: corrupted ph/pl slot.');
     }
-    if (state.ph !== null) {
-        checkWindowRef(state.ph.barIndex, state.ph.time, state.ph.price, 'ph', 'high');
-    }
-    if (state.pl !== null) {
-        checkWindowRef(state.pl.barIndex, state.pl.time, state.pl.price, 'pl', 'low');
-    }
     if (!isValidTracker(state.pbFromHigh, true, maxBarIdx) || !isValidTracker(state.pbFromLow, false, maxBarIdx)) {
         throw new Error('PHL State Integrity Error: corrupted pullback tracker.');
     }
-    if (state.pbFromHigh.price !== null && state.pbFromHigh.idx !== null) {
-        checkWindowRef(state.pbFromHigh.idx, null, state.pbFromHigh.price, 'pbFromHigh', null);
-    }
-    if (state.pbFromLow.price !== null && state.pbFromLow.idx !== null) {
-        checkWindowRef(state.pbFromLow.idx, null, state.pbFromLow.price, 'pbFromLow', null);
-    }
 
-    const checkPair = (price: number | null, idx: number | null, label: string, field: 'high' | 'low') => {
-        if (price === null && idx === null) return;
-        if (price === null || !Number.isFinite(price) || price <= 0 ||
-            idx === null || !Number.isSafeInteger(idx) || idx < 0 ||
-            (maxBarIdx !== null && idx > maxBarIdx)) {
-            throw new Error(`PHL State Integrity Error: inconsistent ${label} price/index pair.`);
-        }
-        checkWindowRef(idx, null, price, label, field);
-    };
-    checkPair(state.lastHigh, state.lastHighIdx, 'lastHigh', 'high');
-    checkPair(state.lastLow, state.lastLowIdx, 'lastLow', 'low');
-
-    const checkTriple = (price: number | null, idx: number | null, time: number | null, label: string, field: 'high' | 'low') => {
+    const checkTriple = (price: number | null, idx: number | null, time: number | null, label: string) => {
         if (price === null && idx === null && time === null) return;
         if (price === null || !Number.isFinite(price) || price <= 0 ||
             idx === null || !Number.isSafeInteger(idx) || idx < 0 ||
@@ -271,10 +285,49 @@ function validatePHLState(state: PHLState, maxWin: number, intervalMs: number): 
             (maxTime !== null && time > maxTime)) {
             throw new Error(`PHL State Integrity Error: inconsistent ${label} price/index/time triple.`);
         }
-        checkWindowRef(idx, time, price, label, field);
     };
-    checkTriple(state.trackHigh, state.trackHighIdx, state.trackHighTime, 'trackHigh', 'high');
-    checkTriple(state.trackLow, state.trackLowIdx, state.trackLowTime, 'trackLow', 'low');
+    checkTriple(state.lastHigh, state.lastHighIdx, state.lastHighTime, 'lastHigh');
+    checkTriple(state.lastLow, state.lastLowIdx, state.lastLowTime, 'lastLow');
+    checkTriple(state.trackHigh, state.trackHighIdx, state.trackHighTime, 'trackHigh');
+    checkTriple(state.trackLow, state.trackLowIdx, state.trackLowTime, 'trackLow');
+
+    const windowByIdx = new Map(state.window.map(w => [w.barIndex, w] as const));
+    const checkWindowRef = (label: string, idx: number, time: number, price: number, kind: 'high' | 'low') => {
+        if (minBarIdx !== null && minTime !== null) {
+            if (idx < minBarIdx) {
+                const expectedTime = resolveExpectedPHLTime(idx, state.clockCheckpoints, intervalMs);
+                if (expectedTime === null || time >= minTime || time !== expectedTime) {
+                    throw new Error(
+                        `PHL State Integrity Error: expired ${label} index/time relationship is inconsistent.`
+                    );
+                }
+            } else {
+                const w = windowByIdx.get(idx);
+                if (!w) {
+                    throw new Error(`PHL State Integrity Error: ${label} index ${idx} missing from retained window.`);
+                }
+                const expectedPrice = kind === 'high' ? w.high : w.low;
+                if (w.time !== time || price !== expectedPrice) {
+                    throw new Error(`PHL State Integrity Error: ${label} disagrees with stored window bar ${idx}.`);
+                }
+            }
+        }
+    };
+
+    if (state.ph !== null) checkWindowRef('ph', state.ph.barIndex, state.ph.time, state.ph.price, 'high');
+    if (state.pl !== null) checkWindowRef('pl', state.pl.barIndex, state.pl.time, state.pl.price, 'low');
+    if (state.lastHighIdx !== null && state.lastHighTime !== null && state.lastHigh !== null) {
+        checkWindowRef('lastHigh', state.lastHighIdx, state.lastHighTime, state.lastHigh, 'high');
+    }
+    if (state.lastLowIdx !== null && state.lastLowTime !== null && state.lastLow !== null) {
+        checkWindowRef('lastLow', state.lastLowIdx, state.lastLowTime, state.lastLow, 'low');
+    }
+    if (state.trackHighIdx !== null && state.trackHighTime !== null && state.trackHigh !== null) {
+        checkWindowRef('trackHigh', state.trackHighIdx, state.trackHighTime, state.trackHigh, 'high');
+    }
+    if (state.trackLowIdx !== null && state.trackLowTime !== null && state.trackLow !== null) {
+        checkWindowRef('trackLow', state.trackLowIdx, state.trackLowTime, state.trackLow, 'low');
+    }
 }
 
 export function stepPHL(
@@ -339,6 +392,18 @@ export function stepPHL(
     }
 
     const baseState = isDiscontinuity ? createInitialPHLState() : previousState;
+    let nextClockCheckpoints = baseState.clockCheckpoints;
+    if (nextClockCheckpoints.length === 0) {
+        nextClockCheckpoints = Object.freeze([Object.freeze({ barIndex, time: candle.time })]);
+    } else {
+        const expected = resolveExpectedPHLTime(barIndex, nextClockCheckpoints, config.intervalMs);
+        if (expected !== candle.time) {
+            nextClockCheckpoints = Object.freeze([
+                ...nextClockCheckpoints,
+                Object.freeze({ barIndex, time: candle.time })
+            ]);
+        }
+    }
     const bar: PHLWindowBar = Object.freeze({
         barIndex,
         time: candle.time,
@@ -357,8 +422,10 @@ export function stepPHL(
     let pbFromLow = baseState.pbFromLow;
     let lastHigh = baseState.lastHigh;
     let lastHighIdx = baseState.lastHighIdx;
+    let lastHighTime = baseState.lastHighTime;
     let lastLow = baseState.lastLow;
     let lastLowIdx = baseState.lastLowIdx;
+    let lastLowTime = baseState.lastLowTime;
     let trackHigh = baseState.trackHigh;
     let trackHighIdx = baseState.trackHighIdx;
     let trackHighTime = baseState.trackHighTime;
@@ -408,6 +475,7 @@ export function stepPHL(
                 if (lastLow === null || cand.low < lastLow) {
                     lastLow = cand.low;
                     lastLowIdx = cand.barIndex;
+                    lastLowTime = cand.time;
                 }
             }
         }
@@ -431,6 +499,7 @@ export function stepPHL(
                 if (lastHigh === null || cand.high > lastHigh) {
                     lastHigh = cand.high;
                     lastHighIdx = cand.barIndex;
+                    lastHighTime = cand.time;
                 }
             }
         }
@@ -489,6 +558,7 @@ export function stepPHL(
             pl = Object.freeze({ price: trackLow, barIndex: trackLowIdx, time: trackLowTime });
             lastHigh = null;
             lastHighIdx = null;
+            lastHighTime = null;
         }
 
         const distProtectedAtr =
@@ -532,6 +602,7 @@ export function stepPHL(
             ph = Object.freeze({ price: trackHigh, barIndex: trackHighIdx, time: trackHighTime });
             lastLow = null;
             lastLowIdx = null;
+            lastLowTime = null;
         }
 
         const distProtectedAtr =
@@ -567,6 +638,7 @@ export function stepPHL(
 
     const nextState: PHLState = Object.freeze({
         stateVersion: 1 as const,
+        clockCheckpoints: nextClockCheckpoints,
         window: nextWindow,
         bull,
         ph,
@@ -575,8 +647,10 @@ export function stepPHL(
         pbFromLow,
         lastHigh,
         lastHighIdx,
+        lastHighTime,
         lastLow,
         lastLowIdx,
+        lastLowTime,
         trackHigh,
         trackHighIdx,
         trackHighTime,

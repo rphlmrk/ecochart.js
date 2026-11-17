@@ -7,6 +7,7 @@ import {
     type StrictZigZagPivot
 } from '../../plugins/StrictCBCZigZagIndicator';
 import type { VAMStepOutput } from '../trend/VolatilityAdjustedMean';
+import type { VAMState } from '../ML1FeatureTypes';
 
 export type StrategyId = 'STRICT_CBC' | 'PHL_BOS_MSS' | 'DTFX_ZONES' | 'VAM_REVERSAL';
 
@@ -584,4 +585,110 @@ export function adaptVAMtoStrategyEvent(params: {
             sellStreak: vamOutput.sellStreak
         }
     });
+}
+
+// =========================================================================
+// Phase 2 Checkpoint Validators (StrictCBC Paired State & VAM State)
+// =========================================================================
+
+export function validateStrictCBCCheckpoint(
+    state: StrictCBCState | null,
+    prevPivot: StrictZigZagPivot | null,
+    currentBarIndex: number
+): void {
+    if (!Number.isSafeInteger(currentBarIndex) || currentBarIndex < 0) {
+        throw new Error(`StrictCBC Checkpoint Error: invalid currentBarIndex ${currentBarIndex}.`);
+    }
+    if (!state || typeof state !== 'object') {
+        throw new Error('StrictCBC Checkpoint Error: state must be non-null.');
+    }
+    if (!Number.isFinite(state.anchorHigh) || state.anchorHigh <= 0 ||
+        !Number.isFinite(state.anchorLow) || state.anchorLow <= 0 ||
+        state.anchorHigh < state.anchorLow ||
+        typeof state.isBullish !== 'boolean') {
+        throw new Error('StrictCBC Checkpoint Error: corrupted anchors or isBullish.');
+    }
+    if (!Number.isFinite(state.phaseHigh) || state.phaseHigh <= 0 ||
+        !Number.isSafeInteger(state.phaseHighIdx) || state.phaseHighIdx < 0 || state.phaseHighIdx > currentBarIndex ||
+        !Number.isSafeInteger(state.phaseHighTime) || state.phaseHighTime < 0 ||
+        !Number.isFinite(state.phaseLow) || state.phaseLow <= 0 ||
+        !Number.isSafeInteger(state.phaseLowIdx) || state.phaseLowIdx < 0 || state.phaseLowIdx > currentBarIndex ||
+        !Number.isSafeInteger(state.phaseLowTime) || state.phaseLowTime < 0) {
+        throw new Error('StrictCBC Checkpoint Error: corrupted phase extremes.');
+    }
+    if ((state.lastHighPrice !== null && (!Number.isFinite(state.lastHighPrice) || state.lastHighPrice <= 0)) ||
+        (state.lastLowPrice !== null && (!Number.isFinite(state.lastLowPrice) || state.lastLowPrice <= 0))) {
+        throw new Error('StrictCBC Checkpoint Error: corrupted lastHighPrice/lastLowPrice.');
+    }
+    if (!Number.isSafeInteger(state.nextPivotId) || state.nextPivotId < 1) {
+        throw new Error('StrictCBC Checkpoint Error: invalid nextPivotId.');
+    }
+
+    if (prevPivot !== null) {
+        if (typeof prevPivot !== 'object' ||
+            !Number.isSafeInteger(prevPivot.id) || prevPivot.id < 1 || prevPivot.id >= state.nextPivotId ||
+            (prevPivot.type !== 'high' && prevPivot.type !== 'low') ||
+            !Number.isFinite(prevPivot.price) || prevPivot.price <= 0 ||
+            !Number.isSafeInteger(prevPivot.barIndex) || prevPivot.barIndex < 0 ||
+            !Number.isSafeInteger(prevPivot.confirmedBarIndex) ||
+            prevPivot.confirmedBarIndex < prevPivot.barIndex ||
+            prevPivot.confirmedBarIndex > currentBarIndex) {
+            throw new Error('StrictCBC Checkpoint Error: corrupted prevPivot.');
+        }
+        // Cross-validate paired prevPivot against StrictCBCState
+        const expectedBullish = prevPivot.type === 'low';
+        if (state.isBullish !== expectedBullish) {
+            throw new Error(
+                `StrictCBC Checkpoint Error: stale/mismatched prevPivot.type '${prevPivot.type}' for isBullish=${state.isBullish}.`
+            );
+        }
+        const expectedLastPrice = prevPivot.type === 'high' ? state.lastHighPrice : state.lastLowPrice;
+        if (expectedLastPrice !== prevPivot.price) {
+            throw new Error('StrictCBC Checkpoint Error: prevPivot.price disagrees with StrictCBCState last extreme.');
+        }
+        const activePhaseIdx = prevPivot.type === 'high' ? state.phaseLowIdx : state.phaseHighIdx;
+        if (activePhaseIdx < prevPivot.confirmedBarIndex) {
+            throw new Error('StrictCBC Checkpoint Error: prevPivot confirmed after current phase index.');
+        }
+    }
+}
+
+export function validateVAMCheckpoint(vs: VAMState): void {
+    if (!vs || typeof vs !== 'object' || !Number.isSafeInteger(vs.unbrokenRun) || vs.unbrokenRun < 0) {
+        throw new Error('VAM Checkpoint Error: invalid VAM state or unbrokenRun.');
+    }
+    if (!Array.isArray(vs.hlc3History) || vs.hlc3History.length !== Math.min(19, vs.unbrokenRun) ||
+        vs.hlc3History.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
+        throw new Error('VAM Checkpoint Error: invalid hlc3History.');
+    }
+    if (!Array.isArray(vs.centerHistory) ||
+        vs.centerHistory.length !== (vs.unbrokenRun < 5 ? 0 : Math.min(4, vs.unbrokenRun - 4)) ||
+        vs.centerHistory.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
+        throw new Error('VAM Checkpoint Error: invalid centerHistory.');
+    }
+    if (vs.unbrokenRun > 0 && (vs.adaptive === null || !Number.isFinite(vs.adaptive))) {
+        throw new Error('VAM Checkpoint Error: non-finite adaptive.');
+    }
+    const atr = vs.atrState;
+    if (!atr || typeof atr !== 'object' || atr.count !== vs.unbrokenRun ||
+        !Number.isFinite(atr.seedMean) || atr.seedMean < 0 ||
+        (atr.isSeeded ? (atr.atr === null || !Number.isFinite(atr.atr) || atr.atr < 0) : atr.atr !== null)) {
+        throw new Error('VAM Checkpoint Error: invalid atrState.');
+    }
+    if (vs.adx !== null && (!Number.isFinite(vs.adx) || vs.adx < 0 || vs.adx > 100)) {
+        throw new Error('VAM Checkpoint Error: invalid ADX.');
+    }
+    if ((vs.trend !== -1 && vs.trend !== 0 && vs.trend !== 1) ||
+        (vs.unbrokenRun < 8 ? vs.trend !== 0 : vs.trend === 0) ||
+        !Number.isSafeInteger(vs.buyStreak) || vs.buyStreak < 0 ||
+        !Number.isSafeInteger(vs.sellStreak) || vs.sellStreak < 0 ||
+        (vs.buyStreak > 0 && vs.sellStreak > 0)) {
+        throw new Error('VAM Checkpoint Error: invalid trend or streaks.');
+    }
+    if (vs.lastSignalAcceptedIndex !== null &&
+        (!Number.isSafeInteger(vs.lastSignalAcceptedIndex) ||
+            vs.lastSignalAcceptedIndex < 0 ||
+            vs.lastSignalAcceptedIndex >= vs.unbrokenRun)) {
+        throw new Error('VAM Checkpoint Error: invalid lastSignalAcceptedIndex.');
+    }
 }
