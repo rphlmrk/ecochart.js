@@ -12,11 +12,14 @@ import {
     serializeCsvRecord
 } from '../indicators/mlr1/pipeline/V3ArtifactAuditor';
 import {
+    MultiHorizonOutcomeTracker,
     V3_MAX_HORIZON_BARS,
-    V3_STRATEGY_EVENT_COLUMNS
+    V3_STRATEGY_EVENT_COLUMNS,
+    type V3TierAAtConfirmation
 } from '../indicators/mlr1/pipeline/MultiHorizonOutcomeEngine';
 import { accountRawSourceRows } from '../indicators/mlr1/dataset/ObservationBackbone';
 import { V3PipelineRunner } from '../indicators/mlr1/pipeline/V3PipelineEngine';
+import { createStrategyEvent, type StrategyEvent } from '../indicators/mlr1/teachers/StrategyEventTypes';
 import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
 
 function assert(condition: boolean, msg: string): asserts condition {
@@ -192,7 +195,8 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         assert(artifacts.manifest.exportAccounting.tierBConfirmedTeacherEventCount > 5,
             'Expected > 5 confirmed V3 teacher events across 650 candles');
 
-        // Verify earliest (<60) AND latest (>400, horizonEnd180 <= 649) events by min/max confirmation index
+        // Explicitly guard non-empty event list before min/max confirmation index selection
+        assert(artifacts.strategyEventRows.length > 0, 'Expected non-empty strategyEventRows before min/max check');
         const minConfirmation = Math.min(...artifacts.strategyEventRows.map(e => e.confirmation_bar_index));
         const maxConfirmation = Math.max(...artifacts.strategyEventRows.map(e => e.confirmation_bar_index));
         const earliestEv = artifacts.strategyEventRows.find(e => e.confirmation_bar_index === minConfirmation)!;
@@ -207,13 +211,17 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
             `Expected early (<60) and late (>400) batch replays, got [${minConfirmation}, ${maxConfirmation}]`
         );
 
-        // Verify first, intermediate (324), and last Continuous CSV rows map to accepted raw indices 0, 324, and 649
+        // Resolve columns from Continuous header and verify exact row count + first, intermediate (324), and last rows
         const contRows = parseCsvDocumentCRLF(artifacts.continuousCsv);
+        assert(contRows.length === 651, `Expected 651 Continuous CSV records (header + 650 rows), got ${contRows.length}`);
+        const contTsCol = contRows[0].indexOf('source_timestamp');
+        const contCloseCol = contRows[0].indexOf('close');
+        assert(contTsCol >= 0 && contCloseCol >= 0, 'Continuous header missing source_timestamp or close column');
         assert(
-            Number(contRows[1][1]) === buffer[0] &&
-            Number(contRows[325][1]) === buffer[324 * 6] &&
-            Number(contRows[325][6]) === buffer[324 * 6 + 4] &&
-            Number(contRows[650][1]) === buffer[649 * 6],
+            Number(contRows[1][contTsCol]) === buffer[0] &&
+            Number(contRows[325][contTsCol]) === buffer[324 * 6] &&
+            Number(contRows[325][contCloseCol]) === buffer[324 * 6 + 4] &&
+            Number(contRows[650][contTsCol]) === buffer[649 * 6],
             'Continuous first/intermediate/last rows must map to accepted raw indices 0, 324, and N-1'
         );
 
@@ -475,13 +483,28 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
             },
             {
                 timeframe: '15m', openTimestamp: alignedOpen, closeTimestamp: alignedOpen + 900_000,
-                expectedSourceCount: 15, actualSourceCount: 14, missingTimestamps: [alignedOpen],
-                duplicateCount: 0, invalidSourceCount: 1, completeness: 'INCOMPLETE_UNFINISHED'
+                expectedSourceCount: 15, actualSourceCount: 1, missingTimestamps: [alignedOpen],
+                duplicateCount: 0, invalidSourceCount: 0, completeness: 'INCOMPLETE_MISSING'
             },
             {
                 timeframe: '15m', openTimestamp: alignedOpen, closeTimestamp: alignedOpen + 900_000,
                 expectedSourceCount: 15, actualSourceCount: 14, missingTimestamps: [alignedOpen],
-                duplicateCount: 1, invalidSourceCount: 0, completeness: 'INCOMPLETE_UNFINISHED'
+                duplicateCount: 0, invalidSourceCount: 0, completeness: 'INCOMPLETE_UNFINISHED'
+            },
+            {
+                timeframe: '15m', openTimestamp: alignedOpen, closeTimestamp: alignedOpen + 900_000,
+                expectedSourceCount: 15, actualSourceCount: 14, missingTimestamps: [alignedOpen],
+                duplicateCount: 0, invalidSourceCount: 1, completeness: 'INCOMPLETE_MISSING'
+            },
+            {
+                timeframe: '15m', openTimestamp: alignedOpen, closeTimestamp: alignedOpen + 900_000,
+                expectedSourceCount: 15, actualSourceCount: 14, missingTimestamps: [alignedOpen],
+                duplicateCount: 1, invalidSourceCount: 0, completeness: 'INCOMPLETE_MISSING'
+            },
+            {
+                timeframe: '15m', openTimestamp: alignedOpen, closeTimestamp: alignedOpen + 900_000,
+                expectedSourceCount: 15, actualSourceCount: 14, missingTimestamps: [alignedOpen],
+                duplicateCount: 0, invalidSourceCount: 0, completeness: 'UNKNOWN_STATUS'
             }
         ];
         for (const badDiag of contraCases) {
@@ -665,7 +688,7 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         assert(refusedOverwrite && new TextDecoder().decode(sentinelHandle.bytes) === '{"prior":"preserved"}',
             'Must refuse to overwrite pre-existing dataset directory');
 
-        // 4c. Failure mid-publication cleans up partial published files & temporary staging folder
+        // 4c. Failure mid-publication cleans up partial published files & temporary staging folder (never returns a result)
         const rootDir2 = new MockDirectoryHandle();
         const origGetDir = rootDir2.getDirectoryHandle.bind(rootDir2);
         rootDir2.getDirectoryHandle = async (name: string, opts?: { create?: boolean }) => {
@@ -675,9 +698,10 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
             }
             return d;
         };
+        let pubResultOnFailure: unknown = null;
         let pubFailed = false;
         try {
-            await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
+            pubResultOnFailure = await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
                 rawCandleBuffer: buffer,
                 symbol: 'SOLUSDT',
                 interval: '1m',
@@ -691,9 +715,10 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         }
         assert(
             pubFailed &&
+            pubResultOnFailure === null &&
             (rootDir2.dirs.get(fixedDestName)?.files.size ?? 0) === 0 &&
             Array.from(rootDir2.dirs.keys()).every(d => !d.startsWith('.tmp_')),
-            'Mid-publication failure must clean up partial destination files AND temporary staging folder'
+            'Mid-publication failure must throw (never return result), clean up partial destination files, and clean up staging folder'
         );
 
         // 4c-2. Write failure inside writable.write() on 2nd destination file cleans up partial published files + staging dir
@@ -782,9 +807,9 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         assert(
             finErrMsg === 'Simulated sink2 close failure' &&
             !finErrMsg.includes('Ignore secondary abort error') &&
-            s1.aborted && s2.aborted &&
+            s1.aborted && s2.aborted && !s3.aborted &&
             s1.abortCalls === 1 && s2.abortCalls === 1 && s3.abortCalls === 1,
-            'Sink finalization failure must preserve original error and abort all 3 sinks independently'
+            'Sink finalization failure must preserve original error and attempt abort on all 3 sinks even when s3.abort throws'
         );
 
         const cancelFinCtrl = new AbortController();
@@ -857,7 +882,7 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         assert(extErr && extDir !== undefined && extDir.files.has('external.txt'),
             'External concurrent directory must never be deleted by rollback');
 
-        // 4g. Default unique execution-owned publication + external-file check/create gap protection
+        // 4g. Default unique execution-owned publication + empty-directory check/create-gap behavior (documented API limitation)
         const uniqueRoot = new MockDirectoryHandle();
         const uResA = await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
             rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000,
@@ -868,87 +893,211 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
             rootDirHandle: uniqueRoot, buildTimestamp: fixedTs
         });
         assert(
+            typeof uResA.folderName === 'string' && uResA.folderName.length > 0 &&
+            typeof uResB.folderName === 'string' && uResB.folderName.length > 0 &&
             uResA.folderName !== uResB.folderName &&
             uResA.folderName.startsWith('MLR1_SOLUSDT_1m_V3_Dataset_') &&
+            uResB.folderName.startsWith('MLR1_SOLUSDT_1m_V3_Dataset_') &&
             uniqueRoot.dirs.has(uResA.folderName) &&
-            uniqueRoot.dirs.has(uResB.folderName),
-            'Default exports must publish into separate unique execution-owned folders'
+            uniqueRoot.dirs.has(uResB.folderName) &&
+            uniqueRoot.dirs.get(uResA.folderName)!.files.has('MLR1_SOLUSDT_1m_Manifest.json') &&
+            uniqueRoot.dirs.get(uResB.folderName)!.files.has('MLR1_SOLUSDT_1m_Manifest.json'),
+            'Default exports must publish into separate unique folders and populate folderName on success'
         );
 
-        const raceRoot = new MockDirectoryHandle();
-        const origRaceGetDir = raceRoot.getDirectoryHandle.bind(raceRoot);
-        raceRoot.getDirectoryHandle = async (name: string, opts?: { create?: boolean }) => {
-            const d = await origRaceGetDir(name, opts);
-            if (name === fixedDestName && opts?.create) {
-                const origGetFile = d.getFileHandle.bind(d);
-                let checkedMissing = false;
-                d.getFileHandle = async (fName: string, fOpts?: { create?: boolean }) => {
-                    if (fName === 'MLR1_SOLUSDT_1m_Continuous_Observations.csv' && fOpts?.create === true && checkedMissing) {
-                        // Simulate external actor writing file right in the check/create gap
-                        const extFile = await origGetFile(fName, { create: true });
-                        const w = await extFile.createWritable();
-                        await w.write(new TextEncoder().encode('external-gap-owned'));
-                        await w.close();
-                        return extFile;
-                    }
-                    try {
-                        return await origGetFile(fName, fOpts);
-                    } catch (err) {
-                        if (fName === 'MLR1_SOLUSDT_1m_Continuous_Observations.csv' && fOpts?.create === false) {
-                            checkedMissing = true;
-                        }
-                        throw err;
-                    }
-                };
+        // Simulate an external actor creating an empty directory right in the check/create gap (after create:false throws NotFoundError,
+        // before create:true runs), combined with a mid-publication error: exclusive ownership is never claimed without O_EXCL,
+        // and rollback MUST NOT delete `finalDirHandle`.
+        const emptyGapRoot = new MockDirectoryHandle();
+        const origEmptyGapGetDir = emptyGapRoot.getDirectoryHandle.bind(emptyGapRoot);
+        let sawCheckAbsent = false;
+        let injectedEmptyExternalDir: MockDirectoryHandle | null = null;
+        emptyGapRoot.getDirectoryHandle = async (name: string, opts?: { create?: boolean }) => {
+            if (name === fixedDestName && opts?.create === true && sawCheckAbsent && injectedEmptyExternalDir === null) {
+                injectedEmptyExternalDir = await origEmptyGapGetDir(name, { create: true });
+                injectedEmptyExternalDir.failOnFileName = 'MLR1_SOLUSDT_1m_StrategyEvents.csv';
+                return injectedEmptyExternalDir;
             }
-            return d;
+            try {
+                return await origEmptyGapGetDir(name, opts);
+            } catch (err) {
+                if (name === fixedDestName && opts?.create === false) {
+                    sawCheckAbsent = true;
+                }
+                throw err;
+            }
         };
-        let gapRaceRejected = false;
+        let emptyGapErr = false;
         try {
             await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
                 rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000,
-                rootDirHandle: raceRoot, destinationFolderName: fixedDestName, buildTimestamp: fixedTs
+                rootDirHandle: emptyGapRoot, destinationFolderName: fixedDestName, buildTimestamp: fixedTs
             });
         } catch (e: any) {
-            gapRaceRejected = String(e.message).includes('created externally');
+            emptyGapErr = String(e.message).includes('Simulated write failure');
         }
-        const racedHandle = raceRoot.dirs.get(fixedDestName)?.files.get('MLR1_SOLUSDT_1m_Continuous_Observations.csv');
         assert(
-            gapRaceRejected &&
-            racedHandle !== undefined &&
-            new TextDecoder().decode(racedHandle.bytes) === 'external-gap-owned',
-            'External file created in check/create gap must neither be overwritten nor deleted by rollback'
+            emptyGapErr &&
+            emptyGapRoot.dirs.has(fixedDestName) &&
+            (emptyGapRoot.dirs.get(fixedDestName)?.files.size ?? 0) === 0,
+            'Empty directory created in check/create gap must never be deleted on rollback'
         );
 
-        // 4h. Streaming runner OHLCV substitution check (same timestamp, altered close price)
+        // 4h. Streaming runner OHLCV substitution checks (finite +0.25, sub-1e-12 +1e-13, and NaN close tamper)
         const origStepCandle = V3PipelineRunner.prototype.stepCandle;
-        let substitutionRejected = false;
-        V3PipelineRunner.prototype.stepCandle = function (rawCandle) {
-            const out = origStepCandle.call(this, rawCandle);
-            if (out.acceptedBarIndex === 10) {
-                return {
-                    ...out,
-                    candle: Object.freeze({ ...out.candle, close: out.candle.close + 0.25 })
-                };
+        for (const [label, mutatedClose] of [
+            ['finite close substitution (+0.25)', (c: number) => c + 0.25],
+            ['sub-1e-12 close substitution (+1e-13)', (c: number) => c + 1e-13],
+            ['NaN close substitution', () => Number.NaN]
+        ] as const) {
+            let substitutionRejected = false;
+            V3PipelineRunner.prototype.stepCandle = function (rawCandle) {
+                const out = origStepCandle.call(this, rawCandle);
+                if (out.acceptedBarIndex === 10) {
+                    return {
+                        ...out,
+                        candle: Object.freeze({ ...out.candle, close: mutatedClose(out.candle.close) })
+                    };
+                }
+                return out;
+            };
+            try {
+                await StreamingDatasetExporter.runV3StreamingCore({
+                    rawCandleBuffer: buffer,
+                    symbol: 'SOLUSDT',
+                    interval: '1m',
+                    intervalMs: 60_000,
+                    continuousSink: new BufferedTextSink(new SpySinkStream(), 128),
+                    representationSink: new BufferedTextSink(new SpySinkStream(), 128),
+                    strategyEventSink: new BufferedTextSink(new SpySinkStream(), 128)
+                });
+            } catch (e: any) {
+                substitutionRejected = String(e.message).includes('modified accepted candle');
+            } finally {
+                V3PipelineRunner.prototype.stepCandle = origStepCandle;
             }
-            return out;
-        };
-        try {
-            await StreamingDatasetExporter.runV3StreamingCore({
-                rawCandleBuffer: buffer,
-                symbol: 'SOLUSDT',
-                interval: '1m',
-                intervalMs: 60_000,
-                continuousSink: new BufferedTextSink(new SpySinkStream(), 128),
-                representationSink: new BufferedTextSink(new SpySinkStream(), 128),
-                strategyEventSink: new BufferedTextSink(new SpySinkStream(), 128)
-            });
-        } catch (e: any) {
-            substitutionRejected = String(e.message).includes('modified accepted candle');
-        } finally {
-            V3PipelineRunner.prototype.stepCandle = origStepCandle;
+            assert(substitutionRejected, `Streaming exporter must reject ${label} on accepted candle`);
         }
-        assert(substitutionRejected, 'Streaming exporter must reject an accepted candle whose OHLCV differs from raw input');
+
+        // 4i. Universal observationBarIndex === confirmationBarIndex rejection across all 4 teachers
+        const dummyTierA: V3TierAAtConfirmation = {
+            tierAObservationId: 'OBS_SOLUSDT_1m_V3_1700000040000',
+            atr14: 2.0,
+            exhaustion20: 0,
+            exhaustion20Valid: true,
+            vcsRatio360: 1.0,
+            vcsZScore360: 0,
+            vcsRegime360: 0,
+            vcsValid: true,
+            vamCenterDistAtr: 0,
+            vamSlope3Atr: 0,
+            vamEfficiency: 0.5,
+            vamAdx14: 25,
+            vamDiSpread14: 5,
+            vamRsi14: 55,
+            vamTrend: 1,
+            vamValid: true,
+            context15mAvailable: true,
+            context15mStatus: 'AVAILABLE_VALID'
+        };
+        const teacherCases = [
+            { strategyId: 'STRICT_CBC' as const, strategyVersion: 'StrictCBCZigZag_v1', eventType: 'CBC_HIGH_HH' as const, direction: 'bear' as const, disc: '1', srcBar: 1 },
+            { strategyId: 'PHL_BOS_MSS' as const, strategyVersion: 'PHL_BOS_MSS_v1', eventType: 'PHL_MSS_BULL' as const, direction: 'bull' as const, disc: 'PH', srcBar: 1 },
+            { strategyId: 'DTFX_ZONES' as const, strategyVersion: 'DTFX_ZONES_v1', eventType: 'DTFX_DEMAND_CREATED' as const, direction: 'bull' as const, disc: '1', srcBar: 1 },
+            { strategyId: 'VAM_REVERSAL' as const, strategyVersion: 'VAM_v1', eventType: 'VAM_BUY' as const, direction: 'bull' as const, disc: 'BUY', srcBar: 3 }
+        ];
+        const tBase = 1_700_000_040_000;
+        for (const tc of teacherCases) {
+            const validEv = createStrategyEvent({
+                strategyId: tc.strategyId,
+                strategyVersion: tc.strategyVersion,
+                symbol: 'SOLUSDT',
+                timeframe: '1m',
+                intervalMs: 60_000,
+                eventType: tc.eventType,
+                eventDirection: tc.direction,
+                eventDiscriminator: tc.disc,
+                sourceBarIndex: tc.srcBar,
+                sourceTimestamp: tBase + tc.srcBar * 60_000,
+                confirmationBarIndex: 3,
+                confirmationTimestamp: tBase + 3 * 60_000,
+                entryTimestamp: null,
+                structuralContext: {}
+            });
+            assert(
+                validEv.sourceBarIndex === tc.srcBar &&
+                validEv.observationBarIndex === validEv.confirmationBarIndex &&
+                validEv.confirmationBarIndex === 3 &&
+                validEv.entryBarIndex === 4,
+                `Factory must produce valid matching observation/confirmation indices for ${tc.strategyId}`
+            );
+
+            // Preceding valid event in the same batch must NOT be partially enqueued if a later event fails preflight
+            const validPrecedingEv = createStrategyEvent({
+                strategyId: tc.strategyId,
+                strategyVersion: tc.strategyVersion,
+                symbol: 'SOLUSDT',
+                timeframe: '1m',
+                intervalMs: 60_000,
+                eventType: tc.eventType,
+                eventDirection: tc.direction,
+                eventDiscriminator: `${tc.disc}_PRECEDING`,
+                sourceBarIndex: tc.srcBar,
+                sourceTimestamp: tBase + tc.srcBar * 60_000,
+                confirmationBarIndex: 3,
+                confirmationTimestamp: tBase + 3 * 60_000,
+                entryTimestamp: null,
+                structuralContext: {}
+            });
+
+            // Isolate ONLY observationBarIndex mismatch while preserving valid eventId & all other chronology fields
+            const mismatchedEv: StrategyEvent = Object.freeze({
+                ...validEv,
+                observationBarIndex: 2
+            });
+
+            const trackerZero = new MultiHorizonOutcomeTracker();
+            let rejectedBatchMismatch = false;
+            try {
+                trackerZero.enqueueEvents([validPrecedingEv, mismatchedEv], 'SOLUSDT', '1m', dummyTierA, true);
+            } catch (e: any) {
+                rejectedBatchMismatch = String(e.message).includes('observationBarIndex === confirmationBarIndex');
+            }
+            assert(
+                rejectedBatchMismatch && trackerZero.getPendingCount() === 0,
+                `Atomic preflight must reject batch with mismatched observationBarIndex for ${tc.strategyId} without queuing validPrecedingEv`
+            );
+            const zeroAcc = trackerZero.finalizeEndOfStream(0);
+            assert(
+                zeroAcc.totalCandidateEvents === 0 &&
+                zeroAcc.eligibleEvents === 0 &&
+                zeroAcc.excludedMissingNextOpen === 0 &&
+                zeroAcc.excludedUnwarmedAtr === 0 &&
+                zeroAcc.excludedIncompleteHorizon === 0,
+                `TrackerZero accounting must remain zeroed after atomic preflight rejection for ${tc.strategyId}`
+            );
+
+            const trackerTen = new MultiHorizonOutcomeTracker();
+            let rejectedSingleMismatch = false;
+            try {
+                trackerTen.enqueueEvents([mismatchedEv], 'SOLUSDT', '1m', dummyTierA, true);
+            } catch (e: any) {
+                rejectedSingleMismatch = String(e.message).includes('observationBarIndex === confirmationBarIndex');
+            }
+            assert(
+                rejectedSingleMismatch && trackerTen.getPendingCount() === 0,
+                `Teacher ${tc.strategyId} event with mismatched observationBarIndex must be rejected before entering trackerTen`
+            );
+            const tenAcc = trackerTen.finalizeEndOfStream(10);
+            assert(
+                tenAcc.totalCandidateEvents === 0 &&
+                tenAcc.eligibleEvents === 0 &&
+                tenAcc.excludedMissingNextOpen === 0 &&
+                tenAcc.excludedUnwarmedAtr === 0 &&
+                tenAcc.excludedIncompleteHorizon === 0,
+                `TrackerTen accounting must remain zeroed after rejected ${tc.strategyId} event`
+            );
+        }
     });
 
     await runTest('5. Full V3 Batch-vs-Streaming Byte-for-Byte CSV, SHA-256 & Complete Manifest Parity', async () => {

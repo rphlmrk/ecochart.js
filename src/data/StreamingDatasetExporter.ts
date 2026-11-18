@@ -1028,13 +1028,18 @@ export class StreamingDatasetExporter {
     }
 
     /**
-     * Streams V3 dataset artifacts into a unique, execution-owned destination directory
-     * by default (exposed via `result.folderName` only after finalization).
+     * Streams V3 dataset artifacts into a unique destination directory by default
+     * (exposed via `result.folderName` only after finalization succeeds).
      *
-     * Note on concurrency: If a shared `destinationFolderName` is explicitly provided,
-     * `activeV3DirReservations` enforces same-runtime concurrency only; the browser
-     * File System Access API provides no `O_EXCL` atomic create-if-absent primitive, so
-     * external cross-process/cross-tab creation races remain a platform limitation.
+     * Platform limitation: The browser File System Access API has no atomic `O_EXCL`
+     * exclusive create-if-absent primitive. The primary `crypto.randomUUID()` folder
+     * suffix minimizes accidental collisions (with a `Date.now() + Math.random()`
+     * collision-reduction fallback when `randomUUID` is unavailable, which is not a
+     * guaranteed unique ID). Shared `destinationFolderName` usage is best-effort for
+     * same-runtime concurrency only (via `activeV3DirReservations`); external
+     * cross-tab/cross-process empty-directory or zero-byte-file races remain an
+     * unresolved platform limitation, so exclusive ownership is never claimed. Rollback
+     * never deletes `finalDirHandle`.
      */
     public static async exportV3ToFolderOrOpfs(params: {
         rawCandleBuffer: Float64Array;
@@ -1180,12 +1185,6 @@ export class StreamingDatasetExporter {
                 await assertDirAbsent(params.rootDirHandle, folderName);
                 finalDirHandle = await params.rootDirHandle.getDirectoryHandle(folderName, { create: true });
 
-                if (typeof finalDirHandle.values === 'function') {
-                    for await (const _entry of finalDirHandle.values()) {
-                        throw new Error(`V3 Export Error: destination directory '${folderName}' is not empty; refusing overwrite.`);
-                    }
-                }
-
                 for (const name of [
                     fileNames.continuousFileName,
                     fileNames.representationFileName,
@@ -1205,10 +1204,6 @@ export class StreamingDatasetExporter {
                     const srcHandle = await targetDirHandle.getFileHandle(name);
                     const srcFile: File = await srcHandle.getFile();
                     const dstHandle = await finalDirHandle.getFileHandle(name, { create: true });
-                    const existingDstFile: File = await dstHandle.getFile();
-                    if (existingDstFile.size > 0) {
-                        throw new Error(`V3 Export Error: destination file '${name}' was created externally; refusing overwrite.`);
-                    }
                     publishedDestinationFiles.push(name);
                     const dstWritable = await dstHandle.createWritable();
                     try {
@@ -1372,15 +1367,37 @@ export class StreamingDatasetExporter {
                     volume: rawVolume,
                     isSynthetic: false as const
                 });
-                if (!stepOut.dataQuality.isSourceValid ||
+                const isValidRaw =
+                    Number.isSafeInteger(rawTime) && rawTime >= 1e12 &&
+                    Number.isFinite(rawOpen) && rawOpen > 0 &&
+                    Number.isFinite(rawHigh) && rawHigh > 0 &&
+                    Number.isFinite(rawLow) && rawLow > 0 &&
+                    Number.isFinite(rawClose) && rawClose > 0 &&
+                    Number.isFinite(rawVolume) && rawVolume >= 0 &&
+                    rawHigh >= rawLow &&
+                    rawHigh >= Math.max(rawOpen, rawClose) &&
+                    rawLow <= Math.min(rawOpen, rawClose);
+                const isValidAccepted =
+                    Number.isSafeInteger(stepOut.candle.time) && stepOut.candle.time >= 1e12 &&
+                    Number.isFinite(stepOut.candle.open) && stepOut.candle.open > 0 &&
+                    Number.isFinite(stepOut.candle.high) && stepOut.candle.high > 0 &&
+                    Number.isFinite(stepOut.candle.low) && stepOut.candle.low > 0 &&
+                    Number.isFinite(stepOut.candle.close) && stepOut.candle.close > 0 &&
+                    Number.isFinite(stepOut.candle.volume) && stepOut.candle.volume >= 0 &&
+                    stepOut.candle.high >= stepOut.candle.low &&
+                    stepOut.candle.high >= Math.max(stepOut.candle.open, stepOut.candle.close) &&
+                    stepOut.candle.low <= Math.min(stepOut.candle.open, stepOut.candle.close);
+                if (!isValidRaw ||
+                    !isValidAccepted ||
+                    !stepOut.dataQuality.isSourceValid ||
                     stepOut.acceptedBarIndex !== expectedAcceptedIdx ||
                     stepOut.sourceTimestamp !== rawTime ||
                     stepOut.candle.time !== rawTime ||
-                    Math.abs(stepOut.candle.open - rawOpen) > 1e-12 ||
-                    Math.abs(stepOut.candle.high - rawHigh) > 1e-12 ||
-                    Math.abs(stepOut.candle.low - rawLow) > 1e-12 ||
-                    Math.abs(stepOut.candle.close - rawClose) > 1e-12 ||
-                    Math.abs(stepOut.candle.volume - rawVolume) > 1e-12) {
+                    stepOut.candle.open !== rawOpen ||
+                    stepOut.candle.high !== rawHigh ||
+                    stepOut.candle.low !== rawLow ||
+                    stepOut.candle.close !== rawClose ||
+                    stepOut.candle.volume !== rawVolume) {
                     throw new Error(
                         `V3 Streaming Chronology Error: unexpected or modified accepted candle at index ${expectedAcceptedIdx} (got ${stepOut.acceptedBarIndex}).`
                     );

@@ -709,6 +709,8 @@ export class MultiHorizonOutcomeTracker {
                     `V3 Outcome Contract Error: event '${ev.eventId}' violates observationBarIndex === confirmationBarIndex (${ev.observationBarIndex} !== ${ev.confirmationBarIndex}).`
                 );
             }
+        }
+        for (const ev of sortedBarEvents) {
             this.totalCandidates++;
             const entryBar = ev.entryBarIndex;
             this.pending.push({

@@ -806,9 +806,9 @@ export class V3ArtifactAuditor {
                     }
                     // Enforce exact MTFAggregator.ts producer truth table:
                     // Precedence: INCOMPLETE_INVALID > INCOMPLETE_DUPLICATE > INCOMPLETE_MISSING.
-                    // COMPLETE and INCOMPLETE_UNFINISHED are never emitted as incomplete-window diagnostics.
-                    if (comp === 'COMPLETE') {
-                        throw new Error('htf15mDiagnostic cannot have completeness COMPLETE');
+                    // COMPLETE and INCOMPLETE_UNFINISHED are never emitted by MTFAggregator inside htf15mDiagnostic.
+                    if (comp === 'COMPLETE' || comp === 'INCOMPLETE_UNFINISHED') {
+                        throw new Error(`htf15mDiagnostic cannot have completeness ${comp}`);
                     }
                     if (invCount > 0 && comp !== 'INCOMPLETE_INVALID') {
                         throw new Error(`${comp} violates precedence: invalidSourceCount (${invCount}) > 0 requires INCOMPLETE_INVALID`);
@@ -816,19 +816,18 @@ export class V3ArtifactAuditor {
                     if (invCount === 0 && dupCount > 0 && comp !== 'INCOMPLETE_DUPLICATE') {
                         throw new Error(`${comp} violates precedence: duplicateCount (${dupCount}) > 0 requires INCOMPLETE_DUPLICATE`);
                     }
-                    if (comp === 'INCOMPLETE_INVALID' && invCount <= 0) {
-                        throw new Error('INCOMPLETE_INVALID requires invalidSourceCount > 0');
-                    }
-                    if (comp === 'INCOMPLETE_DUPLICATE' && (invCount !== 0 || dupCount <= 0)) {
-                        throw new Error('INCOMPLETE_DUPLICATE requires invalidSourceCount === 0 and duplicateCount > 0');
-                    }
-                    if (comp === 'INCOMPLETE_MISSING' &&
-                        (invCount !== 0 || dupCount !== 0 || missing.length === 0 || actualSrc >= expectedSrc)) {
-                        throw new Error('INCOMPLETE_MISSING requires missing timestamps with zero duplicates/invalids');
-                    }
-                    if (comp === 'INCOMPLETE_UNFINISHED' &&
-                        (invCount !== 0 || dupCount !== 0 || missing.length === 0 || actualSrc >= expectedSrc)) {
-                        throw new Error('INCOMPLETE_UNFINISHED requires missing timestamps with zero duplicates/invalids');
+                    if (comp === 'INCOMPLETE_INVALID') {
+                        if (invCount <= 0) throw new Error('INCOMPLETE_INVALID requires invalidSourceCount > 0');
+                    } else if (comp === 'INCOMPLETE_DUPLICATE') {
+                        if (invCount !== 0 || dupCount <= 0) {
+                            throw new Error('INCOMPLETE_DUPLICATE requires invalidSourceCount === 0 and duplicateCount > 0');
+                        }
+                    } else if (comp === 'INCOMPLETE_MISSING') {
+                        if (invCount !== 0 || dupCount !== 0 || missing.length === 0 || actualSrc >= expectedSrc) {
+                            throw new Error('INCOMPLETE_MISSING requires missing timestamps with zero duplicates/invalids');
+                        }
+                    } else {
+                        throw new Error(`Unsupported htf15mDiagnostic completeness '${comp}'`);
                     }
                     const seenMissing = new Set<number>();
                     for (const mt of missing) {
