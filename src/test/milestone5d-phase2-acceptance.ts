@@ -6,6 +6,7 @@ import {
     resolveStrategyEventsEntryTimestamps,
     sortAndVerifyUniqueStrategyEvents,
     stepStrictCBCWithReset,
+    validateAcceptedTimestampsSequence,
     validateStrictCBCCheckpoint,
     validateVAMCheckpoint,
     type StrategyEvent
@@ -254,6 +255,17 @@ export function runPhase5DPhase2Gate1Tests(): boolean {
         expectChronoErr(() => resolveStrategyEventsEntryTimestamps([{ ...evGap, sourceTimestamp: t0 + 999 }], acceptedTs, interval), 'mismatched sourceTimestamp');
         expectChronoErr(() => resolveStrategyEventsEntryTimestamps([evGap], [t0, t0, t0 + 2 * interval], interval), 'duplicate accepted timestamp');
         expectChronoErr(() => resolveStrategyEventsEntryTimestamps([evGap], [t0, t0 + 2 * interval, t0 + interval], interval), 'out-of-order accepted timestamp');
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([evGap], [t0, t0 + 30_000, t0 + interval], interval), 'sub-interval gap < expectedIntervalMs');
+        expectChronoErr(() => resolveStrategyEventsEntryTimestamps([evGap], [t0, t0 + interval, t0 + interval + 75_000], interval), 'off-grid timestamp gap');
+
+        // Direct validateAcceptedTimestampsSequence() checks: 10m gap allowed; invalid expectedIntervalMs rejected
+        validateAcceptedTimestampsSequence([t0, t0 + 10 * interval], interval);
+        for (const badInterval of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+            expectChronoErr(
+                () => validateAcceptedTimestampsSequence([t0, t0 + interval], badInterval),
+                `validateAcceptedTimestampsSequence bad interval=${badInterval}`
+            );
+        }
     });
 
     console.log(`\nPhase 5D Phase 2 Gate 1: ${passed} passed, ${failed} failed.`);
@@ -406,17 +418,33 @@ export function runPhase5DPhase2Tests(): boolean {
             'StrictCBC restoration with non-null prevPivot must match uninterrupted replay'
         );
 
-        // Paired prevPivot cross-validation check (valid state paired with stale/wrong prevPivot must reject)
-        let stalePivotRejected = false;
-        try {
-            validateStrictCBCCheckpoint(sGap, {
-                id: 1, barIndex: 1, time: t0 + interval, price: 999,
-                type: 'low', label: 'LL', confirmedBarIndex: 2
-            }, 5);
-        } catch (e: any) {
-            stalePivotRejected = String(e.message).includes('StrictCBC Checkpoint Error');
-        }
-        assert(stalePivotRejected, 'Stale/mismatched prevPivot paired with valid StrictCBCState must fail');
+        const ctrlClock = [c0.time, c1.time, c2.time, c3Contig.time];
+        const gapClock = [c0.time, c1.time, c2.time, c3Gap.time, c4.time, c5.time];
+
+        // 1. Prove BOTH real-engine directions pass validateStrictCBCCheckpoint WITH accepted clocks BEFORE negative checks
+        validateStrictCBCCheckpoint(sCtrl, pCtrl, 3, c3Contig.time, ctrlClock);
+        validateStrictCBCCheckpoint(sGap, pGap, 5, c5.time, gapClock);
+        assert(sCtrl!.isBullish === true && pCtrl!.type === 'low' && sCtrl!.phaseHighIdx >= pCtrl!.confirmedBarIndex,
+            'Bullish pair & active phase index verified');
+        assert(sGap!.isBullish === false && pGap!.type === 'high' && sGap!.phaseLowIdx >= pGap!.confirmedBarIndex,
+            'Bearish pair & active phase index verified');
+
+        // 2. Reject stale/mismatched prevPivot, corrupted prevPivot.time, clock disagreement & activePhaseIdx < confirmedBarIndex
+        const expectCbcReject = (
+            stIn: StrictCBCState, pvIn: StrictZigZagPivot | null, barIdx: number,
+            tsIn: number, clk: readonly number[] | undefined, label: string
+        ) => {
+            let threw = false;
+            try { validateStrictCBCCheckpoint(stIn, pvIn, barIdx, tsIn, clk); }
+            catch (e: any) { threw = String(e.message).includes('StrictCBC Checkpoint Error'); }
+            assert(threw, `${label}: expected StrictCBC Checkpoint Error`);
+        };
+        expectCbcReject(sGap!, { ...pGap!, price: 999 }, 5, c5.time, gapClock, 'mismatched price');
+        expectCbcReject(sGap!, { ...pGap!, type: 'low', label: 'LL' }, 5, c5.time, gapClock, 'wrong direction type');
+        expectCbcReject(sGap!, { ...pGap!, time: -1 }, 5, c5.time, gapClock, 'negative prevPivot.time');
+        expectCbcReject(sGap!, { ...pGap!, time: c5.time + interval }, 5, c5.time, gapClock, 'prevPivot.time > currentCandleTimestamp');
+        expectCbcReject(sGap!, { ...pGap!, time: t0 }, 5, c5.time, gapClock, 'prevPivot.time disagrees with acceptedTimestamps[barIndex]');
+        expectCbcReject({ ...sGap!, phaseLowIdx: 4 }, pGap!, 5, c5.time, gapClock, 'activePhaseIdx < prevPivot.confirmedBarIndex');
     });
 
     // 2. PHL Teacher: pinned bar 24 MSS + no bar 25 MSS, null-candle validation order, entryTimestamp/OHLC rejections
@@ -610,6 +638,10 @@ export function runPhase5DPhase2Tests(): boolean {
             ...st,
             window: st.window.map((w, idx) => idx === st.window.length - 1 ? { ...w, time: w.time + 1_000 } : w)
         }, cfgValid), 'window timestamps off-grid');
+        expectPHLInputErr(() => stepPHL(validNext, 26, {
+            ...st,
+            window: [{ ...st.window[0], volume: -1 }, ...st.window.slice(1)]
+        }, cfgValid), 'window[0].volume: -1');
 
         // Valid expired ph on intervalMs grid (< minTime) must be accepted
         const expiredValidRes = stepPHL(validNext, 26, {
@@ -626,6 +658,8 @@ export function runPhase5DPhase2Tests(): boolean {
 
         // B2.1 Empty-window non-null reference rejections
         const emptyPhl = createInitialPHLState();
+        // Verify production createInitialPHLState() passes validatePHLState cleanly when window is empty
+        validatePHLState(emptyPhl, 2 * cfgValid.pivotStrength + 4, interval);
         expectPHLInputErr(() => stepPHL(makeCandle(t0, 100, 102, 98, 101, 100), 0, {
             ...emptyPhl, lastHigh: 105, lastHighIdx: 0, lastHighTime: t0
         }, cfgValid), 'empty window + non-null lastHigh');
@@ -635,6 +669,23 @@ export function runPhase5DPhase2Tests(): boolean {
         expectPHLInputErr(() => stepPHL(makeCandle(t0, 100, 102, 98, 101, 100), 0, {
             ...emptyPhl, ph: { price: 105, barIndex: 0, time: t0 }
         }, cfgValid), 'empty window + non-null ph');
+
+        // Null / malformed trackers and wrong-direction empty-window tracker must throw PHL State Integrity Error (never TypeError)
+        expectPHLInputErr(() => stepPHL(makeCandle(t0, 100, 102, 98, 101, 100), 0, {
+            ...emptyPhl, pbFromHigh: null as any
+        }, cfgValid), 'pbFromHigh: null');
+        expectPHLInputErr(() => stepPHL(makeCandle(t0, 100, 102, 98, 101, 100), 0, {
+            ...emptyPhl, pbFromLow: null as any
+        }, cfgValid), 'pbFromLow: null');
+        expectPHLInputErr(() => stepPHL(makeCandle(t0, 100, 102, 98, 101, 100), 0, {
+            ...emptyPhl, pbFromHigh: { price: null, idx: null, bull: true } as any
+        }, cfgValid), 'tracker missing valid field');
+        expectPHLInputErr(() => stepPHL(makeCandle(t0, 100, 102, 98, 101, 100), 0, {
+            ...emptyPhl, pbFromHigh: { price: null, idx: null, valid: false, bull: false }
+        }, cfgValid), 'empty-window tracker wrong bull direction');
+        expectPHLInputErr(() => stepPHL(makeCandle(t0, 100, 102, 98, 101, 100), 0, {
+            ...emptyPhl, bull: true
+        }, cfgValid), 'empty window with bull !== null');
 
         // B2.3 Direct validatePHLState argument checks
         let badPhlArgs = false;
@@ -1039,6 +1090,48 @@ export function runPhase5DPhase2Tests(): boolean {
             activeZones: [baseZ16]
         }, cfg, 0, lcCandles[0], 'empty window with activeZones');
 
+        // Complete field-by-field DTFXState empty-window audit:
+        // DTFXState fields = { stateVersion, clockCheckpoints, window, dir, tDir, t, b, prevTPrice, prevBPrice, prevClose, bosUpCheck, bosDownCheck, nextZoneId, activeZones }
+        const emptyDtfx = createInitialDTFXState();
+        validateDTFXState(emptyDtfx, cfg.structureLen + 1, cfg.maxActiveZones, cfg.intervalMs);
+        const dummyPt = { price: 105, barIndex: 0, time: t0 };
+        expectDTFXReject({ ...emptyDtfx, clockCheckpoints: [{ barIndex: 0, time: t0 }] }, cfg, 0, lcCandles[0], 'empty window with clockCheckpoints');
+        expectDTFXReject({ ...emptyDtfx, stateVersion: -1 as any }, cfg, 0, lcCandles[0], 'empty window with invalid stateVersion');
+        expectDTFXReject({ ...emptyDtfx, nextZoneId: 0 }, cfg, 0, lcCandles[0], 'empty window with invalid nextZoneId');
+        expectDTFXReject({ ...emptyDtfx, t: dummyPt }, cfg, 0, lcCandles[0], 'empty window with non-null t');
+        expectDTFXReject({ ...emptyDtfx, t: { price: null, barIndex: 0, time: t0 } as any }, cfg, 0, lcCandles[0], 'empty window with partial swing t index/time');
+        expectDTFXReject({ ...emptyDtfx, b: dummyPt }, cfg, 0, lcCandles[0], 'empty window with non-null b');
+        expectDTFXReject({ ...emptyDtfx, b: { price: null, barIndex: 0, time: t0 } as any }, cfg, 0, lcCandles[0], 'empty window with partial swing b index/time');
+        expectDTFXReject({ ...emptyDtfx, prevTPrice: 105 }, cfg, 0, lcCandles[0], 'empty window with non-null prevTPrice');
+        expectDTFXReject({ ...emptyDtfx, prevBPrice: 95 }, cfg, 0, lcCandles[0], 'empty window with non-null prevBPrice');
+        expectDTFXReject({ ...emptyDtfx, prevClose: 100 }, cfg, 0, lcCandles[0], 'empty window with non-null prevClose');
+        expectDTFXReject({ ...emptyDtfx, dir: 1 }, cfg, 0, lcCandles[0], 'empty window with dir !== 0');
+        expectDTFXReject({ ...emptyDtfx, tDir: -1 }, cfg, 0, lcCandles[0], 'empty window with tDir !== 0');
+        expectDTFXReject({ ...emptyDtfx, bosUpCheck: true }, cfg, 0, lcCandles[0], 'empty window with bosUpCheck=true');
+        expectDTFXReject({ ...emptyDtfx, bosDownCheck: true }, cfg, 0, lcCandles[0], 'empty window with bosDownCheck=true');
+
+        // Explicit non-vacuous R1 (equal pair) vs R2 (strictly later pair) assertions before validateDTFXState
+        const r1Zone = stateAt18.activeZones[0];
+        assert(
+            r1Zone.zoneId === 1 &&
+            r1Zone.retestCount === 1 &&
+            r1Zone.firstRetestBarIndex === 18 && r1Zone.lastRetestBarIndex === 18 &&
+            r1Zone.firstRetestTimestamp === t0 + 18 * interval && r1Zone.lastRetestTimestamp === t0 + 18 * interval,
+            'stateAt18 precondition: zone 1 R1 requires equal first/last retest bars and timestamps'
+        );
+        validateDTFXState(stateAt18, cfg.structureLen + 1, cfg.maxActiveZones, cfg.intervalMs);
+
+        const r2Zone = stateAt21.activeZones[0];
+        assert(
+            r2Zone.zoneId === r1Zone.zoneId &&
+            r2Zone.retestCount === 2 &&
+            r2Zone.firstRetestBarIndex === 18 && r2Zone.lastRetestBarIndex === 21 &&
+            r2Zone.lastRetestBarIndex > r2Zone.firstRetestBarIndex &&
+            r2Zone.lastRetestTimestamp! > r2Zone.firstRetestTimestamp!,
+            'stateAt21 precondition: same zoneId=1 R2 requires strictly later lastRetest bar and timestamp'
+        );
+        validateDTFXState(stateAt21, cfg.structureLen + 1, cfg.maxActiveZones, cfg.intervalMs);
+
         // Single-field checkpoint corruption anchored by retained window
         expectDTFXReject({
             ...stateAt18,
@@ -1113,6 +1206,77 @@ export function runPhase5DPhase2Tests(): boolean {
             } catch (e: any) { threw = String(e.message).includes('VAM Adapter Error'); }
             assert(threw, `Invalid signal ${badSig} must throw`);
         }
+
+        // Verify validateVAMCheckpoint passes at every key warmup boundary (bars 0, 3, 4, 7, 13, 14, 18, 27, 38)
+        let vamWalk = createInitialVAMState();
+        for (let i = 0; i <= 38; i++) {
+            const h = i <= 27 ? 102 + i : 127 - (i - 27) * 2.5 + 2;
+            const l = i <= 27 ? 98 + i : 127 - (i - 27) * 2.5 - 2;
+            const c = i <= 27 ? 100 + i : 127 - (i - 27) * 2.5 - 1;
+            vamWalk = stepVolatilityAdjustedMean(h, l, c, vamWalk, false).nextState;
+            if ([0, 3, 4, 7, 13, 14, 18, 27, 38].includes(i)) {
+                validateVAMCheckpoint(vamWalk);
+            }
+        }
+
+        // Post-discontinuity checkpoint test where global barIndex (145) >> unbrokenRun (46)
+        // Proves lastSignalAcceptedIndex is segment-relative (< unbrokenRun), survives JSON restore & produces identical signals
+        let vamFull = createInitialVAMState();
+        const postDiscFullEvents: Array<{ gBar: number; signal: number }> = [];
+        const preCheckpointEvents: Array<{ gBar: number; signal: number }> = [];
+        let postDiscCheckpointJson = '';
+        for (let gBar = 0; gBar < 170; gBar++) {
+            const isDisc = gBar === 100;
+            const segIdx = gBar >= 100 ? gBar - 100 : gBar;
+            let h: number, l: number, c: number;
+            if (segIdx <= 27) { h = 102 + segIdx; l = 98 + segIdx; c = 100 + segIdx; }
+            else if (segIdx <= 38) { const p = 127 - (segIdx - 27) * 2.5; h = p + 2; l = p - 2; c = p - 1; }
+            else { const p = 99.5 + (segIdx - 38) * 4.0; h = p + 2; l = p - 2; c = p + 1; }
+
+            const out = stepVolatilityAdjustedMean(h, l, c, vamFull, isDisc);
+            vamFull = out.nextState;
+            if (gBar >= 100 && gBar <= 145 && out.signal !== 0) {
+                preCheckpointEvents.push({ gBar, signal: out.signal });
+            }
+            if (gBar === 145) {
+                assert(JSON.stringify(preCheckpointEvents) === JSON.stringify([{ gBar: 138, signal: -1 }]),
+                    `Expected single VAM_SELL at global bar 138, got ${JSON.stringify(preCheckpointEvents)}`);
+                assert(vamFull.unbrokenRun === 46 && vamFull.lastSignalAcceptedIndex === 38,
+                    `Expected post-discontinuity unbrokenRun=46 & lastSignalAcceptedIndex=38`);
+                validateVAMCheckpoint(vamFull);
+                postDiscCheckpointJson = JSON.stringify(vamFull);
+            }
+            if (gBar > 145 && out.signal !== 0) {
+                postDiscFullEvents.push({ gBar, signal: out.signal });
+            }
+        }
+
+        let vamRestored = JSON.parse(postDiscCheckpointJson) as ReturnType<typeof createInitialVAMState>;
+        validateVAMCheckpoint(vamRestored);
+
+        // Negative VAM checkpoint check: string atrState.isSeeded must throw VAM Checkpoint Error
+        let badSeedTypeRejected = false;
+        try {
+            validateVAMCheckpoint({
+                ...vamRestored,
+                atrState: { ...vamRestored.atrState, isSeeded: 'yes' as any }
+            });
+        } catch (e: any) { badSeedTypeRejected = String(e.message).includes('VAM Checkpoint Error'); }
+        assert(badSeedTypeRejected, 'validateVAMCheckpoint must reject non-boolean atrState.isSeeded');
+
+        const postDiscRestoredEvents: Array<{ gBar: number; signal: number }> = [];
+        for (let gBar = 146; gBar < 170; gBar++) {
+            const segIdx = gBar - 100;
+            const p = 99.5 + (segIdx - 38) * 4.0;
+            const out = stepVolatilityAdjustedMean(p + 2, p - 2, p + 1, vamRestored, false);
+            vamRestored = out.nextState;
+            if (out.signal !== 0) postDiscRestoredEvents.push({ gBar, signal: out.signal });
+        }
+        assert(
+            JSON.stringify(postDiscRestoredEvents) === JSON.stringify(postDiscFullEvents) &&
+            JSON.stringify(postDiscRestoredEvents) === JSON.stringify([{ gBar: 149, signal: 1 }]),
+            `Post-discontinuity VAM restoration must emit VAM_BUY strictly at global bar 149, got ${JSON.stringify(postDiscRestoredEvents)}`
+        );
     });
 
     // 5. Combined 4-Teacher Stream: all 4 emit, REAL bar 109 event resolved across bar 110 gap, full reset checks & 2-run serialized determinism
@@ -1232,7 +1396,7 @@ export function runPhase5DPhase2Tests(): boolean {
                     assert(states.lastCbcPivot === null && states.cbcState!.anchorHigh === c.high && states.cbcState!.anchorLow === c.low &&
                         states.cbcState!.phaseHighIdx === 110 && states.cbcState!.phaseLowIdx === 110 &&
                         states.cbcState!.lastHighPrice === null && states.cbcState!.lastLowPrice === null,
-                        'StrictCBC reset @110');
+                        'StrictCBC global-index reset @110');
                     assert(states.phlState.window.length === 1 && states.phlState.bull === null && states.phlState.ph === null &&
                         states.phlState.pl === null && states.phlState.clockCheckpoints.length === 1 &&
                         states.phlState.pbFromHigh.price === null && states.phlState.pbFromLow.price === null &&
@@ -1275,7 +1439,13 @@ export function runPhase5DPhase2Tests(): boolean {
             restoredStates.dtfxState.window[restoredStates.dtfxState.window.length - 1]?.barIndex === 120,
             'Restored checkpoint must correspond to bar 120'
         );
-        validateStrictCBCCheckpoint(restoredStates.cbcState, restoredStates.lastCbcPivot, 120);
+        validateStrictCBCCheckpoint(
+            restoredStates.cbcState,
+            restoredStates.lastCbcPivot,
+            120,
+            stream[120].time,
+            fullRun1.acceptedTs.slice(0, 121)
+        );
         validatePHLState(restoredStates.phlState, 2 * phlCfg.pivotStrength + 4, phlCfg.intervalMs);
         validateDTFXState(restoredStates.dtfxState, dtfxCfg.structureLen + 1, dtfxCfg.maxActiveZones, dtfxCfg.intervalMs);
         validateVAMCheckpoint(restoredStates.vamState);
@@ -1295,8 +1465,24 @@ export function runPhase5DPhase2Tests(): boolean {
             resolveStrategyEventsEntryTimestamps(postCheckpointRestoredEvents, acceptedTimestamps, interval)
         );
 
-        assert(JSON.stringify(restoredPost120) === JSON.stringify(fullPost120), 'Checkpoint-restored post-120 events must match uninterrupted execution');
-        assert(JSON.stringify(restoredStates) === JSON.stringify(fullRun1.finalStates), 'Checkpoint-restored final states for all 4 teachers must match uninterrupted execution');
+        // Compare combined stream AND each of the 4 teachers independently (deterministic serialized equality)
+        assert(JSON.stringify(restoredPost120) === JSON.stringify(fullPost120),
+            'Deterministic serialized equality failed on combined post-120 events');
+        for (const sid of ['STRICT_CBC', 'PHL_BOS_MSS', 'DTFX_ZONES', 'VAM_REVERSAL'] as const) {
+            const expStrat = fullPost120.filter(e => e.strategyId === sid);
+            const actStrat = restoredPost120.filter(e => e.strategyId === sid);
+            assert(JSON.stringify(actStrat) === JSON.stringify(expStrat),
+                `Deterministic serialized equality failed for teacher ${sid}`);
+        }
+        assert(JSON.stringify(restoredStates.cbcState) === JSON.stringify(fullRun1.finalStates.cbcState) &&
+            JSON.stringify(restoredStates.lastCbcPivot) === JSON.stringify(fullRun1.finalStates.lastCbcPivot),
+            'Deterministic serialized equality failed for StrictCBC final state');
+        assert(JSON.stringify(restoredStates.phlState) === JSON.stringify(fullRun1.finalStates.phlState),
+            'Deterministic serialized equality failed for PHL final state');
+        assert(JSON.stringify(restoredStates.dtfxState) === JSON.stringify(fullRun1.finalStates.dtfxState),
+            'Deterministic serialized equality failed for DTFX final state');
+        assert(JSON.stringify(restoredStates.vamState) === JSON.stringify(fullRun1.finalStates.vamState),
+            'Deterministic serialized equality failed for VAM final state');
 
         const byStrategy: Record<string, number> = { STRICT_CBC: 0, PHL_BOS_MSS: 0, DTFX_ZONES: 0, VAM_REVERSAL: 0 };
         const byType: Record<string, number> = {};
@@ -1329,6 +1515,162 @@ export function runPhase5DPhase2Tests(): boolean {
         assert(byStrategy.STRICT_CBC > 0 && byStrategy.PHL_BOS_MSS > 0 && byStrategy.DTFX_ZONES > 0 && byStrategy.VAM_REVERSAL > 0,
             'All 4 strategies must emit events');
         assert(preGapCount > 0 && postGapCount > 0, 'Events must emit on both sides of bar 110 discontinuity');
+
+        // 3. Independent Isolated Per-Teacher Checkpoint Restoration @120 (zero shared wrapper)
+        // 3a. StrictCBC isolated
+        let cbcFullS: StrictCBCState | null = null;
+        let cbcFullP: StrictZigZagPivot | null = null;
+        let cbcCpJson = '';
+        const cbcFullPost120: StrategyEvent[] = [];
+        for (let i = 0; i < stream.length; i++) {
+            const c = stream[i];
+            const isDisc = i > 0 && c.time - stream[i - 1].time >= 300_000;
+            const r = stepStrictCBCWithReset(c, i, cbcFullS, cbcFullP, isDisc);
+            cbcFullS = r.nextState;
+            cbcFullP = r.nextPrevPivot;
+            if (i === 120) cbcCpJson = JSON.stringify({ s: cbcFullS, p: cbcFullP });
+            if (i > 120 && r.confirmedPivot) {
+                cbcFullPost120.push(adaptStrictCBCtoStrategyEvent({
+                    pivot: r.confirmedPivot, prevPivot: r.prevPivotForEvent, confirmationTimestamp: c.time,
+                    entryTimestamp: null, atr14AtConfirmation: 2.0, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
+                }));
+            }
+        }
+        const cbcParsed = JSON.parse(cbcCpJson) as { s: StrictCBCState; p: StrictZigZagPivot | null };
+        const isoClockPrefix = fullRun1.acceptedTs.slice(0, 121);
+        assert(
+            isoClockPrefix.length === 121 && isoClockPrefix[120] === stream[120].time,
+            'isoClockPrefix must span bars 0..120 and end at stream[120].time'
+        );
+        validateStrictCBCCheckpoint(cbcParsed.s, cbcParsed.p, 120, stream[120].time, isoClockPrefix);
+        let cbcRestS: StrictCBCState | null = cbcParsed.s;
+        let cbcRestP: StrictZigZagPivot | null = cbcParsed.p;
+        const cbcRestPost120: StrategyEvent[] = [];
+        for (let i = 121; i < stream.length; i++) {
+            const c = stream[i];
+            const isDisc = c.time - stream[i - 1].time >= 300_000;
+            const r = stepStrictCBCWithReset(c, i, cbcRestS, cbcRestP, isDisc);
+            cbcRestS = r.nextState;
+            cbcRestP = r.nextPrevPivot;
+            if (r.confirmedPivot) {
+                cbcRestPost120.push(adaptStrictCBCtoStrategyEvent({
+                    pivot: r.confirmedPivot, prevPivot: r.prevPivotForEvent, confirmationTimestamp: c.time,
+                    entryTimestamp: null, atr14AtConfirmation: 2.0, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
+                }));
+            }
+        }
+        const cbcFullResolved = resolveStrategyEventsEntryTimestamps(cbcFullPost120, fullRun1.acceptedTs, interval);
+        const cbcRestResolved = resolveStrategyEventsEntryTimestamps(cbcRestPost120, fullRun1.acceptedTs, interval);
+        assert(JSON.stringify(cbcRestResolved) === JSON.stringify(cbcFullResolved) &&
+            JSON.stringify(cbcRestS) === JSON.stringify(cbcFullS) &&
+            JSON.stringify(cbcRestP) === JSON.stringify(cbcFullP),
+            'Isolated StrictCBC checkpoint restoration mismatch');
+        // Bars 110..239 span bullish -> bearish -> bullish waves, driving transitions in both directions
+        assert(
+            cbcRestS !== null &&
+            cbcFullS !== null &&
+            cbcFullPost120.length > 0 &&
+            cbcRestPost120.length > 0 &&
+            cbcFullPost120.some(ev => ev.eventDirection === 'bear') &&
+            cbcFullPost120.some(ev => ev.eventDirection === 'bull') &&
+            cbcRestPost120.some(ev => ev.eventDirection === 'bear') &&
+            cbcRestPost120.some(ev => ev.eventDirection === 'bull') &&
+            cbcRestS.phaseHighIdx > 110 &&
+            cbcRestS.phaseLowIdx > 110 &&
+            cbcFullS.phaseHighIdx > 110 &&
+            cbcFullS.phaseLowIdx > 110 &&
+            cbcFullPost120.every(ev => ev.sourceBarIndex > 110 && ev.confirmationBarIndex > 120) &&
+            cbcRestPost120.every(ev => ev.sourceBarIndex > 110 && ev.confirmationBarIndex > 120),
+            'Full and restored StrictCBC must emit post-gap transitions in both directions and retain global phase indices (> 110)'
+        );
+
+        // 3b. PHL isolated
+        let phlFullS = createInitialPHLState();
+        let phlCpJson = '';
+        const phlFullPost120: StrategyEvent[] = [];
+        for (let i = 0; i < stream.length; i++) {
+            const c = stream[i];
+            const isDisc = i > 0 && c.time - stream[i - 1].time >= 300_000;
+            const r = stepPHL(c, i, phlFullS, phlCfg, isDisc, 2.0, null);
+            phlFullS = r.nextState;
+            if (i === 120) phlCpJson = JSON.stringify(phlFullS);
+            if (i > 120) phlFullPost120.push(...r.events);
+        }
+        let phlRestS = JSON.parse(phlCpJson) as ReturnType<typeof createInitialPHLState>;
+        validatePHLState(phlRestS, 2 * phlCfg.pivotStrength + 4, phlCfg.intervalMs);
+        const phlRestPost120: StrategyEvent[] = [];
+        for (let i = 121; i < stream.length; i++) {
+            const c = stream[i];
+            const isDisc = c.time - stream[i - 1].time >= 300_000;
+            const r = stepPHL(c, i, phlRestS, phlCfg, isDisc, 2.0, null);
+            phlRestS = r.nextState;
+            phlRestPost120.push(...r.events);
+        }
+        assert(JSON.stringify(phlRestPost120) === JSON.stringify(phlFullPost120) &&
+            JSON.stringify(phlRestS) === JSON.stringify(phlFullS),
+            'Isolated PHL checkpoint restoration mismatch');
+
+        // 3c. DTFX isolated
+        let dtfxFullS = createInitialDTFXState();
+        let dtfxCpJson = '';
+        const dtfxFullPost120: StrategyEvent[] = [];
+        for (let i = 0; i < stream.length; i++) {
+            const c = stream[i];
+            const isDisc = i > 0 && c.time - stream[i - 1].time >= 300_000;
+            const r = stepDTFX(c, i, dtfxFullS, dtfxCfg, isDisc, 2.0, null);
+            dtfxFullS = r.nextState;
+            if (i === 120) dtfxCpJson = JSON.stringify(dtfxFullS);
+            if (i > 120) dtfxFullPost120.push(...r.events);
+        }
+        let dtfxRestS = JSON.parse(dtfxCpJson) as DTFXState;
+        validateDTFXState(dtfxRestS, dtfxCfg.structureLen + 1, dtfxCfg.maxActiveZones, dtfxCfg.intervalMs);
+        const dtfxRestPost120: StrategyEvent[] = [];
+        for (let i = 121; i < stream.length; i++) {
+            const c = stream[i];
+            const isDisc = c.time - stream[i - 1].time >= 300_000;
+            const r = stepDTFX(c, i, dtfxRestS, dtfxCfg, isDisc, 2.0, null);
+            dtfxRestS = r.nextState;
+            dtfxRestPost120.push(...r.events);
+        }
+        assert(JSON.stringify(dtfxRestPost120) === JSON.stringify(dtfxFullPost120) &&
+            JSON.stringify(dtfxRestS) === JSON.stringify(dtfxFullS),
+            'Isolated DTFX checkpoint restoration mismatch');
+
+        // 3d. VAM isolated
+        let vamFullS = createInitialVAMState();
+        let vamCpJson = '';
+        const vamFullPost120: StrategyEvent[] = [];
+        for (let i = 0; i < stream.length; i++) {
+            const c = stream[i];
+            const isDisc = i > 0 && c.time - stream[i - 1].time >= 300_000;
+            const out = stepVolatilityAdjustedMean(c.high, c.low, c.close, vamFullS, isDisc);
+            vamFullS = out.nextState;
+            if (i === 120) vamCpJson = JSON.stringify(vamFullS);
+            if (i > 120) {
+                const ev = adaptVAMtoStrategyEvent({
+                    vamOutput: out, confirmationBarIndex: i, confirmationTimestamp: c.time,
+                    entryTimestamp: null, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
+                });
+                if (ev) vamFullPost120.push(ev);
+            }
+        }
+        let vamRestS = JSON.parse(vamCpJson) as ReturnType<typeof createInitialVAMState>;
+        validateVAMCheckpoint(vamRestS);
+        const vamRestPost120: StrategyEvent[] = [];
+        for (let i = 121; i < stream.length; i++) {
+            const c = stream[i];
+            const isDisc = c.time - stream[i - 1].time >= 300_000;
+            const out = stepVolatilityAdjustedMean(c.high, c.low, c.close, vamRestS, isDisc);
+            vamRestS = out.nextState;
+            const ev = adaptVAMtoStrategyEvent({
+                vamOutput: out, confirmationBarIndex: i, confirmationTimestamp: c.time,
+                entryTimestamp: null, symbol: 'SOLUSDT', timeframe: '1m', intervalMs: interval
+            });
+            if (ev) vamRestPost120.push(ev);
+        }
+        assert(JSON.stringify(vamRestPost120) === JSON.stringify(vamFullPost120) &&
+            JSON.stringify(vamRestS) === JSON.stringify(vamFullS),
+            'Isolated VAM checkpoint restoration mismatch');
     });
 
     console.log(`\nPhase 5D Phase 2 Full Acceptance: ${passed} passed, ${failed} failed.`);

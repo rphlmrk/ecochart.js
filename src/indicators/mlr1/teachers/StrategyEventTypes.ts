@@ -113,10 +113,15 @@ export function buildStrategyEventId(params: {
 }
 
 export function validateAcceptedTimestampsSequence(
-    acceptedTimestampsByBarIndex: readonly number[]
+    acceptedTimestampsByBarIndex: readonly number[],
+    expectedIntervalMs?: number
 ): void {
     if (!Array.isArray(acceptedTimestampsByBarIndex)) {
         throw new Error('StrategyEvent Chronology Error: acceptedTimestampsByBarIndex must be an array.');
+    }
+    if (expectedIntervalMs !== undefined &&
+        (!Number.isSafeInteger(expectedIntervalMs) || expectedIntervalMs <= 0)) {
+        throw new Error(`StrategyEvent Chronology Error: expectedIntervalMs must be a positive safe integer, got ${expectedIntervalMs}.`);
     }
     let prev = -1;
     for (let i = 0; i < acceptedTimestampsByBarIndex.length; i++) {
@@ -126,10 +131,18 @@ export function validateAcceptedTimestampsSequence(
                 `StrategyEvent Chronology Error: invalid accepted timestamp at index ${i} (${ts}).`
             );
         }
-        if (i > 0 && ts <= prev) {
-            throw new Error(
-                `StrategyEvent Chronology Error: accepted timestamps must be strictly ascending (index ${i}: ${ts} <= ${prev}).`
-            );
+        if (i > 0) {
+            const delta = ts - prev;
+            if (delta <= 0) {
+                throw new Error(
+                    `StrategyEvent Chronology Error: accepted timestamps must be strictly ascending (index ${i}: ${ts} <= ${prev}).`
+                );
+            }
+            if (expectedIntervalMs !== undefined && (delta < expectedIntervalMs || delta % expectedIntervalMs !== 0)) {
+                throw new Error(
+                    `StrategyEvent Chronology Error: invalid timestamp gap (${delta}ms) at index ${i} for interval ${expectedIntervalMs}ms.`
+                );
+            }
         }
         prev = ts;
     }
@@ -188,7 +201,7 @@ export function createStrategyEvent(params: CreateStrategyEventParams): Strategy
     }
 
     if (params.acceptedTimestampsByBarIndex !== undefined) {
-        validateAcceptedTimestampsSequence(params.acceptedTimestampsByBarIndex);
+        validateAcceptedTimestampsSequence(params.acceptedTimestampsByBarIndex, params.intervalMs);
         if (params.confirmationBarIndex >= params.acceptedTimestampsByBarIndex.length) {
             throw new Error('StrategyEvent Chronology Error: confirmationBarIndex out of accepted timestamps bounds.');
         }
@@ -315,23 +328,7 @@ export function resolveStrategyEventsEntryTimestamps(
     acceptedTimestampsByBarIndex: readonly number[],
     expectedIntervalMs?: number
 ): readonly StrategyEvent[] {
-    validateAcceptedTimestampsSequence(acceptedTimestampsByBarIndex);
-
-    if (expectedIntervalMs !== undefined) {
-        if (!Number.isSafeInteger(expectedIntervalMs) || expectedIntervalMs <= 0) {
-            throw new Error(
-                `StrategyEvent Chronology Error: expectedIntervalMs must be a positive safe integer, got ${expectedIntervalMs}.`
-            );
-        }
-        for (let i = 1; i < acceptedTimestampsByBarIndex.length; i++) {
-            const deltaMs = acceptedTimestampsByBarIndex[i] - acceptedTimestampsByBarIndex[i - 1];
-            if (deltaMs < expectedIntervalMs || deltaMs % expectedIntervalMs !== 0) {
-                throw new Error(
-                    `StrategyEvent Chronology Error: timestamp delta (${deltaMs}) at index ${i} is not a positive multiple of intervalMs (${expectedIntervalMs}).`
-                );
-            }
-        }
-    }
+    validateAcceptedTimestampsSequence(acceptedTimestampsByBarIndex, expectedIntervalMs);
 
     return Object.freeze(
         events.map(ev => {
@@ -594,10 +591,25 @@ export function adaptVAMtoStrategyEvent(params: {
 export function validateStrictCBCCheckpoint(
     state: StrictCBCState | null,
     prevPivot: StrictZigZagPivot | null,
-    currentBarIndex: number
+    currentBarIndex: number,
+    currentCandleTimestamp?: number,
+    acceptedTimestamps?: readonly number[]
 ): void {
     if (!Number.isSafeInteger(currentBarIndex) || currentBarIndex < 0) {
         throw new Error(`StrictCBC Checkpoint Error: invalid currentBarIndex ${currentBarIndex}.`);
+    }
+    if (currentCandleTimestamp !== undefined &&
+        (!Number.isSafeInteger(currentCandleTimestamp) || currentCandleTimestamp < 0)) {
+        throw new Error(`StrictCBC Checkpoint Error: invalid currentCandleTimestamp ${currentCandleTimestamp}.`);
+    }
+    if (acceptedTimestamps !== undefined) {
+        validateAcceptedTimestampsSequence(acceptedTimestamps);
+        if (currentBarIndex >= acceptedTimestamps.length) {
+            throw new Error('StrictCBC Checkpoint Error: currentBarIndex out of acceptedTimestamps bounds.');
+        }
+        if (currentCandleTimestamp !== undefined && acceptedTimestamps[currentBarIndex] !== currentCandleTimestamp) {
+            throw new Error('StrictCBC Checkpoint Error: currentCandleTimestamp disagrees with acceptedTimestamps.');
+        }
     }
     if (!state || typeof state !== 'object') {
         throw new Error('StrictCBC Checkpoint Error: state must be non-null.');
@@ -616,6 +628,15 @@ export function validateStrictCBCCheckpoint(
         !Number.isSafeInteger(state.phaseLowTime) || state.phaseLowTime < 0) {
         throw new Error('StrictCBC Checkpoint Error: corrupted phase extremes.');
     }
+    if (currentCandleTimestamp !== undefined &&
+        (state.phaseHighTime > currentCandleTimestamp || state.phaseLowTime > currentCandleTimestamp)) {
+        throw new Error('StrictCBC Checkpoint Error: phase timestamp exceeds currentCandleTimestamp.');
+    }
+    if (acceptedTimestamps !== undefined &&
+        (acceptedTimestamps[state.phaseHighIdx] !== state.phaseHighTime ||
+            acceptedTimestamps[state.phaseLowIdx] !== state.phaseLowTime)) {
+        throw new Error('StrictCBC Checkpoint Error: phase extreme timestamp disagrees with acceptedTimestamps.');
+    }
     if ((state.lastHighPrice !== null && (!Number.isFinite(state.lastHighPrice) || state.lastHighPrice <= 0)) ||
         (state.lastLowPrice !== null && (!Number.isFinite(state.lastLowPrice) || state.lastLowPrice <= 0))) {
         throw new Error('StrictCBC Checkpoint Error: corrupted lastHighPrice/lastLowPrice.');
@@ -629,13 +650,25 @@ export function validateStrictCBCCheckpoint(
             !Number.isSafeInteger(prevPivot.id) || prevPivot.id < 1 || prevPivot.id >= state.nextPivotId ||
             (prevPivot.type !== 'high' && prevPivot.type !== 'low') ||
             !Number.isFinite(prevPivot.price) || prevPivot.price <= 0 ||
+            !Number.isSafeInteger(prevPivot.time) || prevPivot.time < 0 ||
             !Number.isSafeInteger(prevPivot.barIndex) || prevPivot.barIndex < 0 ||
             !Number.isSafeInteger(prevPivot.confirmedBarIndex) ||
             prevPivot.confirmedBarIndex < prevPivot.barIndex ||
             prevPivot.confirmedBarIndex > currentBarIndex) {
             throw new Error('StrictCBC Checkpoint Error: corrupted prevPivot.');
         }
-        // Cross-validate paired prevPivot against StrictCBCState
+        if (currentCandleTimestamp !== undefined && prevPivot.time > currentCandleTimestamp) {
+            throw new Error('StrictCBC Checkpoint Error: prevPivot.time exceeds currentCandleTimestamp.');
+        }
+        if (acceptedTimestamps !== undefined) {
+            if (acceptedTimestamps[prevPivot.barIndex] !== prevPivot.time) {
+                throw new Error('StrictCBC Checkpoint Error: prevPivot.time disagrees with acceptedTimestamps[barIndex].');
+            }
+            if (prevPivot.barIndex < prevPivot.confirmedBarIndex &&
+                prevPivot.time >= acceptedTimestamps[prevPivot.confirmedBarIndex]) {
+                throw new Error('StrictCBC Checkpoint Error: prevPivot.time must precede confirmation bar timestamp.');
+            }
+        }
         const expectedBullish = prevPivot.type === 'low';
         if (state.isBullish !== expectedBullish) {
             throw new Error(
@@ -653,6 +686,15 @@ export function validateStrictCBCCheckpoint(
     }
 }
 
+/**
+ * Validates VAMState invariants against VolatilityAdjustedMean.ts:
+ * - lastSignalAcceptedIndex is segment-relative (0 .. unbrokenRun - 1), NOT global barIndex
+ * - atrState.count === unbrokenRun, typeof atrState.isSeeded === 'boolean', atrState.isSeeded === (unbrokenRun >= 14)
+ * - hlc3History.length === Math.min(19, unbrokenRun)
+ * - centerHistory.length === (unbrokenRun < 5 ? 0 : Math.min(4, unbrokenRun - 4))
+ * - trend === 0 when unbrokenRun < 8; -1 or 1 when unbrokenRun >= 8
+ * - buyStreak/sellStreak and lastSignalAcceptedIndex stay 0/null while unbrokenRun < 28 (ADX warmup)
+ */
 export function validateVAMCheckpoint(vs: VAMState): void {
     if (!vs || typeof vs !== 'object' || !Number.isSafeInteger(vs.unbrokenRun) || vs.unbrokenRun < 0) {
         throw new Error('VAM Checkpoint Error: invalid VAM state or unbrokenRun.');
@@ -666,17 +708,44 @@ export function validateVAMCheckpoint(vs: VAMState): void {
         vs.centerHistory.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
         throw new Error('VAM Checkpoint Error: invalid centerHistory.');
     }
-    if (vs.unbrokenRun > 0 && (vs.adaptive === null || !Number.isFinite(vs.adaptive))) {
-        throw new Error('VAM Checkpoint Error: non-finite adaptive.');
+    if (vs.unbrokenRun === 0) {
+        if (vs.prevHigh !== null || vs.prevLow !== null || vs.prevClose !== null ||
+            vs.adaptive !== null || vs.center !== null || vs.adx !== null ||
+            vs.centerSeedMean !== 0 || vs.lastSignalAcceptedIndex !== null || vs.trend !== 0) {
+            throw new Error('VAM Checkpoint Error: unbrokenRun=0 state must have null/zero initial fields.');
+        }
+    } else {
+        if (vs.prevHigh === null || !Number.isFinite(vs.prevHigh) ||
+            vs.prevLow === null || !Number.isFinite(vs.prevLow) ||
+            vs.prevClose === null || !Number.isFinite(vs.prevClose) ||
+            vs.prevHigh < vs.prevLow || vs.prevHigh < vs.prevClose || vs.prevLow > vs.prevClose ||
+            vs.adaptive === null || !Number.isFinite(vs.adaptive)) {
+            throw new Error('VAM Checkpoint Error: corrupted OHLC history or adaptive center.');
+        }
+    }
+    if (!Number.isSafeInteger(vs.centerSeedCount) || vs.centerSeedCount !== Math.min(5, vs.unbrokenRun) ||
+        !Number.isFinite(vs.centerSeedMean)) {
+        throw new Error('VAM Checkpoint Error: invalid centerSeedCount or centerSeedMean.');
+    }
+    if (vs.centerSeedCount < 5 ? vs.center !== null : (vs.center === null || !Number.isFinite(vs.center))) {
+        throw new Error('VAM Checkpoint Error: invalid VAM center.');
     }
     const atr = vs.atrState;
-    if (!atr || typeof atr !== 'object' || atr.count !== vs.unbrokenRun ||
+    if (!atr || typeof atr !== 'object' ||
+        typeof atr.isSeeded !== 'boolean' ||
+        !Number.isSafeInteger(atr.count) || atr.count !== vs.unbrokenRun ||
+        atr.isSeeded !== (vs.unbrokenRun >= 14) ||
         !Number.isFinite(atr.seedMean) || atr.seedMean < 0 ||
         (atr.isSeeded ? (atr.atr === null || !Number.isFinite(atr.atr) || atr.atr < 0) : atr.atr !== null)) {
         throw new Error('VAM Checkpoint Error: invalid atrState.');
     }
-    if (vs.adx !== null && (!Number.isFinite(vs.adx) || vs.adx < 0 || vs.adx > 100)) {
-        throw new Error('VAM Checkpoint Error: invalid ADX.');
+    if (!Number.isSafeInteger(vs.dmiCount) || vs.dmiCount !== Math.max(0, vs.unbrokenRun - 1) ||
+        !Number.isSafeInteger(vs.rsiCount) || vs.rsiCount !== Math.max(0, vs.unbrokenRun - 1) ||
+        !Number.isSafeInteger(vs.dxHistoryCount) || vs.dxHistoryCount !== Math.max(0, vs.dmiCount - 13)) {
+        throw new Error('VAM Checkpoint Error: invalid DMI/RSI/DX counter invariants.');
+    }
+    if (vs.dxHistoryCount < 14 ? vs.adx !== null : (vs.adx === null || !Number.isFinite(vs.adx) || vs.adx < 0 || vs.adx > 100)) {
+        throw new Error('VAM Checkpoint Error: invalid ADX seed state or range.');
     }
     if ((vs.trend !== -1 && vs.trend !== 0 && vs.trend !== 1) ||
         (vs.unbrokenRun < 8 ? vs.trend !== 0 : vs.trend === 0) ||
@@ -685,10 +754,13 @@ export function validateVAMCheckpoint(vs: VAMState): void {
         (vs.buyStreak > 0 && vs.sellStreak > 0)) {
         throw new Error('VAM Checkpoint Error: invalid trend or streaks.');
     }
+    if (vs.unbrokenRun < 28 && (vs.buyStreak !== 0 || vs.sellStreak !== 0 || vs.lastSignalAcceptedIndex !== null)) {
+        throw new Error('VAM Checkpoint Error: streaks/signals cannot exist before ADX warmup (unbrokenRun < 28).');
+    }
     if (vs.lastSignalAcceptedIndex !== null &&
         (!Number.isSafeInteger(vs.lastSignalAcceptedIndex) ||
-            vs.lastSignalAcceptedIndex < 0 ||
+            vs.lastSignalAcceptedIndex < 27 ||
             vs.lastSignalAcceptedIndex >= vs.unbrokenRun)) {
-        throw new Error('VAM Checkpoint Error: invalid lastSignalAcceptedIndex.');
+        throw new Error('VAM Checkpoint Error: invalid segment-relative lastSignalAcceptedIndex.');
     }
 }

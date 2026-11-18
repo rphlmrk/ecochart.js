@@ -199,6 +199,12 @@ export function validatePHLState(state: PHLState, maxWin: number, intervalMs: nu
         throw new Error('PHL State Integrity Error: invalid window container or length.');
     }
 
+    const prelimMaxBarIdx = state.window.length > 0 ? state.window[state.window.length - 1].barIndex : null;
+    if (!isValidTracker(state.pbFromHigh, true, prelimMaxBarIdx) ||
+        !isValidTracker(state.pbFromLow, false, prelimMaxBarIdx)) {
+        throw new Error('PHL State Integrity Error: corrupted pullback tracker.');
+    }
+
     if (state.window.length === 0) {
         if (state.clockCheckpoints.length !== 0 ||
             state.bull !== null ||
