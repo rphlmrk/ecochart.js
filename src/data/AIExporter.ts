@@ -48,7 +48,6 @@ import {
 } from '../indicators/plugins/StrictCBCZigZagIndicator';
 import {
     V3_DATASET_VERSION,
-    V3_MAX_HORIZON_BARS,
     type V3StrategyEventRow
 } from '../indicators/mlr1/pipeline/MultiHorizonOutcomeEngine';
 import {
@@ -66,7 +65,8 @@ import {
     getV3FileNames,
     MTF15mSerializerCache
 } from '../indicators/mlr1/pipeline/V3CsvSerializer';
-import { parseCsvDocumentCRLF, serializeCsvRecord, V3ArtifactAuditor } from '../indicators/mlr1/pipeline/V3ArtifactAuditor';
+import { parseCsvDocumentCRLF, V3ArtifactAuditor } from '../indicators/mlr1/pipeline/V3ArtifactAuditor';
+import { V3_15M_ONLY_MTF_VERSION } from '../indicators/mlr1/pipeline/V3PipelineEngine';
 
 export const MLR1_OUTCOME_CONFIG_VERSION = 'MLR1_v2';
 export const MLR1_DATASET_VERSION = 2;
@@ -1645,11 +1645,13 @@ export class AIExporter {
         return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
     }
 
+    /** rawCandleBuffer must contain strictly accepted, validated candles (0..N-1 = acceptedBarIndex). Use accountRawSourceRows() upstream when filtering dirty raw feeds. */
     public static async buildV3ExportArtifacts(params: {
         rawCandleBuffer: Float64Array;
         symbol: string;
         interval: string;
         intervalMs: number;
+        include15mMtf?: boolean;
         buildTimestamp?: number;
         requireContiguous?: boolean;
         sourceTimestampBounds?: RawSourceTimestampBounds;
@@ -1668,6 +1670,7 @@ export class AIExporter {
             symbol,
             interval,
             intervalMs,
+            include15mMtf: params.include15mMtf,
             requireContiguous: params.requireContiguous ?? true,
             sourceTimestampBounds: params.sourceTimestampBounds
         });
@@ -1818,6 +1821,7 @@ export class AIExporter {
         }
 
         // Independently verify exact CSV bytes entering ZIP against the raw source candles
+        const manifestIncludes15m = artifacts.manifest.featureVersion.includes(V3_15M_ONLY_MTF_VERSION);
         const reAudit = DatasetAuditor.runV3CausalityAudit({
             rawCandleBuffer,
             intervalMs: artifacts.manifest.buildConfig.sourceIntervalMs,
@@ -1826,7 +1830,7 @@ export class AIExporter {
             continuousCsv: artifacts.continuousCsv,
             representationCsv: artifacts.representationCsv,
             strategyEventsCsv: artifacts.strategyEventsCsv,
-            include15mMtf: artifacts.manifest.timeframe === '1m',
+            include15mMtf: manifestIncludes15m,
             is1mBase: artifacts.manifest.timeframe === '1m'
         });
         if (!reAudit.passed) {
@@ -2716,70 +2720,46 @@ export class DatasetAuditor {
         readonly representationCsv: string;
         readonly strategyEventsCsv: string;
         readonly include15mMtf: boolean;
-        readonly is1mBase?: boolean;
+        readonly is1mBase: boolean;
     }): IntegrityAuditResults {
-        const auditor = new V3ArtifactAuditor(
-            params.intervalMs,
-            params.include15mMtf,
-            params.is1mBase ?? true
-        );
-        const contRecords = parseCsvDocumentCRLF(params.continuousCsv);
-        const repRecords = parseCsvDocumentCRLF(params.representationCsv);
-        const evRecords = parseCsvDocumentCRLF(params.strategyEventsCsv);
+        const auditor = new V3ArtifactAuditor({
+            intervalMs: params.intervalMs,
+            include15mMtf: params.include15mMtf,
+            is1mBase: params.is1mBase,
+            batchRawBuffer: params.rawCandleBuffer
+        });
 
-        auditor.validateContinuousHeader(serializeCsvRecord(contRecords[0] ?? []));
-        auditor.validateRepresentationHeader(serializeCsvRecord(repRecords[0] ?? []));
-        auditor.validateStrategyEventsHeader(serializeCsvRecord(evRecords[0] ?? []));
-
-        const confBarColIdx = (evRecords[0] ?? []).indexOf('confirmation_bar_index');
-        const eventCount = Math.max(repRecords.length, evRecords.length) - 1;
-        let evCursor = 1;
-        const getNextReadyBar = (): number | null => {
-            if (evCursor > eventCount || confBarColIdx < 0) return null;
-            const cells = evRecords[evCursor];
-            if (!cells) return null;
-            const cb = Number(cells[confBarColIdx]);
-            if (!Number.isSafeInteger(cb) || cb < 0) return null;
-            return cb + V3_MAX_HORIZON_BARS;
-        };
-
-        let nextReadyBar = getNextReadyBar();
-        const barCount = Math.floor(params.rawCandleBuffer.length / 6);
-
-        for (let i = 0; i < barCount; i++) {
-            const off = i * 6;
-            auditor.pushRawCandle(i, {
-                time: params.rawCandleBuffer[off],
-                open: params.rawCandleBuffer[off + 1],
-                high: params.rawCandleBuffer[off + 2],
-                low: params.rawCandleBuffer[off + 3],
-                close: params.rawCandleBuffer[off + 4],
-                volume: params.rawCandleBuffer[off + 5]
+        let contRecords: string[][];
+        let repRecords: string[][];
+        let evRecords: string[][];
+        try {
+            contRecords = parseCsvDocumentCRLF(params.continuousCsv);
+            repRecords = parseCsvDocumentCRLF(params.representationCsv);
+            evRecords = parseCsvDocumentCRLF(params.strategyEventsCsv);
+        } catch (e: any) {
+            return Object.freeze({
+                passed: false,
+                chronologyValid: false,
+                identityUnique: false,
+                inputOutcomeSeparationValid: false,
+                remarks: Object.freeze([`CSV Document Parse Error: ${e?.message}`])
             });
-
-            if (i + 1 < contRecords.length) {
-                auditor.validateContinuousLine(serializeCsvRecord(contRecords[i + 1]));
-            }
-
-            while (evCursor <= eventCount && (nextReadyBar === null || i >= nextReadyBar)) {
-                auditor.validateSerializedEventPair(
-                    serializeCsvRecord(repRecords[evCursor] ?? []),
-                    serializeCsvRecord(evRecords[evCursor] ?? [])
-                );
-                evCursor++;
-                nextReadyBar = getNextReadyBar();
-            }
         }
 
-        for (let i = barCount + 1; i < contRecords.length; i++) {
-            auditor.validateContinuousLine(serializeCsvRecord(contRecords[i]));
+        auditor.validateContinuousHeader(contRecords[0] ?? []);
+        for (let i = 1; i < contRecords.length; i++) {
+            auditor.validateContinuousCells(contRecords[i]);
         }
-        while (evCursor <= eventCount) {
-            auditor.validateSerializedEventPair(
-                serializeCsvRecord(repRecords[evCursor] ?? []),
-                serializeCsvRecord(evRecords[evCursor] ?? [])
+
+        auditor.validateRepresentationHeader(repRecords[0] ?? []);
+        auditor.validateStrategyEventsHeader(evRecords[0] ?? []);
+
+        const eventCount = Math.max(repRecords.length, evRecords.length) - 1;
+        for (let i = 1; i <= eventCount; i++) {
+            auditor.validateSerializedEventCells(
+                repRecords[i] ?? [],
+                evRecords[i] ?? []
             );
-            evCursor++;
         }
 
         return auditor.finalizeAudit(params.expectedContinuousRows, params.expectedEventRows);

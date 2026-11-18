@@ -24,7 +24,7 @@ import {
     MTF15mSerializerCache
 } from '../indicators/mlr1/pipeline/V3CsvSerializer';
 import { V3_DATASET_VERSION } from '../indicators/mlr1/pipeline/MultiHorizonOutcomeEngine';
-import { V3ArtifactAuditor } from '../indicators/mlr1/pipeline/V3ArtifactAuditor';
+import { parseSingleCsvRecord, V3ArtifactAuditor } from '../indicators/mlr1/pipeline/V3ArtifactAuditor';
 
 const MLR1_EVENT_ID_VERSION = 'v2_ATR14_SL1.5_TP2_HZ60';
 const MLR1_MTF_CONTEXT_VERSION = 'M3A_3E_MTFv1';
@@ -213,6 +213,7 @@ export class BufferedTextSink {
     private rowCount = 0;
     private hasHeader = false;
     private closed = false;
+    private aborted = false;
     public bytesWritten = 0;
 
     public constructor(
@@ -252,6 +253,7 @@ export class BufferedTextSink {
     }
 
     public async finalize(): Promise<{ rowCount: number; bytesWritten: number; sha256: string }> {
+        if (this.aborted) throw new Error('Sink already aborted.');
         if (this.closed) throw new Error('Sink already finalized.');
         await this.flush();
         await this.stream.close();
@@ -265,7 +267,8 @@ export class BufferedTextSink {
 
     public async abort(): Promise<void> {
         this.lines.length = 0;
-        if (!this.closed) {
+        if (!this.aborted) {
+            this.aborted = true;
             this.closed = true;
             try { await this.stream.abort(); } catch { /* ignore cleanup error */ }
         }
@@ -1011,6 +1014,7 @@ export class StreamingDatasetExporter {
         symbol: string;
         interval: string;
         intervalMs: number;
+        include15mMtf?: boolean;
         rootDirHandle?: any;
         buildTimestamp?: number;
         requireContiguous?: boolean;
@@ -1042,9 +1046,22 @@ export class StreamingDatasetExporter {
         let opfsStagingDirName: string | null = null;
         let opfsRoot: any = null;
         const stagingDirName = `.tmp_${folderName}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const runOwnerId = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        const lockFileName = `.ecochart_owner_${runOwnerId}.lock`;
+        const assertDirAbsent = async (parent: any, name: string) => {
+            try {
+                await parent.getDirectoryHandle(name, { create: false });
+                throw new Error(`V3 Export Error: destination directory '${name}' already exists; refusing to overwrite.`);
+            } catch (e: any) {
+                const isNotFound = e?.name === 'NotFoundError' || String(e?.message).startsWith('Missing dir ');
+                if (!isNotFound) throw e;
+            }
+        };
 
+        let ownedFinalDir = false;
         if (params.rootDirHandle) {
             destinationType = 'directory_picker';
+            await assertDirAbsent(params.rootDirHandle, folderName);
             targetDirHandle = await params.rootDirHandle.getDirectoryHandle(stagingDirName, { create: true });
         } else if (this.isOpfsSupported()) {
             destinationType = 'opfs';
@@ -1082,6 +1099,7 @@ export class StreamingDatasetExporter {
                 symbol,
                 interval,
                 intervalMs,
+                include15mMtf: params.include15mMtf,
                 buildTimestamp: params.buildTimestamp,
                 requireContiguous: params.requireContiguous,
                 sourceTimestampBounds: params.sourceTimestampBounds,
@@ -1121,25 +1139,59 @@ export class StreamingDatasetExporter {
             }
 
             if (destinationType === 'directory_picker') {
-                // Publish verified files from staging into final folder only after all 4 files pass verification
+                await assertDirAbsent(params.rootDirHandle, folderName);
                 const finalDirHandle = await params.rootDirHandle.getDirectoryHandle(folderName, { create: true });
+
+                // Verify exclusive ownership: ensure none of our 4 target files already exist before claiming ownership
+                for (const checkName of [
+                    fileNames.continuousFileName,
+                    fileNames.representationFileName,
+                    fileNames.strategyEventsFileName,
+                    fileNames.manifestFileName
+                ]) {
+                    try {
+                        await finalDirHandle.getFileHandle(checkName, { create: false });
+                        throw new Error(`V3 Export Error: concurrent file '${checkName}' detected in '${folderName}'; aborting without overwriting.`);
+                    } catch (fe: any) {
+                        const isNotFound = fe?.name === 'NotFoundError' || String(fe?.message).startsWith('Missing file ');
+                        if (!isNotFound) throw fe;
+                    }
+                }
+
+                // Write exclusive ownership lock marker before copying files
+                const lockHandle = await finalDirHandle.getFileHandle(lockFileName, { create: true });
+                const lockW = await lockHandle.createWritable();
+                await lockW.write(encoder.encode(runOwnerId));
+                await lockW.close();
+                ownedFinalDir = true;
+
                 for (const name of [
                     fileNames.continuousFileName,
                     fileNames.representationFileName,
                     fileNames.strategyEventsFileName,
                     fileNames.manifestFileName
                 ]) {
+                    if (params.signal?.aborted) {
+                        throw new Error('V3 Export cancelled during directory publication.');
+                    }
                     const srcHandle = await targetDirHandle.getFileHandle(name);
                     const srcFile: File = await srcHandle.getFile();
                     const dstHandle = await finalDirHandle.getFileHandle(name, { create: true });
                     const dstWritable = await dstHandle.createWritable();
                     try {
                         await dstWritable.write(await srcFile.arrayBuffer());
+                        if (params.signal?.aborted) {
+                            throw new Error('V3 Export cancelled during directory file write.');
+                        }
                         await dstWritable.close();
                     } catch (pubErr) {
                         await dstWritable.abort().catch(() => {});
                         throw pubErr;
                     }
+                }
+
+                if (typeof finalDirHandle.removeEntry === 'function') {
+                    await finalDirHandle.removeEntry(lockFileName).catch(() => {});
                 }
                 if (typeof params.rootDirHandle.removeEntry === 'function') {
                     await params.rootDirHandle.removeEntry(stagingDirName, { recursive: true }).catch(() => {});
@@ -1196,11 +1248,16 @@ export class StreamingDatasetExporter {
                 }
             };
         } catch (err) {
-            if (continuousSink) await continuousSink.abort();
-            if (representationSink) await representationSink.abort();
-            if (strategyEventSink) await strategyEventSink.abort();
+            await Promise.allSettled([
+                continuousSink ? continuousSink.abort() : Promise.resolve(),
+                representationSink ? representationSink.abort() : Promise.resolve(),
+                strategyEventSink ? strategyEventSink.abort() : Promise.resolve()
+            ]);
             if (destinationType === 'directory_picker' && params.rootDirHandle &&
                 typeof params.rootDirHandle.removeEntry === 'function') {
+                if (ownedFinalDir) {
+                    await params.rootDirHandle.removeEntry(folderName, { recursive: true }).catch(() => {});
+                }
                 await params.rootDirHandle.removeEntry(stagingDirName, { recursive: true }).catch(() => {});
             }
             if (destinationType === 'opfs' && opfsRoot && opfsStagingDirName) {
@@ -1215,6 +1272,7 @@ export class StreamingDatasetExporter {
         symbol: string;
         interval: string;
         intervalMs: number;
+        include15mMtf?: boolean;
         buildTimestamp?: number;
         requireContiguous?: boolean;
         sourceTimestampBounds?: RawSourceTimestampBounds;
@@ -1234,12 +1292,17 @@ export class StreamingDatasetExporter {
             symbol,
             interval,
             intervalMs,
+            include15mMtf: params.include15mMtf,
             requireContiguous: params.requireContiguous ?? true,
             sourceTimestampBounds: params.sourceTimestampBounds
         });
         const runner = new V3PipelineRunner(config);
         const include15mMtf = config.mtf15mConfig !== null;
-        const auditor = new V3ArtifactAuditor(intervalMs, include15mMtf, interval === '1m');
+        const auditor = new V3ArtifactAuditor({
+            intervalMs,
+            include15mMtf,
+            is1mBase: interval === '1m'
+        });
         const mtfCache = new MTF15mSerializerCache();
         let featureKeys: string[] | null = null;
         let headersWritten = false;
@@ -1249,7 +1312,6 @@ export class StreamingDatasetExporter {
         let repStats: { rowCount: number; bytesWritten: number; sha256: string };
         let evStats: { rowCount: number; bytesWritten: number; sha256: string };
         let fin: ReturnType<V3PipelineRunner['finalize']>;
-        let auditResult: ReturnType<V3ArtifactAuditor['finalizeAudit']>;
 
         try {
             for (let i = 0; i < totalCandles; i++) {
@@ -1257,19 +1319,22 @@ export class StreamingDatasetExporter {
                     throw new Error('V3 Export cancelled by user.');
                 }
                 const off = i * 6;
-                const rawBar = {
+                const stepOut = runner.stepCandle({
                     time: rawCandleBuffer[off],
                     open: rawCandleBuffer[off + 1],
                     high: rawCandleBuffer[off + 2],
                     low: rawCandleBuffer[off + 3],
                     close: rawCandleBuffer[off + 4],
-                    volume: rawCandleBuffer[off + 5]
-                };
-                auditor.pushRawCandle(i, rawBar);
-
-                const stepOut = runner.stepCandle({
-                    ...rawBar,
+                    volume: rawCandleBuffer[off + 5],
                     isSynthetic: false as const
+                });
+                auditor.pushRawCandle(stepOut.acceptedBarIndex, {
+                    time: stepOut.sourceTimestamp,
+                    open: stepOut.candle.open,
+                    high: stepOut.candle.high,
+                    low: stepOut.candle.low,
+                    close: stepOut.candle.close,
+                    volume: stepOut.candle.volume
                 });
 
                 if (!headersWritten) {
@@ -1277,9 +1342,9 @@ export class StreamingDatasetExporter {
                     const contHdr = buildV3ContinuousHeader(featureKeys, include15mMtf);
                     const repHdr = buildV3RepresentationHeader();
                     const evHdr = buildV3StrategyEventHeader();
-                    auditor.validateContinuousHeader(contHdr);
-                    auditor.validateRepresentationHeader(repHdr);
-                    auditor.validateStrategyEventsHeader(evHdr);
+                    auditor.validateContinuousHeader(parseSingleCsvRecord(contHdr));
+                    auditor.validateRepresentationHeader(parseSingleCsvRecord(repHdr));
+                    auditor.validateStrategyEventsHeader(parseSingleCsvRecord(evHdr));
                     await continuousSink.writeHeader(contHdr);
                     await representationSink.writeHeader(repHdr);
                     await strategyEventSink.writeHeader(evHdr);
@@ -1293,7 +1358,7 @@ export class StreamingDatasetExporter {
                 for (const row of stepOut.completedOutcomeRows) {
                     const evLine = formatV3StrategyEventRow(row);
                     const repLine = formatV3RepresentationRow(row).csvLine;
-                    auditor.validateSerializedEventPair(repLine, evLine);
+                    auditor.validateSerializedEventPairLines(repLine, evLine);
                     await strategyEventSink.appendRow(evLine);
                     await representationSink.appendRow(repLine);
                     emittedEvents++;
@@ -1315,7 +1380,7 @@ export class StreamingDatasetExporter {
                 throw new Error('V3 Streaming Export Error: no eligible confirmed events with complete 180-bar horizons.');
             }
 
-            auditResult = auditor.finalizeAudit(totalCandles, emittedEvents);
+            const auditResult = auditor.finalizeAudit(totalCandles, emittedEvents);
             if (!auditResult.passed) {
                 throw new Error(`V3 Streaming Audit Failed: ${auditResult.remarks.join('; ')}`);
             }
@@ -1329,41 +1394,43 @@ export class StreamingDatasetExporter {
             repStats = await representationSink.finalize();
             if (params.signal?.aborted) throw new Error('V3 Export cancelled during finalization.');
             evStats = await strategyEventSink.finalize();
-        } catch (streamErr) {
-            await continuousSink.abort();
-            await representationSink.abort();
-            await strategyEventSink.abort();
-            throw streamErr;
+
+            const fileNames = getV3FileNames(symbol, interval);
+            const manifest = buildV3DatasetManifest({
+                runner,
+                config,
+                totalRawCandles: totalCandles,
+                startTimestamp: rawCandleBuffer[0],
+                endTimestamp: rawCandleBuffer[(totalCandles - 1) * 6],
+                outcomeAccounting: fin.outcomeAccounting,
+                continuousRowCount: contStats.rowCount,
+                representationRowCount: repStats.rowCount,
+                strategyEventRowCount: evStats.rowCount,
+                auditResults: auditResult,
+                fileChecksums: {
+                    continuousSha256: contStats.sha256,
+                    representationSha256: repStats.sha256,
+                    strategyEventsSha256: evStats.sha256
+                },
+                buildTimestamp: params.buildTimestamp
+            });
+
+            return {
+                manifest,
+                fileChecksums: {
+                    [fileNames.continuousFileName]: { sha256: contStats.sha256, bytesWritten: contStats.bytesWritten },
+                    [fileNames.representationFileName]: { sha256: repStats.sha256, bytesWritten: repStats.bytesWritten },
+                    [fileNames.strategyEventsFileName]: { sha256: evStats.sha256, bytesWritten: evStats.bytesWritten }
+                }
+            };
+        } catch (coreErr) {
+            await Promise.allSettled([
+                continuousSink.abort(),
+                representationSink.abort(),
+                strategyEventSink.abort()
+            ]);
+            throw coreErr;
         }
-
-        const fileNames = getV3FileNames(symbol, interval);
-        const manifest = buildV3DatasetManifest({
-            runner,
-            config,
-            totalRawCandles: totalCandles,
-            startTimestamp: rawCandleBuffer[0],
-            endTimestamp: rawCandleBuffer[(totalCandles - 1) * 6],
-            outcomeAccounting: fin.outcomeAccounting,
-            continuousRowCount: contStats.rowCount,
-            representationRowCount: repStats.rowCount,
-            strategyEventRowCount: evStats.rowCount,
-            auditResults: auditResult,
-            fileChecksums: {
-                continuousSha256: contStats.sha256,
-                representationSha256: repStats.sha256,
-                strategyEventsSha256: evStats.sha256
-            },
-            buildTimestamp: params.buildTimestamp
-        });
-
-        return {
-            manifest,
-            fileChecksums: {
-                [fileNames.continuousFileName]: { sha256: contStats.sha256, bytesWritten: contStats.bytesWritten },
-                [fileNames.representationFileName]: { sha256: repStats.sha256, bytesWritten: repStats.bytesWritten },
-                [fileNames.strategyEventsFileName]: { sha256: evStats.sha256, bytesWritten: evStats.bytesWritten }
-            }
-        };
     }
 }
 

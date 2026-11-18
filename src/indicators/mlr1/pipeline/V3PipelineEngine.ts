@@ -83,6 +83,7 @@ export function createV3PipelineConfig(params: {
     readonly symbol: string;
     readonly interval: string;
     readonly intervalMs: number;
+    readonly include15mMtf?: boolean;
     readonly requireContiguous?: boolean;
     readonly sourceTimestampBounds?: RawSourceTimestampBounds;
 }): V3PipelineConfig {
@@ -110,8 +111,13 @@ export function createV3PipelineConfig(params: {
         enableVAM: ML1_CONFIG_C.enableVAM
     });
 
+    const enable15mMtf = params.include15mMtf ?? is1m;
+    if (enable15mMtf && !is1m) {
+        throw new Error(`V3PipelineConfig Error: 15m MTF requires '1m' base interval, got '${interval}'.`);
+    }
+
     // 15m-ONLY MTF config (1h explicitly removed from v3; VolumeCandleSize stays 1m-only)
-    const mtf15mConfig: MTFTimeframeConfig | null = is1m
+    const mtf15mConfig: MTFTimeframeConfig | null = enable15mMtf
         ? Object.freeze({
               timeframe: '15m' as const,
               durationMs: 900_000,
