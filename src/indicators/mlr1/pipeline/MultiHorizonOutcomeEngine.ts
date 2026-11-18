@@ -342,6 +342,17 @@ export function serializeAndValidateStructuralContext(
     if (proto !== Object.prototype && proto !== null) {
         throw new Error('V3 Structural Context Error: structuralContext must have Object.prototype or null prototype.');
     }
+    for (const rawKey of Reflect.ownKeys(structuralContext)) {
+        if (typeof rawKey !== 'string') {
+            throw new Error('V3 Structural Context Error: symbol keys are not permitted.');
+        }
+        const desc = Object.getOwnPropertyDescriptor(structuralContext, rawKey);
+        if (!desc || !('value' in desc) || !desc.enumerable) {
+            throw new Error(
+                `V3 Structural Context Error: property '${rawKey}' must be an enumerable data property.`
+            );
+        }
+    }
     const allowedKeys = V3_STRUCTURAL_CONTEXT_ALLOWLIST[strategyId];
     if (!allowedKeys) {
         throw new Error(`V3 Structural Context Error: unknown strategyId '${strategyId}'.`);

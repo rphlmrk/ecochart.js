@@ -244,6 +244,19 @@ export function runPhase5DPhase3Tests(): boolean {
             serializeAndValidateStructuralContext('PHL_BOS_MSS', nullPrototypeContext).length > 0,
             'Null-prototype structural context should be accepted'
         );
+        const symObj: Record<string | symbol, unknown> = { breakType: 'MSS', [Symbol('leak')]: 1 };
+        expectLeak(() => serializeAndValidateStructuralContext('PHL_BOS_MSS', symObj as any), 'symbol key inside context');
+
+        const accessorObj = {};
+        Object.defineProperty(accessorObj, 'breakType', { get: () => 'MSS', enumerable: true });
+        expectLeak(() => serializeAndValidateStructuralContext('PHL_BOS_MSS', accessorObj as any), 'accessor getter inside context');
+
+        const nonEnumObj = {};
+        Object.defineProperty(nonEnumObj, 'breakType', { value: 'MSS', enumerable: false });
+        expectLeak(
+            () => serializeAndValidateStructuralContext('PHL_BOS_MSS', nonEnumObj as any),
+            'non-enumerable property inside context'
+        );
 
         // Adversarial serialized JSON injection on a V3RepresentationRow
         const tracker = new MultiHorizonOutcomeTracker();
@@ -315,14 +328,34 @@ export function runPhase5DPhase3Tests(): boolean {
                 isoCbcEvents.push(ev);
             }
         }
-        assert(isoCbcEvents.length > 0, 'Isolated StrictCBC adapter must emit events');
-        const cbcRes = runControlled(cbcStream);
-        assert((cbcRes.fin.outcomeAccounting.countsByStrategy['STRICT_CBC'] ?? 0) >= 1, 'STRICT_CBC must route eligible outcomes');
-        assert(cbcRes.fin.outcomeAccounting.excludedUnwarmedAtr >= 1, 'Expected excludedUnwarmedAtr');
-        assert(cbcRes.fin.outcomeAccounting.excludedIncompleteHorizon >= 1, 'Expected excludedIncompleteHorizon');
-        assert(cbcRes.fin.outcomeAccounting.excludedMissingNextOpen >= 1, 'Expected excludedMissingNextOpen');
+        const expectedCbcSummary = [
+            { type: 'CBC_HIGH_HH', bar: 2 },
+            { type: 'CBC_LOW_LL', bar: 20 },
+            { type: 'CBC_HIGH_HH', bar: 22 },
+            { type: 'CBC_LOW_HL', bar: 98 },
+            { type: 'CBC_HIGH_HH', bar: 100 },
+            { type: 'CBC_LOW_LL', bar: 228 },
+            { type: 'CBC_HIGH_HH', bar: 229 }
+        ];
         assert(
-            cbcRes.fin.unresolvedFinalBarEvents.some(e => e.strategyId === 'STRICT_CBC' && e.entryTimestamp === null),
+            JSON.stringify(isoCbcEvents.map(e => ({ type: e.eventType, bar: e.confirmationBarIndex }))) ===
+                JSON.stringify(expectedCbcSummary),
+            'Isolated StrictCBC event sequence mismatch'
+        );
+        const cbcRes = runControlled(cbcStream);
+        const pipelineCbcEvents = cbcRes.confirmed.filter(e => e.strategyId === 'STRICT_CBC');
+        assert(
+            pipelineCbcEvents.length === isoCbcEvents.length &&
+            JSON.stringify(pipelineCbcEvents.map(e => ({ id: e.eventId, type: e.eventType, bar: e.confirmationBarIndex }))) ===
+                JSON.stringify(isoCbcEvents.map(e => ({ id: e.eventId, type: e.eventType, bar: e.confirmationBarIndex }))),
+            'StrictCBC pipeline confirmed events must match isolated adapter events exactly'
+        );
+        assert((cbcRes.fin.outcomeAccounting.countsByStrategy['STRICT_CBC'] ?? 0) >= 1, 'STRICT_CBC must route eligible outcomes');
+        assert(cbcRes.fin.outcomeAccounting.excludedUnwarmedAtr >= 1, 'Aggregate pipeline must record excludedUnwarmedAtr');
+        assert(cbcRes.fin.outcomeAccounting.excludedIncompleteHorizon >= 1, 'Aggregate pipeline must record excludedIncompleteHorizon');
+        assert(cbcRes.fin.outcomeAccounting.excludedMissingNextOpen >= 1, 'Aggregate pipeline must record excludedMissingNextOpen');
+        assert(
+            cbcRes.fin.unresolvedFinalBarEvents.some(e => e.strategyId === 'STRICT_CBC' && e.entryTimestamp === null && e.entryBarIndex === cbcStream.length),
             'Final bar STRICT_CBC event must stay unresolved with entryTimestamp=null'
         );
 
@@ -347,7 +380,7 @@ export function runPhase5DPhase3Tests(): boolean {
         const phlCfg = createDefaultPHLConfig('SOLUSDT', '1m', interval);
         let isoPhlS = createInitialPHLState();
         const isoPhlEvents: StrategyEvent[] = [];
-        for (let i = 0; i < phlBars.length; i++) {
+        for (let i = 0; i < phlStream.length; i++) {
             const r = stepPHL(phlStream[i], i, isoPhlS, phlCfg, false, 2.0, null);
             isoPhlS = r.nextState;
             for (const ev of r.events) {
@@ -355,8 +388,24 @@ export function runPhase5DPhase3Tests(): boolean {
                 isoPhlEvents.push(ev);
             }
         }
-        assert(isoPhlEvents.length === 3, 'Isolated PHL must emit 3 events');
+        const expectedPhlSummary = [
+            { type: 'PHL_MSS_BULL', bar: 15 },
+            { type: 'PHL_BOS_BULL', bar: 22 },
+            { type: 'PHL_MSS_BEAR', bar: 24 }
+        ];
+        assert(
+            JSON.stringify(isoPhlEvents.map(e => ({ type: e.eventType, bar: e.confirmationBarIndex }))) ===
+                JSON.stringify(expectedPhlSummary),
+            'Isolated PHL event types/bars mismatch'
+        );
         const phlRes = runControlled(phlStream);
+        const pipelinePhlEvents = phlRes.confirmed.filter(e => e.strategyId === 'PHL_BOS_MSS');
+        assert(
+            pipelinePhlEvents.length === isoPhlEvents.length &&
+            JSON.stringify(pipelinePhlEvents.map(e => ({ id: e.eventId, type: e.eventType, bar: e.confirmationBarIndex }))) ===
+                JSON.stringify(isoPhlEvents.map(e => ({ id: e.eventId, type: e.eventType, bar: e.confirmationBarIndex }))),
+            'PHL pipeline confirmed events must match isolated teacher events exactly'
+        );
         assert((phlRes.fin.outcomeAccounting.countsByStrategy['PHL_BOS_MSS'] ?? 0) === 3,
             `PHL_BOS_MSS must route all 3 eligible outcomes, got ${phlRes.fin.outcomeAccounting.countsByStrategy['PHL_BOS_MSS']}`);
 
@@ -380,7 +429,7 @@ export function runPhase5DPhase3Tests(): boolean {
         const dtfxCfg = createDefaultDTFXConfig('SOLUSDT', '1m', interval);
         let isoDtfxS = createInitialDTFXState();
         const isoDtfxEvents: StrategyEvent[] = [];
-        for (let i = 0; i <= 21; i++) {
+        for (let i = 0; i < dtfxStream.length; i++) {
             const r = stepDTFX(dtfxStream[i], i, isoDtfxS, dtfxCfg, false, 2.0, null);
             isoDtfxS = r.nextState;
             for (const ev of r.events) {
@@ -388,8 +437,24 @@ export function runPhase5DPhase3Tests(): boolean {
                 isoDtfxEvents.push(ev);
             }
         }
-        assert(isoDtfxEvents.length === 3, 'Isolated DTFX must emit CREATED + R1 + R2');
+        const expectedDtfxSummary = [
+            { type: 'DTFX_DEMAND_CREATED', bar: 16 },
+            { type: 'DTFX_DEMAND_RETEST', bar: 18 },
+            { type: 'DTFX_DEMAND_RETEST', bar: 21 }
+        ];
+        assert(
+            JSON.stringify(isoDtfxEvents.map(e => ({ type: e.eventType, bar: e.confirmationBarIndex }))) ===
+                JSON.stringify(expectedDtfxSummary),
+            'Isolated DTFX event types/bars mismatch'
+        );
         const dtfxRes = runControlled(dtfxStream);
+        const pipelineDtfxEvents = dtfxRes.confirmed.filter(e => e.strategyId === 'DTFX_ZONES');
+        assert(
+            pipelineDtfxEvents.length === isoDtfxEvents.length &&
+            JSON.stringify(pipelineDtfxEvents.map(e => ({ id: e.eventId, type: e.eventType, bar: e.confirmationBarIndex }))) ===
+                JSON.stringify(isoDtfxEvents.map(e => ({ id: e.eventId, type: e.eventType, bar: e.confirmationBarIndex }))),
+            'DTFX pipeline confirmed events must match isolated teacher events exactly'
+        );
         assert((dtfxRes.fin.outcomeAccounting.countsByStrategy['DTFX_ZONES'] ?? 0) === 3,
             `DTFX_ZONES must route all 3 eligible outcomes, got ${dtfxRes.fin.outcomeAccounting.countsByStrategy['DTFX_ZONES']}`);
 
@@ -405,7 +470,7 @@ export function runPhase5DPhase3Tests(): boolean {
         // Isolated VAM adapter check
         let isoVamS = createInitialVAMState();
         const isoVamEvents: StrategyEvent[] = [];
-        for (let i = 0; i <= 55; i++) {
+        for (let i = 0; i < vamStream.length; i++) {
             const out = stepVolatilityAdjustedMean(vamStream[i].high, vamStream[i].low, vamStream[i].close, isoVamS, false);
             isoVamS = out.nextState;
             const ev = adaptVAMtoStrategyEvent({
@@ -417,9 +482,23 @@ export function runPhase5DPhase3Tests(): boolean {
                 isoVamEvents.push(ev);
             }
         }
-        assert(isoVamEvents.length === 2 && isoVamEvents[0].eventType === 'VAM_SELL' && isoVamEvents[1].eventType === 'VAM_BUY',
-            'Isolated VAM adapter must emit VAM_SELL @38 and VAM_BUY @49');
+        const expectedVamSummary = [
+            { type: 'VAM_SELL', bar: 38 },
+            { type: 'VAM_BUY', bar: 49 }
+        ];
+        assert(
+            JSON.stringify(isoVamEvents.map(e => ({ type: e.eventType, bar: e.confirmationBarIndex }))) ===
+                JSON.stringify(expectedVamSummary),
+            'Isolated VAM adapter must emit VAM_SELL @38 and VAM_BUY @49'
+        );
         const vamRes = runControlled(vamStream);
+        const pipelineVamEvents = vamRes.confirmed.filter(e => e.strategyId === 'VAM_REVERSAL');
+        assert(
+            pipelineVamEvents.length === isoVamEvents.length &&
+            JSON.stringify(pipelineVamEvents.map(e => ({ id: e.eventId, type: e.eventType, bar: e.confirmationBarIndex }))) ===
+                JSON.stringify(isoVamEvents.map(e => ({ id: e.eventId, type: e.eventType, bar: e.confirmationBarIndex }))),
+            'VAM pipeline confirmed events must match isolated adapter events exactly'
+        );
         assert((vamRes.fin.outcomeAccounting.countsByStrategy['VAM_REVERSAL'] ?? 0) === 2,
             `VAM_REVERSAL must route both eligible outcomes, got ${vamRes.fin.outcomeAccounting.countsByStrategy['VAM_REVERSAL']}`);
 
@@ -519,8 +598,9 @@ export function runPhase5DPhase3Tests(): boolean {
                 origFinal.entryTimestamp === null &&
                 finalEv.eventId === origFinal.eventId &&
                 finalEv.entryTimestamp === null &&
-                finalEv.confirmationBarIndex === candles.length - 1,
-                'Unresolved final-bar event must exist in confirmedById with entryTimestamp === null'
+                finalEv.confirmationBarIndex === candles.length - 1 &&
+                finalEv.entryBarIndex === candles.length,
+                'Unresolved final-bar event must exist in confirmedById with entryTimestamp === null and entryBarIndex === candles.length'
             );
             assert(!passA.resolvedSeenIds.has(finalEv.eventId) && !outcomeIdSet.has(finalEv.eventId),
                 'Final-bar unresolved event must not be marked resolved or eligible');
