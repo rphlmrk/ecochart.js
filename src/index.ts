@@ -118,6 +118,8 @@ import { runPhase5DPhase1Tests } from './test/milestone5d-phase1-acceptance';
 export { runPhase5DPhase1Tests };
 import { runPhase5DPhase2Gate1Tests, runPhase5DPhase2Tests } from './test/milestone5d-phase2-acceptance';
 export { runPhase5DPhase2Gate1Tests, runPhase5DPhase2Tests };
+import { runPhase5DPhase3Tests } from './test/milestone5d-phase3-acceptance';
+export { runPhase5DPhase3Tests };
 
 const auditBoundButtons = new WeakSet<HTMLElement>();
 
@@ -6077,5 +6079,6 @@ export class WorkspaceManager {
         (window as any).runPhase5DPhase1Tests = runPhase5DPhase1Tests;
         (window as any).runPhase5DPhase2Gate1Tests = runPhase5DPhase2Gate1Tests;
         (window as any).runPhase5DPhase2Tests = runPhase5DPhase2Tests;
+        (window as any).runPhase5DPhase3Tests = runPhase5DPhase3Tests;
     }
 }
