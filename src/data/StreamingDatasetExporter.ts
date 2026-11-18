@@ -1009,6 +1009,24 @@ export class StreamingDatasetExporter {
         };
     }
 
+    private static readonly activeV3DirReservations = new WeakMap<object, Set<string>>();
+
+    private static acquireV3FolderReservation(rootDirHandle: object, folderName: string): void {
+        let active = this.activeV3DirReservations.get(rootDirHandle);
+        if (!active) {
+            active = new Set<string>();
+            this.activeV3DirReservations.set(rootDirHandle, active);
+        }
+        if (active.has(folderName)) {
+            throw new Error(`V3 Export Error: concurrent export already active for '${folderName}'.`);
+        }
+        active.add(folderName);
+    }
+
+    private static releaseV3FolderReservation(rootDirHandle: object, folderName: string): void {
+        this.activeV3DirReservations.get(rootDirHandle)?.delete(folderName);
+    }
+
     public static async exportV3ToFolderOrOpfs(params: {
         rawCandleBuffer: Float64Array;
         symbol: string;
@@ -1046,31 +1064,24 @@ export class StreamingDatasetExporter {
         let opfsStagingDirName: string | null = null;
         let opfsRoot: any = null;
         const stagingDirName = `.tmp_${folderName}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const runOwnerId = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-        const lockFileName = `.ecochart_owner_${runOwnerId}.lock`;
+        let hasReservation = false;
+        if (params.rootDirHandle) {
+            destinationType = 'directory_picker';
+            this.acquireV3FolderReservation(params.rootDirHandle, folderName);
+            hasReservation = true;
+        }
+
         const assertDirAbsent = async (parent: any, name: string) => {
             try {
                 await parent.getDirectoryHandle(name, { create: false });
                 throw new Error(`V3 Export Error: destination directory '${name}' already exists; refusing to overwrite.`);
             } catch (e: any) {
-                const isNotFound = e?.name === 'NotFoundError' || String(e?.message).startsWith('Missing dir ');
-                if (!isNotFound) throw e;
+                if (e?.name !== 'NotFoundError') throw e;
             }
         };
 
-        let ownedFinalDir = false;
-        if (params.rootDirHandle) {
-            destinationType = 'directory_picker';
-            await assertDirAbsent(params.rootDirHandle, folderName);
-            targetDirHandle = await params.rootDirHandle.getDirectoryHandle(stagingDirName, { create: true });
-        } else if (this.isOpfsSupported()) {
-            destinationType = 'opfs';
-            opfsRoot = await navigator.storage.getDirectory();
-            opfsStagingDirName = stagingDirName;
-            targetDirHandle = await opfsRoot.getDirectoryHandle(opfsStagingDirName, { create: true });
-        } else {
-            throw new Error('Neither File System Access API nor OPFS incremental writing is supported in this browser.');
-        }
+        let finalDirHandle: any = null;
+        const publishedDestinationFiles: string[] = [];
 
         const createSink = async (fileName: string): Promise<BufferedTextSink> => {
             const fileHandle = await targetDirHandle.getFileHandle(fileName, { create: true });
@@ -1087,6 +1098,17 @@ export class StreamingDatasetExporter {
         let strategyEventSink: BufferedTextSink | null = null;
 
         try {
+            if (params.rootDirHandle) {
+                await assertDirAbsent(params.rootDirHandle, folderName);
+                targetDirHandle = await params.rootDirHandle.getDirectoryHandle(stagingDirName, { create: true });
+            } else if (this.isOpfsSupported()) {
+                destinationType = 'opfs';
+                opfsRoot = await navigator.storage.getDirectory();
+                opfsStagingDirName = stagingDirName;
+                targetDirHandle = await opfsRoot.getDirectoryHandle(opfsStagingDirName, { create: true });
+            } else {
+                throw new Error('Neither File System Access API nor OPFS incremental writing is supported in this browser.');
+            }
             if (params.signal?.aborted) {
                 throw new Error('V3 Export cancelled by user.');
             }
@@ -1140,30 +1162,7 @@ export class StreamingDatasetExporter {
 
             if (destinationType === 'directory_picker') {
                 await assertDirAbsent(params.rootDirHandle, folderName);
-                const finalDirHandle = await params.rootDirHandle.getDirectoryHandle(folderName, { create: true });
-
-                // Verify exclusive ownership: ensure none of our 4 target files already exist before claiming ownership
-                for (const checkName of [
-                    fileNames.continuousFileName,
-                    fileNames.representationFileName,
-                    fileNames.strategyEventsFileName,
-                    fileNames.manifestFileName
-                ]) {
-                    try {
-                        await finalDirHandle.getFileHandle(checkName, { create: false });
-                        throw new Error(`V3 Export Error: concurrent file '${checkName}' detected in '${folderName}'; aborting without overwriting.`);
-                    } catch (fe: any) {
-                        const isNotFound = fe?.name === 'NotFoundError' || String(fe?.message).startsWith('Missing file ');
-                        if (!isNotFound) throw fe;
-                    }
-                }
-
-                // Write exclusive ownership lock marker before copying files
-                const lockHandle = await finalDirHandle.getFileHandle(lockFileName, { create: true });
-                const lockW = await lockHandle.createWritable();
-                await lockW.write(encoder.encode(runOwnerId));
-                await lockW.close();
-                ownedFinalDir = true;
+                finalDirHandle = await params.rootDirHandle.getDirectoryHandle(folderName, { create: true });
 
                 for (const name of [
                     fileNames.continuousFileName,
@@ -1174,9 +1173,17 @@ export class StreamingDatasetExporter {
                     if (params.signal?.aborted) {
                         throw new Error('V3 Export cancelled during directory publication.');
                     }
+                    try {
+                        await finalDirHandle.getFileHandle(name, { create: false });
+                        throw new Error(`V3 Export Error: destination file '${name}' already exists; refusing overwrite.`);
+                    } catch (fe: any) {
+                        if (fe?.name !== 'NotFoundError') throw fe;
+                    }
+
                     const srcHandle = await targetDirHandle.getFileHandle(name);
                     const srcFile: File = await srcHandle.getFile();
                     const dstHandle = await finalDirHandle.getFileHandle(name, { create: true });
+                    publishedDestinationFiles.push(name);
                     const dstWritable = await dstHandle.createWritable();
                     try {
                         await dstWritable.write(await srcFile.arrayBuffer());
@@ -1188,10 +1195,6 @@ export class StreamingDatasetExporter {
                         await dstWritable.abort().catch(() => {});
                         throw pubErr;
                     }
-                }
-
-                if (typeof finalDirHandle.removeEntry === 'function') {
-                    await finalDirHandle.removeEntry(lockFileName).catch(() => {});
                 }
                 if (typeof params.rootDirHandle.removeEntry === 'function') {
                     await params.rootDirHandle.removeEntry(stagingDirName, { recursive: true }).catch(() => {});
@@ -1253,17 +1256,25 @@ export class StreamingDatasetExporter {
                 representationSink ? representationSink.abort() : Promise.resolve(),
                 strategyEventSink ? strategyEventSink.abort() : Promise.resolve()
             ]);
-            if (destinationType === 'directory_picker' && params.rootDirHandle &&
-                typeof params.rootDirHandle.removeEntry === 'function') {
-                if (ownedFinalDir) {
-                    await params.rootDirHandle.removeEntry(folderName, { recursive: true }).catch(() => {});
+            if (destinationType === 'directory_picker') {
+                // Only remove individual files written by THIS execution; never delete an unowned directory recursively
+                if (finalDirHandle && typeof finalDirHandle.removeEntry === 'function') {
+                    for (const fName of publishedDestinationFiles) {
+                        await finalDirHandle.removeEntry(fName).catch(() => {});
+                    }
                 }
-                await params.rootDirHandle.removeEntry(stagingDirName, { recursive: true }).catch(() => {});
+                if (params.rootDirHandle && typeof params.rootDirHandle.removeEntry === 'function') {
+                    await params.rootDirHandle.removeEntry(stagingDirName, { recursive: true }).catch(() => {});
+                }
             }
             if (destinationType === 'opfs' && opfsRoot && opfsStagingDirName) {
                 await opfsRoot.removeEntry(opfsStagingDirName, { recursive: true }).catch(() => {});
             }
             throw err;
+        } finally {
+            if (hasReservation && params.rootDirHandle) {
+                this.releaseV3FolderReservation(params.rootDirHandle, folderName);
+            }
         }
     }
 
@@ -1307,6 +1318,7 @@ export class StreamingDatasetExporter {
         let featureKeys: string[] | null = null;
         let headersWritten = false;
         let emittedEvents = 0;
+        let expectedAcceptedIdx = 0;
 
         let contStats: { rowCount: number; bytesWritten: number; sha256: string };
         let repStats: { rowCount: number; bytesWritten: number; sha256: string };
@@ -1328,6 +1340,14 @@ export class StreamingDatasetExporter {
                     volume: rawCandleBuffer[off + 5],
                     isSynthetic: false as const
                 });
+                if (!stepOut.dataQuality.isSourceValid ||
+                    stepOut.acceptedBarIndex !== expectedAcceptedIdx ||
+                    stepOut.sourceTimestamp !== stepOut.candle.time) {
+                    throw new Error(
+                        `V3 Streaming Chronology Error: unexpected runner acceptance state at index ${expectedAcceptedIdx} (got ${stepOut.acceptedBarIndex}).`
+                    );
+                }
+                expectedAcceptedIdx++;
                 auditor.pushRawCandle(stepOut.acceptedBarIndex, {
                     time: stepOut.sourceTimestamp,
                     open: stepOut.candle.open,

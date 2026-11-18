@@ -11,7 +11,10 @@ import {
     parseCsvDocumentCRLF,
     serializeCsvRecord
 } from '../indicators/mlr1/pipeline/V3ArtifactAuditor';
-import { V3_MAX_HORIZON_BARS } from '../indicators/mlr1/pipeline/MultiHorizonOutcomeEngine';
+import {
+    V3_MAX_HORIZON_BARS,
+    V3_STRATEGY_EVENT_COLUMNS
+} from '../indicators/mlr1/pipeline/MultiHorizonOutcomeEngine';
 import { accountRawSourceRows } from '../indicators/mlr1/dataset/ObservationBackbone';
 import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
 
@@ -36,22 +39,28 @@ function makeTestBuffer(count: number, gapAtIndex?: number): Float64Array {
     return buf;
 }
 
+function makeNotFoundError(msg: string): Error {
+    const err = new Error(msg);
+    err.name = 'NotFoundError';
+    return err;
+}
+
 class MockFileHandle {
     public bytes: Uint8Array = new Uint8Array(0);
-    public failOnWriteOrClose = false;
+    public failOnWrite = false;
+    public failOnClose = false;
     public async createWritable() {
         const chunks: Uint8Array[] = [];
         let aborted = false;
         return {
             write: async (data: Uint8Array | ArrayBuffer) => {
                 if (aborted) throw new Error('Writable aborted');
-                if (this.failOnWriteOrClose) {
-                    throw new Error('Simulated stream write failure');
-                }
+                if (this.failOnWrite) throw new Error('Simulated file write failure');
                 chunks.push(data instanceof Uint8Array ? data.slice() : new Uint8Array(data));
             },
             close: async () => {
                 if (aborted) throw new Error('Writable aborted');
+                if (this.failOnClose) throw new Error('Simulated file close failure');
                 const total = chunks.reduce((s, c) => s + c.length, 0);
                 const out = new Uint8Array(total);
                 let off = 0;
@@ -76,10 +85,11 @@ class MockDirectoryHandle {
     public readonly dirs = new Map<string, MockDirectoryHandle>();
     public failOnFileName: string | null = null;
     public failWriteOnFileName: string | null = null;
+    public failCloseOnFileName: string | null = null;
 
     public async getDirectoryHandle(name: string, opts?: { create?: boolean }): Promise<MockDirectoryHandle> {
         if (!this.dirs.has(name)) {
-            if (!opts?.create) throw new Error(`Missing dir ${name}`);
+            if (!opts?.create) throw makeNotFoundError(`Missing dir ${name}`);
             this.dirs.set(name, new MockDirectoryHandle());
         }
         return this.dirs.get(name)!;
@@ -87,17 +97,21 @@ class MockDirectoryHandle {
 
     public async getFileHandle(name: string, opts?: { create?: boolean }): Promise<MockFileHandle> {
         if (!this.files.has(name)) {
-            if (!opts?.create) throw new Error(`Missing file ${name}`);
+            if (!opts?.create) throw makeNotFoundError(`Missing file ${name}`);
             if (this.failOnFileName === name) {
                 throw new Error(`Simulated write failure on ${name}`);
             }
-            this.files.set(name, new MockFileHandle());
+            const fh = new MockFileHandle();
+            if (this.failWriteOnFileName === name) fh.failOnWrite = true;
+            if (this.failCloseOnFileName === name) fh.failOnClose = true;
+            this.files.set(name, fh);
         } else if (opts?.create && this.failOnFileName === name) {
             throw new Error(`Simulated write failure on ${name}`);
         }
         const h = this.files.get(name)!;
-        if (this.failWriteOnFileName === name) {
-            h.failOnWriteOrClose = true;
+        if (opts?.create) {
+            if (this.failWriteOnFileName === name) h.failOnWrite = true;
+            if (this.failCloseOnFileName === name) h.failOnClose = true;
         }
         return h;
     }
@@ -110,12 +124,17 @@ class MockDirectoryHandle {
 
 class SpySinkStream {
     public aborted = false;
-    public abortAttempts = 0;
+    public abortCalls = 0;
+    public throwOnAbort = false;
     public closed = false;
     public writes = 0;
     public write = async (_data: Uint8Array) => { this.writes++; };
     public close = async () => { this.closed = true; };
-    public abort = async () => { this.abortAttempts++; this.aborted = true; };
+    public abort = async () => {
+        this.abortCalls++;
+        if (this.throwOnAbort) throw new Error('Ignore secondary abort error');
+        this.aborted = true;
+    };
 }
 
 export async function runPhase5DPhase4Tests(): Promise<boolean> {
@@ -141,6 +160,17 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
 
     await runTest('1. V3 Batch Export, Real Uptime, Boundary Replay & Synchronized-Forgery Archive Protection', async () => {
         assertStrategyEventSchemaCoverage();
+        const expectSchemaErr = (fn: () => void, label: string) => {
+            let threw = false;
+            try { fn(); } catch { threw = true; }
+            assert(threw, `${label}: expected schema coverage rejection`);
+        };
+        expectSchemaErr(() => assertStrategyEventSchemaCoverage([...V3_STRATEGY_EVENT_COLUMNS, 'extra_col']), 'missing schema entry');
+        expectSchemaErr(() => assertStrategyEventSchemaCoverage(V3_STRATEGY_EVENT_COLUMNS.slice(0, -1)), 'extra schema entry');
+        expectSchemaErr(() => assertStrategyEventSchemaCoverage([...V3_STRATEGY_EVENT_COLUMNS.slice(0, -1), 'event_id']), 'duplicate col');
+        expectSchemaErr(() => assertStrategyEventSchemaCoverage(['event_id'], { event_id: 'bad_type' as any }), 'unsupported col type');
+        expectSchemaErr(() => assertStrategyEventSchemaCoverage(['event_id'], { event_id: undefined as any }), 'undefined col type');
+
         const artifacts = await AIExporter.buildV3ExportArtifacts({
             rawCandleBuffer: buffer,
             symbol: 'SOLUSDT',
@@ -156,11 +186,21 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         assert(artifacts.manifest.exportAccounting.tierBConfirmedTeacherEventCount > 5,
             'Expected > 5 confirmed V3 teacher events across 650 candles');
 
-        // Verify replay boundary: first eligible event and latest eligible event up to bar 649 (horizonEnd180 <= 649)
+        // Verify early (<60) AND late (>400, horizonEnd180 <= 649) events were replayed & verified
         const firstEv = artifacts.strategyEventRows[0];
         const lastEv = artifacts.strategyEventRows[artifacts.strategyEventRows.length - 1];
-        assert(firstEv.entry_bar_index + V3_MAX_HORIZON_BARS - 1 < 650, 'First event horizon valid');
-        assert(lastEv.entry_bar_index + V3_MAX_HORIZON_BARS - 1 <= 649, 'Last event horizon within 650 bars');
+        assert(
+            firstEv.confirmation_bar_index < 60 &&
+            lastEv.confirmation_bar_index > 400 &&
+            firstEv.entry_bar_index + V3_MAX_HORIZON_BARS - 1 < 650 &&
+            lastEv.entry_bar_index + V3_MAX_HORIZON_BARS - 1 <= 649,
+            `Expected early (<60) and late (>400) batch replays, got [${firstEv.confirmation_bar_index}, ${lastEv.confirmation_bar_index}]`
+        );
+
+        // Verify 1st and last Continuous CSV rows map to accepted raw indices 0 and 649
+        const contRows = parseCsvDocumentCRLF(artifacts.continuousCsv);
+        assert(Number(contRows[1][1]) === buffer[0] && Number(contRows[650][1]) === buffer[649 * 6],
+            'Continuous first/last rows must map to accepted raw indices 0 and N-1');
 
         const archiveBytes = await AIExporter.createVerifiedV3DatasetArchive(artifacts, buffer);
         const reopened = await JSZip.loadAsync(archiveBytes);
@@ -393,30 +433,40 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         const linkRep = parseCsvDocumentCRLF(artifacts.representationCsv);
         linkEv[1][linkEv[0].indexOf('tierA_observation_id')] = 'OBS_FORGED_ID';
         linkRep[1][linkRep[0].indexOf('tierA_observation_id')] = 'OBS_FORGED_ID';
-        assert(!DatasetAuditor.runV3CausalityAudit({
+        const linkAudit = DatasetAuditor.runV3CausalityAudit({
             ...baseAuditParams,
             representationCsv: linkRep.map(serializeCsvRecord).join('\r\n'),
             strategyEventsCsv: linkEv.map(serializeCsvRecord).join('\r\n')
-        }).identityUnique, 'Auditor must reject tierA_observation_id diverging from Continuous at observation_bar_index');
-
-        // 2o. Contradictory htf15mDiagnostic (COMPLETE with 14/15 bars)
-        const contraDiag = parseCsvDocumentCRLF(artifacts.continuousCsv);
-        const alignedOpen = Math.floor((buffer[20 * 6] - 900_000) / 900_000) * 900_000;
-        contraDiag[20][diagCol] = JSON.stringify({
-            timeframe: '15m',
-            openTimestamp: alignedOpen,
-            closeTimestamp: alignedOpen + 900_000,
-            expectedSourceCount: 15,
-            actualSourceCount: 14,
-            missingTimestamps: [alignedOpen],
-            duplicateCount: 0,
-            invalidSourceCount: 0,
-            completeness: 'COMPLETE'
         });
-        assert(!DatasetAuditor.runV3CausalityAudit({ ...baseAuditParams, continuousCsv: contraDiag.map(serializeCsvRecord).join('\r\n') }).inputOutcomeSeparationValid,
-            'Auditor must reject COMPLETE diagnostic with missing timestamps');
+        assert(!linkAudit.passed && !linkAudit.identityUnique, 'Forged tierA_observation_id must fail passed and identityUnique');
 
-        // 2p. RFC-4180 escaped quotes + embedded CRLF, trailing empty field & empty record
+        // 2o. Contradictory htf15mDiagnostic cases (COMPLETE w/ missing, INCOMPLETE_DUPLICATE w/ invalid, INCOMPLETE_MISSING w/ empty missingTimestamps)
+        const alignedOpen = Math.floor((buffer[20 * 6] - 900_000) / 900_000) * 900_000;
+        const contraCases = [
+            {
+                timeframe: '15m', openTimestamp: alignedOpen, closeTimestamp: alignedOpen + 900_000,
+                expectedSourceCount: 15, actualSourceCount: 14, missingTimestamps: [alignedOpen],
+                duplicateCount: 0, invalidSourceCount: 0, completeness: 'COMPLETE'
+            },
+            {
+                timeframe: '15m', openTimestamp: alignedOpen, closeTimestamp: alignedOpen + 900_000,
+                expectedSourceCount: 15, actualSourceCount: 14, missingTimestamps: [alignedOpen],
+                duplicateCount: 1, invalidSourceCount: 1, completeness: 'INCOMPLETE_DUPLICATE'
+            },
+            {
+                timeframe: '15m', openTimestamp: alignedOpen, closeTimestamp: alignedOpen + 900_000,
+                expectedSourceCount: 15, actualSourceCount: 15, missingTimestamps: [],
+                duplicateCount: 0, invalidSourceCount: 0, completeness: 'INCOMPLETE_MISSING'
+            }
+        ];
+        for (const badDiag of contraCases) {
+            const contraDiag = parseCsvDocumentCRLF(artifacts.continuousCsv);
+            contraDiag[20][diagCol] = JSON.stringify(badDiag);
+            assert(!DatasetAuditor.runV3CausalityAudit({ ...baseAuditParams, continuousCsv: contraDiag.map(serializeCsvRecord).join('\r\n') }).inputOutcomeSeparationValid,
+                `Auditor must reject contradictory diagnostic (${badDiag.completeness})`);
+        }
+
+        // 2p. RFC-4180 escaped quotes + embedded CRLF, trailing empty field, empty record & empty trailing CSV record rejection
         const complexCsv = 'id,context\r\n1,"{""message"":""line one\r\nline two""}"\r\n2,\r\n\r\n';
         const parsedComplex = parseCsvDocumentCRLF(complexCsv);
         assert(
@@ -428,6 +478,10 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         );
         assert(serializeCsvRecord(parsedComplex[1]) === '1,"{""message"":""line one\r\nline two""}"',
             'RFC-4180 round-trip serialization mismatch');
+        assert(!DatasetAuditor.runV3CausalityAudit({
+            ...baseAuditParams,
+            continuousCsv: artifacts.continuousCsv + '\r\n\r\n'
+        }).passed, 'Auditor must reject empty trailing record in Continuous CSV');
     });
 
     await runTest('3. Gap-Tolerant Chronology + Rejected Raw Candle Filtering Between Confirmation and Entry', async () => {
@@ -449,6 +503,31 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
             });
             ts += intervalMs;
         }
+        // Verify un-filtered raw buffer containing invalid bar 5 is rejected by both batch & streaming exporters
+        const rawDirtyBuf = new Float64Array(rawCandles.length * 6);
+        rawCandles.forEach((c, idx) => rawDirtyBuf.set([c.time, c.open, c.high, c.low, c.close, c.volume], idx * 6));
+        let batchRejectedDirty = false;
+        try {
+            await AIExporter.buildV3ExportArtifacts({
+                rawCandleBuffer: rawDirtyBuf, symbol: 'SOLUSDT', interval: '1m', intervalMs, requireContiguous: false
+            });
+        } catch {
+            batchRejectedDirty = true;
+        }
+        let streamRejectedDirty = false;
+        try {
+            await StreamingDatasetExporter.runV3StreamingCore({
+                rawCandleBuffer: rawDirtyBuf, symbol: 'SOLUSDT', interval: '1m', intervalMs, requireContiguous: false,
+                continuousSink: new BufferedTextSink(new SpySinkStream(), 128),
+                representationSink: new BufferedTextSink(new SpySinkStream(), 128),
+                strategyEventSink: new BufferedTextSink(new SpySinkStream(), 128)
+            });
+        } catch {
+            streamRejectedDirty = true;
+        }
+        assert(batchRejectedDirty && streamRejectedDirty,
+            'Both batch and streaming exporters must reject un-filtered invalid raw candles');
+
         const prePolicy = { rejectInvalidSource: true, rejectInvalidOhlcv: true, rejectDuplicateTimestamp: true, rejectOutOfOrder: true };
         const preReport = accountRawSourceRows(rawCandles, 'SOLUSDT', '1m', prePolicy, intervalMs);
         assert(preReport.rejectedRows.length === 1 && preReport.stats.invalidOhlcvCount === 1, 'Expected bar 5 rejected');
@@ -559,7 +638,7 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         assert(refusedOverwrite && new TextDecoder().decode(sentinelHandle.bytes) === '{"prior":"preserved"}',
             'Must refuse to overwrite pre-existing dataset directory');
 
-        // 4c. Failure mid-publication cleans up both staging & partial final directory
+        // 4c. Failure mid-publication cleans up partial published files & temporary staging folder
         const rootDir2 = new MockDirectoryHandle();
         const origGetDir = rootDir2.getDirectoryHandle.bind(rootDir2);
         rootDir2.getDirectoryHandle = async (name: string, opts?: { create?: boolean }) => {
@@ -582,16 +661,20 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         } catch (e: any) {
             pubFailed = String(e.message).includes('Simulated write failure');
         }
-        assert(pubFailed && rootDir2.dirs.size === 0,
-            'Mid-publication failure must clean up partial final folder AND temporary staging folder');
+        assert(
+            pubFailed &&
+            (rootDir2.dirs.get('MLR1_SOLUSDT_1m_V3_Dataset')?.files.size ?? 0) === 0 &&
+            Array.from(rootDir2.dirs.keys()).every(d => !d.startsWith('.tmp_')),
+            'Mid-publication failure must clean up partial destination files AND temporary staging folder'
+        );
 
-        // 4c-2. Write failure inside writable.write() on 2nd destination file mid-publication cleans up partial final + staging directories
+        // 4c-2. Write failure inside writable.write() on 2nd destination file cleans up partial published files + staging dir
         const rootDir3 = new MockDirectoryHandle();
         const origGetDir3 = rootDir3.getDirectoryHandle.bind(rootDir3);
         rootDir3.getDirectoryHandle = async (name: string, opts?: { create?: boolean }) => {
             const d = await origGetDir3(name, opts);
             if (name === 'MLR1_SOLUSDT_1m_V3_Dataset') {
-                d.failWriteOnFileName = 'MLR1_SOLUSDT_1m_Representation_Features.csv'; // Throw inside write() on 2nd copied file!
+                d.failWriteOnFileName = 'MLR1_SOLUSDT_1m_Representation_Features.csv';
             }
             return d;
         };
@@ -606,17 +689,51 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
                 buildTimestamp: fixedTs
             });
         } catch (e: any) {
-            pubWriteFailed = String(e.message).includes('Simulated stream write failure');
+            pubWriteFailed = String(e.message).includes('Simulated file write failure');
         }
-        assert(pubWriteFailed && rootDir3.dirs.size === 0,
-            'Mid-publication stream write failure must clean up partial final folder AND temporary staging folder');
+        assert(
+            pubWriteFailed &&
+            (rootDir3.dirs.get('MLR1_SOLUSDT_1m_V3_Dataset')?.files.size ?? 0) === 0 &&
+            Array.from(rootDir3.dirs.keys()).every(d => !d.startsWith('.tmp_')),
+            'Mid-publication stream write failure must clean up partial destination files AND temporary staging folder'
+        );
 
-        // 4d. Sink finalization failure aborts remaining sinks independently without masking original error
+        // 4c-3. Close failure inside writable.close() on 3rd destination file cleans up partial published files + staging dir
+        const rootDir4 = new MockDirectoryHandle();
+        const origGetDir4 = rootDir4.getDirectoryHandle.bind(rootDir4);
+        rootDir4.getDirectoryHandle = async (name: string, opts?: { create?: boolean }) => {
+            const d = await origGetDir4(name, opts);
+            if (name === 'MLR1_SOLUSDT_1m_V3_Dataset') {
+                d.failCloseOnFileName = 'MLR1_SOLUSDT_1m_StrategyEvents.csv';
+            }
+            return d;
+        };
+        let pubCloseFailed = false;
+        try {
+            await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
+                rawCandleBuffer: buffer,
+                symbol: 'SOLUSDT',
+                interval: '1m',
+                intervalMs: 60_000,
+                rootDirHandle: rootDir4,
+                buildTimestamp: fixedTs
+            });
+        } catch (e: any) {
+            pubCloseFailed = String(e.message).includes('Simulated file close failure');
+        }
+        assert(
+            pubCloseFailed &&
+            (rootDir4.dirs.get('MLR1_SOLUSDT_1m_V3_Dataset')?.files.size ?? 0) === 0 &&
+            Array.from(rootDir4.dirs.keys()).every(d => !d.startsWith('.tmp_')),
+            'Mid-publication stream close failure must clean up partial destination files AND temporary staging folder'
+        );
+
+        // 4d. Sink finalization failure & cancellation during 2nd sink close() abort all 3 sinks independently
         const s1 = new SpySinkStream();
         const s2 = new SpySinkStream();
         s2.close = async () => { throw new Error('Simulated sink2 close failure'); };
         const s3 = new SpySinkStream();
-        s3.abort = async () => { s3.abortAttempts++; throw new Error('Ignore secondary abort error'); };
+        s3.throwOnAbort = true;
 
         let finErrMsg = '';
         try {
@@ -635,9 +752,76 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         assert(
             finErrMsg.includes('Simulated sink2 close failure') &&
             s1.aborted && s2.aborted &&
-            s1.abortAttempts === 1 && s2.abortAttempts === 1 && s3.abortAttempts === 1,
+            s1.abortCalls === 1 && s2.abortCalls === 1 && s3.abortCalls === 1,
             'Sink finalization failure must preserve original error and abort all 3 sinks independently'
         );
+
+        const cancelFinCtrl = new AbortController();
+        const cf1 = new SpySinkStream();
+        const cf2 = new SpySinkStream();
+        cf2.close = async () => { cf2.closed = true; cancelFinCtrl.abort(); };
+        const cf3 = new SpySinkStream();
+        let cancelFinErr = false;
+        try {
+            await StreamingDatasetExporter.runV3StreamingCore({
+                rawCandleBuffer: buffer,
+                symbol: 'SOLUSDT',
+                interval: '1m',
+                intervalMs: 60_000,
+                signal: cancelFinCtrl.signal,
+                continuousSink: new BufferedTextSink(cf1, 128),
+                representationSink: new BufferedTextSink(cf2, 128),
+                strategyEventSink: new BufferedTextSink(cf3, 128)
+            });
+        } catch (e: any) {
+            cancelFinErr = String(e.message).includes('cancelled');
+        }
+        assert(
+            cancelFinErr && cf1.closed && !cf3.closed &&
+            cf1.abortCalls === 1 && cf2.abortCalls === 1 && cf3.abortCalls === 1,
+            'Cancellation during 2nd sink close() must abort all 3 sinks independently'
+        );
+
+        // 4e. Concurrent in-process exports targeting same folder reject second call safely without destroying first
+        const concRoot = new MockDirectoryHandle();
+        const p1 = StreamingDatasetExporter.exportV3ToFolderOrOpfs({
+            rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000, rootDirHandle: concRoot, buildTimestamp: fixedTs
+        });
+        let concRejected = false;
+        try {
+            await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
+                rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000, rootDirHandle: concRoot, buildTimestamp: fixedTs
+            });
+        } catch (e: any) {
+            concRejected = String(e.message).includes('concurrent export already active');
+        }
+        const res1 = await p1;
+        assert(concRejected && res1.manifest.auditResults.passed, 'Concurrent in-process export rejected while first succeeds');
+
+        // 4f. External concurrent creation during streaming refuses overwrite and does NOT delete external directory!
+        const extRoot = new MockDirectoryHandle();
+        let extCreated = false;
+        let extErr = false;
+        try {
+            await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
+                rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000, rootDirHandle: extRoot,
+                onProgress: async (pct) => {
+                    if (!extCreated && pct >= 50) {
+                        extCreated = true;
+                        const d = await extRoot.getDirectoryHandle('MLR1_SOLUSDT_1m_V3_Dataset', { create: true });
+                        const f = await d.getFileHandle('external.txt', { create: true });
+                        const w = await f.createWritable();
+                        await w.write(new TextEncoder().encode('owned-by-other'));
+                        await w.close();
+                    }
+                }
+            });
+        } catch (e: any) {
+            extErr = String(e.message).includes('already exists');
+        }
+        const extDir = extRoot.dirs.get('MLR1_SOLUSDT_1m_V3_Dataset');
+        assert(extErr && extDir !== undefined && extDir.files.has('external.txt'),
+            'External concurrent directory must never be deleted by rollback');
     });
 
     await runTest('5. Full V3 Batch-vs-Streaming Byte-for-Byte CSV, SHA-256 & Complete Manifest Parity', async () => {

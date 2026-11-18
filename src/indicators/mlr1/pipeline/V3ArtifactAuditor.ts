@@ -477,6 +477,7 @@ export class V3ArtifactAuditor {
             this.batchRawBuffer = params.batchRawBuffer;
             this.batchRawLength = params.batchRawBuffer.length / 6;
             let prevT = -1;
+            const gridAnchor = this.batchRawLength > 0 ? params.batchRawBuffer[0] : 0;
             for (let i = 0; i < this.batchRawLength; i++) {
                 const off = i * 6;
                 const t = params.batchRawBuffer[off];
@@ -485,12 +486,12 @@ export class V3ArtifactAuditor {
                 const l = params.batchRawBuffer[off + 3];
                 const c = params.batchRawBuffer[off + 4];
                 const v = params.batchRawBuffer[off + 5];
-                if (!Number.isSafeInteger(t) || t < 0 ||
+                if (!Number.isSafeInteger(t) || t < 1e12 || (t - gridAnchor) % this.intervalMs !== 0 ||
                     !Number.isFinite(o) || o <= 0 || !Number.isFinite(h) || h <= 0 ||
                     !Number.isFinite(l) || l <= 0 || !Number.isFinite(c) || c <= 0 ||
                     !Number.isFinite(v) || v < 0 ||
                     h < l || h < Math.max(o, c) || l > Math.min(o, c)) {
-                    this.fail('replay', `Invalid raw OHLCV candle in batch buffer at bar ${i}.`);
+                    this.fail('replay', `Invalid or off-grid raw candle in accepted batch buffer at bar ${i}.`);
                     break;
                 }
                 if (prevT !== -1 && t <= prevT) {
@@ -623,6 +624,8 @@ export class V3ArtifactAuditor {
     }
 
     public validateContinuousCells(cells: readonly string[]): void {
+        // Explicit 0-based read-before-increment contract: row 0 -> accepted index 0, final row -> N - 1
+        const rowIdx = this.contRowCount;
         this.contRowCount++;
         if (!this.contHeaders) {
             this.fail('cont', 'Continuous row seen before valid header.');
@@ -633,7 +636,6 @@ export class V3ArtifactAuditor {
             return;
         }
         try {
-            const rowIdx = this.contRowCount - 1;
             const obsId = cells[0];
             if (!obsId || obsId.trim() === '') throw new Error('empty observation_id');
             if (this.seenObservationIds.has(obsId)) throw new Error(`duplicate observation_id '${obsId}'`);
@@ -1126,7 +1128,13 @@ export class V3ArtifactAuditor {
     }
 
     public finalizeAudit(expectedContinuousRows: number, expectedEventRows: number): IntegrityAuditResults {
+        const batchLengthMismatch =
+            this.batchRawBuffer !== null && this.batchRawLength !== expectedContinuousRows;
+        if (batchLengthMismatch) {
+            this.fail('cont', `Batch raw buffer length (${this.batchRawLength}) !== expectedContinuousRows (${expectedContinuousRows}).`);
+        }
         const countMismatch =
+            batchLengthMismatch ||
             this.contRowCount !== expectedContinuousRows ||
             this.repRowCount !== expectedEventRows ||
             this.evRowCount !== expectedEventRows;

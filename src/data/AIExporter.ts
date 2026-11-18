@@ -1711,6 +1711,11 @@ export class AIExporter {
         }
 
         const fin = runner.finalize();
+        if (runner.getAcceptedCount() !== rawCandleCount || runner.getStats().rejectedObservationCount !== 0) {
+            throw new Error(
+                `V3 Batch Contract Error: rawCandleBuffer must contain strictly accepted candles (accepted=${runner.getAcceptedCount()}, raw=${rawCandleCount}).`
+            );
+        }
         if (strategyEventRows.length === 0) {
             throw new Error('V3 Export Error: no eligible confirmed events with complete 180-bar horizons.');
         }
