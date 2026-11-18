@@ -704,6 +704,11 @@ export class MultiHorizonOutcomeTracker {
         atrValid: boolean
     ): void {
         for (const ev of sortedBarEvents) {
+            if (ev.observationBarIndex !== ev.confirmationBarIndex) {
+                throw new Error(
+                    `V3 Outcome Contract Error: event '${ev.eventId}' violates observationBarIndex === confirmationBarIndex (${ev.observationBarIndex} !== ${ev.confirmationBarIndex}).`
+                );
+            }
             this.totalCandidates++;
             const entryBar = ev.entryBarIndex;
             this.pending.push({

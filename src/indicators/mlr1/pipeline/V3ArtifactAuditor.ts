@@ -804,10 +804,17 @@ export class V3ArtifactAuditor {
                         !VALID_HTF_COMPLETENESS.has(comp)) {
                         throw new Error('invalid or inconsistent htf15mDiagnostic');
                     }
-                    // Enforce producer completeness semantics (MTFAggregator.ts)
-                    if (comp === 'COMPLETE' &&
-                        (actualSrc !== expectedSrc || missing.length !== 0 || dupCount !== 0 || invCount !== 0)) {
-                        throw new Error('COMPLETE htf15mDiagnostic cannot have missing, duplicate, or invalid sources');
+                    // Enforce exact MTFAggregator.ts producer truth table:
+                    // Precedence: INCOMPLETE_INVALID > INCOMPLETE_DUPLICATE > INCOMPLETE_MISSING.
+                    // COMPLETE and INCOMPLETE_UNFINISHED are never emitted as incomplete-window diagnostics.
+                    if (comp === 'COMPLETE') {
+                        throw new Error('htf15mDiagnostic cannot have completeness COMPLETE');
+                    }
+                    if (invCount > 0 && comp !== 'INCOMPLETE_INVALID') {
+                        throw new Error(`${comp} violates precedence: invalidSourceCount (${invCount}) > 0 requires INCOMPLETE_INVALID`);
+                    }
+                    if (invCount === 0 && dupCount > 0 && comp !== 'INCOMPLETE_DUPLICATE') {
+                        throw new Error(`${comp} violates precedence: duplicateCount (${dupCount}) > 0 requires INCOMPLETE_DUPLICATE`);
                     }
                     if (comp === 'INCOMPLETE_INVALID' && invCount <= 0) {
                         throw new Error('INCOMPLETE_INVALID requires invalidSourceCount > 0');
@@ -819,8 +826,9 @@ export class V3ArtifactAuditor {
                         (invCount !== 0 || dupCount !== 0 || missing.length === 0 || actualSrc >= expectedSrc)) {
                         throw new Error('INCOMPLETE_MISSING requires missing timestamps with zero duplicates/invalids');
                     }
-                    if (comp === 'INCOMPLETE_UNFINISHED' && (missing.length === 0 || actualSrc >= expectedSrc)) {
-                        throw new Error('INCOMPLETE_UNFINISHED requires actualSourceCount < expectedSourceCount');
+                    if (comp === 'INCOMPLETE_UNFINISHED' &&
+                        (invCount !== 0 || dupCount !== 0 || missing.length === 0 || actualSrc >= expectedSrc)) {
+                        throw new Error('INCOMPLETE_UNFINISHED requires missing timestamps with zero duplicates/invalids');
                     }
                     const seenMissing = new Set<number>();
                     for (const mt of missing) {

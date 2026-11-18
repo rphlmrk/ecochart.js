@@ -16,6 +16,7 @@ import {
     V3_STRATEGY_EVENT_COLUMNS
 } from '../indicators/mlr1/pipeline/MultiHorizonOutcomeEngine';
 import { accountRawSourceRows } from '../indicators/mlr1/dataset/ObservationBackbone';
+import { V3PipelineRunner } from '../indicators/mlr1/pipeline/V3PipelineEngine';
 import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
 
 function assert(condition: boolean, msg: string): asserts condition {
@@ -170,6 +171,11 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         expectSchemaErr(() => assertStrategyEventSchemaCoverage([...V3_STRATEGY_EVENT_COLUMNS.slice(0, -1), 'event_id']), 'duplicate col');
         expectSchemaErr(() => assertStrategyEventSchemaCoverage(['event_id'], { event_id: 'bad_type' as any }), 'unsupported col type');
         expectSchemaErr(() => assertStrategyEventSchemaCoverage(['event_id'], { event_id: undefined as any }), 'undefined col type');
+        const inheritedSchema = Object.assign(
+            Object.create({ event_id: 'nonempty_string' }),
+            { unrelated_own: 'nonempty_string' }
+        ) as Record<string, any>;
+        expectSchemaErr(() => assertStrategyEventSchemaCoverage(['event_id'], inheritedSchema), 'inherited schema property');
 
         const artifacts = await AIExporter.buildV3ExportArtifacts({
             rawCandleBuffer: buffer,
@@ -186,21 +192,30 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         assert(artifacts.manifest.exportAccounting.tierBConfirmedTeacherEventCount > 5,
             'Expected > 5 confirmed V3 teacher events across 650 candles');
 
-        // Verify early (<60) AND late (>400, horizonEnd180 <= 649) events were replayed & verified
-        const firstEv = artifacts.strategyEventRows[0];
-        const lastEv = artifacts.strategyEventRows[artifacts.strategyEventRows.length - 1];
+        // Verify earliest (<60) AND latest (>400, horizonEnd180 <= 649) events by min/max confirmation index
+        const minConfirmation = Math.min(...artifacts.strategyEventRows.map(e => e.confirmation_bar_index));
+        const maxConfirmation = Math.max(...artifacts.strategyEventRows.map(e => e.confirmation_bar_index));
+        const earliestEv = artifacts.strategyEventRows.find(e => e.confirmation_bar_index === minConfirmation)!;
+        const latestEv = artifacts.strategyEventRows.find(e => e.confirmation_bar_index === maxConfirmation)!;
         assert(
-            firstEv.confirmation_bar_index < 60 &&
-            lastEv.confirmation_bar_index > 400 &&
-            firstEv.entry_bar_index + V3_MAX_HORIZON_BARS - 1 < 650 &&
-            lastEv.entry_bar_index + V3_MAX_HORIZON_BARS - 1 <= 649,
-            `Expected early (<60) and late (>400) batch replays, got [${firstEv.confirmation_bar_index}, ${lastEv.confirmation_bar_index}]`
+            earliestEv.confirmation_bar_index < 60 &&
+            latestEv.confirmation_bar_index > 400 &&
+            earliestEv.entry_bar_index + V3_MAX_HORIZON_BARS - 1 < 650 &&
+            latestEv.entry_bar_index + V3_MAX_HORIZON_BARS - 1 <= 649 &&
+            Number.isFinite(earliestEv.long_net_r_180) &&
+            Number.isFinite(latestEv.long_net_r_180),
+            `Expected early (<60) and late (>400) batch replays, got [${minConfirmation}, ${maxConfirmation}]`
         );
 
-        // Verify 1st and last Continuous CSV rows map to accepted raw indices 0 and 649
+        // Verify first, intermediate (324), and last Continuous CSV rows map to accepted raw indices 0, 324, and 649
         const contRows = parseCsvDocumentCRLF(artifacts.continuousCsv);
-        assert(Number(contRows[1][1]) === buffer[0] && Number(contRows[650][1]) === buffer[649 * 6],
-            'Continuous first/last rows must map to accepted raw indices 0 and N-1');
+        assert(
+            Number(contRows[1][1]) === buffer[0] &&
+            Number(contRows[325][1]) === buffer[324 * 6] &&
+            Number(contRows[325][6]) === buffer[324 * 6 + 4] &&
+            Number(contRows[650][1]) === buffer[649 * 6],
+            'Continuous first/intermediate/last rows must map to accepted raw indices 0, 324, and N-1'
+        );
 
         const archiveBytes = await AIExporter.createVerifiedV3DatasetArchive(artifacts, buffer);
         const reopened = await JSZip.loadAsync(archiveBytes);
@@ -457,6 +472,16 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
                 timeframe: '15m', openTimestamp: alignedOpen, closeTimestamp: alignedOpen + 900_000,
                 expectedSourceCount: 15, actualSourceCount: 15, missingTimestamps: [],
                 duplicateCount: 0, invalidSourceCount: 0, completeness: 'INCOMPLETE_MISSING'
+            },
+            {
+                timeframe: '15m', openTimestamp: alignedOpen, closeTimestamp: alignedOpen + 900_000,
+                expectedSourceCount: 15, actualSourceCount: 14, missingTimestamps: [alignedOpen],
+                duplicateCount: 0, invalidSourceCount: 1, completeness: 'INCOMPLETE_UNFINISHED'
+            },
+            {
+                timeframe: '15m', openTimestamp: alignedOpen, closeTimestamp: alignedOpen + 900_000,
+                expectedSourceCount: 15, actualSourceCount: 14, missingTimestamps: [alignedOpen],
+                duplicateCount: 1, invalidSourceCount: 0, completeness: 'INCOMPLETE_UNFINISHED'
             }
         ];
         for (const badDiag of contraCases) {
@@ -623,6 +648,7 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         await sw.write(new TextEncoder().encode('{"prior":"preserved"}'));
         await sw.close();
 
+        const fixedDestName = 'MLR1_SOLUSDT_1m_V3_Dataset';
         let refusedOverwrite = false;
         try {
             await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
@@ -630,7 +656,8 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
                 symbol: 'SOLUSDT',
                 interval: '1m',
                 intervalMs: 60_000,
-                rootDirHandle: rootDir
+                rootDirHandle: rootDir,
+                destinationFolderName: fixedDestName
             });
         } catch (e: any) {
             refusedOverwrite = String(e.message).includes('already exists');
@@ -643,7 +670,7 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         const origGetDir = rootDir2.getDirectoryHandle.bind(rootDir2);
         rootDir2.getDirectoryHandle = async (name: string, opts?: { create?: boolean }) => {
             const d = await origGetDir(name, opts);
-            if (name === 'MLR1_SOLUSDT_1m_V3_Dataset') {
+            if (name === fixedDestName) {
                 d.failOnFileName = 'MLR1_SOLUSDT_1m_StrategyEvents.csv'; // Fail mid-publication!
             }
             return d;
@@ -656,6 +683,7 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
                 interval: '1m',
                 intervalMs: 60_000,
                 rootDirHandle: rootDir2,
+                destinationFolderName: fixedDestName,
                 buildTimestamp: fixedTs
             });
         } catch (e: any) {
@@ -663,7 +691,7 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         }
         assert(
             pubFailed &&
-            (rootDir2.dirs.get('MLR1_SOLUSDT_1m_V3_Dataset')?.files.size ?? 0) === 0 &&
+            (rootDir2.dirs.get(fixedDestName)?.files.size ?? 0) === 0 &&
             Array.from(rootDir2.dirs.keys()).every(d => !d.startsWith('.tmp_')),
             'Mid-publication failure must clean up partial destination files AND temporary staging folder'
         );
@@ -673,7 +701,7 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         const origGetDir3 = rootDir3.getDirectoryHandle.bind(rootDir3);
         rootDir3.getDirectoryHandle = async (name: string, opts?: { create?: boolean }) => {
             const d = await origGetDir3(name, opts);
-            if (name === 'MLR1_SOLUSDT_1m_V3_Dataset') {
+            if (name === fixedDestName) {
                 d.failWriteOnFileName = 'MLR1_SOLUSDT_1m_Representation_Features.csv';
             }
             return d;
@@ -686,6 +714,7 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
                 interval: '1m',
                 intervalMs: 60_000,
                 rootDirHandle: rootDir3,
+                destinationFolderName: fixedDestName,
                 buildTimestamp: fixedTs
             });
         } catch (e: any) {
@@ -693,7 +722,7 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         }
         assert(
             pubWriteFailed &&
-            (rootDir3.dirs.get('MLR1_SOLUSDT_1m_V3_Dataset')?.files.size ?? 0) === 0 &&
+            (rootDir3.dirs.get(fixedDestName)?.files.size ?? 0) === 0 &&
             Array.from(rootDir3.dirs.keys()).every(d => !d.startsWith('.tmp_')),
             'Mid-publication stream write failure must clean up partial destination files AND temporary staging folder'
         );
@@ -703,7 +732,7 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         const origGetDir4 = rootDir4.getDirectoryHandle.bind(rootDir4);
         rootDir4.getDirectoryHandle = async (name: string, opts?: { create?: boolean }) => {
             const d = await origGetDir4(name, opts);
-            if (name === 'MLR1_SOLUSDT_1m_V3_Dataset') {
+            if (name === fixedDestName) {
                 d.failCloseOnFileName = 'MLR1_SOLUSDT_1m_StrategyEvents.csv';
             }
             return d;
@@ -716,6 +745,7 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
                 interval: '1m',
                 intervalMs: 60_000,
                 rootDirHandle: rootDir4,
+                destinationFolderName: fixedDestName,
                 buildTimestamp: fixedTs
             });
         } catch (e: any) {
@@ -723,7 +753,7 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         }
         assert(
             pubCloseFailed &&
-            (rootDir4.dirs.get('MLR1_SOLUSDT_1m_V3_Dataset')?.files.size ?? 0) === 0 &&
+            (rootDir4.dirs.get(fixedDestName)?.files.size ?? 0) === 0 &&
             Array.from(rootDir4.dirs.keys()).every(d => !d.startsWith('.tmp_')),
             'Mid-publication stream close failure must clean up partial destination files AND temporary staging folder'
         );
@@ -750,7 +780,8 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
             finErrMsg = e?.message || '';
         }
         assert(
-            finErrMsg.includes('Simulated sink2 close failure') &&
+            finErrMsg === 'Simulated sink2 close failure' &&
+            !finErrMsg.includes('Ignore secondary abort error') &&
             s1.aborted && s2.aborted &&
             s1.abortCalls === 1 && s2.abortCalls === 1 && s3.abortCalls === 1,
             'Sink finalization failure must preserve original error and abort all 3 sinks independently'
@@ -782,15 +813,17 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
             'Cancellation during 2nd sink close() must abort all 3 sinks independently'
         );
 
-        // 4e. Concurrent in-process exports targeting same folder reject second call safely without destroying first
+        // 4e. Concurrent in-process exports targeting same fixed folder reject second call safely without destroying first
         const concRoot = new MockDirectoryHandle();
         const p1 = StreamingDatasetExporter.exportV3ToFolderOrOpfs({
-            rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000, rootDirHandle: concRoot, buildTimestamp: fixedTs
+            rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000,
+            rootDirHandle: concRoot, destinationFolderName: fixedDestName, buildTimestamp: fixedTs
         });
         let concRejected = false;
         try {
             await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
-                rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000, rootDirHandle: concRoot, buildTimestamp: fixedTs
+                rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000,
+                rootDirHandle: concRoot, destinationFolderName: fixedDestName, buildTimestamp: fixedTs
             });
         } catch (e: any) {
             concRejected = String(e.message).includes('concurrent export already active');
@@ -804,11 +837,12 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         let extErr = false;
         try {
             await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
-                rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000, rootDirHandle: extRoot,
+                rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000,
+                rootDirHandle: extRoot, destinationFolderName: fixedDestName,
                 onProgress: async (pct) => {
                     if (!extCreated && pct >= 50) {
                         extCreated = true;
-                        const d = await extRoot.getDirectoryHandle('MLR1_SOLUSDT_1m_V3_Dataset', { create: true });
+                        const d = await extRoot.getDirectoryHandle(fixedDestName, { create: true });
                         const f = await d.getFileHandle('external.txt', { create: true });
                         const w = await f.createWritable();
                         await w.write(new TextEncoder().encode('owned-by-other'));
@@ -819,9 +853,102 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
         } catch (e: any) {
             extErr = String(e.message).includes('already exists');
         }
-        const extDir = extRoot.dirs.get('MLR1_SOLUSDT_1m_V3_Dataset');
+        const extDir = extRoot.dirs.get(fixedDestName);
         assert(extErr && extDir !== undefined && extDir.files.has('external.txt'),
             'External concurrent directory must never be deleted by rollback');
+
+        // 4g. Default unique execution-owned publication + external-file check/create gap protection
+        const uniqueRoot = new MockDirectoryHandle();
+        const uResA = await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
+            rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000,
+            rootDirHandle: uniqueRoot, buildTimestamp: fixedTs
+        });
+        const uResB = await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
+            rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000,
+            rootDirHandle: uniqueRoot, buildTimestamp: fixedTs
+        });
+        assert(
+            uResA.folderName !== uResB.folderName &&
+            uResA.folderName.startsWith('MLR1_SOLUSDT_1m_V3_Dataset_') &&
+            uniqueRoot.dirs.has(uResA.folderName) &&
+            uniqueRoot.dirs.has(uResB.folderName),
+            'Default exports must publish into separate unique execution-owned folders'
+        );
+
+        const raceRoot = new MockDirectoryHandle();
+        const origRaceGetDir = raceRoot.getDirectoryHandle.bind(raceRoot);
+        raceRoot.getDirectoryHandle = async (name: string, opts?: { create?: boolean }) => {
+            const d = await origRaceGetDir(name, opts);
+            if (name === fixedDestName && opts?.create) {
+                const origGetFile = d.getFileHandle.bind(d);
+                let checkedMissing = false;
+                d.getFileHandle = async (fName: string, fOpts?: { create?: boolean }) => {
+                    if (fName === 'MLR1_SOLUSDT_1m_Continuous_Observations.csv' && fOpts?.create === true && checkedMissing) {
+                        // Simulate external actor writing file right in the check/create gap
+                        const extFile = await origGetFile(fName, { create: true });
+                        const w = await extFile.createWritable();
+                        await w.write(new TextEncoder().encode('external-gap-owned'));
+                        await w.close();
+                        return extFile;
+                    }
+                    try {
+                        return await origGetFile(fName, fOpts);
+                    } catch (err) {
+                        if (fName === 'MLR1_SOLUSDT_1m_Continuous_Observations.csv' && fOpts?.create === false) {
+                            checkedMissing = true;
+                        }
+                        throw err;
+                    }
+                };
+            }
+            return d;
+        };
+        let gapRaceRejected = false;
+        try {
+            await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
+                rawCandleBuffer: buffer, symbol: 'SOLUSDT', interval: '1m', intervalMs: 60_000,
+                rootDirHandle: raceRoot, destinationFolderName: fixedDestName, buildTimestamp: fixedTs
+            });
+        } catch (e: any) {
+            gapRaceRejected = String(e.message).includes('created externally');
+        }
+        const racedHandle = raceRoot.dirs.get(fixedDestName)?.files.get('MLR1_SOLUSDT_1m_Continuous_Observations.csv');
+        assert(
+            gapRaceRejected &&
+            racedHandle !== undefined &&
+            new TextDecoder().decode(racedHandle.bytes) === 'external-gap-owned',
+            'External file created in check/create gap must neither be overwritten nor deleted by rollback'
+        );
+
+        // 4h. Streaming runner OHLCV substitution check (same timestamp, altered close price)
+        const origStepCandle = V3PipelineRunner.prototype.stepCandle;
+        let substitutionRejected = false;
+        V3PipelineRunner.prototype.stepCandle = function (rawCandle) {
+            const out = origStepCandle.call(this, rawCandle);
+            if (out.acceptedBarIndex === 10) {
+                return {
+                    ...out,
+                    candle: Object.freeze({ ...out.candle, close: out.candle.close + 0.25 })
+                };
+            }
+            return out;
+        };
+        try {
+            await StreamingDatasetExporter.runV3StreamingCore({
+                rawCandleBuffer: buffer,
+                symbol: 'SOLUSDT',
+                interval: '1m',
+                intervalMs: 60_000,
+                continuousSink: new BufferedTextSink(new SpySinkStream(), 128),
+                representationSink: new BufferedTextSink(new SpySinkStream(), 128),
+                strategyEventSink: new BufferedTextSink(new SpySinkStream(), 128)
+            });
+        } catch (e: any) {
+            substitutionRejected = String(e.message).includes('modified accepted candle');
+        } finally {
+            V3PipelineRunner.prototype.stepCandle = origStepCandle;
+        }
+        assert(substitutionRejected, 'Streaming exporter must reject an accepted candle whose OHLCV differs from raw input');
     });
 
     await runTest('5. Full V3 Batch-vs-Streaming Byte-for-Byte CSV, SHA-256 & Complete Manifest Parity', async () => {

@@ -1027,6 +1027,15 @@ export class StreamingDatasetExporter {
         this.activeV3DirReservations.get(rootDirHandle)?.delete(folderName);
     }
 
+    /**
+     * Streams V3 dataset artifacts into a unique, execution-owned destination directory
+     * by default (exposed via `result.folderName` only after finalization).
+     *
+     * Note on concurrency: If a shared `destinationFolderName` is explicitly provided,
+     * `activeV3DirReservations` enforces same-runtime concurrency only; the browser
+     * File System Access API provides no `O_EXCL` atomic create-if-absent primitive, so
+     * external cross-process/cross-tab creation races remain a platform limitation.
+     */
     public static async exportV3ToFolderOrOpfs(params: {
         rawCandleBuffer: Float64Array;
         symbol: string;
@@ -1034,6 +1043,7 @@ export class StreamingDatasetExporter {
         intervalMs: number;
         include15mMtf?: boolean;
         rootDirHandle?: any;
+        destinationFolderName?: string;
         buildTimestamp?: number;
         requireContiguous?: boolean;
         sourceTimestampBounds?: RawSourceTimestampBounds;
@@ -1056,7 +1066,13 @@ export class StreamingDatasetExporter {
         }
 
         const totalCandles = rawCandleBuffer.length / 6;
-        const folderName = `MLR1_${symbol}_${interval}_V${V3_DATASET_VERSION}_Dataset`;
+        const executionId =
+            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                ? crypto.randomUUID()
+                : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        const folderName =
+            params.destinationFolderName ??
+            `MLR1_${symbol}_${interval}_V${V3_DATASET_VERSION}_Dataset_${executionId}`;
         const fileNames = getV3FileNames(symbol, interval);
 
         let destinationType: 'directory_picker' | 'opfs' = 'opfs';
@@ -1164,6 +1180,12 @@ export class StreamingDatasetExporter {
                 await assertDirAbsent(params.rootDirHandle, folderName);
                 finalDirHandle = await params.rootDirHandle.getDirectoryHandle(folderName, { create: true });
 
+                if (typeof finalDirHandle.values === 'function') {
+                    for await (const _entry of finalDirHandle.values()) {
+                        throw new Error(`V3 Export Error: destination directory '${folderName}' is not empty; refusing overwrite.`);
+                    }
+                }
+
                 for (const name of [
                     fileNames.continuousFileName,
                     fileNames.representationFileName,
@@ -1183,6 +1205,10 @@ export class StreamingDatasetExporter {
                     const srcHandle = await targetDirHandle.getFileHandle(name);
                     const srcFile: File = await srcHandle.getFile();
                     const dstHandle = await finalDirHandle.getFileHandle(name, { create: true });
+                    const existingDstFile: File = await dstHandle.getFile();
+                    if (existingDstFile.size > 0) {
+                        throw new Error(`V3 Export Error: destination file '${name}' was created externally; refusing overwrite.`);
+                    }
                     publishedDestinationFiles.push(name);
                     const dstWritable = await dstHandle.createWritable();
                     try {
@@ -1331,20 +1357,32 @@ export class StreamingDatasetExporter {
                     throw new Error('V3 Export cancelled by user.');
                 }
                 const off = i * 6;
+                const rawTime = rawCandleBuffer[off];
+                const rawOpen = rawCandleBuffer[off + 1];
+                const rawHigh = rawCandleBuffer[off + 2];
+                const rawLow = rawCandleBuffer[off + 3];
+                const rawClose = rawCandleBuffer[off + 4];
+                const rawVolume = rawCandleBuffer[off + 5];
                 const stepOut = runner.stepCandle({
-                    time: rawCandleBuffer[off],
-                    open: rawCandleBuffer[off + 1],
-                    high: rawCandleBuffer[off + 2],
-                    low: rawCandleBuffer[off + 3],
-                    close: rawCandleBuffer[off + 4],
-                    volume: rawCandleBuffer[off + 5],
+                    time: rawTime,
+                    open: rawOpen,
+                    high: rawHigh,
+                    low: rawLow,
+                    close: rawClose,
+                    volume: rawVolume,
                     isSynthetic: false as const
                 });
                 if (!stepOut.dataQuality.isSourceValid ||
                     stepOut.acceptedBarIndex !== expectedAcceptedIdx ||
-                    stepOut.sourceTimestamp !== stepOut.candle.time) {
+                    stepOut.sourceTimestamp !== rawTime ||
+                    stepOut.candle.time !== rawTime ||
+                    Math.abs(stepOut.candle.open - rawOpen) > 1e-12 ||
+                    Math.abs(stepOut.candle.high - rawHigh) > 1e-12 ||
+                    Math.abs(stepOut.candle.low - rawLow) > 1e-12 ||
+                    Math.abs(stepOut.candle.close - rawClose) > 1e-12 ||
+                    Math.abs(stepOut.candle.volume - rawVolume) > 1e-12) {
                     throw new Error(
-                        `V3 Streaming Chronology Error: unexpected runner acceptance state at index ${expectedAcceptedIdx} (got ${stepOut.acceptedBarIndex}).`
+                        `V3 Streaming Chronology Error: unexpected or modified accepted candle at index ${expectedAcceptedIdx} (got ${stepOut.acceptedBarIndex}).`
                     );
                 }
                 expectedAcceptedIdx++;
