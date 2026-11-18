@@ -37,7 +37,8 @@ import { AIExporter } from './data/AIExporter';
 import {
     StreamingDatasetExporter,
     runPhase0ExportBaseline,
-    runStreamingExportParityTest
+    runStreamingExportParityTest,
+    runV3StreamingExportParityTest
 } from './data/StreamingDatasetExporter';
 import { createML1ZipExportRequest } from './indicators/mlr1/integration/ML1IntegrationTypes';
 export { AIExporter };
@@ -120,6 +121,8 @@ import { runPhase5DPhase2Gate1Tests, runPhase5DPhase2Tests } from './test/milest
 export { runPhase5DPhase2Gate1Tests, runPhase5DPhase2Tests };
 import { runPhase5DPhase3Tests } from './test/milestone5d-phase3-acceptance';
 export { runPhase5DPhase3Tests };
+import { runPhase5DPhase4Tests } from './test/milestone5d-phase4-acceptance';
+export { runPhase5DPhase4Tests };
 
 const auditBoundButtons = new WeakSet<HTMLElement>();
 
@@ -6080,5 +6083,7 @@ export class WorkspaceManager {
         (window as any).runPhase5DPhase2Gate1Tests = runPhase5DPhase2Gate1Tests;
         (window as any).runPhase5DPhase2Tests = runPhase5DPhase2Tests;
         (window as any).runPhase5DPhase3Tests = runPhase5DPhase3Tests;
+        (window as any).runPhase5DPhase4Tests = runPhase5DPhase4Tests;
+        (window as any).runV3StreamingExportParityTest = runV3StreamingExportParityTest;
     }
 }
