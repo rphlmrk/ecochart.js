@@ -211,19 +211,35 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
             `Expected early (<60) and late (>400) batch replays, got [${minConfirmation}, ${maxConfirmation}]`
         );
 
-        // Resolve columns from Continuous header and verify exact row count + first, intermediate (324), and last rows
+        // Resolve all 6 raw candle columns from Continuous header and verify exact row count + first (0), middle (324), and last (649) rows
         const contRows = parseCsvDocumentCRLF(artifacts.continuousCsv);
         assert(contRows.length === 651, `Expected 651 Continuous CSV records (header + 650 rows), got ${contRows.length}`);
         const contTsCol = contRows[0].indexOf('source_timestamp');
+        const contOpenCol = contRows[0].indexOf('open');
+        const contHighCol = contRows[0].indexOf('high');
+        const contLowCol = contRows[0].indexOf('low');
         const contCloseCol = contRows[0].indexOf('close');
-        assert(contTsCol >= 0 && contCloseCol >= 0, 'Continuous header missing source_timestamp or close column');
+        const contVolCol = contRows[0].indexOf('volume');
         assert(
-            Number(contRows[1][contTsCol]) === buffer[0] &&
-            Number(contRows[325][contTsCol]) === buffer[324 * 6] &&
-            Number(contRows[325][contCloseCol]) === buffer[324 * 6 + 4] &&
-            Number(contRows[650][contTsCol]) === buffer[649 * 6],
-            'Continuous first/intermediate/last rows must map to accepted raw indices 0, 324, and N-1'
+            contTsCol >= 0 && contOpenCol >= 0 && contHighCol >= 0 && contLowCol >= 0 && contCloseCol >= 0 && contVolCol >= 0,
+            'Continuous header missing required raw candle column(s)'
         );
+        for (const [rowIdx, bufIdx] of [
+            [1, 0],
+            [325, 324],
+            [650, 649]
+        ] as const) {
+            const off = bufIdx * 6;
+            assert(
+                Number(contRows[rowIdx][contTsCol]) === buffer[off] &&
+                Number(contRows[rowIdx][contOpenCol]) === buffer[off + 1] &&
+                Number(contRows[rowIdx][contHighCol]) === buffer[off + 2] &&
+                Number(contRows[rowIdx][contLowCol]) === buffer[off + 3] &&
+                Number(contRows[rowIdx][contCloseCol]) === buffer[off + 4] &&
+                Number(contRows[rowIdx][contVolCol]) === buffer[off + 5],
+                `Continuous row ${rowIdx} must match raw buffer candle ${bufIdx} across all 6 OHLCVT fields`
+            );
+        }
 
         const archiveBytes = await AIExporter.createVerifiedV3DatasetArchive(artifacts, buffer);
         const reopened = await JSZip.loadAsync(archiveBytes);
