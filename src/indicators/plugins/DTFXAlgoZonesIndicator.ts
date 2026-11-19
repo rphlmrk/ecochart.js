@@ -16,6 +16,8 @@ import type { StrategyEvent } from '../mlr1/teachers/StrategyEventTypes';
 export interface DTFXRenderedZoneLifecycle {
     readonly zone: DTFXZoneRecord;
     readonly endBarIndex: number;
+    readonly fibStartBarIndex: number;
+    readonly fibEndBarIndex: number;
     readonly retestBars: number[];
 }
 
@@ -35,10 +37,17 @@ export class DTFXAlgoZonesIndicator extends BaseIndicator {
 
         this.params = [
             { id: 'structureLen', name: 'Structure Length', type: 'number', value: 10, min: 2, max: 50, step: 1 },
+            { id: 'showSwings', name: 'Show Swing Points', type: 'boolean', value: true },
+            { id: 'dispAll', name: 'Display All Zones', type: 'boolean', value: true },
+            { id: 'zoneDispNum', name: 'Show Last Zones', type: 'number', value: 1, min: 0, max: 100, step: 1 },
+            { id: 'zoneFilter', name: 'Zone Display', type: 'select', value: 'Both', options: ['Bullish Only', 'Bearish Only', 'Both'] },
             { id: 'showFibs', name: 'Show 0.3 / 0.5 / 0.7 Fibs', type: 'boolean', value: true },
-            { id: 'extendLeft', name: 'Extend Box Left', type: 'boolean', value: true },
-            { id: 'demandColor', name: 'Demand Zone Color', type: 'color', value: '#26A69A40' },
-            { id: 'supplyColor', name: 'Supply Zone Color', type: 'color', value: '#EF535040' }
+            { id: 'noOverlap', name: 'Clean-Up Level Overlap', type: 'boolean', value: true },
+            { id: 'extendLeft', name: 'Extend Box Left', type: 'boolean', value: false },
+            { id: 'showLifecycle', name: 'Show Retest / Invalidation Markers', type: 'boolean', value: false },
+            { id: 'demandColor', name: 'Bullish Zone Color', type: 'color', value: '#08998133' },
+            { id: 'supplyColor', name: 'Bearish Zone Color', type: 'color', value: '#F2364533' },
+            { id: 'structureColor', name: 'Swing Point Color', type: 'color', value: '#787B86' }
         ];
     }
 
@@ -63,12 +72,13 @@ export class DTFXAlgoZonesIndicator extends BaseIndicator {
         if (len === 0) return;
 
         const structureLen = Math.max(2, Math.round(this.getParam<number>('structureLen', 10)));
+        const noOverlap = this.getParam<boolean>('noOverlap', true);
         const intervalMs = (len >= 2 && ds.data[6] > ds.data[0]) ? (ds.data[6] - ds.data[0]) : 60_000;
         const discThresholdMs = Math.max(300_000, intervalMs * 5);
 
         const lastBase = (len - 1) * 6;
         const rev = (ds as any).revision ?? 0;
-        const hash = `${this.currentSymbol}:${intervalMs}:${structureLen}:${len}:${rev}:${ds.data[0]}:${ds.data[lastBase]}:${ds.data[lastBase + 4]}`;
+        const hash = `${this.currentSymbol}:${intervalMs}:${structureLen}:${noOverlap}:${len}:${rev}:${ds.data[0]}:${ds.data[lastBase]}:${ds.data[lastBase + 4]}`;
         if (this.lastStateHash === hash && this.lastCalculatedLength === len) return;
 
         this.cachedEvents = [];
@@ -84,7 +94,7 @@ export class DTFXAlgoZonesIndicator extends BaseIndicator {
         let prevTime = -1;
         let acceptedIdx = 0;
 
-        const lifecycleById = new Map<number, { zone: DTFXZoneRecord; endBarIndex: number; retestBars: number[] }>();
+        const lifecycleById = new Map<number, { zone: DTFXZoneRecord; endBarIndex: number; fibStartBarIndex: number; fibEndBarIndex: number; retestBars: number[] }>();
 
         for (let i = 0; i < len; i++) {
             const base = i * 6;
@@ -104,16 +114,12 @@ export class DTFXAlgoZonesIndicator extends BaseIndicator {
                 Number.isFinite(v) && v >= 0 &&
                 h >= l && h >= Math.max(o, c) && l <= Math.min(o, c);
 
-            if (!validOhlcv || (prevTime !== -1 && t <= prevTime)) {
-                continue;
-            }
+            if (!validOhlcv || (prevTime !== -1 && t <= prevTime)) continue;
 
             const isDiscontinuity = prevTime !== -1 && (t - prevTime) >= discThresholdMs;
-            if (isDiscontinuity) {
-                for (const active of dtfxState.activeZones) {
-                    const entry = lifecycleById.get(active.zoneId);
-                    if (entry) entry.endBarIndex = Math.max(entry.zone.createdConfirmationBarIndex, acceptedIdx - 1);
-                }
+            if (isDiscontinuity && this.zoneLifecycles.length > 0) {
+                const lastItem = this.zoneLifecycles[this.zoneLifecycles.length - 1] as any;
+                lastItem.fibEndBarIndex = Math.max(lastItem.fibStartBarIndex, acceptedIdx - 1);
             }
             prevTime = t;
 
@@ -126,7 +132,28 @@ export class DTFXAlgoZonesIndicator extends BaseIndicator {
             dtfxState = step.nextState;
 
             for (const cz of step.createdZones) {
-                const rec = { zone: cz, endBarIndex: len - 1, retestBars: [] };
+                // Pine box span is strictly [t.bar .. bar_index] (sourceBar -> confirmationBar)
+                const boxEnd = cz.createdConfirmationBarIndex;
+                let fibStart = cz.createdSourceBarIndex;
+
+                if (this.zoneLifecycles.length > 0) {
+                    const prevEntry = this.zoneLifecycles[this.zoneLifecycles.length - 1] as any;
+                    // Previous live_lvls stops extending when the new zone replaces live_lvls
+                    prevEntry.fibEndBarIndex = Math.min(prevEntry.fibEndBarIndex, cz.createdConfirmationBarIndex);
+                    if (noOverlap && prevEntry.fibEndBarIndex > cz.createdSourceBarIndex) {
+                        const boundary = Math.max(cz.createdSourceBarIndex, prevEntry.zone.createdConfirmationBarIndex);
+                        prevEntry.fibEndBarIndex = boundary;
+                        fibStart = boundary;
+                    }
+                }
+
+                const rec = {
+                    zone: cz,
+                    endBarIndex: boxEnd,
+                    fibStartBarIndex: fibStart,
+                    fibEndBarIndex: len - 1,
+                    retestBars: []
+                };
                 lifecycleById.set(cz.zoneId, rec);
                 this.zoneLifecycles.push(rec);
             }
@@ -141,7 +168,6 @@ export class DTFXAlgoZonesIndicator extends BaseIndicator {
                 const entry = lifecycleById.get(iz.zoneId);
                 if (entry) {
                     entry.zone = iz;
-                    entry.endBarIndex = acceptedIdx;
                 }
             }
             this.acceptedToDsIndex[acceptedIdx] = i;
@@ -154,6 +180,9 @@ export class DTFXAlgoZonesIndicator extends BaseIndicator {
     }
 
     public override update(ds: DataStore, isClosedTick: boolean): void {
+        if (this.lastCalculatedLength !== -1 && (ds.length > this.lastCalculatedLength + 2 || ds.length <= this.lastCalculatedLength)) {
+            this.lastCalculatedLength = -1;
+        }
         this.calculate(ds);
         super.update(ds, isClosedTick);
     }
@@ -162,58 +191,91 @@ export class DTFXAlgoZonesIndicator extends BaseIndicator {
         if (!this.visible || r.dataStore.length === 0) return;
         if (this.lastCalculatedLength !== r.dataStore.length) this.calculate(r.dataStore);
 
-        const demandClr = parseColorAndAlpha(this.getParam<string>('demandColor', '#26A69A40'), 0.25);
-        const supplyClr = parseColorAndAlpha(this.getParam<string>('supplyColor', '#EF535040'), 0.25);
+        const demandClr = parseColorAndAlpha(this.getParam<string>('demandColor', '#08998133'), 0.20);
+        const supplyClr = parseColorAndAlpha(this.getParam<string>('supplyColor', '#F2364533'), 0.20);
+        const swingClr = parseColor(this.getParam<string>('structureColor', '#787B86'));
+        const showSwings = this.getParam<boolean>('showSwings', true);
         const showFibs = this.getParam<boolean>('showFibs', true);
-        const extendLeft = this.getParam<boolean>('extendLeft', true);
+        const showLifecycle = this.getParam<boolean>('showLifecycle', false);
+        const dispAll = this.getParam<boolean>('dispAll', true);
+        const zoneDispNum = Math.max(0, Math.round(this.getParam<number>('zoneDispNum', 1)));
+        const zoneFilter = this.getParam<string>('zoneFilter', 'Both');
+        const extendLeft = this.getParam<boolean>('extendLeft', false);
 
-        for (const item of this.zoneLifecycles) {
+        let visibleZones = this.zoneLifecycles.filter(item => {
+            if (zoneFilter === 'Bullish Only') return item.zone.direction === 'bull';
+            if (zoneFilter === 'Bearish Only') return item.zone.direction === 'bear';
+            return true;
+        });
+        if (!dispAll) {
+            visibleZones = zoneDispNum === 0 ? [] : visibleZones.slice(-zoneDispNum);
+        }
+
+        for (const item of visibleZones) {
             const z = item.zone;
-            const startAcceptedIdx = extendLeft ? z.createdSourceBarIndex : z.createdConfirmationBarIndex;
-            const startDsIdx = this.acceptedToDsIndex[startAcceptedIdx] ?? startAcceptedIdx;
-            const endDsIdx = z.status === 'INVALIDATED'
-                ? (this.acceptedToDsIndex[item.endBarIndex] ?? item.endBarIndex)
-                : item.endBarIndex;
-            const x1 = r.getCandleCenterX(startDsIdx);
+            const sourceDsIdx = this.acceptedToDsIndex[z.createdSourceBarIndex] ?? z.createdSourceBarIndex;
+            const endDsIdx = this.acceptedToDsIndex[item.endBarIndex] ?? item.endBarIndex;
+            const fibStartDsIdx = this.acceptedToDsIndex[item.fibStartBarIndex] ?? item.fibStartBarIndex;
+            const fibEndDsIdx = item.fibEndBarIndex < this.acceptedToDsIndex.length
+                ? (this.acceptedToDsIndex[item.fibEndBarIndex] ?? item.fibEndBarIndex)
+                : item.fibEndBarIndex;
+
+            const x1 = r.getCandleCenterX(sourceDsIdx);
             const x2 = r.getCandleCenterX(endDsIdx);
-            if (x2 < -20 || x1 > layout.chartWidth + 20) continue;
+            const fx1 = r.getCandleCenterX(fibStartDsIdx);
+            const fx2 = r.getCandleCenterX(fibEndDsIdx);
+            if (Math.max(x2, fx2) < -20 || Math.min(x1, fx1) > layout.chartWidth + 20) continue;
 
             const yTop = r.priceToY(z.top);
             const yBot = r.priceToY(z.bot);
             const w = Math.max(4, x2 - x1);
             const h = Math.max(2, yBot - yTop);
             const style = z.direction === 'bull' ? demandClr : supplyClr;
-            const alphaMult = z.status === 'INVALIDATED' ? 0.35 : 1.0;
 
-            g.rect(x1, yTop, w, h).fill({ color: style.color, alpha: style.alpha * alphaMult });
-            g.rect(x1, yTop, w, h).stroke({ color: style.color, width: z.status === 'RETESTED' ? 1.5 : 1, alpha: 0.8 * alphaMult });
+            // Pine box(t.bar, _top, bar_index, _bot, border_color = na): always highlights the zone section
+            g.rect(x1, yTop, w, h).fill({ color: style.color, alpha: style.alpha });
 
-            if (showFibs && z.status !== 'INVALIDATED') {
-                for (const fibPrice of [z.fib03, z.fib05, z.fib07]) {
-                    const fy = r.priceToY(fibPrice);
-                    StrokeEngine.drawLine(g, x1, fy, x1 + w, fy, {
-                        color: style.color, width: 1, alpha: 0.55, style: 'dashed', dashLength: 3, gapLength: 3
+            // Optional extension beyond the box towards the left
+            if (extendLeft && x1 > 0) {
+                g.rect(0, yTop, x1, h).fill({ color: style.color, alpha: style.alpha * 0.5 });
+            }
+
+            if (showSwings) {
+                const sy = z.direction === 'bull' ? yTop - 5 : yBot + 5;
+                g.circle(x1, sy, 2.5).fill({ color: swingClr, alpha: 0.85 });
+            }
+
+            // Pine Fibs: 0.3 dashed, 0.5 solid, 0.7 dashed
+            if (showFibs && fx2 > fx1) {
+                const fibSpecs: Array<{ price: number; style: 'dashed' | 'solid' }> = [
+                    { price: z.fib03, style: 'dashed' },
+                    { price: z.fib05, style: 'solid' },
+                    { price: z.fib07, style: 'dashed' }
+                ];
+                for (const fs of fibSpecs) {
+                    const fy = r.priceToY(fs.price);
+                    StrokeEngine.drawLine(g, fx1, fy, fx2, fy, {
+                        color: style.color, width: fs.style === 'solid' ? 1.5 : 1, alpha: 0.9, style: fs.style, dashLength: 4, gapLength: 3
                     });
                 }
             }
 
-            // Retest diamond markers
-            for (const rb of item.retestBars) {
-                const rx = r.getCandleCenterX(this.acceptedToDsIndex[rb] ?? rb);
-                const ry = r.priceToY(z.fib05);
-                g.beginPath();
-                g.moveTo(rx, ry - 4).lineTo(rx + 4, ry).lineTo(rx, ry + 4).lineTo(rx - 4, ry).closePath();
-                g.fill({ color: style.color, alpha: 0.95 });
-            }
-
-            // Invalidation X marker
-            if (z.status === 'INVALIDATED' && z.invalidationBarIndex !== null) {
-                const ix = r.getCandleCenterX(this.acceptedToDsIndex[z.invalidationBarIndex] ?? z.invalidationBarIndex);
-                const iy = r.priceToY(z.direction === 'bull' ? z.bot : z.top);
-                g.beginPath();
-                g.moveTo(ix - 4, iy - 4).lineTo(ix + 4, iy + 4);
-                g.moveTo(ix + 4, iy - 4).lineTo(ix - 4, iy + 4);
-                g.stroke({ color: style.color, width: 1.5, alpha: 0.85 });
+            if (showLifecycle) {
+                for (const rb of item.retestBars) {
+                    const rx = r.getCandleCenterX(this.acceptedToDsIndex[rb] ?? rb);
+                    const ry = r.priceToY(z.fib05);
+                    g.beginPath();
+                    g.moveTo(rx, ry - 4).lineTo(rx + 4, ry).lineTo(rx, ry + 4).lineTo(rx - 4, ry).closePath();
+                    g.fill({ color: style.color, alpha: 0.95 });
+                }
+                if (z.status === 'INVALIDATED' && z.invalidationBarIndex !== null) {
+                    const ix = r.getCandleCenterX(this.acceptedToDsIndex[z.invalidationBarIndex] ?? z.invalidationBarIndex);
+                    const iy = r.priceToY(z.direction === 'bull' ? z.bot : z.top);
+                    g.beginPath();
+                    g.moveTo(ix - 4, iy - 4).lineTo(ix + 4, iy + 4);
+                    g.moveTo(ix + 4, iy - 4).lineTo(ix - 4, iy + 4);
+                    g.stroke({ color: style.color, width: 1.5, alpha: 0.85 });
+                }
             }
         }
     }
@@ -222,12 +284,14 @@ export class DTFXAlgoZonesIndicator extends BaseIndicator {
         if (idx < 0 || idx >= ds.length) return { label: this.name, valueStr: '—', valueColor: defaultTextClr };
         const evAtBar = this.cachedEvents.find(e => e.confirmationBarIndex === idx);
         const activeCount = this.zoneLifecycles.filter(
-            z => z.zone.createdConfirmationBarIndex <= idx && z.endBarIndex >= idx && z.zone.status !== 'INVALIDATED'
+            z => z.zone.createdConfirmationBarIndex <= idx &&
+                (z.zone.invalidationBarIndex === null || z.zone.invalidationBarIndex >= idx) &&
+                z.zone.status !== 'INVALIDATED'
         ).length;
         if (evAtBar) {
             const clr = evAtBar.eventDirection === 'bull'
-                ? parseColor(this.getParam('demandColor', '#26A69A40'))
-                : parseColor(this.getParam('supplyColor', '#EF535040'));
+                ? parseColor(this.getParam('demandColor', '#08998133'))
+                : parseColor(this.getParam('supplyColor', '#F2364533'));
             return { label: this.name, valueStr: `${evAtBar.eventType} (${activeCount} active)`, valueColor: clr };
         }
         return { label: this.name, valueStr: `Active Zones: ${activeCount}`, valueColor: defaultTextClr };
@@ -236,5 +300,6 @@ export class DTFXAlgoZonesIndicator extends BaseIndicator {
     public destroy(): void {
         this.cachedEvents = [];
         this.zoneLifecycles = [];
+        this.acceptedToDsIndex = [];
     }
 }

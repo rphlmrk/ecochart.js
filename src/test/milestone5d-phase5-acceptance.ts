@@ -105,7 +105,9 @@ export function runPhase5DPhase5Tests(): boolean {
         let atrState: ATRPeriodState | undefined;
         let prevClose: number | null = null;
 
-        const phlCfg = createDefaultPHLConfig('SOLUSDT', '1m', interval);
+        const phlStrength = indPhl.getParam<number>('pivotStrength', 10);
+        assert(phlStrength >= 8 && phlStrength <= 15, `Default PHL pivotStrength must be tuned 8..15, got ${phlStrength}`);
+        const phlCfg = { ...createDefaultPHLConfig('SOLUSDT', '1m', interval), pivotStrength: phlStrength };
         const dtfxCfg = createDefaultDTFXConfig('SOLUSDT', '1m', interval);
         const purePhlEvents: string[] = [];
         const pureDtfxEvents: string[] = [];
@@ -169,6 +171,40 @@ export function runPhase5DPhase5Tests(): boolean {
         assert(
             JSON.stringify(indPhl.cachedEvents.map(e => `${e.eventType}@${e.confirmationBarIndex}`)) === JSON.stringify(purePhlEvents),
             'PHL chart events diverged from pure PHL engine'
+        );
+
+        // Verify Close Only target trigger ignores wicks while Wick (High/Low) triggers
+        const wickSubset = candles.slice(0, 260);
+        const wickDs = buildDataStore(wickSubset);
+        const phlWickTest = new ProtectedHighsLowsIndicator();
+        phlWickTest.currentSymbol = 'SOLUSDT';
+        phlWickTest.updateParams({ pivotStrength: 3, targetTrigger: 'Close Only' });
+        phlWickTest.calculate(wickDs);
+        const openSeg = phlWickTest.targetSegments.find(s => !s.hit);
+        assert(openSeg !== undefined, 'Expected an open trailing ATR target segment for wick test');
+
+        const prevC = wickSubset[wickSubset.length - 1];
+        const safeClose = openSeg.dir === 1
+            ? Math.min(prevC.close, openSeg.price - 0.5)
+            : Math.max(prevC.close, openSeg.price + 0.5);
+        const spikeHigh = openSeg.dir === 1
+            ? openSeg.price + 1.5
+            : Math.max(prevC.close, safeClose) + 0.2;
+        const spikeLow = openSeg.dir === -1
+            ? Math.max(1, openSeg.price - 1.5)
+            : Math.min(prevC.close, safeClose) - 0.2;
+        wickDs.appendOrUpdate(
+            prevC.time + interval,
+            prevC.close,
+            spikeHigh,
+            spikeLow,
+            safeClose,
+            150
+        );
+        phlWickTest.calculate(wickDs);
+        assert(
+            !phlWickTest.targetSegments.some(s => s.startBar === openSeg.startBar && s.stepNum === openSeg.stepNum && s.hit),
+            'Close Only target trigger must ignore wick-only pierces'
         );
         assert(
             JSON.stringify(indDtfx.cachedEvents.map(e => `${e.eventType}@${e.confirmationBarIndex}`)) === JSON.stringify(pureDtfxEvents),

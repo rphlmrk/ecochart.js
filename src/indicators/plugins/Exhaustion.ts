@@ -109,6 +109,9 @@ export class ExhaustionIndicator extends BaseIndicator {
     }
 
     public override update(ds: DataStore, isClosedTick: boolean): void {
+        if (this.lastCalculatedLength !== -1 && (ds.length > this.lastCalculatedLength + 2 || ds.length <= this.lastCalculatedLength)) {
+            this.lastCalculatedLength = -1;
+        }
         this.calculate(ds);
         super.update(ds, isClosedTick);
     }
