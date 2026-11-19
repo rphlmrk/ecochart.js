@@ -12,6 +12,8 @@ import { createDefaultPHLConfig, createInitialPHLState, stepPHL } from '../indic
 import { createDefaultDTFXConfig, createInitialDTFXState, stepDTFX } from '../indicators/mlr1/teachers/DTFXAlgoZonesTeacher';
 import { updateWilderATR } from '../indicators/mlr1/volatility/ATR';
 import { stepStrictCBCWithReset } from '../indicators/mlr1/teachers/StrategyEventTypes';
+import { ML1_CONFIG_C } from '../indicators/mlr1/ML1FeatureConfigs';
+import { createInitialML1FeatureStateV5, stepML1FeaturesV5 } from '../indicators/mlr1/ML1FeatureEngine';
 import type { ATRPeriodState, ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
 import type { StrictCBCState, StrictZigZagPivot } from '../indicators/plugins/StrictCBCZigZagIndicator';
 
@@ -230,20 +232,32 @@ export function runPhase5DPhase5Tests(): boolean {
         // Case 3: VCS below default volume (bar 362: wider range -> vcsRatio < defRatio, teal + grey)
         // Case 4: VCS = 3x default volume (bar 363: range solved for exact 3x -> +200.0%, amber = 2x teal)
         // Case 5: Zero default volume (bar 364: Diff: N/A, no division by zero)
-        // Case 6: Ratio > 4 (bar 365: v = 600 -> 6x defaultVolRatio, dynamic scale > 4, no clipping)
-        // Case 7: 5-minute discontinuity (bar 366: +300,000ms gap resets comparison baseline)
-        const wideSpreadRange = 2.0 / 100 + 1 / 2000; // baseline relSpread = 0.0205
-        const targetRange3x = ((wideSpreadRange / 3) - 1 / 2000) * 100; // exact range for 3x jam1 at v=100
+        // Case 6: Ratio > 4 (bar 365: v = 600 -> ~6x defaultVolRatio, fixed 0-4x scale + overflow marker, uncapped tooltip)
+        // Case 7: 5-minute discontinuity (bar 366: +300,000ms gap) followed by 362 clean post-gap bars at vol=500 to verify recovery
+        const wideSpreadRange = 2.0 / 100 + 1 / 2000;
+        const targetRange3x = ((wideSpreadRange / 3) - 1 / 2000) * 100;
 
-        const cmpCandles: ML1Candle[] = flatBaseCandles.map((c, idx) => {
-            if (idx === 361) return { ...c, high: 100.5, low: 99.5, volume: 100 }; // tighter range -> VCS > 1x
-            if (idx === 362) return { ...c, high: 102, low: 98, volume: 100 };     // wider range -> VCS < 1x
+        const cmpCandles: ML1Candle[] = flatBaseCandles.slice(0, 366).map((c, idx) => {
+            if (idx === 361) return { ...c, high: 100.5, low: 99.5, volume: 100 };
+            if (idx === 362) return { ...c, high: 102, low: 98, volume: 100 };
             if (idx === 363) return { ...c, high: 100 + targetRange3x * 0.5, low: 100 - targetRange3x * 0.5, volume: 100 };
             if (idx === 364) return { ...c, volume: 0 };
-            if (idx === 365) return { ...c, volume: 600 }; // > 4x spike
-            if (idx >= 366) return { ...c, time: c.time + 300_000 }; // 5m discontinuity at bar 366
+            if (idx === 365) return { ...c, volume: 600 };
             return c;
         });
+
+        // Append 362 post-gap candles (bars 366..727) with distinct volume = 500 after a 5-minute discontinuity
+        const postGapStart = t0 + 365 * interval + 300_000;
+        for (let k = 0; k < 362; k++) {
+            cmpCandles.push({
+                time: postGapStart + k * interval,
+                open: 100,
+                high: 101,
+                low: 99,
+                close: 100,
+                volume: 500
+            });
+        }
 
         const cmpDs = buildDataStore(cmpCandles);
         const vcsCmp = new VolumeCandleSizeIndicator();
@@ -253,7 +267,7 @@ export function runPhase5DPhase5Tests(): boolean {
         const g360 = vcsCmp.getCompositeBarGeometry(360);
         const r360 = vcsCmp.getValueAt(360, cmpDs, true, 0xffffff);
         assert(
-            g360.mode === 'composite' && g360.amberTop === 0 && g360.greyTop === 0 &&
+            g360.mode === 'composite' && !g360.isOverflow && g360.amberTop === 0 && g360.greyTop === 0 &&
             r360.valueStr.includes('Diff: 0.0%') && r360.valueColor === 0x26A69A,
             'Equal VCS and Default Vol must render solid teal and Diff: 0.0%'
         );
@@ -276,26 +290,58 @@ export function runPhase5DPhase5Tests(): boolean {
             'VCS < Default Vol must render teal + grey and negative Diff'
         );
 
-        // Bar 363: VCS ≈ 3x Default Vol -> amber overflow ≈ 2x teal base, Diff ≈ +200% (199.6% after bars 361–362 shift rolling mean by +0.14%)
+        // Bar 363: Verify actual generated ratios (VCS ~ 3.0, DefaultVol ~ 1.0) AND composite geometry
         const g363 = vcsCmp.getCompositeBarGeometry(363);
         const r363 = vcsCmp.getValueAt(363, cmpDs, true, 0xffffff);
         assert(
+            Math.abs(vcsCmp.ratios[363] - 3.0) < 0.05 &&
+            Math.abs(vcsCmp.defaultVolRatios[363] - 1.0) < 0.01 &&
             g363.mode === 'composite' &&
             Math.abs((g363.amberTop - g363.amberBottom) - 2 * g363.tealHeight) < 0.05 &&
             r363.valueStr.includes('VCS: 3.00x') && /Diff: \+(199|200)\.\d%/.test(r363.valueStr) && r363.valueColor === 0xFF9800,
-            `3x VCS overflow mismatch: ${r363.valueStr}`
+            `3x VCS ratio/overflow mismatch: vcs=${vcsCmp.ratios[363]}, def=${vcsCmp.defaultVolRatios[363]}, ${r363.valueStr}`
         );
 
         // Bar 364: Zero volume -> Diff: N/A, no division by zero
         const r364 = vcsCmp.getValueAt(364, cmpDs, true, 0xffffff);
         assert(r364.valueStr.includes('Diff: N/A') && vcsCmp.ratios[364] === 0, 'Zero default volume must show Diff: N/A');
 
-        // Bar 365: Ratio > 4 -> dynamic scale expands past 4 (no silent clipping)
-        const dynMax = vcsCmp.getEffectiveVisibleMax(360, 366);
-        assert(dynMax > 6.0 && vcsCmp.oscillatorScale!.max === dynMax, `Scale must expand above 6.0 without clipping, got ${dynMax}`);
+        // Bar 365: Ratio > 4 -> fixed 0-4x scale, rendered bar capped at 4x with overflow flag, tooltip uncapped
+        const g365 = vcsCmp.getCompositeBarGeometry(365);
+        const r365 = vcsCmp.getValueAt(365, cmpDs, true, 0xffffff);
+        assert(
+            vcsCmp.oscillatorScale!.min === 0 && vcsCmp.oscillatorScale!.max === 4 &&
+            vcsCmp.defaultVolRatios[365] > 5.5 &&
+            g365.isOverflow && Math.max(g365.tealHeight, g365.amberTop, g365.greyTop) === 4.0 &&
+            r365.valueStr.includes('6.0'),
+            `Bar > 4x must stay on fixed 0-4x scale with overflow marker and uncapped tooltip, got ${r365.valueStr}`
+        );
 
-        // Bar 366: 5-minute discontinuity resets comparison baseline
-        assert(vcsCmp.validMask[366] === 0 && vcsCmp.defaultVolValid[366] === 0, '5m discontinuity must reset comparison baseline');
+        // Bar 366..726: Discontinuity resets baseline, stays unavailable for 360 post-gap bars, then recovers cleanly at bar 726 (volMean === 500)
+        assert(vcsCmp.validMask[366] === 0 && vcsCmp.defaultVolValid[366] === 0, 'Bar 366 discontinuity must reset both baselines');
+        assert(vcsCmp.validMask[725] === 0 && vcsCmp.defaultVolValid[725] === 0, 'Bar 725 (360th post-gap bar) must still be warming up');
+        assert(
+            vcsCmp.validMask[726] === 1 && vcsCmp.defaultVolValid[726] === 1 &&
+            Math.abs(vcsCmp.defaultVolMeans[726] - 500) < 1e-9 &&
+            Math.abs(vcsCmp.defaultVolRatios[726] - 1.0) < 1e-9 &&
+            Math.abs(vcsCmp.ratios[726] - 1.0) < 1e-9,
+            'Post-gap baseline must isolate pre-gap vol=100 and recover strictly on 360 post-gap bars of vol=500'
+        );
+
+        // Verify zero alteration to frozen Phase 1 ML1_CONFIG_C VolumeCandleSize feature values
+        let mlState = createInitialML1FeatureStateV5(ML1_CONFIG_C);
+        for (let idx = 0; idx < cmpCandles.length; idx++) {
+            const step = stepML1FeaturesV5({ ...cmpCandles[idx], isSynthetic: false }, idx, mlState, ML1_CONFIG_C);
+            mlState = step.nextState;
+            const obs = step.observation;
+            assert(
+                (vcsCmp.validMask[idx] === 1) === obs.validity['VolumeCandleSize_Ratio_360'] &&
+                vcsCmp.ratios[idx] === obs.features['VolumeCandleSize_Ratio_360'] &&
+                vcsCmp.zScores[idx] === obs.features['VolumeCandleSize_ZScore_360'] &&
+                vcsCmp.regimes[idx] === obs.features['VolumeCandleSize_Regime_360'],
+                `Comparison-enabled VolumeCandleSizeIndicator diverged from frozen ML1_CONFIG_C at bar ${idx}`
+            );
+        }
 
         // Unavailable comparison state when VCS is valid but defaultVolValid === 0
         vcsCmp.defaultVolValid[360] = 0;

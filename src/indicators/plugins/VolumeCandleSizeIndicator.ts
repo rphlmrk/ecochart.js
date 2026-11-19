@@ -189,22 +189,6 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
         super.update(ds, isClosedTick);
     }
 
-    public getEffectiveVisibleMax(visStart: number, visEnd: number): number {
-        const compareDefault = this.getParam<boolean>('compareDefaultVolume', true);
-        let peak = 0;
-        for (let i = Math.max(0, visStart); i < visEnd; i++) {
-            if (this.validMask[i] === 1 && this.ratios[i] > peak) {
-                peak = this.ratios[i];
-            }
-            if (compareDefault && this.defaultVolValid[i] === 1 && this.defaultVolRatios[i] > peak) {
-                peak = this.defaultVolRatios[i];
-            }
-        }
-        const dynamicMax = peak > 3.6 ? Math.ceil(peak * 1.15 * 10) / 10 : 4;
-        this.oscillatorScale = { min: 0, max: dynamicMax, steps: [1, 2], format: (v) => `${v}x` };
-        return dynamicMax;
-    }
-
     public getCompositeBarGeometry(idx: number): {
         mode: 'hidden' | 'classic' | 'composite';
         tealHeight: number;
@@ -212,24 +196,58 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
         amberTop: number;
         greyBottom: number;
         greyTop: number;
+        isOverflow: boolean;
+        overflowSide: 'none' | 'teal' | 'amber' | 'grey';
     } {
         if (this.validMask[idx] !== 1) {
-            return { mode: 'hidden', tealHeight: 0, amberBottom: 0, amberTop: 0, greyBottom: 0, greyTop: 0 };
+            return { mode: 'hidden', tealHeight: 0, amberBottom: 0, amberTop: 0, greyBottom: 0, greyTop: 0, isOverflow: false, overflowSide: 'none' };
         }
         const compareDefault = this.getParam<boolean>('compareDefaultVolume', true);
         if (!compareDefault || this.defaultVolValid[idx] !== 1) {
-            return { mode: 'classic', tealHeight: 0, amberBottom: 0, amberTop: 0, greyBottom: 0, greyTop: 0 };
+            return { mode: 'classic', tealHeight: 0, amberBottom: 0, amberTop: 0, greyBottom: 0, greyTop: 0, isOverflow: false, overflowSide: 'none' };
         }
+
+        const maxCap = 4.0;
         const vcsVal = this.ratios[idx];
         const defVal = this.defaultVolRatios[idx];
-        const tealHeight = Math.min(defVal, vcsVal);
+        const cappedVcs = Math.min(vcsVal, maxCap);
+        const cappedDef = Math.min(defVal, maxCap);
+        const tealHeight = Math.min(cappedDef, cappedVcs);
+
+        const isOverflow = vcsVal > maxCap || defVal > maxCap;
+        const overflowSide: 'none' | 'teal' | 'amber' | 'grey' = !isOverflow
+            ? 'none'
+            : vcsVal > defVal + 1e-9
+                ? 'amber'
+                : defVal > vcsVal + 1e-9
+                    ? 'grey'
+                    : 'teal';
+
         if (vcsVal > defVal + 1e-9) {
-            return { mode: 'composite', tealHeight, amberBottom: defVal, amberTop: vcsVal, greyBottom: 0, greyTop: 0 };
+            return {
+                mode: 'composite',
+                tealHeight,
+                amberBottom: cappedDef,
+                amberTop: cappedVcs,
+                greyBottom: 0,
+                greyTop: 0,
+                isOverflow,
+                overflowSide
+            };
         }
         if (defVal > vcsVal + 1e-9) {
-            return { mode: 'composite', tealHeight, amberBottom: 0, amberTop: 0, greyBottom: vcsVal, greyTop: defVal };
+            return {
+                mode: 'composite',
+                tealHeight,
+                amberBottom: 0,
+                amberTop: 0,
+                greyBottom: cappedVcs,
+                greyTop: cappedDef,
+                isOverflow,
+                overflowSide
+            };
         }
-        return { mode: 'composite', tealHeight, amberBottom: 0, amberTop: 0, greyBottom: 0, greyTop: 0 };
+        return { mode: 'composite', tealHeight, amberBottom: 0, amberTop: 0, greyBottom: 0, greyTop: 0, isOverflow, overflowSide };
     }
 
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics): void {
@@ -240,9 +258,12 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
         const visStart = Math.max(0, Math.floor(r.cameraX / sp) - 2);
         const visEnd = Math.min(r.dataStore.length, Math.floor((r.cameraX + layout.chartWidth) / sp) + 2);
 
-        const usableH = Math.max(1, layout.oscHeight - 4);
-        const yBottom = layout.oscY + 2 + usableH;
-        const maxScale = this.getEffectiveVisibleMax(visStart, visEnd);
+        // Fixed 0–4x scale with 6px top headroom for overflow carets
+        const maxScale = 4;
+        this.oscillatorScale = { min: 0, max: maxScale, steps: [1, 2], format: (v) => `${v}x` };
+        const yCap = layout.oscY + 6;
+        const usableH = Math.max(1, layout.oscHeight - 8);
+        const yBottom = yCap + usableH;
         const toY = (val: number) => yBottom - Math.max(0, Math.min(1, val / maxScale)) * usableH;
 
         // 1. Pine bgcolor(close < open ? red@80%transp : green@80%transp)
@@ -272,13 +293,13 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
         const barW = Math.max(1, sp * 0.72);
         const compareDefault = this.getParam<boolean>('compareDefaultVolume', true);
 
-        // 3. Single-Bar Composite Mode (only for bars where BOTH VCS & Default Vol are valid)
+        // 3. Single-Bar Composite Mode (fixed 0–4x scale + overflow marker above 4x)
         if (compareDefault) {
             const tealStyle = parseColorAndAlpha(this.getParam<string>('compTealColor', '#26A69A'), 0.95);
             const amberStyle = parseColorAndAlpha(this.getParam<string>('compAmberColor', '#FF9800'), 0.95);
             const greyStyle = parseColorAndAlpha(this.getParam<string>('compGreyColor', '#787B86'), 0.75);
 
-            // Batch A: Teal Base (0 -> min(def, vcs))
+            // Batch A: Teal Base (0 -> min(def, vcs), capped at 4x)
             g.beginPath();
             let hasTeal = false;
             for (let i = visStart; i < visEnd; i++) {
@@ -291,7 +312,7 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
             }
             if (hasTeal) g.fill({ color: tealStyle.color, alpha: tealStyle.alpha });
 
-            // Batch B: Amber Overflow (def -> vcs when vcs > def)
+            // Batch B: Amber Overflow (def -> vcs when vcs > def, capped at 4x)
             g.beginPath();
             let hasAmber = false;
             for (let i = visStart; i < visEnd; i++) {
@@ -305,7 +326,7 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
             }
             if (hasAmber) g.fill({ color: amberStyle.color, alpha: amberStyle.alpha });
 
-            // Batch C: Grey Remaining Default Volume (vcs -> def when def > vcs)
+            // Batch C: Grey Remaining Default Volume (vcs -> def when def > vcs, capped at 4x)
             g.beginPath();
             let hasGrey = false;
             for (let i = visStart; i < visEnd; i++) {
@@ -318,6 +339,20 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
                 hasGrey = true;
             }
             if (hasGrey) g.fill({ color: greyStyle.color, alpha: greyStyle.alpha });
+
+            // Batch D: Small overflow caret (▲) above 4x-capped bars
+            for (const [side, style] of [['teal', tealStyle], ['amber', amberStyle], ['grey', greyStyle]] as const) {
+                g.beginPath();
+                let hasOver = false;
+                for (let i = visStart; i < visEnd; i++) {
+                    const geom = this.getCompositeBarGeometry(i);
+                    if (geom.mode !== 'composite' || !geom.isOverflow || geom.overflowSide !== side) continue;
+                    const cx = r.getCandleCenterX(i);
+                    g.moveTo(cx, yCap - 5).lineTo(cx - 3.5, yCap - 1).lineTo(cx + 3.5, yCap - 1).closePath();
+                    hasOver = true;
+                }
+                if (hasOver) g.fill({ color: style.color, alpha: 1.0 });
+            }
         }
 
         // 4. Classic VCS Regime Rendering (when comparison disabled OR comparison data unavailable for bar i)
