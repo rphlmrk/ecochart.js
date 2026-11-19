@@ -14,3 +14,7 @@ export * from './StrictCBCPullbackZones';
 export * from './StrictCBCZigZagIndicator';
 export * from './EmaSmaCross';
 export { PullbackDoubleTopBottomIndicator, type DoublePattern, type PullbackZoneBox as PullbackDTDBZoneBox } from './PullbackDoubleTopBottomIndicator';
+export { VolumeCandleSizeIndicator } from './VolumeCandleSizeIndicator';
+export { VolatilityAdjustedMeanIndicator } from './VolatilityAdjustedMeanIndicator';
+export { ProtectedHighsLowsIndicator } from './ProtectedHighsLowsIndicator';
+export { DTFXAlgoZonesIndicator } from './DTFXAlgoZonesIndicator';

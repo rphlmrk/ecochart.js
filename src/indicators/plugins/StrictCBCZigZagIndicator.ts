@@ -2,6 +2,7 @@ import { BaseIndicator, parseColorAndAlpha, parseColor, type IndicatorLayout } f
 import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { TimeframeResampler } from '../../data/TimeframeResampler';
+import { stepStrictCBCWithReset } from '../mlr1/teachers/StrategyEventTypes';
 import { Graphics } from 'pixi.js';
 
 export const STRICT_CBC_ZIGZAG_TEACHER_VERSION = 'StrictCBCZigZag_v1';
@@ -369,6 +370,9 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
 
             // Pivot Markers Styling
             { id: 'showPivots', name: 'Show Pivot Markers', type: 'boolean', value: true },
+            { id: 'showEventMarkers', name: 'Show Confirmed Event Markers', type: 'boolean', value: true },
+            { id: 'highEventMarkerColor', name: 'High Event Marker Color', type: 'color', value: '#EF5350' },
+            { id: 'lowEventMarkerColor', name: 'Low Event Marker Color', type: 'color', value: '#26A69A' },
             { id: 'pivotRadius', name: 'Pivot Dot Radius', type: 'number', value: 3.5, min: 1, max: 10, step: 0.5 },
             { id: 'highColor', name: 'High Pivot Color', type: 'color', value: '#EF5350' },
             { id: 'lowColor', name: 'Low Pivot Color', type: 'color', value: '#26A69A' }
@@ -563,14 +567,10 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
             const data = ds.data;
             const pivots: StrictZigZagPivot[] = [];
 
-            const candle0: StrictCBCCandle = {
-                time: data[0],
-                open: data[1],
-                high: data[2],
-                low: data[3],
-                close: data[4]
-            };
-            let state = createInitialStrictCBCState(candle0);
+            const discThresholdMs = Math.max(300_000, chartTfMs * 5);
+            let state: StrictCBCState | null = null;
+            let prevPivot: StrictZigZagPivot | null = null;
+            let prevTime = -1;
 
             for (let i = 0; i < len; i++) {
                 const base = i * 6;
@@ -582,9 +582,41 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
                     close: data[base + 4]
                 };
 
-                // Issue 2 Fix: Call the single shared transition step
-                const stepResult = stepStrictCBC(candle, i, state);
+                const isDiscontinuity = prevTime !== -1 && (candle.time - prevTime) >= discThresholdMs;
+                prevTime = candle.time;
+
+                const resetStep = stepStrictCBCWithReset(candle, i, state, prevPivot, isDiscontinuity);
+                const stepResult: {
+                    nextState: StrictCBCState;
+                    teacher: StrictCBCCandleTeacher;
+                    confirmedPivot: StrictZigZagPivot | null;
+                } = (i === 0 || isDiscontinuity || state === null)
+                    ? {
+                        nextState: resetStep.nextState,
+                        confirmedPivot: resetStep.confirmedPivot,
+                        teacher: {
+                            barIndex: i,
+                            timestamp: candle.time,
+                            trend: resetStep.nextState.isBullish ? 1 as const : -1 as const,
+                            anchorHigh: resetStep.nextState.anchorHigh,
+                            anchorLow: resetStep.nextState.anchorLow,
+                            candidateType: resetStep.nextState.isBullish ? 'high' as const : 'low' as const,
+                            candidatePrice: resetStep.nextState.isBullish ? resetStep.nextState.phaseHigh : resetStep.nextState.phaseLow,
+                            candidateBarIndex: resetStep.nextState.isBullish ? resetStep.nextState.phaseHighIdx : resetStep.nextState.phaseLowIdx,
+                            candidateAgeBars: 0,
+                            confirmedPivotEvent: 0 as const,
+                            confirmedPivotId: 0,
+                            confirmedPivotPrice: 0,
+                            confirmedPivotBarIndex: -1,
+                            confirmedPivotConfirmedBarIndex: -1,
+                            confirmedPivotLabel: 'NONE' as const,
+                            confirmedPivotLagBars: 0
+                        }
+                    }
+                    : stepStrictCBC(candle, i, state);
                 state = stepResult.nextState;
+                if (stepResult.confirmedPivot) prevPivot = stepResult.confirmedPivot;
+                else if (isDiscontinuity) prevPivot = null;
 
                 const teacher = stepResult.teacher;
                 const confirmedPivot = stepResult.confirmedPivot;
@@ -627,9 +659,11 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
 
             this.cachedPivots = pivots;
             this.cachedLegs = legs;
-            this.activePivot = state.isBullish
-                ? { barIndex: state.phaseHighIdx, price: state.phaseHigh, type: 'high' }
-                : { barIndex: state.phaseLowIdx, price: state.phaseLow, type: 'low' };
+            this.activePivot = state
+                ? (state.isBullish
+                    ? { barIndex: state.phaseHighIdx, price: state.phaseHigh, type: 'high' }
+                    : { barIndex: state.phaseLowIdx, price: state.phaseLow, type: 'low' })
+                : null;
 
             this.lastCalculatedLength = len;
             this.lastStateHash = stateHash;
@@ -866,6 +900,9 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
         const downLegColor = parseColorAndAlpha(this.getParam<string>('downLegColor', '#EF5350'), 1.0);
 
         const showPivots = this.getParam<boolean>('showPivots', true);
+        const showEventMarkers = this.getParam<boolean>('showEventMarkers', true);
+        const highEventColor = parseColorAndAlpha(this.getParam<string>('highEventMarkerColor', '#EF5350'), 0.95);
+        const lowEventColor = parseColorAndAlpha(this.getParam<string>('lowEventMarkerColor', '#26A69A'), 0.95);
         const pivotRadius = Math.max(1.5, this.getParam<number>('pivotRadius', 3.5));
         const highColor = parseColorAndAlpha(this.getParam<string>('highColor', '#EF5350'), 1.0);
         const lowColor = parseColorAndAlpha(this.getParam<string>('lowColor', '#26A69A'), 1.0);
@@ -976,6 +1013,26 @@ export class StrictCBCZigZagIndicator extends BaseIndicator {
             if (hasLowDots) {
                 g.fill({ color: lowColor.color, alpha: lowColor.alpha });
                 g.stroke({ color: 0xffffff, width: 1, alpha: 0.85 });
+            }
+        }
+
+        // --- 5. RENDER CONFIRMED EVENT MARKERS ON CONFIRMATION BAR ---
+        if (showEventMarkers) {
+            for (const [targetType, clr] of [['high', highEventColor], ['low', lowEventColor]] as const) {
+                g.beginPath();
+                let hasMarkers = false;
+                for (let i = 0; i < pivots.length; i++) {
+                    const p = pivots[i];
+                    if (p.type !== targetType) continue;
+                    const cx = r.getCandleCenterX(p.confirmedBarIndex);
+                    if (cx < minX || cx > maxX) continue;
+                    const cy = targetType === 'high'
+                        ? r.priceToY(r.dataStore.data[p.confirmedBarIndex * 6 + 2]) - 8
+                        : r.priceToY(r.dataStore.data[p.confirmedBarIndex * 6 + 3]) + 8;
+                    g.moveTo(cx, cy - 4).lineTo(cx + 4, cy).lineTo(cx, cy + 4).lineTo(cx - 4, cy).closePath();
+                    hasMarkers = true;
+                }
+                if (hasMarkers) g.fill({ color: clr.color, alpha: clr.alpha });
             }
         }
     }

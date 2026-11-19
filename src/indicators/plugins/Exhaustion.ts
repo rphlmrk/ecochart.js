@@ -1,192 +1,167 @@
-import { BaseIndicator, parseColor, type IndicatorLayout } from '../Indicator';
+import { Graphics } from 'pixi.js';
+import { BaseIndicator, parseColor, parseColorAndAlpha, type IndicatorLayout } from '../Indicator';
 import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
-import { StrokeEngine } from '../../renderer/StrokeEngine';
-import { Graphics } from 'pixi.js';
-import { MathWorkerClient } from '../../workers/MathWorkerClient';
+import { updateExhaustionCCI } from '../mlr1/momentum/Exhaustion';
+import type { ExhaustionPeriodState } from '../mlr1/ML1FeatureTypes';
 
 export class ExhaustionIndicator extends BaseIndicator {
-    constructor(period = 20, threshold = 80) {
-        super('EXHAUST', 'Exhaustion (CCI)', true);
+    public values = new Float64Array(20000);
+    public validMask = new Uint8Array(20000);
+    public discontinuityBreaks = new Uint8Array(20000);
+
+    private lastCalculatedLength = -1;
+    private lastStateHash = '';
+
+    constructor() {
+        super('EXHAUST', 'Exhaustion (CCI)');
+        this.isOscillator = true;
+        this.layerType = 'oscillator';
+        this.oscillatorScale = { min: -300, max: 300, steps: [100, 80, 0, -80, -100] };
+
         this.params = [
-            { id: 'length', name: 'CCI Length', type: 'number', value: period, min: 2, max: 200 },
-            { id: 'threshold', name: 'Extreme Level', type: 'number', value: threshold, min: 10, max: 200, step: 10 },
-            { id: 'bullColor', name: 'Bull Extreme Color', type: 'color', value: '#00FFEA' },
-            { id: 'bearColor', name: 'Bear Extreme Color', type: 'color', value: '#FF9800' },
-            { id: 'lineColor', name: 'Line Color', type: 'color', value: '#FFFFFF' }
+            { id: 'period', name: 'CCI Period', type: 'number', value: 20, min: 2, max: 200, step: 1 },
+            { id: 'lineColor', name: 'Line Color', type: 'color', value: '#2962FF' },
+            { id: 'lineWidth', name: 'Line Width', type: 'number', value: 1.5, min: 1, max: 5, step: 0.5 },
+            { id: 'bandColor', name: '±100 / ±80 Band Color', type: 'color', value: '#787B8666' }
         ];
+    }
 
-        this.oscillatorScale = {
-            min: -150,
-            max: 150,
-            steps: [threshold, 0, -threshold],
-            format: (v) => (v > 0 ? `+${v}` : `${v}`)
+    protected override onParamsUpdated(): void {
+        this.lastCalculatedLength = -1;
+        this.lastStateHash = '';
+        this.name = `Exhaustion (CCI ${this.getParam<number>('period', 20)})`;
+    }
+
+    private ensureCapacity(len: number): void {
+        if (len <= this.values.length) return;
+        const cap = Math.max(len * 2, 20000);
+        this.values = new Float64Array(cap);
+        this.validMask = new Uint8Array(cap);
+        this.discontinuityBreaks = new Uint8Array(cap);
+    }
+
+    public override reset(): void {
+        this.lastCalculatedLength = -1;
+        this.lastStateHash = '';
+        this.values.fill(0);
+        this.validMask.fill(0);
+        this.discontinuityBreaks.fill(0);
+        super.reset();
+    }
+
+    public calculate(ds: DataStore): void {
+        const len = ds.length;
+        if (len === 0) return;
+        this.ensureCapacity(len);
+
+        const period = Math.max(2, Math.round(this.getParam<number>('period', 20)));
+        const intervalMs = (len >= 2 && ds.data[6] > ds.data[0]) ? (ds.data[6] - ds.data[0]) : 60_000;
+        const discThresholdMs = Math.max(300_000, intervalMs * 5);
+        const lastBase = (len - 1) * 6;
+        const rev = (ds as any).revision ?? 0;
+        const hash = `${period}:${intervalMs}:${len}:${rev}:${ds.data[0]}:${ds.data[lastBase]}:${ds.data[lastBase + 4]}`;
+        if (this.lastStateHash === hash && this.lastCalculatedLength === len) return;
+
+        this.values.fill(0, 0, len);
+        this.validMask.fill(0, 0, len);
+        this.discontinuityBreaks.fill(0, 0, len);
+
+        let state: ExhaustionPeriodState | undefined;
+        let prevTime = -1;
+
+        for (let i = 0; i < len; i++) {
+            const base = i * 6;
+            const t = ds.data[base];
+            const o = ds.data[base + 1];
+            const h = ds.data[base + 2];
+            const l = ds.data[base + 3];
+            const c = ds.data[base + 4];
+            const v = ds.data[base + 5];
+
+            const validOhlcv =
+                Number.isFinite(t) && t >= 0 &&
+                Number.isFinite(o) && o > 0 &&
+                Number.isFinite(h) && h > 0 &&
+                Number.isFinite(l) && l > 0 &&
+                Number.isFinite(c) && c > 0 &&
+                Number.isFinite(v) && v >= 0 &&
+                h >= l && h >= Math.max(o, c) && l <= Math.min(o, c);
+
+            if (!validOhlcv || (prevTime !== -1 && t <= prevTime)) {
+                continue;
+            }
+
+            const isDiscontinuity = prevTime !== -1 && (t - prevTime) >= discThresholdMs;
+            if (isDiscontinuity) this.discontinuityBreaks[i] = 1;
+            prevTime = t;
+
+            const res = updateExhaustionCCI(h, l, c, period, state, isDiscontinuity);
+            state = res.nextState;
+            if (res.isValid) {
+                this.values[i] = res.cciValue;
+                this.validMask[i] = 1;
+            }
+        }
+
+        this.lastCalculatedLength = len;
+        this.lastStateHash = hash;
+    }
+
+    public override update(ds: DataStore, isClosedTick: boolean): void {
+        this.calculate(ds);
+        super.update(ds, isClosedTick);
+    }
+
+    public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics): void {
+        if (!this.visible || r.dataStore.length === 0) return;
+        if (this.lastCalculatedLength !== r.dataStore.length) this.calculate(r.dataStore);
+
+        const usableH = Math.max(1, layout.oscHeight - 4);
+        const toY = (val: number) => {
+            const norm = Math.max(0, Math.min(1, (val - (-300)) / 600));
+            return layout.oscY + 2 + usableH - norm * usableH;
         };
-    }
 
-    protected onParamsUpdated(): void {
-        const thresh = this.getParam<number>('threshold', 80);
-        if (this.oscillatorScale) {
-            this.oscillatorScale.steps = [thresh, 0, -thresh];
+        const bandClr = parseColorAndAlpha(this.getParam<string>('bandColor', '#787B8666'), 0.4);
+        g.beginPath();
+        for (const lvl of [100, 80, 0, -80, -100]) {
+            const y = toY(lvl);
+            g.moveTo(0, y).lineTo(layout.chartWidth, y);
         }
-    }
+        g.stroke({ color: bandClr.color, width: 1, alpha: bandClr.alpha });
 
-    private reusableTps = new Float64Array(200);
-
-    protected async calculate(ds: DataStore) {
-        if (this.isCalculating || ds.length === 0) return;
-
-        // If historical candles were prepended or data reset, invalidate cache so worker recalculates
-        if (this.lastCalculatedIdx !== -1 && (ds.length > this.lastCalculatedIdx + 2 || ds.length <= this.lastCalculatedIdx)) {
-            this.lastCalculatedIdx = -1;
-        }
-
-        if (this.lastCalculatedIdx === -1) {
-            this.isCalculating = true;
-            const period = this.getParam<number>('length', 20);
-            try {
-                const activeData = ds.data.subarray(0, ds.length * 6);
-                const res = await MathWorkerClient.calculate('EXHAUSTION', activeData, { period });
-                if (res) {
-                    if (res.values.length > this.values.length) {
-                        this.values = new Float64Array(res.values.length * 2);
-                    }
-                    this.values.set(res.values);
-                }
-                this.lastCalculatedIdx = ds.length - 1;
-                this.revision++;
-            } finally {
-                this.isCalculating = false;
-                window.dispatchEvent(new Event('ecochart-indicator-ready'));
-            }
-        } else {
-            const period = Math.max(2, this.getParam<number>('length', 20));
-            const liveIdx = ds.length - 1;
-            if (liveIdx < period - 1) return;
-
-            if (this.reusableTps.length < period) this.reusableTps = new Float64Array(period * 2);
-            const tps = this.reusableTps;
-
-            let sum = 0;
-            for (let j = 0; j < period; j++) {
-                const base = (liveIdx - j) * 6;
-                const tp = (ds.data[base + 2] + ds.data[base + 3] + ds.data[base + 4]) / 3;
-                tps[j] = tp;
-                sum += tp;
-            }
-            const sma = sum / period;
-            let madSum = 0;
-            for (let j = 0; j < period; j++) madSum += Math.abs(tps[j] - sma);
-
-            const mad = madSum / period;
-            const rawVal = mad === 0 ? 0 : (tps[0] - sma) / (0.015 * mad);
-            this.values[liveIdx] = Math.max(-300, Math.min(300, rawVal));
-            this.lastCalculatedIdx = liveIdx;
-        }
-    }
-
-    public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics) {
-        const isLightMode = !r.isDarkTheme;
-
-        // 2. Resolve line color: Exact clash prevention
-        const rawLineColor = String(this.getParam('lineColor', '#FFFFFF')).trim().toUpperCase();
-        let lineColor = parseColor(rawLineColor);
-
-        // Only flip pure white or pure black
-        if (isLightMode && lineColor === 0xFFFFFF) {
-            lineColor = 0x131722;
-        } else if (!isLightMode && lineColor === 0x000000) {
-            lineColor = 0xD1D4DC;
-        }
-
-        // 3. Resolve Bull/Bear band colors
-        const rawBull = String(this.getParam('bullColor', '#00FFEA')).toUpperCase();
-        const bullColor = rawBull === '#00FFEA' ? r.bullColor : parseColor(rawBull);
-
-        const rawBear = String(this.getParam('bearColor', '#FF9800')).toUpperCase();
-        const bearColor = rawBear === '#FF9800' ? r.bearColor : parseColor(rawBear);
-
-        // 4. Dynamic Auto-Scale: Scan visible bars to fit peaks & troughs inside the panel
-        const thresh = this.getParam<number>('threshold', 80);
+        const lineClr = parseColorAndAlpha(this.getParam<string>('lineColor', '#2962FF'), 1.0);
+        const lineWidth = Math.max(1, this.getParam<number>('lineWidth', 1.5));
         const sp = r.candleSpacing * r.zoom;
-        const visStart = Math.max(0, Math.floor(r.cameraX / sp) - 5);
-        const visEnd = Math.min(r.dataStore.length, Math.floor((r.cameraX + layout.chartWidth) / sp) + 5);
+        const visStart = Math.max(0, Math.floor(r.cameraX / sp) - 2);
+        const visEnd = Math.min(r.dataStore.length - 1, Math.floor((r.cameraX + layout.chartWidth) / sp) + 2);
 
-        let maxVal = thresh * 1.3;
-        let minVal = -thresh * 1.3;
-
+        g.beginPath();
+        let hasLine = false;
         for (let i = visStart; i < visEnd; i++) {
-            const v = this.values[i];
-            if (v > maxVal) maxVal = v;
-            if (v < minVal) minVal = v;
+            if (this.validMask[i] !== 1 || this.validMask[i + 1] !== 1) continue;
+            if (this.discontinuityBreaks[i + 1] === 1) continue;
+            g.moveTo(r.getCandleCenterX(i), toY(this.values[i]))
+                .lineTo(r.getCandleCenterX(i + 1), toY(this.values[i + 1]));
+            hasLine = true;
         }
-
-        // Keep scale symmetric around 0 with 15% breathing room at the extremes
-        const absMax = Math.max(Math.abs(maxVal), Math.abs(minVal));
-        const scaleMax = Math.ceil(absMax * 1.15);
-        const scaleMin = -scaleMax;
-
-        if (this.oscillatorScale) {
-            this.oscillatorScale.min = scaleMin;
-            this.oscillatorScale.max = scaleMax;
-            this.oscillatorScale.steps = [thresh, 0, -thresh];
-        }
-
-        // 5. Calculate Y positions aligned with dynamic scale bounds
-        const oscRange = scaleMax - scaleMin;
-        const normUpper = (thresh - scaleMin) / oscRange;
-        const normLower = (-thresh - scaleMin) / oscRange;
-
-        const yUpperBand = layout.oscY + layout.oscHeight - (normUpper * layout.oscHeight);
-        const yLowerBand = layout.oscY + layout.oscHeight - (normLower * layout.oscHeight);
-        const midY = layout.oscY + (layout.oscHeight / 2);
-        const bandAlpha = isLightMode ? 0.18 : 0.12;
-
-        // Extreme shaded zones
-        g.rect(0, layout.oscY, layout.chartWidth, Math.max(0, yUpperBand - layout.oscY)).fill({ color: bullColor, alpha: bandAlpha });
-        g.rect(0, yLowerBand, layout.chartWidth, Math.max(0, (layout.oscY + layout.oscHeight) - yLowerBand)).fill({ color: bearColor, alpha: bandAlpha });
-
-        const zeroLineColor = isLightMode ? 0x000000 : 0xFFFFFF;
-        StrokeEngine.drawLine(g, 0, midY, layout.chartWidth, midY, {
-            color: zeroLineColor, width: 1, alpha: isLightMode ? 0.35 : 0.25, style: 'solid'
-        });
-
-        StrokeEngine.drawLine(g, 0, yUpperBand, layout.chartWidth, yUpperBand, {
-            color: bullColor, width: 1, alpha: 0.35, style: 'dashed', dashLength: 4, gapLength: 3
-        });
-
-        StrokeEngine.drawLine(g, 0, yLowerBand, layout.chartWidth, yLowerBand, {
-            color: bearColor, width: 1, alpha: 0.35, style: 'dashed', dashLength: 4, gapLength: 3
-        });
-
-        // Fire line rendering directly to the GPU!
-        r.drawGPUIndicatorLine(this.id, this.values, lineColor, 1.5, true, layout, this.oscillatorScale);
+        if (hasLine) g.stroke({ color: lineClr.color, width: lineWidth, alpha: lineClr.alpha });
     }
 
-    public getValueAt(idx: number, ds: DataStore, isDark: boolean, defaultTextClr: number) {
-        const val = (idx >= 0 && idx < ds.length) ? this.values[idx] : 0;
-        const thresh = this.getParam<number>('threshold', 80);
-
-        const rawBull = String(this.getParam('bullColor', '#00FFEA')).toUpperCase();
-        const rawBear = String(this.getParam('bearColor', '#FF9800')).toUpperCase();
-
-        let bullColor = parseColor(rawBull);
-        let bearColor = parseColor(rawBear);
-
-        if (!isDark) {
-            if (rawBull === '#00FFEA') bullColor = 0x089981;
-            if (rawBear === '#FF9800') bearColor = 0xF23645;
-        }
-
-        let valueColor = !isDark ? 0x000000 : defaultTextClr;
-        if (val >= thresh) valueColor = bullColor;
-        else if (val <= -thresh) valueColor = bearColor;
-
-        const sign = val > 0 ? '+' : '';
+    public override getValueAt(idx: number, ds: DataStore, _isDark: boolean, defaultTextClr: number) {
+        if (idx < 0 || idx >= ds.length) return { label: this.name, valueStr: '—', valueColor: defaultTextClr };
+        if (this.validMask[idx] !== 1) return { label: this.name, valueStr: 'Warmup / Invalid', valueColor: 0x787B86 };
         return {
-            label: `Exhaustion (${this.getParam('length', 20)})`,
-            valueStr: `${sign}${val.toFixed(2)}`,
-            valueColor
+            label: this.name,
+            valueStr: this.values[idx].toFixed(2),
+            valueColor: parseColor(this.getParam('lineColor', '#2962FF'))
         };
+    }
+
+    public destroy(): void {
+        this.values = new Float64Array(0);
+        this.validMask = new Uint8Array(0);
+        this.discontinuityBreaks = new Uint8Array(0);
     }
 }

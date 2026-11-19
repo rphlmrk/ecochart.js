@@ -22,7 +22,11 @@ import {
     PullbackDoubleTopBottomIndicator,
     StrictCBCPullbackZonesIndicator,
     StrictCBCZigZagIndicator,
-    EmaSmaCrossIndicator
+    EmaSmaCrossIndicator,
+    VolumeCandleSizeIndicator,
+    VolatilityAdjustedMeanIndicator,
+    ProtectedHighsLowsIndicator,
+    DTFXAlgoZonesIndicator
 } from './indicators/plugins';
 
 import { DrawingManager, type ToolType } from './tools/DrawingManager';
@@ -123,6 +127,8 @@ import { runPhase5DPhase3Tests } from './test/milestone5d-phase3-acceptance';
 export { runPhase5DPhase3Tests };
 import { runPhase5DPhase4Tests } from './test/milestone5d-phase4-acceptance';
 export { runPhase5DPhase4Tests };
+import { runPhase5DPhase5Tests } from './test/milestone5d-phase5-acceptance';
+export { runPhase5DPhase5Tests };
 
 const auditBoundButtons = new WeakSet<HTMLElement>();
 
@@ -4669,6 +4675,31 @@ export class WorkspaceManager {
         btnAiExportClose?.addEventListener('click', () => modalAiExport?.close());
         btnAiExportCancel?.addEventListener('click', () => modalAiExport?.close());
 
+        const selectSchemaVersion = document.getElementById('ai-export-schema-version') as HTMLSelectElement | null;
+        const v3MtfRow = document.getElementById('ai-export-v3-mtf-row');
+        const infoTitle = document.getElementById('ai-export-info-title');
+        const infoBody = document.getElementById('ai-export-info-body');
+        const infoHorizon = document.getElementById('ai-export-info-horizon');
+        selectSchemaVersion?.addEventListener('change', () => {
+            const isV3 = selectSchemaVersion.value === 'v3';
+            if (v3MtfRow) v3MtfRow.style.display = isV3 ? 'flex' : 'none';
+            if (infoTitle) {
+                infoTitle.textContent = isV3
+                    ? 'Frozen ML-R1 v3 export configuration (15m-Only MTF)'
+                    : 'Frozen ML-R1 v2 export configuration';
+            }
+            if (infoBody) {
+                infoBody.textContent = isV3
+                    ? 'Runs ML1_CONFIG_C_v1 (15m-only MTF) and all 4 teachers (StrictCBC, PHL BOS/MSS, DTFX Zones, VAM).'
+                    : 'One accepted source candle produces one causal M1 observation. Confirmed Strict CBC events are linked to separate outcome labels.';
+            }
+            if (infoHorizon) {
+                infoHorizon.textContent = isV3
+                    ? 'Execution labels use next-open entry, a 1.5 ATR stop, 2R target, independent 60/120/180-bar horizons, and 0.05R cost.'
+                    : 'Execution labels use next-open entry, a 1.5 ATR stop, 2R target, 60-bar maximum horizon, and 0.05R transaction cost. These parameters are fixed by the dataset contract.';
+            }
+        });
+
         // UI: Custom Date Inputs Setup
         const customDateBox = document.getElementById('ai-custom-date-container');
         const customStartDate = document.getElementById('ai-custom-start-date') as HTMLInputElement | null;
@@ -5098,9 +5129,19 @@ export class WorkspaceManager {
                         expectedCandleCount
                     );
                 }
-                if (loadingTitle) loadingTitle.textContent = 'Streaming 4-File M4 Dataset...';
+                const schemaSelect = document.getElementById('ai-export-schema-version') as HTMLSelectElement | null;
+                const exportSchemaVersion = schemaSelect?.value === 'v3' ? 'v3' : 'v2';
+                const mtf15mCheck = document.getElementById('check-ai-v3-15m-mtf') as HTMLInputElement | null;
+                const include15mMtf = exportInterval === '1m' && (mtf15mCheck?.checked ?? true);
+
+                if (loadingTitle) {
+                    loadingTitle.textContent = exportSchemaVersion === 'v3'
+                        ? 'Streaming 4-File V3 Multi-Teacher Dataset...'
+                        : 'Streaming 4-File M4 Dataset...';
+                }
                 if (loadingDetail) loadingDetail.textContent = 'Processing rolling features & writing chunks...';
-                const streamResult = await StreamingDatasetExporter.exportToFolderOrOpfs({
+
+                const commonStreamParams = {
                     rawCandleBuffer,
                     symbol: exportSymbol,
                     interval: exportInterval,
@@ -5110,12 +5151,18 @@ export class WorkspaceManager {
                         ? { startTimestamp: customStartMs, endTimestamp: customEndMs }
                         : undefined,
                     signal: exportAbortController.signal,
-                    onProgress: (pct, detail) => {
+                    onProgress: (pct: number, detail: string) => {
                         if (progressFill) progressFill.style.width = `${pct}%`;
                         if (progressPct) progressPct.textContent = `${pct}%`;
                         if (loadingDetail) loadingDetail.textContent = detail;
                     }
-                });
+                };
+                const streamResult = exportSchemaVersion === 'v3'
+                    ? await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
+                        ...commonStreamParams,
+                        include15mMtf
+                    })
+                    : await StreamingDatasetExporter.exportToFolderOrOpfs(commonStreamParams);
                 rawCandleBuffer = null;
                 console.log('✅ Streaming M4 Export Complete:', streamResult);
                 if (loadingDetail) {
@@ -5565,6 +5612,10 @@ export class WorkspaceManager {
             { type: 'EMA_SMA_CROSS', name: 'EMA 10 & SMA 30 Cross (Alerts & Shapes)', factory: () => new EmaSmaCrossIndicator(10, 30) },
             { type: 'VOL', name: 'Volume', factory: () => new VolumeIndicator() },
             { type: 'EXHAUST', name: 'Exhaustion (CCI)', factory: () => new ExhaustionIndicator() },
+            { type: 'VCS_360', name: 'Volume Candle Size (360)', factory: () => new VolumeCandleSizeIndicator() },
+            { type: 'VAM', name: 'Volatility Adjusted Mean (VAM)', factory: () => new VolatilityAdjustedMeanIndicator() },
+            { type: 'PHL_BOS_MSS', name: 'Protected Highs/Lows (BOS/MSS)', factory: () => new ProtectedHighsLowsIndicator() },
+            { type: 'DTFX_ZONES', name: 'DTFX Algo Zones', factory: () => new DTFXAlgoZonesIndicator() },
             { type: 'HTF_BOX', name: 'HTF Box', factory: () => new HTFBoxIndicator(60) },
             { type: 'HTF_BIAS', name: 'HTF Bias', factory: () => new HTFBiasIndicator(60) },
             { type: 'HTF_PROJ', name: 'HTF Projections', factory: () => new HTFProjectionsIndicator('Custom', 21) },
@@ -6084,6 +6135,7 @@ export class WorkspaceManager {
         (window as any).runPhase5DPhase2Tests = runPhase5DPhase2Tests;
         (window as any).runPhase5DPhase3Tests = runPhase5DPhase3Tests;
         (window as any).runPhase5DPhase4Tests = runPhase5DPhase4Tests;
+        (window as any).runPhase5DPhase5Tests = runPhase5DPhase5Tests;
         (window as any).runV3StreamingExportParityTest = runV3StreamingExportParityTest;
     }
 }

@@ -6,7 +6,11 @@ import {
     PeriodSeparatorIndicator, MarketSessionsIndicator,
     MarketStructurePullbackZonesIndicator, PullbackDoubleTopBottomIndicator,
     StrictCBCPullbackZonesIndicator, EmaSmaCrossIndicator,
-    StrictCBCZigZagIndicator
+    StrictCBCZigZagIndicator,
+    VolumeCandleSizeIndicator,
+    VolatilityAdjustedMeanIndicator,
+    ProtectedHighsLowsIndicator,
+    DTFXAlgoZonesIndicator
 } from './plugins';
 
 export interface SavedIndicatorState {
@@ -32,6 +36,10 @@ export class IndicatorRegistry {
         else if (ind instanceof MarketSessionsIndicator) type = 'MARKET_SESSIONS';
         else if (ind instanceof StrictCBCPullbackZonesIndicator) type = 'STRICT_CBC_PULLBACK';
         else if (ind instanceof StrictCBCZigZagIndicator) type = 'STRICT_CBC_ZIGZAG';
+        else if (ind instanceof VolumeCandleSizeIndicator) type = 'VCS_360';
+        else if (ind instanceof VolatilityAdjustedMeanIndicator) type = 'VAM';
+        else if (ind instanceof ProtectedHighsLowsIndicator) type = 'PHL_BOS_MSS';
+        else if (ind instanceof DTFXAlgoZonesIndicator) type = 'DTFX_ZONES';
         else if (ind instanceof MarketStructurePullbackZonesIndicator) type = 'PULLBACK_ZONES';
         else if (ind instanceof PullbackDoubleTopBottomIndicator) type = 'MS_PULLBACK_DTDB';
 
@@ -64,6 +72,10 @@ export class IndicatorRegistry {
             case 'STRICT_CBC_PULLBACK':
             case 'STRICT_CBC_PULLBACK_ZONES': ind = new StrictCBCPullbackZonesIndicator(); break;
             case 'STRICT_CBC_ZIGZAG': ind = new StrictCBCZigZagIndicator(); break;
+            case 'VCS_360': ind = new VolumeCandleSizeIndicator(); break;
+            case 'VAM': ind = new VolatilityAdjustedMeanIndicator(); break;
+            case 'PHL_BOS_MSS': ind = new ProtectedHighsLowsIndicator(); break;
+            case 'DTFX_ZONES': ind = new DTFXAlgoZonesIndicator(); break;
         }
 
         if (ind) {
