@@ -20,12 +20,15 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
 
     constructor() {
         super('VCS_360', 'Volume Candle Size (360)');
-        this.isOscillator = true;
-        this.layerType = 'oscillator';
-        this.oscillatorScale = { min: 0, max: 4, steps: [1, 2], format: (v) => `${v}x` };
+        this.isOscillator = false;
+        this.layerType = 'main';
+        this.oscillatorScale = { min: 0, max: 4 };
 
         this.params = [
             { id: 'period', name: 'Baseline Period (1m)', type: 'number', value: 360, min: 2, max: 1440, step: 1 },
+            { id: 'displayPlacement', name: 'Placement', type: 'select', value: 'Main Chart Bottom', options: ['Main Chart Bottom', 'Oscillator Pane'] },
+            { id: 'heightPct', name: 'Main Chart Height %', type: 'number', value: 0.15, min: 0.05, max: 0.5, step: 0.05 },
+            { id: 'opacity', name: 'Bar Opacity', type: 'number', value: 0.65, min: 0.1, max: 1.0, step: 0.05 },
             { id: 'compareDefaultVolume', name: 'Compare with Default Volume (Composite Bar)', type: 'boolean', value: true },
             { id: 'compTealColor', name: 'Composite Base (Teal)', type: 'color', value: '#26A69A' },
             { id: 'compAmberColor', name: 'Excess VCS Overflow (Amber)', type: 'color', value: '#FF9800' },
@@ -34,11 +37,14 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
             { id: 'extremeColor', name: 'Extreme (> 2x) Color', type: 'color', value: '#EF5350' },
             { id: 'elevatedColor', name: 'Elevated (1x–2x) Color', type: 'color', value: '#FFEB3B' },
             { id: 'normalColor', name: 'Normal (<= 1x) Color', type: 'color', value: '#787B86' },
-            { id: 'showBgColor', name: 'Show Candle Direction BG', type: 'boolean', value: true }
+            { id: 'showBgColor', name: 'Show Candle Direction BG', type: 'boolean', value: false }
         ];
     }
 
     protected override onParamsUpdated(): void {
+        const isOsc = this.getParam<string>('displayPlacement', 'Main Chart Bottom') === 'Oscillator Pane';
+        this.isOscillator = isOsc;
+        this.layerType = isOsc ? 'oscillator' : 'main';
         this.lastCalculatedLength = -1;
         this.lastStateHash = '';
         this.name = `Volume Candle Size (${this.getParam<number>('period', 360)})`;
@@ -255,42 +261,55 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
         if (this.lastCalculatedLength !== r.dataStore.length) this.calculate(r.dataStore);
 
         const sp = r.candleSpacing * r.zoom;
-        const visStart = Math.max(0, Math.floor(r.cameraX / sp) - 2);
-        const visEnd = Math.min(r.dataStore.length, Math.floor((r.cameraX + layout.chartWidth) / sp) + 2);
+        const visStart = Math.max(0, Math.floor(r.cameraX / sp));
+        const visEnd = Math.min(r.dataStore.length, Math.floor((r.cameraX + layout.chartWidth) / sp) + 1);
+
+        // Render on main chart bottom (like VolumeIndicator) or optional oscillator pane
+        const isOsc = this.isOscillator && layout.oscHeight > 0;
+        const heightPct = Math.max(0.05, Math.min(0.5, this.getParam<number>('heightPct', 0.15)));
+        const regionHeight = isOsc ? layout.oscHeight : (layout.mainChartHeight * heightPct);
+        const regionTop = isOsc ? layout.oscY : (layout.mainChartHeight - regionHeight);
+
+        const customOpacity = this.getParam<number>('opacity', 0.65);
+        const barOpacity = isOsc
+            ? 1.0
+            : (r.isDarkTheme ? customOpacity : Math.min(0.95, customOpacity * 1.3));
 
         // Fixed 0–4x scale with 6px top headroom for overflow carets
         const maxScale = 4;
-        this.oscillatorScale = { min: 0, max: maxScale, steps: [1, 2], format: (v) => `${v}x` };
-        const yCap = layout.oscY + 6;
-        const usableH = Math.max(1, layout.oscHeight - 8);
+        this.oscillatorScale = { min: 0, max: maxScale };
+        const yCap = regionTop + 6;
+        const usableH = Math.max(1, regionHeight - (isOsc ? 8 : 6));
         const yBottom = yCap + usableH;
         const toY = (val: number) => yBottom - Math.max(0, Math.min(1, val / maxScale)) * usableH;
 
-        // 1. Pine bgcolor(close < open ? red@80%transp : green@80%transp)
-        if (this.getParam<boolean>('showBgColor', true)) {
+        // Exact Volume.ts candle-aligned bar X & width
+        const barW = Math.max(1, sp * 0.8);
+
+        // 1. Optional candle-direction background strip restricted to regionTop..yBottom
+        if (this.getParam<boolean>('showBgColor', false)) {
             for (const [dir, clr] of [[1, 0x26A69A], [-1, 0xEF5350]] as const) {
                 g.beginPath();
                 let hasBg = false;
                 for (let i = visStart; i < visEnd; i++) {
                     if (this.validMask[i] !== 1 || this.candleDirs[i] !== dir) continue;
                     const xLeft = (i * sp) - r.cameraX;
-                    g.rect(xLeft, layout.oscY, Math.max(1, sp), layout.oscHeight);
+                    g.rect(xLeft, regionTop, Math.max(1, sp), regionHeight);
                     hasBg = true;
                 }
-                if (hasBg) g.fill({ color: clr, alpha: 0.14 });
+                if (hasBg) g.fill({ color: clr, alpha: 0.10 });
             }
         }
 
         // 2. Pine ma1 (2x) and ma2 (1x) in Aqua (light-mode adapted)
         const rawBase = String(this.getParam('baselineColor', '#00E5FF')).toUpperCase();
-        const baseParsed = parseColorAndAlpha(rawBase, 0.9);
+        const baseParsed = parseColorAndAlpha(rawBase, 0.75);
         const baseColor = (!r.isDarkTheme && rawBase.startsWith('#00E5FF')) ? 0x00838F : baseParsed.color;
         g.beginPath();
         g.moveTo(0, toY(1)).lineTo(layout.chartWidth, toY(1));
         g.moveTo(0, toY(2)).lineTo(layout.chartWidth, toY(2));
-        g.stroke({ color: baseColor, width: 1.2, alpha: baseParsed.alpha });
+        g.stroke({ color: baseColor, width: 1, alpha: baseParsed.alpha * (isOsc ? 1.0 : 0.7) });
 
-        const barW = Math.max(1, sp * 0.72);
         const compareDefault = this.getParam<boolean>('compareDefaultVolume', true);
 
         // 3. Single-Bar Composite Mode (fixed 0–4x scale + overflow marker above 4x)
@@ -305,12 +324,12 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
             for (let i = visStart; i < visEnd; i++) {
                 const geom = this.getCompositeBarGeometry(i);
                 if (geom.mode !== 'composite' || geom.tealHeight <= 0) continue;
-                const cx = r.getCandleCenterX(i);
+                const x = (i * sp) - r.cameraX;
                 const yTop = toY(geom.tealHeight);
-                g.rect(cx - barW * 0.5, yTop, barW, Math.max(1, yBottom - yTop));
+                g.rect(x, yTop, barW, Math.max(1, yBottom - yTop));
                 hasTeal = true;
             }
-            if (hasTeal) g.fill({ color: tealStyle.color, alpha: tealStyle.alpha });
+            if (hasTeal) g.fill({ color: tealStyle.color, alpha: tealStyle.alpha * barOpacity });
 
             // Batch B: Amber Overflow (def -> vcs when vcs > def, capped at 4x)
             g.beginPath();
@@ -318,13 +337,13 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
             for (let i = visStart; i < visEnd; i++) {
                 const geom = this.getCompositeBarGeometry(i);
                 if (geom.mode !== 'composite' || geom.amberTop <= geom.amberBottom) continue;
-                const cx = r.getCandleCenterX(i);
+                const x = (i * sp) - r.cameraX;
                 const yTop = toY(geom.amberTop);
                 const yBot = toY(geom.amberBottom);
-                g.rect(cx - barW * 0.5, yTop, barW, Math.max(1, yBot - yTop));
+                g.rect(x, yTop, barW, Math.max(1, yBot - yTop));
                 hasAmber = true;
             }
-            if (hasAmber) g.fill({ color: amberStyle.color, alpha: amberStyle.alpha });
+            if (hasAmber) g.fill({ color: amberStyle.color, alpha: amberStyle.alpha * barOpacity });
 
             // Batch C: Grey Remaining Default Volume (vcs -> def when def > vcs, capped at 4x)
             g.beginPath();
@@ -332,13 +351,13 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
             for (let i = visStart; i < visEnd; i++) {
                 const geom = this.getCompositeBarGeometry(i);
                 if (geom.mode !== 'composite' || geom.greyTop <= geom.greyBottom) continue;
-                const cx = r.getCandleCenterX(i);
+                const x = (i * sp) - r.cameraX;
                 const yTop = toY(geom.greyTop);
                 const yBot = toY(geom.greyBottom);
-                g.rect(cx - barW * 0.5, yTop, barW, Math.max(1, yBot - yTop));
+                g.rect(x, yTop, barW, Math.max(1, yBot - yTop));
                 hasGrey = true;
             }
-            if (hasGrey) g.fill({ color: greyStyle.color, alpha: greyStyle.alpha });
+            if (hasGrey) g.fill({ color: greyStyle.color, alpha: greyStyle.alpha * barOpacity });
 
             // Batch D: Small overflow caret (▲) above 4x-capped bars
             for (const [side, style] of [['teal', tealStyle], ['amber', amberStyle], ['grey', greyStyle]] as const) {
@@ -347,7 +366,7 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
                 for (let i = visStart; i < visEnd; i++) {
                     const geom = this.getCompositeBarGeometry(i);
                     if (geom.mode !== 'composite' || !geom.isOverflow || geom.overflowSide !== side) continue;
-                    const cx = r.getCandleCenterX(i);
+                    const cx = (i * sp) - r.cameraX + barW * 0.5;
                     g.moveTo(cx, yCap - 5).lineTo(cx - 3.5, yCap - 1).lineTo(cx + 3.5, yCap - 1).closePath();
                     hasOver = true;
                 }
@@ -363,18 +382,18 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
         const cNorm = parseColorAndAlpha(this.getParam<string>('normalColor', '#787B86'), 0.85);
 
         for (const [targetRegime, color, alpha] of [
-            [0, cNorm.color, cNorm.alpha],
-            [1, elevColor, cElev.alpha],
-            [2, cExt.color, cExt.alpha]
+            [0, cNorm.color, cNorm.alpha * barOpacity],
+            [1, elevColor, cElev.alpha * barOpacity],
+            [2, cExt.color, cExt.alpha * barOpacity]
         ] as const) {
             g.beginPath();
             let hasAny = false;
             for (let i = visStart; i < visEnd; i++) {
                 const geom = this.getCompositeBarGeometry(i);
                 if (geom.mode !== 'classic' || this.regimes[i] !== targetRegime) continue;
-                const cx = r.getCandleCenterX(i);
+                const x = (i * sp) - r.cameraX;
                 const topY = toY(this.ratios[i]);
-                g.rect(cx - barW * 0.5, topY, barW, Math.max(1, yBottom - topY));
+                g.rect(x, topY, barW, Math.max(1, yBottom - topY));
                 hasAny = true;
             }
             if (hasAny) g.fill({ color, alpha });
