@@ -11,6 +11,9 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
     public regimes = new Int8Array(20000);
     public validMask = new Uint8Array(20000);
     public candleDirs = new Int8Array(20000); // 1 = close >= open, -1 = close < open
+    public defaultVolRatios = new Float64Array(20000);
+    public defaultVolMeans = new Float64Array(20000);
+    public defaultVolValid = new Uint8Array(20000);
 
     private lastCalculatedLength = -1;
     private lastStateHash = '';
@@ -23,6 +26,10 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
 
         this.params = [
             { id: 'period', name: 'Baseline Period (1m)', type: 'number', value: 360, min: 2, max: 1440, step: 1 },
+            { id: 'compareDefaultVolume', name: 'Compare with Default Volume (Composite Bar)', type: 'boolean', value: true },
+            { id: 'compTealColor', name: 'Composite Base (Teal)', type: 'color', value: '#26A69A' },
+            { id: 'compAmberColor', name: 'Excess VCS Overflow (Amber)', type: 'color', value: '#FF9800' },
+            { id: 'compGreyColor', name: 'Remaining Default Vol (Grey)', type: 'color', value: '#787B86' },
             { id: 'baselineColor', name: '1x / 2x MA Line Color', type: 'color', value: '#00E5FF' },
             { id: 'extremeColor', name: 'Extreme (> 2x) Color', type: 'color', value: '#EF5350' },
             { id: 'elevatedColor', name: 'Elevated (1x–2x) Color', type: 'color', value: '#FFEB3B' },
@@ -45,6 +52,9 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
         this.regimes = new Int8Array(cap);
         this.validMask = new Uint8Array(cap);
         this.candleDirs = new Int8Array(cap);
+        this.defaultVolRatios = new Float64Array(cap);
+        this.defaultVolMeans = new Float64Array(cap);
+        this.defaultVolValid = new Uint8Array(cap);
     }
 
     public override reset(): void {
@@ -55,6 +65,9 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
         this.regimes.fill(0);
         this.validMask.fill(0);
         this.candleDirs.fill(0);
+        this.defaultVolRatios.fill(0);
+        this.defaultVolMeans.fill(0);
+        this.defaultVolValid.fill(0);
         super.reset();
     }
 
@@ -75,6 +88,9 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
         this.regimes.fill(0, 0, len);
         this.validMask.fill(0, 0, len);
         this.candleDirs.fill(0, 0, len);
+        this.defaultVolRatios.fill(0, 0, len);
+        this.defaultVolMeans.fill(0, 0, len);
+        this.defaultVolValid.fill(0, 0, len);
 
         if (intervalMs !== 60_000) {
             this.lastCalculatedLength = len;
@@ -84,6 +100,12 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
 
         let state: VolumeCandleSizeState | undefined;
         let prevTime = -1;
+
+        // Prior-window circular buffer for Default Volume comparison (same 360-bar baseline, zero ML-R1 alteration)
+        const volRing = new Float64Array(period);
+        let volCount = 0;
+        let volHead = 0;
+        let volSum = 0;
 
         for (let i = 0; i < len; i++) {
             const base = i * 6;
@@ -106,8 +128,43 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
             if (!validOhlcv || (prevTime !== -1 && t <= prevTime)) continue;
 
             const isDiscontinuity = prevTime !== -1 && (t - prevTime) >= 300_000;
+            if (isDiscontinuity) {
+                volCount = 0;
+                volHead = 0;
+                volSum = 0;
+            }
             prevTime = t;
             this.candleDirs[i] = c < o ? -1 : 1;
+
+            if (volCount >= period) {
+                const priorMean = volSum / period;
+                if (Number.isFinite(priorMean) && priorMean > 0) {
+                    const ratio = v / priorMean;
+                    if (Number.isFinite(ratio) && ratio >= 0) {
+                        this.defaultVolMeans[i] = priorMean;
+                        this.defaultVolRatios[i] = ratio;
+                        this.defaultVolValid[i] = 1;
+                    }
+                }
+            }
+
+            if (volCount < period) {
+                volRing[volHead] = v;
+                volSum += v;
+                volCount++;
+                volHead = (volHead + 1) % period;
+            } else {
+                const oldValue = volRing[volHead];
+                volRing[volHead] = v;
+                volSum += v - oldValue;
+                volHead = (volHead + 1) % period;
+                // Periodic exact recomputation once every `period` bars to prevent floating-point drift
+                if (volHead === 0) {
+                    let exact = 0;
+                    for (let k = 0; k < period; k++) exact += volRing[k];
+                    volSum = exact;
+                }
+            }
 
             const res = updateVolumeCandleSize(h, l, v, period, state, isDiscontinuity);
             state = res.nextState;
@@ -132,6 +189,49 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
         super.update(ds, isClosedTick);
     }
 
+    public getEffectiveVisibleMax(visStart: number, visEnd: number): number {
+        const compareDefault = this.getParam<boolean>('compareDefaultVolume', true);
+        let peak = 0;
+        for (let i = Math.max(0, visStart); i < visEnd; i++) {
+            if (this.validMask[i] === 1 && this.ratios[i] > peak) {
+                peak = this.ratios[i];
+            }
+            if (compareDefault && this.defaultVolValid[i] === 1 && this.defaultVolRatios[i] > peak) {
+                peak = this.defaultVolRatios[i];
+            }
+        }
+        const dynamicMax = peak > 3.6 ? Math.ceil(peak * 1.15 * 10) / 10 : 4;
+        this.oscillatorScale = { min: 0, max: dynamicMax, steps: [1, 2], format: (v) => `${v}x` };
+        return dynamicMax;
+    }
+
+    public getCompositeBarGeometry(idx: number): {
+        mode: 'hidden' | 'classic' | 'composite';
+        tealHeight: number;
+        amberBottom: number;
+        amberTop: number;
+        greyBottom: number;
+        greyTop: number;
+    } {
+        if (this.validMask[idx] !== 1) {
+            return { mode: 'hidden', tealHeight: 0, amberBottom: 0, amberTop: 0, greyBottom: 0, greyTop: 0 };
+        }
+        const compareDefault = this.getParam<boolean>('compareDefaultVolume', true);
+        if (!compareDefault || this.defaultVolValid[idx] !== 1) {
+            return { mode: 'classic', tealHeight: 0, amberBottom: 0, amberTop: 0, greyBottom: 0, greyTop: 0 };
+        }
+        const vcsVal = this.ratios[idx];
+        const defVal = this.defaultVolRatios[idx];
+        const tealHeight = Math.min(defVal, vcsVal);
+        if (vcsVal > defVal + 1e-9) {
+            return { mode: 'composite', tealHeight, amberBottom: defVal, amberTop: vcsVal, greyBottom: 0, greyTop: 0 };
+        }
+        if (defVal > vcsVal + 1e-9) {
+            return { mode: 'composite', tealHeight, amberBottom: 0, amberTop: 0, greyBottom: vcsVal, greyTop: defVal };
+        }
+        return { mode: 'composite', tealHeight, amberBottom: 0, amberTop: 0, greyBottom: 0, greyTop: 0 };
+    }
+
     public render(r: ChartRenderer, layout: IndicatorLayout, g: Graphics): void {
         if (!this.visible || r.dataStore.length === 0) return;
         if (this.lastCalculatedLength !== r.dataStore.length) this.calculate(r.dataStore);
@@ -142,7 +242,7 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
 
         const usableH = Math.max(1, layout.oscHeight - 4);
         const yBottom = layout.oscY + 2 + usableH;
-        const maxScale = this.oscillatorScale?.max ?? 4;
+        const maxScale = this.getEffectiveVisibleMax(visStart, visEnd);
         const toY = (val: number) => yBottom - Math.max(0, Math.min(1, val / maxScale)) * usableH;
 
         // 1. Pine bgcolor(close < open ? red@80%transp : green@80%transp)
@@ -169,8 +269,58 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
         g.moveTo(0, toY(2)).lineTo(layout.chartWidth, toY(2));
         g.stroke({ color: baseColor, width: 1.2, alpha: baseParsed.alpha });
 
-        // 3. Histogram Columns (Red > 2x, Yellow 1x–2x, Gray <= 1x)
         const barW = Math.max(1, sp * 0.72);
+        const compareDefault = this.getParam<boolean>('compareDefaultVolume', true);
+
+        // 3. Single-Bar Composite Mode (only for bars where BOTH VCS & Default Vol are valid)
+        if (compareDefault) {
+            const tealStyle = parseColorAndAlpha(this.getParam<string>('compTealColor', '#26A69A'), 0.95);
+            const amberStyle = parseColorAndAlpha(this.getParam<string>('compAmberColor', '#FF9800'), 0.95);
+            const greyStyle = parseColorAndAlpha(this.getParam<string>('compGreyColor', '#787B86'), 0.75);
+
+            // Batch A: Teal Base (0 -> min(def, vcs))
+            g.beginPath();
+            let hasTeal = false;
+            for (let i = visStart; i < visEnd; i++) {
+                const geom = this.getCompositeBarGeometry(i);
+                if (geom.mode !== 'composite' || geom.tealHeight <= 0) continue;
+                const cx = r.getCandleCenterX(i);
+                const yTop = toY(geom.tealHeight);
+                g.rect(cx - barW * 0.5, yTop, barW, Math.max(1, yBottom - yTop));
+                hasTeal = true;
+            }
+            if (hasTeal) g.fill({ color: tealStyle.color, alpha: tealStyle.alpha });
+
+            // Batch B: Amber Overflow (def -> vcs when vcs > def)
+            g.beginPath();
+            let hasAmber = false;
+            for (let i = visStart; i < visEnd; i++) {
+                const geom = this.getCompositeBarGeometry(i);
+                if (geom.mode !== 'composite' || geom.amberTop <= geom.amberBottom) continue;
+                const cx = r.getCandleCenterX(i);
+                const yTop = toY(geom.amberTop);
+                const yBot = toY(geom.amberBottom);
+                g.rect(cx - barW * 0.5, yTop, barW, Math.max(1, yBot - yTop));
+                hasAmber = true;
+            }
+            if (hasAmber) g.fill({ color: amberStyle.color, alpha: amberStyle.alpha });
+
+            // Batch C: Grey Remaining Default Volume (vcs -> def when def > vcs)
+            g.beginPath();
+            let hasGrey = false;
+            for (let i = visStart; i < visEnd; i++) {
+                const geom = this.getCompositeBarGeometry(i);
+                if (geom.mode !== 'composite' || geom.greyTop <= geom.greyBottom) continue;
+                const cx = r.getCandleCenterX(i);
+                const yTop = toY(geom.greyTop);
+                const yBot = toY(geom.greyBottom);
+                g.rect(cx - barW * 0.5, yTop, barW, Math.max(1, yBot - yTop));
+                hasGrey = true;
+            }
+            if (hasGrey) g.fill({ color: greyStyle.color, alpha: greyStyle.alpha });
+        }
+
+        // 4. Classic VCS Regime Rendering (when comparison disabled OR comparison data unavailable for bar i)
         const cExt = parseColorAndAlpha(this.getParam<string>('extremeColor', '#EF5350'), 1.0);
         const rawElev = String(this.getParam('elevatedColor', '#FFEB3B')).toUpperCase();
         const cElev = parseColorAndAlpha(rawElev, 0.95);
@@ -185,7 +335,8 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
             g.beginPath();
             let hasAny = false;
             for (let i = visStart; i < visEnd; i++) {
-                if (this.validMask[i] !== 1 || this.regimes[i] !== targetRegime) continue;
+                const geom = this.getCompositeBarGeometry(i);
+                if (geom.mode !== 'classic' || this.regimes[i] !== targetRegime) continue;
                 const cx = r.getCandleCenterX(i);
                 const topY = toY(this.ratios[i]);
                 g.rect(cx - barW * 0.5, topY, barW, Math.max(1, yBottom - topY));
@@ -200,17 +351,60 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
         const intervalMs = (ds.length >= 2 && ds.data[6] > ds.data[0]) ? (ds.data[6] - ds.data[0]) : 60_000;
         if (intervalMs !== 60_000) return { label: this.name, valueStr: '1m Only', valueColor: 0x787B86 };
         if (this.validMask[idx] !== 1) return { label: this.name, valueStr: 'Warmup / Invalid', valueColor: 0x787B86 };
+
         const reg = this.regimes[idx];
+        const vcsRatio = this.ratios[idx];
         const elevRaw = String(this.getParam('elevatedColor', '#FFEB3B')).toUpperCase();
-        const clr = reg === 2
+        const classicClr = reg === 2
             ? parseColor(this.getParam('extremeColor', '#EF5350'))
             : reg === 1
                 ? ((!isDark && elevRaw.startsWith('#FFEB3B')) ? 0xD97706 : parseColor(elevRaw))
                 : parseColor(this.getParam('normalColor', '#787B86'));
+
+        const compareDefault = this.getParam<boolean>('compareDefaultVolume', true);
+        if (!compareDefault) {
+            return {
+                label: this.name,
+                valueStr: `${vcsRatio.toFixed(2)}x (Z=${this.zScores[idx].toFixed(2)}, R${reg})`,
+                valueColor: classicClr
+            };
+        }
+
+        if (this.defaultVolValid[idx] !== 1) {
+            return {
+                label: this.name,
+                valueStr: `VCS: ${vcsRatio.toFixed(2)}x (R${reg}) | Comparison: Unavailable`,
+                valueColor: classicClr
+            };
+        }
+
+        const fmtVol = (v: number) =>
+            v >= 1_000_000 ? `${(v / 1_000_000).toFixed(2)}M`
+                : v >= 1_000 ? v.toLocaleString(undefined, { maximumFractionDigits: 1 })
+                    : v.toFixed(2);
+
+        const defVol = ds.data[idx * 6 + 5];
+        const defRatio = this.defaultVolRatios[idx];
+
+        if (defVol <= 0 || defRatio <= 0) {
+            return {
+                label: this.name,
+                valueStr: `Vol: ${fmtVol(defVol)} (${defRatio.toFixed(2)}x) | VCS: ${vcsRatio.toFixed(2)}x | Diff: N/A`,
+                valueColor: classicClr
+            };
+        }
+
+        const diffPct = ((vcsRatio - defRatio) / defRatio) * 100;
+        const sign = diffPct > 0 ? '+' : '';
+        const compClr = Math.abs(diffPct) < 1e-6
+            ? parseColor(this.getParam('compTealColor', '#26A69A'))
+            : diffPct > 0
+                ? parseColor(this.getParam('compAmberColor', '#FF9800'))
+                : parseColor(this.getParam('compGreyColor', '#787B86'));
         return {
             label: this.name,
-            valueStr: `${this.ratios[idx].toFixed(2)}x (Z=${this.zScores[idx].toFixed(2)}, R${reg})`,
-            valueColor: clr
+            valueStr: `Vol: ${fmtVol(defVol)} (${defRatio.toFixed(2)}x) | VCS: ${vcsRatio.toFixed(2)}x | Diff: ${sign}${diffPct.toFixed(1)}%`,
+            valueColor: compClr
         };
     }
 
@@ -220,5 +414,8 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
         this.regimes = new Int8Array(0);
         this.validMask = new Uint8Array(0);
         this.candleDirs = new Int8Array(0);
+        this.defaultVolRatios = new Float64Array(0);
+        this.defaultVolMeans = new Float64Array(0);
+        this.defaultVolValid = new Uint8Array(0);
     }
 }

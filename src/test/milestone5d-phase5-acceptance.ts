@@ -214,6 +214,107 @@ export function runPhase5DPhase5Tests(): boolean {
             JSON.stringify(indCbc.cachedPivots.map(p => p.confirmedBarIndex)) === JSON.stringify(pureCbcConfirmedBars),
             'StrictCBC chart pivots diverged from pure reset-aware CBC engine'
         );
+
+        // Comprehensive 10-case Single-Bar Composite Comparison & Scale Tests
+        const flatBaseCandles: ML1Candle[] = Array.from({ length: 368 }, (_, idx) => ({
+            time: t0 + idx * interval,
+            open: 100,
+            high: 101,
+            low: 99,
+            close: 100,
+            volume: 100
+        }));
+
+        // Case 1: VCS equals default volume (bar 360: solid teal, Diff: 0.0%)
+        // Case 2: VCS exceeds default volume (bar 361: tighter range -> vcsRatio > defRatio, teal + amber)
+        // Case 3: VCS below default volume (bar 362: wider range -> vcsRatio < defRatio, teal + grey)
+        // Case 4: VCS = 3x default volume (bar 363: range solved for exact 3x -> +200.0%, amber = 2x teal)
+        // Case 5: Zero default volume (bar 364: Diff: N/A, no division by zero)
+        // Case 6: Ratio > 4 (bar 365: v = 600 -> 6x defaultVolRatio, dynamic scale > 4, no clipping)
+        // Case 7: 5-minute discontinuity (bar 366: +300,000ms gap resets comparison baseline)
+        const wideSpreadRange = 2.0 / 100 + 1 / 2000; // baseline relSpread = 0.0205
+        const targetRange3x = ((wideSpreadRange / 3) - 1 / 2000) * 100; // exact range for 3x jam1 at v=100
+
+        const cmpCandles: ML1Candle[] = flatBaseCandles.map((c, idx) => {
+            if (idx === 361) return { ...c, high: 100.5, low: 99.5, volume: 100 }; // tighter range -> VCS > 1x
+            if (idx === 362) return { ...c, high: 102, low: 98, volume: 100 };     // wider range -> VCS < 1x
+            if (idx === 363) return { ...c, high: 100 + targetRange3x * 0.5, low: 100 - targetRange3x * 0.5, volume: 100 };
+            if (idx === 364) return { ...c, volume: 0 };
+            if (idx === 365) return { ...c, volume: 600 }; // > 4x spike
+            if (idx >= 366) return { ...c, time: c.time + 300_000 }; // 5m discontinuity at bar 366
+            return c;
+        });
+
+        const cmpDs = buildDataStore(cmpCandles);
+        const vcsCmp = new VolumeCandleSizeIndicator();
+        vcsCmp.calculate(cmpDs);
+
+        // Bar 360: Equal -> solid teal, Diff: 0.0%, tooltip color = teal
+        const g360 = vcsCmp.getCompositeBarGeometry(360);
+        const r360 = vcsCmp.getValueAt(360, cmpDs, true, 0xffffff);
+        assert(
+            g360.mode === 'composite' && g360.amberTop === 0 && g360.greyTop === 0 &&
+            r360.valueStr.includes('Diff: 0.0%') && r360.valueColor === 0x26A69A,
+            'Equal VCS and Default Vol must render solid teal and Diff: 0.0%'
+        );
+
+        // Bar 361: VCS > Default Vol -> teal + amber, tooltip color = amber
+        const g361 = vcsCmp.getCompositeBarGeometry(361);
+        const r361 = vcsCmp.getValueAt(361, cmpDs, true, 0xffffff);
+        assert(
+            g361.mode === 'composite' && g361.amberTop > g361.amberBottom && g361.greyTop === 0 &&
+            r361.valueStr.includes('Diff: +') && r361.valueColor === 0xFF9800,
+            'VCS > Default Vol must render teal + amber and positive Diff'
+        );
+
+        // Bar 362: VCS < Default Vol -> teal + grey, tooltip color = grey
+        const g362 = vcsCmp.getCompositeBarGeometry(362);
+        const r362 = vcsCmp.getValueAt(362, cmpDs, true, 0xffffff);
+        assert(
+            g362.mode === 'composite' && g362.greyTop > g362.greyBottom && g362.amberTop === 0 &&
+            r362.valueStr.includes('Diff: -') && r362.valueColor === 0x787B86,
+            'VCS < Default Vol must render teal + grey and negative Diff'
+        );
+
+        // Bar 363: VCS ≈ 3x Default Vol -> amber overflow ≈ 2x teal base, Diff ≈ +200% (199.6% after bars 361–362 shift rolling mean by +0.14%)
+        const g363 = vcsCmp.getCompositeBarGeometry(363);
+        const r363 = vcsCmp.getValueAt(363, cmpDs, true, 0xffffff);
+        assert(
+            g363.mode === 'composite' &&
+            Math.abs((g363.amberTop - g363.amberBottom) - 2 * g363.tealHeight) < 0.05 &&
+            r363.valueStr.includes('VCS: 3.00x') && /Diff: \+(199|200)\.\d%/.test(r363.valueStr) && r363.valueColor === 0xFF9800,
+            `3x VCS overflow mismatch: ${r363.valueStr}`
+        );
+
+        // Bar 364: Zero volume -> Diff: N/A, no division by zero
+        const r364 = vcsCmp.getValueAt(364, cmpDs, true, 0xffffff);
+        assert(r364.valueStr.includes('Diff: N/A') && vcsCmp.ratios[364] === 0, 'Zero default volume must show Diff: N/A');
+
+        // Bar 365: Ratio > 4 -> dynamic scale expands past 4 (no silent clipping)
+        const dynMax = vcsCmp.getEffectiveVisibleMax(360, 366);
+        assert(dynMax > 6.0 && vcsCmp.oscillatorScale!.max === dynMax, `Scale must expand above 6.0 without clipping, got ${dynMax}`);
+
+        // Bar 366: 5-minute discontinuity resets comparison baseline
+        assert(vcsCmp.validMask[366] === 0 && vcsCmp.defaultVolValid[366] === 0, '5m discontinuity must reset comparison baseline');
+
+        // Unavailable comparison state when VCS is valid but defaultVolValid === 0
+        vcsCmp.defaultVolValid[360] = 0;
+        const gUnavail = vcsCmp.getCompositeBarGeometry(360);
+        const rUnavail = vcsCmp.getValueAt(360, cmpDs, true, 0xffffff);
+        assert(
+            gUnavail.mode === 'classic' && rUnavail.valueStr.includes('Comparison: Unavailable'),
+            'Unavailable comparison must fall back to classic VCS bar and report Comparison: Unavailable'
+        );
+        vcsCmp.defaultVolValid[360] = 1;
+
+        // Comparison disabled -> classic mode rendering & classic tooltip
+        vcsCmp.updateParams({ compareDefaultVolume: false });
+        vcsCmp.calculate(cmpDs);
+        assert(
+            vcsCmp.getCompositeBarGeometry(361).mode === 'classic' &&
+            !vcsCmp.getValueAt(361, cmpDs, true, 0xffffff).valueStr.includes('Diff:'),
+            'Disabling compareDefaultVolume must restore original VCS rendering and tooltip'
+        );
     });
 
     runTest('2. Zero-Repainting Incremental Confirmation & DTFX Lifecycle (CREATED -> RETESTED -> INVALIDATED)', () => {
