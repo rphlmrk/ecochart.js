@@ -30,8 +30,11 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
             { id: 'heightPct', name: 'Main Chart Height %', type: 'number', value: 0.15, min: 0.05, max: 0.5, step: 0.05 },
             { id: 'opacity', name: 'Bar Opacity', type: 'number', value: 0.65, min: 0.1, max: 1.0, step: 0.05 },
             { id: 'compareDefaultVolume', name: 'Compare with Default Volume (Composite Bar)', type: 'boolean', value: true },
-            { id: 'compTealColor', name: 'Composite Base (Teal)', type: 'color', value: '#26A69A' },
-            { id: 'compAmberColor', name: 'Excess VCS Overflow (Amber)', type: 'color', value: '#FF9800' },
+            { id: 'useBuySellColors', name: 'Color Base by Buy / Sell', type: 'boolean', value: true },
+            { id: 'buyColor', name: 'Buy Candle Base Color', type: 'color', value: '#26A69A' },
+            { id: 'sellColor', name: 'Sell Candle Base Color', type: 'color', value: '#EF5350' },
+            { id: 'compTealColor', name: 'Single Base Color (Buy/Sell Off)', type: 'color', value: '#26A69A' },
+            { id: 'compAmberColor', name: 'Excess VCS Overflow (Amber)', type: 'color', value: '#FFC107' },
             { id: 'compGreyColor', name: 'Remaining Default Vol (Grey)', type: 'color', value: '#787B86' },
             { id: 'baselineColor', name: '1x / 2x MA Line Color', type: 'color', value: '#00E5FF' },
             { id: 'extremeColor', name: 'Extreme (> 2x) Color', type: 'color', value: '#EF5350' },
@@ -312,24 +315,44 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
 
         const compareDefault = this.getParam<boolean>('compareDefaultVolume', true);
 
-        // 3. Single-Bar Composite Mode (fixed 0–4x scale + overflow marker above 4x)
+        // 3. Single-Bar Composite Mode (fixed 0–4x scale + Buy/Sell base + overflow marker above 4x)
         if (compareDefault) {
-            const tealStyle = parseColorAndAlpha(this.getParam<string>('compTealColor', '#26A69A'), 0.95);
-            const amberStyle = parseColorAndAlpha(this.getParam<string>('compAmberColor', '#FF9800'), 0.95);
-            const greyStyle = parseColorAndAlpha(this.getParam<string>('compGreyColor', '#787B86'), 0.75);
+            const useBuySell = this.getParam<boolean>('useBuySellColors', true);
+            const buyStyle = parseColorAndAlpha(this.getParam<string>('buyColor', '#26A69A'), 0.95);
+            const sellStyle = parseColorAndAlpha(this.getParam<string>('sellColor', '#EF5350'), 0.95);
+            const singleStyle = parseColorAndAlpha(this.getParam<string>('compTealColor', '#26A69A'), 0.95);
+            const amberStyle = parseColorAndAlpha(this.getParam<string>('compAmberColor', '#FFC107'), 0.98);
+            const greyStyle = parseColorAndAlpha(this.getParam<string>('compGreyColor', '#787B86'), 0.80);
 
-            // Batch A: Teal Base (0 -> min(def, vcs), capped at 4x)
-            g.beginPath();
-            let hasTeal = false;
-            for (let i = visStart; i < visEnd; i++) {
-                const geom = this.getCompositeBarGeometry(i);
-                if (geom.mode !== 'composite' || geom.tealHeight <= 0) continue;
-                const x = (i * sp) - r.cameraX;
-                const yTop = toY(geom.tealHeight);
-                g.rect(x, yTop, barW, Math.max(1, yBottom - yTop));
-                hasTeal = true;
+            // Batch A: Composite Base (0 -> min(def, vcs), colored by Buy/Sell or single base color)
+            if (useBuySell) {
+                for (const [targetDir, style] of [[1, buyStyle], [-1, sellStyle]] as const) {
+                    g.beginPath();
+                    let hasBase = false;
+                    for (let i = visStart; i < visEnd; i++) {
+                        if (this.candleDirs[i] !== targetDir) continue;
+                        const geom = this.getCompositeBarGeometry(i);
+                        if (geom.mode !== 'composite' || geom.tealHeight <= 0) continue;
+                        const x = (i * sp) - r.cameraX;
+                        const yTop = toY(geom.tealHeight);
+                        g.rect(x, yTop, barW, Math.max(1, yBottom - yTop));
+                        hasBase = true;
+                    }
+                    if (hasBase) g.fill({ color: style.color, alpha: style.alpha * barOpacity });
+                }
+            } else {
+                g.beginPath();
+                let hasTeal = false;
+                for (let i = visStart; i < visEnd; i++) {
+                    const geom = this.getCompositeBarGeometry(i);
+                    if (geom.mode !== 'composite' || geom.tealHeight <= 0) continue;
+                    const x = (i * sp) - r.cameraX;
+                    const yTop = toY(geom.tealHeight);
+                    g.rect(x, yTop, barW, Math.max(1, yBottom - yTop));
+                    hasTeal = true;
+                }
+                if (hasTeal) g.fill({ color: singleStyle.color, alpha: singleStyle.alpha * barOpacity });
             }
-            if (hasTeal) g.fill({ color: tealStyle.color, alpha: tealStyle.alpha * barOpacity });
 
             // Batch B: Amber Overflow (def -> vcs when vcs > def, capped at 4x)
             g.beginPath();
@@ -360,7 +383,7 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
             if (hasGrey) g.fill({ color: greyStyle.color, alpha: greyStyle.alpha * barOpacity });
 
             // Batch D: Small overflow caret (▲) above 4x-capped bars
-            for (const [side, style] of [['teal', tealStyle], ['amber', amberStyle], ['grey', greyStyle]] as const) {
+            for (const [side, style] of [['amber', amberStyle], ['grey', greyStyle]] as const) {
                 g.beginPath();
                 let hasOver = false;
                 for (let i = visStart; i < visEnd; i++) {
@@ -371,6 +394,34 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
                     hasOver = true;
                 }
                 if (hasOver) g.fill({ color: style.color, alpha: 1.0 });
+            }
+
+            // Equal-overflow carets (teal / buy / sell)
+            if (useBuySell) {
+                for (const [targetDir, style] of [[1, buyStyle], [-1, sellStyle]] as const) {
+                    g.beginPath();
+                    let hasEqOver = false;
+                    for (let i = visStart; i < visEnd; i++) {
+                        if (this.candleDirs[i] !== targetDir) continue;
+                        const geom = this.getCompositeBarGeometry(i);
+                        if (geom.mode !== 'composite' || !geom.isOverflow || geom.overflowSide !== 'teal') continue;
+                        const cx = (i * sp) - r.cameraX + barW * 0.5;
+                        g.moveTo(cx, yCap - 5).lineTo(cx - 3.5, yCap - 1).lineTo(cx + 3.5, yCap - 1).closePath();
+                        hasEqOver = true;
+                    }
+                    if (hasEqOver) g.fill({ color: style.color, alpha: 1.0 });
+                }
+            } else {
+                g.beginPath();
+                let hasEqOver = false;
+                for (let i = visStart; i < visEnd; i++) {
+                    const geom = this.getCompositeBarGeometry(i);
+                    if (geom.mode !== 'composite' || !geom.isOverflow || geom.overflowSide !== 'teal') continue;
+                    const cx = (i * sp) - r.cameraX + barW * 0.5;
+                    g.moveTo(cx, yCap - 5).lineTo(cx - 3.5, yCap - 1).lineTo(cx + 3.5, yCap - 1).closePath();
+                    hasEqOver = true;
+                }
+                if (hasEqOver) g.fill({ color: singleStyle.color, alpha: 1.0 });
             }
         }
 
@@ -450,14 +501,20 @@ export class VolumeCandleSizeIndicator extends BaseIndicator {
 
         const diffPct = ((vcsRatio - defRatio) / defRatio) * 100;
         const sign = diffPct > 0 ? '+' : '';
+        const useBuySell = this.getParam<boolean>('useBuySellColors', true);
+        const isBuyCandle = this.candleDirs[idx] >= 0;
+        const baseClr = useBuySell
+            ? parseColor(isBuyCandle ? this.getParam('buyColor', '#26A69A') : this.getParam('sellColor', '#EF5350'))
+            : parseColor(this.getParam('compTealColor', '#26A69A'));
         const compClr = Math.abs(diffPct) < 1e-6
-            ? parseColor(this.getParam('compTealColor', '#26A69A'))
+            ? baseClr
             : diffPct > 0
-                ? parseColor(this.getParam('compAmberColor', '#FF9800'))
+                ? parseColor(this.getParam('compAmberColor', '#FFC107'))
                 : parseColor(this.getParam('compGreyColor', '#787B86'));
+        const sideTag = useBuySell ? (isBuyCandle ? '▲ ' : '▼ ') : '';
         return {
             label: this.name,
-            valueStr: `Vol: ${fmtVol(defVol)} (${defRatio.toFixed(2)}x) | VCS: ${vcsRatio.toFixed(2)}x | Diff: ${sign}${diffPct.toFixed(1)}%`,
+            valueStr: `${sideTag}Vol: ${fmtVol(defVol)} (${defRatio.toFixed(2)}x) | VCS: ${vcsRatio.toFixed(2)}x | Diff: ${sign}${diffPct.toFixed(1)}%`,
             valueColor: compClr
         };
     }

@@ -272,22 +272,22 @@ export function runPhase5DPhase5Tests(): boolean {
             'Equal VCS and Default Vol must render solid teal and Diff: 0.0%'
         );
 
-        // Bar 361: VCS > Default Vol -> teal + amber, tooltip color = amber
+        // Bar 361: VCS > Default Vol -> base + amber, tooltip color = amber (#FFC107)
         const g361 = vcsCmp.getCompositeBarGeometry(361);
         const r361 = vcsCmp.getValueAt(361, cmpDs, true, 0xffffff);
         assert(
             g361.mode === 'composite' && g361.amberTop > g361.amberBottom && g361.greyTop === 0 &&
-            r361.valueStr.includes('Diff: +') && r361.valueColor === 0xFF9800,
-            'VCS > Default Vol must render teal + amber and positive Diff'
+            r361.valueStr.includes('Diff: +') && r361.valueColor === 0xFFC107,
+            'VCS > Default Vol must render base + amber and positive Diff'
         );
 
-        // Bar 362: VCS < Default Vol -> teal + grey, tooltip color = grey
+        // Bar 362: VCS < Default Vol -> base + grey, tooltip color = grey
         const g362 = vcsCmp.getCompositeBarGeometry(362);
         const r362 = vcsCmp.getValueAt(362, cmpDs, true, 0xffffff);
         assert(
             g362.mode === 'composite' && g362.greyTop > g362.greyBottom && g362.amberTop === 0 &&
             r362.valueStr.includes('Diff: -') && r362.valueColor === 0x787B86,
-            'VCS < Default Vol must render teal + grey and negative Diff'
+            'VCS < Default Vol must render base + grey and negative Diff'
         );
 
         // Bar 363: Verify actual generated ratios (VCS ~ 3.0, DefaultVol ~ 1.0) AND composite geometry
@@ -298,8 +298,19 @@ export function runPhase5DPhase5Tests(): boolean {
             Math.abs(vcsCmp.defaultVolRatios[363] - 1.0) < 0.01 &&
             g363.mode === 'composite' &&
             Math.abs((g363.amberTop - g363.amberBottom) - 2 * g363.tealHeight) < 0.05 &&
-            r363.valueStr.includes('VCS: 3.00x') && /Diff: \+(199|200)\.\d%/.test(r363.valueStr) && r363.valueColor === 0xFF9800,
+            r363.valueStr.includes('VCS: 3.00x') && /Diff: \+(199|200)\.\d%/.test(r363.valueStr) && r363.valueColor === 0xFFC107,
             `3x VCS ratio/overflow mismatch: vcs=${vcsCmp.ratios[363]}, def=${vcsCmp.defaultVolRatios[363]}, ${r363.valueStr}`
+        );
+
+        // Verify Sell-candle base color distinction (close < open -> sellColor #EF5350 on equal bar 726)
+        const sellCandles = cmpCandles.map((c, idx) => idx === 726 ? { ...c, open: 100.4, close: 99.6 } : c);
+        const sellDs = buildDataStore(sellCandles);
+        const vcsSell = new VolumeCandleSizeIndicator();
+        vcsSell.calculate(sellDs);
+        const rSell = vcsSell.getValueAt(726, sellDs, true, 0xffffff);
+        assert(
+            vcsSell.candleDirs[726] === -1 && rSell.valueStr.startsWith('▼ ') && rSell.valueColor === 0xEF5350,
+            'Sell candle (close < open) equal to baseline must use sellColor (#EF5350) and ▼ tag'
         );
 
         // Bar 364: Zero volume -> Diff: N/A, no division by zero
