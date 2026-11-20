@@ -11,6 +11,7 @@ export class BackgroundDataMiner {
     // Legacy global abort controller for UI (non-ML) tasks. 
     // ML jobs pass their own specific AbortSignal.
     private static globalAbortController: AbortController | null = null;
+    public static fetchImpl: typeof fetch = (input, init) => globalThis.fetch(input, init);
 
     public static abort(): void {
         if (this.globalAbortController) {
@@ -146,7 +147,7 @@ export class BackgroundDataMiner {
                 });
                 const url = `https://api.binance.com/api/v3/klines?${query.toString()}`;
 
-                const res = await fetch(url, { signal });
+                const res = await this.fetchImpl(url, { signal });
                 if (res.status === 429 || res.status === 418) {
                     throw new Error('Binance rate limit triggered. Cooldown required.');
                 }

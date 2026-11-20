@@ -38,10 +38,10 @@ async function mineWithMockedResponse(
     endTime: number
 ): Promise<MockedMiningResult> {
     const originalNow = Date.now;
-    const originalFetch = globalThis.fetch;
+    const originalFetch = BackgroundDataMiner.fetchImpl;
     let requestUrl: URL | null = null;
     Date.now = () => now;
-    globalThis.fetch = (async input => {
+    BackgroundDataMiner.fetchImpl = (async input => {
         requestUrl = new URL(String(input));
         return new Response(JSON.stringify(klines), { status: 200 });
     }) as typeof fetch;
@@ -58,7 +58,7 @@ async function mineWithMockedResponse(
         return { buffer, requestUrl };
     } finally {
         Date.now = originalNow;
-        globalThis.fetch = originalFetch;
+        BackgroundDataMiner.fetchImpl = originalFetch;
     }
 }
 
@@ -255,7 +255,7 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
 
     await runTest('Seven-day fetch uses inclusive open-time bounds and returns exactly 10,080 rows when complete', async () => {
         const originalNow = Date.now;
-        const originalFetch = globalThis.fetch;
+        const originalFetch = BackgroundDataMiner.fetchImpl;
         const now = 1_800_000_000_000;
         const intervalMs = 60000;
         const expectedCount = 7 * 24 * 60;
@@ -263,7 +263,7 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
         const expectedFirstOpen = expectedLastOpen - (expectedCount - 1) * intervalMs;
         const requests: URL[] = [];
         Date.now = () => now;
-        globalThis.fetch = (async input => {
+        BackgroundDataMiner.fetchImpl = (async input => {
             const url = new URL(String(input));
             requests.push(url);
             const requestedStart = Number(url.searchParams.get('startTime'));
@@ -309,7 +309,7 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
             }
         } finally {
             Date.now = originalNow;
-            globalThis.fetch = originalFetch;
+            BackgroundDataMiner.fetchImpl = originalFetch;
         }
     });
 
@@ -325,9 +325,9 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
             ).filter(timestamp => timestamp !== missingTimestamp);
             const rows = opens.map(timestamp => mockKline(timestamp, timestamp + intervalMs - 1));
             const originalNow = Date.now;
-            const originalFetch = globalThis.fetch;
+            const originalFetch = BackgroundDataMiner.fetchImpl;
             Date.now = () => now;
-            globalThis.fetch = (async input => {
+            BackgroundDataMiner.fetchImpl = (async input => {
                 const url = new URL(String(input));
                 const startTime = Number(url.searchParams.get('startTime'));
                 const endTime = Number(url.searchParams.get('endTime'));
@@ -358,7 +358,7 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
                 assert(rejected, `Missing boundary candle ${missingTimestamp} must fail reconciliation`);
             } finally {
                 Date.now = originalNow;
-                globalThis.fetch = originalFetch;
+                BackgroundDataMiner.fetchImpl = originalFetch;
             }
         };
         await verifyMissingBoundary(expectedFirstOpen);

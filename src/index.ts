@@ -4942,6 +4942,26 @@ export class WorkspaceManager {
                     throw new Error('Streaming M4 Parity test failed');
                 }
 
+                // Phase 5D (V3 Multi-Teacher, 134-Feature CONFIG_C, Replay, Auditor & Chart Parity)
+                if (loadingDetail) {
+                    loadingDetail.textContent = 'Executing Phase 5D (V3 Phases 1–5 & 650-Candle Streaming Parity)...';
+                }
+                await new Promise(resolve => setTimeout(resolve, 50));
+
+                const phase5dGates: Array<{ name: string; passed: boolean }> = [];
+                const recordGate = (name: string, passed: boolean) => {
+                    phase5dGates.push({ name, passed });
+                    if (!passed) throw new Error(`${name} failed`);
+                    console.log(`✅ ${name}: Passed`);
+                };
+
+                recordGate('Phase 5D Phase 1 (Exhaustion, VCS 360, VAM, ML1_CONFIG_C)', runPhase5DPhase1Tests());
+                recordGate('Phase 5D Phase 2 (Gate 1 + All 4 Teachers)', runPhase5DPhase2Tests());
+                recordGate('Phase 5D Phase 3 (Shared V3 Pipeline & 60/120/180 Replay)', runPhase5DPhase3Tests());
+                recordGate('Phase 5D Phase 4 (V3 Exporters & Artifact Auditor)', await runPhase5DPhase4Tests());
+                recordGate('Phase 5D Phase 5 (Chart Plugins & Engine Parity)', runPhase5DPhase5Tests());
+                recordGate('V3 Streaming Parity (Synthetic 650-Candle CSV/SHA-256/Manifest)', await runV3StreamingExportParityTest(650));
+
                 // Deterministic Reconstruction Verification
                 if (loadingDetail) loadingDetail.textContent = 'Verifying Deterministic Reconstruction parity...';
                 await new Promise(resolve => setTimeout(resolve, 50));
@@ -5001,13 +5021,24 @@ export class WorkspaceManager {
                     'across CSV artifacts, audit results, and manifest metrics.'
                 );
 
+                const phase5dFailed = phase5dGates.filter(g => !g.passed).length;
+                if (phase5dFailed > 0 || phase5dGates.length !== 6) {
+                    throw new Error(`Stage 1 incomplete: ${phase5dFailed} Phase 5D gates failed.`);
+                }
+
                 console.log('\n======================================================');
-                console.log('🏆 ALL MILESTONES 1 TO 4 & DETERMINISTIC EXPORT GATES VERIFIED');
-                console.log('   ↳ M1, M2, M3A–M3E, M4B, and production exporter integrity gates passed.');
+                console.log('🏆 STAGE 1 GATE VERIFIED: M1–M5C + PHASE 5D (1–5) + V2/V3 PARITY');
+                console.log(`   ↳ Timestamp UTC:      ${new Date().toISOString()}`);
+                console.log(`   ↳ Browser Runtime:    ${navigator.userAgent}`);
+                console.log(`   ↳ Active Feed:        ${chart.currentSymbol} ${chart.currentInterval} (${realCandles.length} candles verified)`);
+                console.log('   ↳ Legacy Gates:       M1, M2, M3A–3E, M4B, ProdExporter, M5B, M5C, Phase0, V2-Parity, Deterministic-Recon (all reached without throw)');
+                console.log(`   ↳ Phase 5D + V3 Gate: ${phase5dGates.length}/${phase5dGates.length} passed, ${phase5dFailed} failed`);
+                console.log('   ↳ Note (Stage 3A):    650-candle V3 parity passed; physical 1w dataset audit still requires Stage 3A/4.');
+                console.log('   ↳ Archive Note:       Save this log together with your terminal git commit hash & tsc/build output.');
                 console.log('======================================================\n');
 
                 if (loadingDetail) {
-                    loadingDetail.textContent = '✅ All Milestones 1 to 4 Passed! Check DevTools console.';
+                    loadingDetail.textContent = '✅ Stage 1 Complete (All M1–5C & Phase 5D Suites Passed)! Check console.';
                 }
 
                 setTimeout(() => {
