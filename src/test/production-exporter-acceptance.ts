@@ -1,29 +1,69 @@
 import JSZip from 'jszip';
 import {
     AIExporter,
-    DatasetAuditor,
-    HybridTokenBuilder,
-    SourceIntegrityError,
-    auditConfirmedPivotSequence,
-    auditNativeConfirmedPivots,
-    buildRepresentationInput,
-    MLR1_MODEL_INPUT_SCHEMA,
-    MLR1_REPRESENTATION_COLUMNS,
-    MLR1_DATASET_VERSION,
-    validateMLR1ModelInput
+    DatasetAuditor
 } from '../data/AIExporter';
-import { createML1ZipExportRequest } from '../indicators/mlr1/integration/ML1IntegrationTypes';
 import {
-    MLR1_MODEL_INPUT_SCHEMA_VERSION,
-    MLR1_REPRESENTATION_SCHEMA_VERSION
+    createML1ZipExportRequest,
+    validateML1ExportRequestAgainstManifest
+} from '../indicators/mlr1/integration/ML1IntegrationTypes';
+import {
+    MLR1_V3_MODEL_INPUT_SCHEMA_VERSION,
+    MLR1_V3_REPRESENTATION_SCHEMA_VERSION,
+    TIER_C_V3_QUARANTINE_LIST
 } from '../indicators/mlr1/dataset/DatasetSchema';
-import type { DatasetManifest } from '../indicators/mlr1/dataset/DatasetManifest';
+import {
+    accountRawSourceRows,
+    type RawSourceAccountingReport
+} from '../indicators/mlr1/dataset/ObservationBackbone';
+import type { IntegrityPolicy } from '../indicators/mlr1/dataset/DatasetConfig';
+import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
+import {
+    V3_DATASET_VERSION,
+    V3_REPRESENTATION_COLUMNS
+} from '../indicators/mlr1/pipeline/MultiHorizonOutcomeEngine';
+import { V3_15M_ONLY_MTF_VERSION } from '../indicators/mlr1/pipeline/V3PipelineEngine';
+import { parseCsvDocumentCRLF } from '../indicators/mlr1/pipeline/V3ArtifactAuditor';
 import { BackgroundDataMiner } from '../data/BackgroundDataMiner';
-import { DataStore } from '../data/DataStore';
-import { StrictCBCZigZagIndicator } from '../indicators/plugins/StrictCBCZigZagIndicator';
 
 function assert(condition: boolean, message: string): asserts condition {
     if (!condition) throw new Error(`[ProductionExporterAssertionFailed] ${message}`);
+}
+
+const STRICT_SOURCE_POLICY: IntegrityPolicy = {
+    rejectInvalidSource: true,
+    rejectInvalidOhlcv: true,
+    rejectDuplicateTimestamp: true,
+    rejectOutOfOrder: true,
+    requireMinimumUptimeFraction: 1
+};
+
+function bufferToRawCandles(buffer: Float64Array): ML1Candle[] {
+    const count = Math.floor(buffer.length / 6);
+    const out: ML1Candle[] = [];
+    for (let i = 0; i < count; i++) {
+        const off = i * 6;
+        out.push({
+            time: buffer[off],
+            open: buffer[off + 1],
+            high: buffer[off + 2],
+            low: buffer[off + 3],
+            close: buffer[off + 4],
+            volume: buffer[off + 5],
+            isSynthetic: false
+        });
+    }
+    return out;
+}
+
+function accountBufferRawRows(buffer: Float64Array, intervalMs: number): RawSourceAccountingReport {
+    return accountRawSourceRows(
+        bufferToRawCandles(buffer),
+        'SOLUSDT',
+        '1m',
+        STRICT_SOURCE_POLICY,
+        intervalMs
+    );
 }
 
 interface MockedMiningResult {
@@ -66,114 +106,26 @@ function mockKline(openTime: number, closeTime: number): unknown[] {
     return [openTime, '10', '12', '9', '11', '100', closeTime];
 }
 
-function createArchiveFixture() {
-    const symbol = 'SOLUSDT';
-    const timeframe = '1m';
-    const continuousFileName = `MLR1_${symbol}_${timeframe}_Continuous_Observations.csv`;
-    const representationFileName = `MLR1_${symbol}_${timeframe}_Representation_Features.csv`;
-    const eventFileName = `MLR1_${symbol}_${timeframe}_Events.csv`;
-    const dateRange = { startTimestamp: 1_800_000_000_000, endTimestamp: 1_800_000_060_000 };
-    const buildConfig = {
-        symbol,
-        baseTimeframe: timeframe,
-        datasetVersion: 2,
-        representationSchemaVersion: MLR1_REPRESENTATION_SCHEMA_VERSION,
-        modelInputSchemaVersion: MLR1_MODEL_INPUT_SCHEMA_VERSION,
-        sourceIntervalMs: 60_000,
-        featureConfigVersion: 'ML1_CONFIG_B_TEST',
-        teacherVersion: 'STRICT_CBC_TEST',
-        outcomeConfigVersion: 'MLR1_TEST',
-        dateRange,
-        integrityPolicy: {
-            rejectInvalidSource: true,
-            rejectInvalidOhlcv: true,
-            rejectDuplicateTimestamp: true,
-            rejectOutOfOrder: true,
-            requireMinimumUptimeFraction: 1
-        },
-        exportConfig: {
-            exportTierA: true,
-            exportTierB: true,
-            exportTierC: true,
-            separateFiles: false
-        }
-    };
-    const manifest: DatasetManifest = {
-        datasetId: 'DS_SOLUSDT_1m_V2',
-        sourceIdentity: 'BINANCE_SPOT',
-        datasetVersion: 2,
-        representationSchemaVersion: MLR1_REPRESENTATION_SCHEMA_VERSION,
-        modelInputSchemaVersion: MLR1_MODEL_INPUT_SCHEMA_VERSION,
-        symbol,
-        timeframe,
-        startTimestamp: dateRange.startTimestamp,
-        endTimestamp: dateRange.endTimestamp,
-        sourceRowCount: 1,
-        acceptedObservationCount: 1,
-        rejectedObservationCount: 0,
-        totalExpectedObservations: 1,
-        sourceAvailabilityFraction: 1,
-        usableObservationFraction: 1,
-        isUptimeValid: true,
-        featureVersion: buildConfig.featureConfigVersion,
-        teacherVersion: buildConfig.teacherVersion,
-        outcomeVersion: buildConfig.outcomeConfigVersion,
-        missingDataStats: {
-            missingIntervalCount: 0,
-            unexpectedIntervalCount: 0,
-            duplicateTimestampCount: 0,
-            outOfOrderCount: 0,
-            invalidOhlcvCount: 0,
-            invalidSourceCount: 0,
-            offGridTimestampCount: 0,
-            outOfRangeTimestampCount: 0,
-            htf15mGapCount: 0,
-            htf1hGapCount: 0,
-            htf15mResetCount: 0,
-            htf1hResetCount: 0,
-            htf15mIncompleteWindowCount: 0,
-            htf1hIncompleteWindowCount: 0
-        },
-        buildConfig,
-        buildTimestamp: 1_800_000_000_000,
-        auditResults: {
-            passed: true,
-            chronologyValid: true,
-            identityUnique: true,
-            inputOutcomeSeparationValid: true,
-            remarks: []
-        },
-        exportAccounting: {
-            rawSourceCandleCount: 1,
-            acceptedSourceObservationCount: 1,
-            rejectedSourceObservationCount: 0,
-            tierAContinuousObservationCount: 1,
-            tierAEventRepresentationRowCount: 1,
-            tierBConfirmedTeacherEventCount: 1,
-            tierCOutcomeRowCount: 1,
-            actualFileRowCounts: {
-                [continuousFileName]: 1,
-                [representationFileName]: 1,
-                [eventFileName]: 1
-            }
-        }
-    };
-    const representationRow = ['OBS_SOLUSDT_1m_V1_1800000000000', ...Array(12).fill('0')].join(',');
-    const artifacts = {
-        manifest,
-        continuousCsv: 'source_timestamp\r\n1800000000000',
-        representationCsv: `${MLR1_REPRESENTATION_COLUMNS.join(',')}\r\n${representationRow}`,
-        eventCsv: 'event_id\r\nEVENT_1',
-        continuousFileName,
-        representationFileName,
-        eventFileName
-    };
-    return { artifacts, request: createML1ZipExportRequest(manifest) };
+function buildDeterministicCandleBuffer(candleCount: number, start = 1_700_000_040_000, intervalMs = 60_000): Float64Array {
+    const rawCandleBuffer = new Float64Array(candleCount * 6);
+    for (let index = 0; index < candleCount; index++) {
+        const close = index % 8 < 4
+            ? 100 + (index % 4)
+            : 104 - (index % 4);
+        const open = index % 2 === 1 ? close - 0.5 : close + 0.5;
+        const high = Math.max(open, close) + 1;
+        const low = Math.min(open, close) - 1;
+        rawCandleBuffer.set(
+            [start + index * intervalMs, open, high, low, close, 100 + index % 7],
+            index * 6
+        );
+    }
+    return rawCandleBuffer;
 }
 
 export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
     console.log('\n======================================================');
-    console.log('🧪 Starting Production Exporter Integrity Acceptance Suite');
+    console.log('🧪 Starting Production V3 Exporter Integrity Acceptance Suite');
     console.log('======================================================\n');
     let passed = 0;
     let failed = 0;
@@ -191,50 +143,54 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
         }
     };
 
-    await runTest('Raw rejected candles are accounted before feature processing', async () => {
+    await runTest('Raw rejected candles are accounted before V3 feature processing', async () => {
         const base = 1_800_000_000_000;
         const raw = new Float64Array([
             base, 10, 8, 9, 11, 100,
             base + 60000, 10, 12, 9, 11, 100
         ]);
-        let caught: unknown;
+        const report = accountBufferRawRows(raw, 60000);
+        assert(report.stats.sourceRowCount === 2, 'Source report must include every raw row');
+        assert(report.stats.rejectedObservationCount === 1, 'Invalid source must be rejected');
+        assert(
+            report.rejectedRows[0].reasons.includes('INVALID_OHLCV'),
+            'Rejected row must retain its OHLCV rejection reason'
+        );
+
+        let rejectedBuild = false;
         try {
-            await AIExporter.buildExportArtifacts({
+            await AIExporter.buildV3ExportArtifacts({
                 rawCandleBuffer: raw,
                 symbol: 'SOLUSDT',
                 interval: '1m',
                 intervalMs: 60000
             });
         } catch (error: unknown) {
-            caught = error;
+            rejectedBuild = error instanceof Error && error.message.includes('V3 Source Integrity Error');
         }
-        assert(caught instanceof SourceIntegrityError, 'Invalid source must fail through M4B accounting');
-        assert(caught.sourceReport.stats.sourceRowCount === 2, 'Source report must include every raw row');
-        assert(caught.sourceReport.stats.rejectedObservationCount === 1, 'Invalid source must be rejected');
-        assert(
-            caught.sourceReport.rejectedRows[0].reasons.includes('INVALID_OHLCV'),
-            'Rejected row must retain its OHLCV rejection reason'
-        );
+        assert(rejectedBuild, 'V3 exporter must fail closed on invalid OHLCV source buffers');
     });
 
     await runTest('Non-positive OHLC prices are rejected and reconciled as raw source rows', async () => {
         const base = 1_800_000_000_000;
         const raw = new Float64Array([base, -10, -9, -11, -10, 100]);
-        let caught: unknown;
+        const report = accountBufferRawRows(raw, 60000);
+        assert(report.stats.sourceRowCount === 1, 'Raw source count must include rejected prices');
+        assert(report.stats.invalidOhlcvCount === 1, 'Rejected prices must increment invalid OHLCV');
+        assert(report.stats.rejectedObservationCount === 1, 'Rejected prices must be accounted once');
+
+        let rejectedBuild = false;
         try {
-            await AIExporter.buildExportArtifacts({
+            await AIExporter.buildV3ExportArtifacts({
                 rawCandleBuffer: raw,
                 symbol: 'SOLUSDT',
                 interval: '1m',
                 intervalMs: 60000
             });
         } catch (error: unknown) {
-            caught = error;
+            rejectedBuild = error instanceof Error && error.message.includes('V3 Source Integrity Error');
         }
-        assert(caught instanceof SourceIntegrityError, 'Non-positive prices must fail source validation');
-        assert(caught.sourceReport.stats.sourceRowCount === 1, 'Raw source count must include rejected prices');
-        assert(caught.sourceReport.stats.invalidOhlcvCount === 1, 'Rejected prices must increment invalid OHLCV');
-        assert(caught.sourceReport.stats.rejectedObservationCount === 1, 'Rejected prices must be accounted once');
+        assert(rejectedBuild, 'V3 exporter must fail closed on non-positive OHLC prices');
     });
 
     await runTest('Historical fetch applies inclusive bounds and excludes incomplete klines', async () => {
@@ -409,51 +365,46 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
         assert(threw, 'Any candle outside the selected custom range must fail validation');
     });
 
-    await runTest('Generated archive has exact physical entries, bytes, and row counts', async () => {
-        const { artifacts, request } = createArchiveFixture();
-        const bytes = await AIExporter.createVerifiedDatasetArchive(artifacts, request);
+    await runTest('Generated V3 archive has exact physical entries, bytes, and row counts', async () => {
+        const rawCandleBuffer = buildDeterministicCandleBuffer(650);
+        const artifacts = await AIExporter.buildV3ExportArtifacts({
+            rawCandleBuffer,
+            symbol: 'SOLUSDT',
+            interval: '1m',
+            intervalMs: 60_000,
+            buildTimestamp: 1_700_000_000_000
+        });
+        const bytes = await AIExporter.createVerifiedV3DatasetArchive(artifacts, rawCandleBuffer);
         const reopened = await JSZip.loadAsync(bytes);
         const names = Object.keys(reopened.files).filter(name => !reopened.files[name].dir).sort();
-        assert(names.length === 4, 'Archive must contain the manifest and all three CSVs');
+        assert(names.length === 4, 'Archive must contain the manifest and all three V3 CSVs');
         assert(names.includes(artifacts.continuousFileName), 'Continuous observations CSV is missing');
         assert(names.includes(artifacts.representationFileName), 'Representation CSV is missing');
-        assert(names.includes(artifacts.eventFileName), 'Event outcomes CSV is missing');
+        assert(names.includes(artifacts.strategyEventsFileName), 'StrategyEvents CSV is missing');
+        assert(names.includes(artifacts.manifestFileName), 'Manifest JSON is missing');
         assert(
-            await reopened.file(artifacts.eventFileName)!.async('string') === artifacts.eventCsv,
-            'Physical event CSV bytes must equal deterministic artifact bytes'
+            await reopened.file(artifacts.strategyEventsFileName)!.async('string') === artifacts.strategyEventsCsv,
+            'Physical StrategyEvents CSV bytes must equal deterministic artifact bytes'
         );
 
         let duplicateNameThrew = false;
         try {
-            await AIExporter.createVerifiedDatasetArchive({
+            await AIExporter.createVerifiedV3DatasetArchive({
                 ...artifacts,
-                eventFileName: artifacts.continuousFileName
-            }, request);
+                strategyEventsFileName: artifacts.continuousFileName
+            }, rawCandleBuffer);
         } catch {
             duplicateNameThrew = true;
         }
-        assert(duplicateNameThrew, 'Duplicate archive entry names must be rejected before ZIP generation');
+        assert(duplicateNameThrew, 'Mismatched or duplicate archive entry names must be rejected before ZIP generation');
     });
 
-    await runTest('500-candle production export is deterministic with a mature CBC outcome', async () => {
-        const candleCount = 500;
-        const intervalMs = 60000;
-        const start = 1_700_000_040_000;
-        const rawCandleBuffer = new Float64Array(candleCount * 6);
-        for (let index = 0; index < candleCount; index++) {
-            const close = index % 8 < 4
-                ? 100 + (index % 4)
-                : 104 - (index % 4);
-            const open = index % 2 === 1 ? close - 0.5 : close + 0.5;
-            const high = Math.max(open, close) + 1;
-            const low = Math.min(open, close) - 1;
-            rawCandleBuffer.set(
-                [start + index * intervalMs, open, high, low, close, 100 + index % 7],
-                index * 6
-            );
-        }
+    await runTest('650-candle V3 production export is deterministic with mature 180-bar outcomes and causality audits', async () => {
+        const candleCount = 650;
+        const intervalMs = 60_000;
+        const rawCandleBuffer = buildDeterministicCandleBuffer(candleCount, 1_700_000_040_000, intervalMs);
         const fixedBuildTimestamp = 1_700_000_000_000;
-        const build = () => AIExporter.buildExportArtifacts({
+        const build = () => AIExporter.buildV3ExportArtifacts({
             rawCandleBuffer,
             symbol: 'SOLUSDT',
             interval: '1m',
@@ -462,355 +413,154 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
         });
         const first = await build();
         const second = await build();
-        assert(first.events.length > 0, 'Deterministic source must produce confirmed CBC events');
-        assert(first.events.some(event =>
-            event.entry_bar_index + 60 - 1 < first.backboneResult.acceptedRows.length
-        ), 'At least one confirmed event must have a complete 60-bar outcome horizon');
+
+        assert(first.strategyEventRows.length > 0, 'Deterministic source must produce confirmed multi-teacher events');
+        assert(first.strategyEventRows.some(row =>
+            row.entry_bar_index + 180 - 1 < first.manifest.acceptedObservationCount
+        ), 'At least one confirmed event must have a complete 180-bar outcome horizon');
         assert(first.manifest.sourceRowCount === candleCount, 'Manifest raw count must match the source buffer');
-        assert(first.manifest.auditResults.passed, 'Both production audits must pass');
-        assert(first.manifest.datasetVersion === MLR1_DATASET_VERSION && MLR1_DATASET_VERSION === 2,
-            'Representation contract correction must emit dataset version 2');
-        assert(first.manifest.representationSchemaVersion === MLR1_REPRESENTATION_SCHEMA_VERSION,
-            'Manifest must record the representation schema version');
-        assert(first.manifest.modelInputSchemaVersion === MLR1_MODEL_INPUT_SCHEMA_VERSION,
-            'Manifest must record the model-input schema version');
+        assert(first.manifest.auditResults.passed, 'V3 production audits must pass');
+        assert(first.manifest.datasetVersion === V3_DATASET_VERSION && V3_DATASET_VERSION === 3,
+            'V3 production exporter must emit dataset version 3');
+        assert(first.manifest.representationSchemaVersion === MLR1_V3_REPRESENTATION_SCHEMA_VERSION,
+            'Manifest must record the V3 representation schema version');
+        assert(first.manifest.modelInputSchemaVersion === MLR1_V3_MODEL_INPUT_SCHEMA_VERSION,
+            'Manifest must record the V3 model-input schema version');
+        assert(first.manifest.featureVersion.includes(V3_15M_ONLY_MTF_VERSION) &&
+            first.manifest.featureVersion.includes('ML1_CONFIG_C_v1'),
+        'Manifest featureVersion must reflect 15m-only V3 MTF and Config C');
+
         const representationHeaders = first.representationCsv.split('\r\n')[0].split(',');
         assert(
-            representationHeaders.join(',') === MLR1_REPRESENTATION_COLUMNS.join(','),
-            'Representation columns and feature order must be explicit and deterministic'
+            representationHeaders.join(',') === V3_REPRESENTATION_COLUMNS.join(','),
+            'V3 representation columns and feature order must be explicit and deterministic'
         );
-        assert(
-            representationHeaders.slice(1, 1 + MLR1_MODEL_INPUT_SCHEMA.tierA.length)
-                .every(header => header.startsWith('tierA_')) &&
-                representationHeaders.slice(1 + MLR1_MODEL_INPUT_SCHEMA.tierA.length)
-                    .every(header => header.startsWith('tierB_')),
-            'Model-input CSV must preserve distinct ordered Tier A and Tier B channels'
-        );
-        const selectedInput = buildRepresentationInput(
-            first.events[0],
-            first.backboneResult.acceptedRows[first.events[0].confirmed_bar_index].observationId
-        );
-        assert(selectedInput.schemaVersion === MLR1_MODEL_INPUT_SCHEMA.version,
-            'Model-input builder must declare its schema version');
-        assert(Object.keys(selectedInput.tierA).join(',') === MLR1_MODEL_INPUT_SCHEMA.tierA.join(','),
-            'Tier A model-input selection must be separately explicit and ordered');
-        assert(Object.keys(selectedInput.tierB).join(',') === MLR1_MODEL_INPUT_SCHEMA.tierB.join(','),
-            'Tier B model-input selection must be separately explicit and ordered');
-        assert(validateMLR1ModelInput(selectedInput), 'Valid versioned Tier A/Tier B input must pass validation');
-        assert(
-            selectedInput.tierAObservationId ===
-                first.backboneResult.acceptedRows[first.events[0].confirmed_bar_index].observationId,
-            'Tier A model input must link to its exact causal observation row'
-        );
-        assert(
-            !validateMLR1ModelInput({
-                ...selectedInput,
-                tierB: { ...selectedInput.tierB, outcome_class: 'future-result' }
-            }),
-            'Unknown and Tier C fields must fail closed at the model-input boundary'
-        );
-        assert(
-            Object.keys(selectedInput.tierB).length === 6,
-            'All six approved teacher descriptors must remain in the Tier B channel'
-        );
-        const acceptedRows = first.backboneResult.acceptedRows;
-        const dataStore = new DataStore(acceptedRows.length);
-        dataStore.data = new Float64Array(acceptedRows.length * 6);
-        dataStore.length = acceptedRows.length;
-        acceptedRows.forEach((row, index) => {
-            dataStore.data.set([
-                row.candle.time,
-                row.candle.open,
-                row.candle.high,
-                row.candle.low,
-                row.candle.close,
-                row.candle.volume
-            ], index * 6);
-        });
-        const teacher = new StrictCBCZigZagIndicator();
-        teacher.calculate(dataStore);
-        const nativePivots = teacher.cachedPivots;
-        const nativeSequenceAudit = auditConfirmedPivotSequence(nativePivots, acceptedRows);
-        assert(nativeSequenceAudit.firstViolation === null,
-            'The native teacher confirmed sequence must satisfy occurrence and confirmation ordering');
-        assert(nativeSequenceAudit.pivotCount > 2, 'The fixture must exercise multiple confirmed teacher pivots');
-        assert(
-            DatasetAuditor.runCausalityAudit(
-                first.events,
-                dataStore,
-                acceptedRows,
-                intervalMs,
-                nativePivots,
-                first.representationCsv
-            ).passed,
-            'The auditor must accept the same native confirmed sequence used by event generation'
-        );
-        assert(first.mtfContexts !== undefined && first.mtfContexts.length === candleCount,
-            'Production 1m artifacts must retain one causal MTF context per accepted row');
-        const contextIndex = first.mtfContexts.findIndex(context =>
-            context.context15m.lastCompletedCandle !== null
-        );
-        assert(contextIndex >= 0, 'Fixture must contain a completed 15m context');
-        const forgedMtfContexts = first.mtfContexts.map((context, index) => index === contextIndex
-            ? {
-                ...context,
-                context15m: {
-                    ...context.context15m,
-                    lastCompletedCloseTimestamp: context.observationTimestamp + intervalMs
-                }
-            }
-            : context
-        );
-        assert(
-            !DatasetAuditor.runCausalityAudit(
-                first.events,
-                dataStore,
-                acceptedRows,
-                intervalMs,
-                nativePivots,
-                first.representationCsv,
-                forgedMtfContexts
-            ).passed,
-            'Auditor must reject MTF context that claims a completion after its observation timestamp'
-        );
-        assert(
-            first.events.every(event =>
-                event.entry_time === acceptedRows[event.confirmed_bar_index].observationTimestamp &&
-                event.confirmed_bar_index >= event.pivot_bar_index
-            ),
-            'Tier B descriptors must be aligned no earlier than the native teacher confirmation boundary'
-        );
-        const firstRepresentationLines = first.representationCsv.split('\r\n');
-        const futureLabelEvent = first.events.slice(1).find(event =>
-            event.pivot_label !== first.events[0].pivot_label
-        );
-        assert(futureLabelEvent !== undefined, 'Fixture must contain a distinct future teacher label');
-        const pivotLabelColumn = representationHeaders.indexOf('tierB_pivot_label');
-        const forgedFutureRow = firstRepresentationLines[1].split(',');
-        forgedFutureRow[pivotLabelColumn] = futureLabelEvent.pivot_label;
-        const futurePivotLeakCsv = [
-            firstRepresentationLines[0],
-            forgedFutureRow.join(','),
-            ...firstRepresentationLines.slice(2)
-        ].join('\r\n');
-        assert(
-            !DatasetAuditor.runCausalityAudit(
-                first.events,
-                dataStore,
-                acceptedRows,
-                intervalMs,
-                nativePivots,
-                futurePivotLeakCsv
-            ).passed,
-            'Auditor must reject a future confirmed-pivot descriptor in an earlier representation row'
-        );
-        const delayedTeacherEvent = first.events.find(event =>
-            event.confirmed_bar_index > event.pivot_bar_index
-        );
-        assert(delayedTeacherEvent !== undefined,
-            'Fixture must contain a teacher event confirmed after its source pivot bar');
-        const beforeConfirmationEvent = {
-            ...delayedTeacherEvent,
-            confirmed_bar_index: delayedTeacherEvent.pivot_bar_index,
-            confirmation_time_ms: acceptedRows[delayedTeacherEvent.pivot_bar_index].sourceTimestamp,
-            entry_bar_index: delayedTeacherEvent.pivot_bar_index + 1,
-            entry_time: acceptedRows[delayedTeacherEvent.pivot_bar_index].observationTimestamp
-        };
-        const beforeConfirmationCsv = AIExporter.exportMLR1RepresentationCSV(
-            [beforeConfirmationEvent],
-            'SOLUSDT',
-            '1m',
-            acceptedRows
-        );
-        assert(
-            beforeConfirmationCsv !== null &&
-                !DatasetAuditor.runCausalityAudit(
-                    [beforeConfirmationEvent],
-                    dataStore,
-                    acceptedRows,
-                    intervalMs,
-                    nativePivots,
-                    beforeConfirmationCsv
-                ).passed,
-            'Auditor must reject teacher descriptors made available before native confirmation'
-        );
-        const misclassifiedHeaders = [...representationHeaders];
-        misclassifiedHeaders[1] = 'tierB_context_net_return_atr';
-        const misclassifiedCsv = [
-            misclassifiedHeaders.join(','),
-            ...firstRepresentationLines.slice(1)
-        ].join('\r\n');
-        assert(
-            !DatasetAuditor.runCausalityAudit(
-                first.events,
-                dataStore,
-                acceptedRows,
-                intervalMs,
-                nativePivots,
-                misclassifiedCsv
-            ).inputOutcomeSeparationValid,
-            'Auditor classification contract must reject Tier A/Tier B channel swaps independently'
-        );
-
-        const sameTypeSequence = nativePivots.map(pivot => ({ ...pivot }));
-        const sameTypeIndex = 1;
-        const sameTypePivot = sameTypeSequence[sameTypeIndex];
-        const precedingPivot = sameTypeSequence[sameTypeIndex - 1];
-        const sameTypeRow = acceptedRows[sameTypePivot.barIndex];
-        sameTypePivot.type = precedingPivot.type;
-        sameTypePivot.price = precedingPivot.type === 'high'
-            ? sameTypeRow.candle.high
-            : sameTypeRow.candle.low;
-        const priorSameType = sameTypeSequence.slice(0, sameTypeIndex)
-            .reverse().find(pivot => pivot.type === sameTypePivot.type);
-        sameTypePivot.label = sameTypePivot.type === 'high'
-            ? (priorSameType === undefined || sameTypePivot.price >= priorSameType.price ? 'HH' : 'LH')
-            : (priorSameType === undefined || sameTypePivot.price <= priorSameType.price ? 'LL' : 'HL');
-        const sameTypeAudit = auditConfirmedPivotSequence(sameTypeSequence, acceptedRows);
-        assert(sameTypeAudit.sameTypeAdjacentPairCount > 0,
-            'Same-type pairs are invalid under the native StrictCBC state-transition contract');
-        let builderRejectedSameType = false;
-        try {
-            AIExporter.buildMLR1Dataset(dataStore, acceptedRows, sameTypeSequence, 'SOLUSDT', '1m', intervalMs);
-        } catch (error: unknown) {
-            builderRejectedSameType = error instanceof Error &&
-                (error.message.includes('same-type adjacent confirmed pivots') ||
-                    error.message.includes('Cached pivots differ from the native confirmed-pivot sequence'));
+        for (const quarantined of TIER_C_V3_QUARANTINE_LIST) {
+            assert(!representationHeaders.includes(quarantined),
+                `V3 representation CSV must exclude Tier C column '${quarantined}'`);
         }
-        assert(builderRejectedSameType, 'Event builder must reject a same-type confirmed sequence');
-        assert(
-            !DatasetAuditor.runCausalityAudit(
-                first.events,
-                dataStore,
-                acceptedRows,
-                intervalMs,
-                sameTypeSequence,
-                first.representationCsv
-            ).passed,
-            'Auditor must reject the same invalid sequence contract as the event builder'
-        );
 
-        const sourceOrderSequence = nativePivots.map(pivot => ({ ...pivot }));
-        sourceOrderSequence[1].barIndex = sourceOrderSequence[0].barIndex - 1;
-        assert(
-            auditConfirmedPivotSequence(sourceOrderSequence, acceptedRows).sourceOrderViolationCount > 0,
-            'A decreasing source pivot bar must be classified as a source-order violation'
-        );
-        const confirmationOrderSequence = nativePivots.map(pivot => ({ ...pivot }));
-        confirmationOrderSequence[1].confirmedBarIndex = confirmationOrderSequence[0].confirmedBarIndex;
-        assert(
-            auditConfirmedPivotSequence(confirmationOrderSequence, acceptedRows)
-                .confirmationOrderViolationCount > 0,
-            'A non-increasing confirmation bar must be classified as a confirmation-order violation'
-        );
-        assert(
-            auditNativeConfirmedPivots(dataStore, nativePivots).matches,
-            'Cached pivots must independently match exact native teacher output fields'
-        );
-        const forgedCachedPivots = nativePivots.map(pivot => ({ ...pivot }));
-        forgedCachedPivots[0].price += 0.01;
-        assert(
-            !auditNativeConfirmedPivots(dataStore, forgedCachedPivots).matches,
-            'A forged cached pivot price must differ from independently recomputed native output'
-        );
-
-        const liveFailurePair = [
-            {
-                id: 1,
-                barIndex: 926,
-                time: 1_793_183_700_000,
-                price: 103.14,
-                type: 'low' as const,
-                label: 'LL' as const,
-                confirmedBarIndex: 926
-            },
-            {
-                id: 2,
-                barIndex: 926,
-                time: 1_793_183_700_000,
-                price: 103.23,
-                type: 'high' as const,
-                label: 'HH' as const,
-                confirmedBarIndex: 927
-            }
-        ];
-        const liveFailureAudit = auditConfirmedPivotSequence(liveFailurePair, []);
-        assert(liveFailureAudit.firstViolation === null,
-            'The exact live low/high same-source-bar pair is valid in native confirmation order');
-        assert(liveFailureAudit.sourceOrderViolationCount === 0,
-            'A same-source-bar opposite-extreme pair is not a source-order violation');
-        const paddedLiveRows = Array.from({ length: 928 }, (_, index) => {
-            const source = acceptedRows[Math.min(index, acceptedRows.length - 1)];
-            const offset = Math.max(0, index - (acceptedRows.length - 1)) * intervalMs;
-            const time = source.sourceTimestamp + offset;
-            const candle = { ...source.candle, time };
-            const observation = {
-                ...source.observation,
-                timestamp: time,
-                barIndex: index,
-                sourceOpen: candle.open,
-                sourceHigh: candle.high,
-                sourceLow: candle.low,
-                sourceClose: candle.close,
-                sourceVolume: candle.volume
-            };
-            return {
-                ...source,
-                candle,
-                sourceTimestamp: time,
-                observationTimestamp: time + intervalMs,
-                observation
-            };
-        });
-        const liveFailureToken = HybridTokenBuilder.build(
-            liveFailurePair[1],
-            liveFailurePair[0],
-            paddedLiveRows,
-            1
-        );
-        assert(liveFailureToken.bars_since_last_pivot === 1,
-            'The live same-source-bar pair must retain its one-bar confirmation delay');
-        assert(liveFailureToken.zigzag_next_leg_orientation === 'down',
-            'The live confirmed HIGH must retain native down-leg orientation');
-
-        assert(
-            JSON.stringify(first.events.map(event => event.event_id)) ===
-                JSON.stringify(second.events.map(event => event.event_id)),
-            'Event identities must be deterministic'
-        );
-        assert(first.events.length === second.events.length, 'Event counts must be deterministic');
-        assert(first.continuousCsv === second.continuousCsv, 'Continuous CSV bytes must be deterministic');
-        const continuousHeader = first.continuousCsv.split('\r\n', 1)[0].split(',');
-        assert(continuousHeader.includes('context15m') && continuousHeader.includes('context1h'),
-            'M1 continuous observations must include existing M3 15m and 1h context columns');
+        const continuousHeaders = first.continuousCsv.split('\r\n', 1)[0].split(',');
+        assert(continuousHeaders.includes('context15m') && continuousHeaders.includes('htf15mDiagnostic'),
+            'V3 continuous observations must include 15m MTF context columns');
+        assert(!continuousHeaders.includes('context1h') && !continuousHeaders.includes('htf1hDiagnostic'),
+            'V3 continuous observations must remain strictly 15m-only and exclude 1h MTF columns');
         assert(first.continuousCsv.includes('lastCompletedCloseTimestamp'),
             'Serialized MTF context must include completed-candle availability timestamps');
         assert(first.continuousCsv.includes('WARMING_UP') || first.continuousCsv.includes('AVAILABLE_VALID'),
             'Serialized MTF context must preserve warmup or validity status');
-        assert(first.manifest.featureVersion.includes('M3A_3E_MTFv1'),
-            'Manifest must version the added MTF context fields');
+
+        const validAudit = DatasetAuditor.runV3CausalityAudit({
+            rawCandleBuffer,
+            intervalMs,
+            expectedContinuousRows: candleCount,
+            expectedEventRows: first.strategyEventRows.length,
+            continuousCsv: first.continuousCsv,
+            representationCsv: first.representationCsv,
+            strategyEventsCsv: first.strategyEventsCsv,
+            include15mMtf: true,
+            is1mBase: true
+        });
+        assert(validAudit.passed, 'V3 causality auditor must accept canonical V3 artifacts');
+
+        const repRecords = parseCsvDocumentCRLF(first.representationCsv);
+        const tierCInjectedCsv = [
+            `${repRecords[0].join(',')},long_net_r_180`,
+            ...repRecords.slice(1).map(row => `${row.join(',')},0`)
+        ].join('\r\n');
+        const tierCAudit = DatasetAuditor.runV3CausalityAudit({
+            rawCandleBuffer,
+            intervalMs,
+            expectedContinuousRows: candleCount,
+            expectedEventRows: first.strategyEventRows.length,
+            continuousCsv: first.continuousCsv,
+            representationCsv: tierCInjectedCsv,
+            strategyEventsCsv: first.strategyEventsCsv,
+            include15mMtf: true,
+            is1mBase: true
+        });
+        assert(!tierCAudit.passed && !tierCAudit.inputOutcomeSeparationValid,
+            'V3 causality auditor must reject Tier C outcome columns injected into representation CSV');
+
+        const swappedRepHeaders = [...repRecords[0]];
+        swappedRepHeaders[1] = 'tierA_atr_14';
+        swappedRepHeaders[2] = repRecords[0][1];
+        const swappedRepCsv = [
+            swappedRepHeaders.join(','),
+            ...repRecords.slice(1).map(row => row.join(','))
+        ].join('\r\n');
+        assert(!DatasetAuditor.runV3CausalityAudit({
+            rawCandleBuffer,
+            intervalMs,
+            expectedContinuousRows: candleCount,
+            expectedEventRows: first.strategyEventRows.length,
+            continuousCsv: first.continuousCsv,
+            representationCsv: swappedRepCsv,
+            strategyEventsCsv: first.strategyEventsCsv,
+            include15mMtf: true,
+            is1mBase: true
+        }).passed, 'V3 causality auditor must reject reordered representation headers');
+
+        const evRecords = parseCsvDocumentCRLF(first.strategyEventsCsv);
+        const evHeader = evRecords[0];
+        const confCol = evHeader.indexOf('confirmation_bar_index');
+        const entryCol = evHeader.indexOf('entry_bar_index');
+        const forgedEvRow = [...evRecords[1]];
+        forgedEvRow[entryCol] = forgedEvRow[confCol];
+        const forgedEvCsv = [
+            evHeader.join(','),
+            forgedEvRow.join(','),
+            ...evRecords.slice(2).map(r => r.join(','))
+        ].join('\r\n');
+        assert(!DatasetAuditor.runV3CausalityAudit({
+            rawCandleBuffer,
+            intervalMs,
+            expectedContinuousRows: candleCount,
+            expectedEventRows: first.strategyEventRows.length,
+            continuousCsv: first.continuousCsv,
+            representationCsv: first.representationCsv,
+            strategyEventsCsv: forgedEvCsv,
+            include15mMtf: true,
+            is1mBase: true
+        }).passed, 'V3 causality auditor must reject entry bar chronology violations');
+
+        const validRequest = createML1ZipExportRequest(first.manifest);
+        validateML1ExportRequestAgainstManifest(validRequest, first.manifest);
+        let v2Rejected = false;
+        try {
+            validateML1ExportRequestAgainstManifest({
+                ...validRequest,
+                datasetRef: { ...validRequest.datasetRef, datasetVersion: 2 }
+            }, first.manifest);
+        } catch {
+            v2Rejected = true;
+        }
+        assert(v2Rejected, 'Manifest-bound request validator must reject retired V2 dataset version');
+
+        assert(
+            JSON.stringify(first.strategyEventRows.map(event => event.event_id)) ===
+                JSON.stringify(second.strategyEventRows.map(event => event.event_id)),
+            'V3 event identities must be deterministic'
+        );
+        assert(first.strategyEventRows.length === second.strategyEventRows.length, 'Event counts must be deterministic');
+        assert(first.continuousCsv === second.continuousCsv, 'Continuous CSV bytes must be deterministic');
         assert(first.representationCsv === second.representationCsv, 'Representation CSV bytes must be deterministic');
-        assert(first.eventCsv === second.eventCsv, 'Event CSV bytes must be deterministic');
+        assert(first.strategyEventsCsv === second.strategyEventsCsv, 'StrategyEvents CSV bytes must be deterministic');
         assert(JSON.stringify(first.manifest) === JSON.stringify(second.manifest), 'Manifest contents must be deterministic');
-        assert(JSON.stringify(first.exportAccounting) === JSON.stringify(second.exportAccounting),
-            'Export accounting must be deterministic');
+        assert(JSON.stringify(first.outcomeAccounting) === JSON.stringify(second.outcomeAccounting),
+            'Outcome accounting must be deterministic');
         assert(JSON.stringify(first.auditResult) === JSON.stringify(second.auditResult),
             'Audit results must be deterministic');
-        const firstArchive = await AIExporter.createVerifiedDatasetArchive(
-            first,
-            createML1ZipExportRequest(first.manifest)
-        );
-        const secondArchive = await AIExporter.createVerifiedDatasetArchive(
-            second,
-            createML1ZipExportRequest(second.manifest)
-        );
+
+        const firstArchive = await AIExporter.createVerifiedV3DatasetArchive(first, rawCandleBuffer);
+        const secondArchive = await AIExporter.createVerifiedV3DatasetArchive(second, rawCandleBuffer);
         assert(firstArchive.length === secondArchive.length &&
             firstArchive.every((byte, index) => byte === secondArchive[index]),
-        'ZIP physical artifact bytes must be deterministic');
+        'V3 ZIP physical artifact bytes must be deterministic');
     });
 
     if (typeof document !== 'undefined') {
-        await runTest('Live package UI exposes only the supported streaming M4 folder export', () => {
+        await runTest('Live package UI exposes only the V3 streaming folder export', () => {
             assert(
                 document.querySelector('[data-pack="csv"]') === null &&
                     document.querySelector('[data-pack="zip"]') === null,
@@ -818,7 +568,12 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
             );
             assert(
                 document.querySelectorAll('.ai-pack-card[data-pack="stream_folder"]').length === 1,
-                'The streaming ML-R1 4-file folder export must be the sole visible package choice'
+                'The streaming V3 4-file folder export must be the sole visible package choice'
+            );
+            assert(
+                document.querySelector('#ai-export-schema-version') === null &&
+                    document.querySelector('#check-ai-v3-15m-mtf') !== null,
+                'V2 schema selector must be retired and V3 15m MTF checkbox must be present'
             );
             assert(
                 document.querySelector('#ai-export-rr') === null &&
@@ -830,6 +585,6 @@ export async function runProductionExporterAcceptanceSuite(): Promise<boolean> {
         console.log('  ⏭️ Skipped: Live package UI check requires a browser DOM.');
     }
 
-    console.log(`Production Exporter Integrity: ${passed} passed, ${failed} failed.`);
+    console.log(`Production V3 Exporter Integrity: ${passed} passed, ${failed} failed.`);
     return failed === 0;
 }

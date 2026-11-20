@@ -1,8 +1,7 @@
 import JSZip from 'jszip';
-import { AIExporter, DatasetAuditor, MLR1_DATASET_VERSION, MLR1_REPRESENTATION_COLUMNS } from '../data/AIExporter';
+import { AIExporter, DatasetAuditor } from '../data/AIExporter';
 import {
     BufferedTextSink,
-    runStreamingExportParityTest,
     runV3StreamingExportParityTest,
     StreamingDatasetExporter
 } from '../data/StreamingDatasetExporter';
@@ -1118,11 +1117,6 @@ export async function runPhase5DPhase4Tests(): Promise<boolean> {
 
     await runTest('5. Full V3 Batch-vs-Streaming Byte-for-Byte CSV, SHA-256 & Complete Manifest Parity', async () => {
         assert(await runV3StreamingExportParityTest(650), 'V3 streaming parity failed');
-    });
-
-    await runTest('6. Frozen V2 Contract & Streaming Parity Non-Regression', async () => {
-        assert(MLR1_DATASET_VERSION === 2 && MLR1_REPRESENTATION_COLUMNS.length === 13, 'V2 frozen constants modified');
-        assert(await runStreamingExportParityTest(500), 'V2 streaming parity failed');
     });
 
     console.log(`\nPhase 5D Phase 4 Acceptance: ${passed} passed, ${failed} failed.`);

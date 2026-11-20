@@ -37,37 +37,12 @@ import { favoritesManager } from './data/FavoritesManager';
 import { DataWorkerClient } from './workers/DataWorkerClient';
 import { TimeframeResampler } from './data/TimeframeResampler';
 export { alertManager } from './alerts/AlertManager';
-import { AIExporter } from './data/AIExporter';
+import { AIExporter, DatasetAuditor } from './data/AIExporter';
 import {
     StreamingDatasetExporter,
-    runPhase0ExportBaseline,
-    runStreamingExportParityTest,
     runV3StreamingExportParityTest
 } from './data/StreamingDatasetExporter';
-import { createML1ZipExportRequest } from './indicators/mlr1/integration/ML1IntegrationTypes';
-export { AIExporter };
-export {
-    DatasetAuditor,
-    CandleContextAggregator,
-    HybridTokenBuilder,
-    MLR1_MODEL_INPUT_SCHEMA,
-    MLR1_DATASET_VERSION,
-    MLR1_REPRESENTATION_COLUMNS,
-    MLR1_REPRESENTATION_FEATURE_ALLOWLIST,
-    MLR1_OUTCOME_LABEL_ALLOWLIST,
-    MLR1_OUTCOME_CONFIG_VERSION,
-    buildRepresentationInput,
-    validateMLR1ModelInput,
-    type MLR1RepresentationFeature,
-    type MLR1ModelInput,
-    type MLR1EventRow
-} from './data/AIExporter';
-export {
-    MLR1_MODEL_INPUT_SCHEMA_VERSION,
-    MLR1_REPRESENTATION_SCHEMA_VERSION,
-    TIER_A_MODEL_INPUT_ALLOWLIST,
-    TIER_B_MODEL_INPUT_ALLOWLIST
-} from './indicators/mlr1/dataset/DatasetSchema';
+export { AIExporter, DatasetAuditor, StreamingDatasetExporter, runV3StreamingExportParityTest };
 import { BackgroundDataMiner } from './data/BackgroundDataMiner';
 import { AlertUI } from './alerts/AlertUI';
 import { runMilestone1AcceptanceSuite } from './test/milestone1-acceptance';
@@ -4675,31 +4650,6 @@ export class WorkspaceManager {
         btnAiExportClose?.addEventListener('click', () => modalAiExport?.close());
         btnAiExportCancel?.addEventListener('click', () => modalAiExport?.close());
 
-        const selectSchemaVersion = document.getElementById('ai-export-schema-version') as HTMLSelectElement | null;
-        const v3MtfRow = document.getElementById('ai-export-v3-mtf-row');
-        const infoTitle = document.getElementById('ai-export-info-title');
-        const infoBody = document.getElementById('ai-export-info-body');
-        const infoHorizon = document.getElementById('ai-export-info-horizon');
-        selectSchemaVersion?.addEventListener('change', () => {
-            const isV3 = selectSchemaVersion.value === 'v3';
-            if (v3MtfRow) v3MtfRow.style.display = isV3 ? 'flex' : 'none';
-            if (infoTitle) {
-                infoTitle.textContent = isV3
-                    ? 'Frozen ML-R1 v3 export configuration (15m-Only MTF)'
-                    : 'Frozen ML-R1 v2 export configuration';
-            }
-            if (infoBody) {
-                infoBody.textContent = isV3
-                    ? 'Runs ML1_CONFIG_C_v1 (15m-only MTF) and all 4 teachers (StrictCBC, PHL BOS/MSS, DTFX Zones, VAM).'
-                    : 'One accepted source candle produces one causal M1 observation. Confirmed Strict CBC events are linked to separate outcome labels.';
-            }
-            if (infoHorizon) {
-                infoHorizon.textContent = isV3
-                    ? 'Execution labels use next-open entry, a 1.5 ATR stop, 2R target, independent 60/120/180-bar horizons, and 0.05R cost.'
-                    : 'Execution labels use next-open entry, a 1.5 ATR stop, 2R target, 60-bar maximum horizon, and 0.05R transaction cost. These parameters are fixed by the dataset contract.';
-            }
-        });
-
         // UI: Custom Date Inputs Setup
         const customDateBox = document.getElementById('ai-custom-date-container');
         const customStartDate = document.getElementById('ai-custom-start-date') as HTMLInputElement | null;
@@ -4936,12 +4886,6 @@ export class WorkspaceManager {
                 }
                 console.log('✅ Milestone 5C: Passed (18/18 Acceptance Tests)');
 
-                // Phase 0 Baseline & Streaming Parity Verification
-                await runPhase0ExportBaseline(1440);
-                if (!await runStreamingExportParityTest(1440)) {
-                    throw new Error('Streaming M4 Parity test failed');
-                }
-
                 // Phase 5D (V3 Multi-Teacher, 134-Feature CONFIG_C, Replay, Auditor & Chart Parity)
                 if (loadingDetail) {
                     loadingDetail.textContent = 'Executing Phase 5D (V3 Phases 1–5 & 650-Candle Streaming Parity)...';
@@ -4962,62 +4906,55 @@ export class WorkspaceManager {
                 recordGate('Phase 5D Phase 5 (Chart Plugins & Engine Parity)', runPhase5DPhase5Tests());
                 recordGate('V3 Streaming Parity (Synthetic 650-Candle CSV/SHA-256/Manifest)', await runV3StreamingExportParityTest(650));
 
-                // Deterministic Reconstruction Verification
-                if (loadingDetail) loadingDetail.textContent = 'Verifying Deterministic Reconstruction parity...';
+                // V3 Deterministic Reconstruction Verification
+                if (loadingDetail) loadingDetail.textContent = 'Verifying V3 Deterministic Reconstruction parity...';
                 await new Promise(resolve => setTimeout(resolve, 50));
 
-                const testSlice = realCandlesRaw.subarray(0, 500 * 6);
-                if (testSlice.length !== 500 * 6) {
-                    throw new Error('Deterministic Reconstruction requires exactly 500 candles.');
+                const testSlice = realCandlesRaw.subarray(0, 650 * 6);
+                if (testSlice.length !== 650 * 6) {
+                    throw new Error('V3 Deterministic Reconstruction requires exactly 650 candles.');
                 }
                 const deterministicFixedTimestamp = 1_700_000_000_000;
-                const runPipelinePass = () => AIExporter.buildExportArtifacts({
+                const runV3PipelinePass = () => AIExporter.buildV3ExportArtifacts({
                     rawCandleBuffer: testSlice,
                     symbol: 'SOLUSDT',
                     interval: '1m',
                     intervalMs: 60_000,
+                    include15mMtf: true,
                     buildTimestamp: deterministicFixedTimestamp
                 });
-                const pass1 = await runPipelinePass();
-                const pass2 = await runPipelinePass();
-                if (pass1.events.length === 0 || !pass1.events.some(event =>
-                    event.entry_bar_index + 60 - 1 < pass1.backboneResult.acceptedRows.length
-                )) {
+                const pass1 = await runV3PipelinePass();
+                const pass2 = await runV3PipelinePass();
+                if (pass1.strategyEventRows.length === 0 || pass1.outcomeAccounting.eligibleEvents === 0) {
                     throw new Error(
-                        'Deterministic Reconstruction requires at least one confirmed event with a complete 60-bar horizon.'
+                        'V3 Deterministic Reconstruction requires at least one eligible event with a complete 180-bar horizon.'
                     );
                 }
                 if (pass1.manifest.buildTimestamp !== deterministicFixedTimestamp ||
                     pass2.manifest.buildTimestamp !== deterministicFixedTimestamp) {
-                    throw new Error('Deterministic Reconstruction did not use the fixed build timestamp.');
+                    throw new Error('V3 Deterministic Reconstruction did not use the fixed build timestamp.');
                 }
-                const pass1EventIds = pass1.events.map(event => event.event_id);
-                const pass2EventIds = pass2.events.map(event => event.event_id);
-                const pass1Archive = await AIExporter.createVerifiedDatasetArchive(
-                    pass1,
-                    createML1ZipExportRequest(pass1.manifest)
-                );
-                const pass2Archive = await AIExporter.createVerifiedDatasetArchive(
-                    pass2,
-                    createML1ZipExportRequest(pass2.manifest)
-                );
+                const pass1EventIds = pass1.strategyEventRows.map(event => event.event_id);
+                const pass2EventIds = pass2.strategyEventRows.map(event => event.event_id);
+                const pass1Archive = await AIExporter.createVerifiedV3DatasetArchive(pass1, testSlice);
+                const pass2Archive = await AIExporter.createVerifiedV3DatasetArchive(pass2, testSlice);
                 const archiveBytesMatch = pass1Archive.length === pass2Archive.length &&
                     pass1Archive.every((byte, index) => byte === pass2Archive[index]);
                 if (pass1.continuousCsv !== pass2.continuousCsv ||
                     pass1.representationCsv !== pass2.representationCsv ||
-                    pass1.eventCsv !== pass2.eventCsv ||
-                    pass1.events.length !== pass2.events.length ||
+                    pass1.strategyEventsCsv !== pass2.strategyEventsCsv ||
+                    pass1.strategyEventRows.length !== pass2.strategyEventRows.length ||
                     JSON.stringify(pass1EventIds) !== JSON.stringify(pass2EventIds) ||
                     JSON.stringify(pass1.manifest) !== JSON.stringify(pass2.manifest) ||
-                    JSON.stringify(pass1.exportAccounting) !== JSON.stringify(pass2.exportAccounting) ||
+                    JSON.stringify(pass1.outcomeAccounting) !== JSON.stringify(pass2.outcomeAccounting) ||
                     JSON.stringify(pass1.auditResult) !== JSON.stringify(pass2.auditResult) ||
                     !archiveBytesMatch) {
                     throw new Error(
-                        'Deterministic Reconstruction Failure: shared production pipeline produced divergent artifacts or manifest metrics.'
+                        'V3 Deterministic Reconstruction Failure: shared V3 pipeline produced divergent artifacts or manifest metrics.'
                     );
                 }
                 console.log(
-                    '✅ Deterministic Reconstruction: shared production pipeline achieved bitwise parity ' +
+                    '✅ V3 Deterministic Reconstruction: shared V3 pipeline achieved bitwise parity ' +
                     'across CSV artifacts, audit results, and manifest metrics.'
                 );
 
@@ -5027,14 +4964,12 @@ export class WorkspaceManager {
                 }
 
                 console.log('\n======================================================');
-                console.log('🏆 STAGE 1 GATE VERIFIED: M1–M5C + PHASE 5D (1–5) + V2/V3 PARITY');
+                console.log('🏆 STAGE 1 GATE VERIFIED: M1–M5C + PHASE 5D (1–5) + V3 PARITY');
                 console.log(`   ↳ Timestamp UTC:      ${new Date().toISOString()}`);
                 console.log(`   ↳ Browser Runtime:    ${navigator.userAgent}`);
                 console.log(`   ↳ Active Feed:        ${chart.currentSymbol} ${chart.currentInterval} (${realCandles.length} candles verified)`);
-                console.log('   ↳ Legacy Gates:       M1, M2, M3A–3E, M4B, ProdExporter, M5B, M5C, Phase0, V2-Parity, Deterministic-Recon (all reached without throw)');
+                console.log('   ↳ Core Gates:         M1, M2, M3A–3E, M4B, ProdExporter, M5B, M5C, V3-Deterministic-Recon (all reached without throw)');
                 console.log(`   ↳ Phase 5D + V3 Gate: ${phase5dGates.length}/${phase5dGates.length} passed, ${phase5dFailed} failed`);
-                console.log('   ↳ Note (Stage 3A):    650-candle V3 parity passed; physical 1w dataset audit still requires Stage 3A/4.');
-                console.log('   ↳ Archive Note:       Save this log together with your terminal git commit hash & tsc/build output.');
                 console.log('======================================================\n');
 
                 if (loadingDetail) {
@@ -5160,23 +5095,20 @@ export class WorkspaceManager {
                         expectedCandleCount
                     );
                 }
-                const schemaSelect = document.getElementById('ai-export-schema-version') as HTMLSelectElement | null;
-                const exportSchemaVersion = schemaSelect?.value === 'v3' ? 'v3' : 'v2';
                 const mtf15mCheck = document.getElementById('check-ai-v3-15m-mtf') as HTMLInputElement | null;
                 const include15mMtf = exportInterval === '1m' && (mtf15mCheck?.checked ?? true);
 
                 if (loadingTitle) {
-                    loadingTitle.textContent = exportSchemaVersion === 'v3'
-                        ? 'Streaming 4-File V3 Multi-Teacher Dataset...'
-                        : 'Streaming 4-File M4 Dataset...';
+                    loadingTitle.textContent = 'Streaming 4-File V3 Multi-Teacher Dataset...';
                 }
                 if (loadingDetail) loadingDetail.textContent = 'Processing rolling features & writing chunks...';
 
-                const commonStreamParams = {
+                const streamResult = await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
                     rawCandleBuffer,
                     symbol: exportSymbol,
                     interval: exportInterval,
                     intervalMs,
+                    include15mMtf,
                     rootDirHandle: selectedDirHandle,
                     sourceTimestampBounds: customStartMs !== undefined && customEndMs !== undefined
                         ? { startTimestamp: customStartMs, endTimestamp: customEndMs }
@@ -5187,15 +5119,9 @@ export class WorkspaceManager {
                         if (progressPct) progressPct.textContent = `${pct}%`;
                         if (loadingDetail) loadingDetail.textContent = detail;
                     }
-                };
-                const streamResult = exportSchemaVersion === 'v3'
-                    ? await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
-                        ...commonStreamParams,
-                        include15mMtf
-                    })
-                    : await StreamingDatasetExporter.exportToFolderOrOpfs(commonStreamParams);
+                });
                 rawCandleBuffer = null;
-                console.log('✅ Streaming M4 Export Complete:', streamResult);
+                console.log('✅ Streaming V3 Export Complete:', streamResult);
                 if (loadingDetail) {
                     loadingDetail.textContent = `Exported ${streamResult.telemetry.totalEvents} events (${streamResult.telemetry.durationMs}ms, peak heap ${streamResult.telemetry.peakHeapMB ?? 'N/A'} MB).`;
                 }
@@ -6159,8 +6085,6 @@ export class WorkspaceManager {
         (window as any).runPhase2JTests = runPhase2JTests;
         (window as any).generatePhase2JReports = generatePhase2JReports;
         (window as any).runPhase5CAcceptanceSuite = runPhase5CAcceptanceSuite;
-        (window as any).runPhase0ExportBaseline = runPhase0ExportBaseline;
-        (window as any).runStreamingExportParityTest = runStreamingExportParityTest;
         (window as any).runPhase5DPhase1Tests = runPhase5DPhase1Tests;
         (window as any).runPhase5DPhase2Gate1Tests = runPhase5DPhase2Gate1Tests;
         (window as any).runPhase5DPhase2Tests = runPhase5DPhase2Tests;

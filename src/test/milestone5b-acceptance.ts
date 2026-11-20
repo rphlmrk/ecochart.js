@@ -1,20 +1,22 @@
 import JSZip from 'jszip';
-import {
-    AIExporter,
-    MLR1_REPRESENTATION_COLUMNS
-} from '../data/AIExporter';
+import { AIExporter } from '../data/AIExporter';
 import {
     createML1ZipExportRequest,
     validateML1ExportRequest,
+    validateML1ExportRequestAgainstManifest,
     type ML1DataTier,
     type ML1ExportProfile,
     type ML1ExportRequest
 } from '../indicators/mlr1/integration/ML1IntegrationTypes';
 import {
-    MLR1_MODEL_INPUT_SCHEMA_VERSION,
-    MLR1_REPRESENTATION_SCHEMA_VERSION,
-    TIER_C_QUARANTINE_LIST
+    MLR1_V3_MODEL_INPUT_SCHEMA_VERSION,
+    MLR1_V3_REPRESENTATION_SCHEMA_VERSION,
+    TIER_C_V3_QUARANTINE_LIST
 } from '../indicators/mlr1/dataset/DatasetSchema';
+import {
+    V3_DATASET_VERSION,
+    V3_REPRESENTATION_COLUMNS
+} from '../indicators/mlr1/pipeline/MultiHorizonOutcomeEngine';
 
 function assert(condition: boolean, message: string): asserts condition {
     if (!condition) throw new Error(`[Phase5BAssertionFailed] ${message}`);
@@ -25,20 +27,20 @@ function makeRequest(
     tiers: readonly ML1DataTier[] = ['A', 'B']
 ): ML1ExportRequest {
     const schemaVersion = profile === 'MODEL_INPUTS'
-        ? MLR1_MODEL_INPUT_SCHEMA_VERSION
-        : MLR1_REPRESENTATION_SCHEMA_VERSION;
+        ? MLR1_V3_MODEL_INPUT_SCHEMA_VERSION
+        : MLR1_V3_REPRESENTATION_SCHEMA_VERSION;
     return {
-        requestId: 'REQUEST_SOLUSDT_1m_V2',
+        requestId: 'REQUEST_SOLUSDT_1m_V3',
         datasetRef: {
-            datasetId: 'DS_SOLUSDT_1m_V2',
+            datasetId: 'DS_SOLUSDT_1m_V3',
             symbol: 'SOLUSDT',
             baseTimeframe: '1m',
-            datasetVersion: 2,
+            datasetVersion: V3_DATASET_VERSION,
             sourceIdentity: 'BINANCE_SPOT',
-            buildConfigVersion: 'ML1_CONFIG_B_TEST',
+            buildConfigVersion: 'ML1_CONFIG_C_v1',
             featureSchemaVersion: schemaVersion,
-            teacherVersion: 'STRICT_CBC_TEST',
-            outcomeVersion: 'MLR1_TEST',
+            teacherVersion: 'MULTI_TEACHER_CBC_PHL_DTFX_VAM_v1',
+            outcomeVersion: 'MLR1_V3_H60_120_180',
             dateRange: { startTimestamp: 1_800_000_000_000, endTimestamp: 1_800_000_060_000 },
             integrityStatus: 'VALIDATED'
         },
@@ -71,7 +73,7 @@ function createCandles(count: number): Float64Array {
 
 export async function runPhase5BAcceptanceSuite(): Promise<boolean> {
     console.log('\n======================================================');
-    console.log('🧪 Starting Milestone 5 Phase 5B Acceptance Suite');
+    console.log('🧪 Starting Milestone 5 Phase 5B V3 Acceptance Suite');
     console.log('======================================================\n');
     let passed = 0;
     let failed = 0;
@@ -100,7 +102,7 @@ export async function runPhase5BAcceptanceSuite(): Promise<boolean> {
         assert(errorMessage.includes(expectedMessage), `Expected rejection containing '${expectedMessage}', got '${errorMessage}'.`);
     };
 
-    await runTest('Valid MODEL_INPUTS request accepts the approved Tier A/B projection', () => {
+    await runTest('Valid V3 MODEL_INPUTS request accepts the approved Tier A/B projection', () => {
         validateML1ExportRequest(makeRequest());
     });
 
@@ -112,7 +114,7 @@ export async function runPhase5BAcceptanceSuite(): Promise<boolean> {
         expectRejected(makeRequest('MODEL_INPUTS', ['B']), 'requires Tier A');
     });
 
-    await runTest('Valid STRUCTURAL_TEACHER request accepts Tier B only', () => {
+    await runTest('Valid V3 STRUCTURAL_TEACHER request accepts Tier B only', () => {
         validateML1ExportRequest(makeRequest('STRUCTURAL_TEACHER', ['B']));
     });
 
@@ -121,7 +123,7 @@ export async function runPhase5BAcceptanceSuite(): Promise<boolean> {
         expectRejected(makeRequest('STRUCTURAL_TEACHER', ['C']), 'permits only Tier B');
     });
 
-    await runTest('Valid FORWARD_OUTCOMES request accepts Tier C only', () => {
+    await runTest('Valid V3 FORWARD_OUTCOMES request accepts Tier C only', () => {
         validateML1ExportRequest(makeRequest('FORWARD_OUTCOMES', ['C']));
     });
 
@@ -130,9 +132,14 @@ export async function runPhase5BAcceptanceSuite(): Promise<boolean> {
         expectRejected(makeRequest('FORWARD_OUTCOMES', ['B', 'C']), 'permits only Tier C');
     });
 
-    await runTest('Validator rejects invalid output type and unsupported schema version', () => {
+    await runTest('Validator rejects retired V2 dataset/schema versions and invalid output types', () => {
         expectRejected({ ...makeRequest(), requestedOutputType: 'TAR' }, 'Unknown output type');
+        expectRejected({ ...makeRequest(), schemaVersion: 'MLR1_MODEL_INPUT_V2' }, 'Unsupported schema version');
         expectRejected({ ...makeRequest(), schemaVersion: 'MLR1_MODEL_INPUT_V99' }, 'Unsupported schema version');
+        expectRejected({
+            ...makeRequest(),
+            datasetRef: { ...makeRequest().datasetRef, datasetVersion: 2 }
+        }, 'datasetVersion must be 3');
     });
 
     await runTest('Validator rejects missing required fields and unknown top-level properties', () => {
@@ -168,93 +175,99 @@ export async function runPhase5BAcceptanceSuite(): Promise<boolean> {
         }, 'ordered safe integer timestamps');
     });
 
-    let artifacts: Awaited<ReturnType<typeof AIExporter.buildExportArtifacts>>;
+    const rawBuffer = createCandles(650);
+    let artifacts: Awaited<ReturnType<typeof AIExporter.buildV3ExportArtifacts>>;
     try {
-        artifacts = await AIExporter.buildExportArtifacts({
-            rawCandleBuffer: createCandles(500),
+        artifacts = await AIExporter.buildV3ExportArtifacts({
+            rawCandleBuffer: rawBuffer,
             symbol: 'SOLUSDT',
             interval: '1m',
             intervalMs: 60_000,
             buildTimestamp: 1_700_000_000_000
         });
     } catch (error: unknown) {
-        await runTest('Validated M4 build fixture supplies the production packaging boundary', () => {
+        await runTest('Validated V3 build fixture supplies the production packaging boundary', () => {
             throw error;
         });
         console.log(`\nPhase 5B Acceptance: ${passed} passed, ${failed} failed.`);
         return false;
     }
 
-    await runTest('Validated M4 build fixture supplies the production packaging boundary', () => {
-        assert(artifacts.events.length > 0, 'M4 fixture must contain confirmed events.');
-        assert(artifacts.manifest.auditResults.passed, 'M4 fixture must have passed its audits.');
+    await runTest('Validated V3 build fixture supplies the production packaging boundary', () => {
+        assert(artifacts.strategyEventRows.length > 0, 'V3 fixture must contain confirmed events with 180-bar horizons.');
+        assert(artifacts.manifest.auditResults.passed, 'V3 fixture must have passed its audits.');
+        assert(artifacts.manifest.datasetVersion === V3_DATASET_VERSION, 'V3 fixture must emit dataset version 3.');
     });
 
     const validRequest = createML1ZipExportRequest(artifacts.manifest);
 
-    await runTest('Production boundary rejects an invalid request before ZIP creation', async () => {
+    await runTest('V3 request bound to manifest passes validation and rejects version or manifest mismatches', () => {
+        validateML1ExportRequestAgainstManifest(validRequest, artifacts.manifest);
+
         let errorMessage = '';
         try {
-            await AIExporter.createVerifiedDatasetArchive(
-                artifacts,
-                { ...validRequest, requestedOutputType: 'TAR' }
+            validateML1ExportRequestAgainstManifest(
+                { ...validRequest, requestedOutputType: 'TAR' },
+                artifacts.manifest
             );
         } catch (error: unknown) {
             errorMessage = error instanceof Error ? error.message : String(error);
         }
-        assert(errorMessage.includes('Unknown output type'), `Unexpected production boundary result: ${errorMessage}`);
+        assert(errorMessage.includes('Unknown output type'), `Unexpected validation result: ${errorMessage}`);
+
+        errorMessage = '';
+        try {
+            validateML1ExportRequestAgainstManifest(
+                {
+                    ...validRequest,
+                    datasetRef: { ...validRequest.datasetRef, datasetVersion: 2 }
+                },
+                artifacts.manifest
+            );
+        } catch (error: unknown) {
+            errorMessage = error instanceof Error ? error.message : String(error);
+        }
+        assert(errorMessage.includes('datasetVersion must be 3'), `Expected V2 rejection, got: ${errorMessage}`);
     });
 
-    await runTest('Production boundary rejects Tier B fields outside the frozen allowlist', async () => {
+    await runTest('V3 archive boundary rejects tampered representation CSV and Tier C contamination', async () => {
         let errorMessage = '';
         try {
-            await AIExporter.createVerifiedDatasetArchive({
+            await AIExporter.createVerifiedV3DatasetArchive({
                 ...artifacts,
                 representationCsv: artifacts.representationCsv.replace(
                     '\r\n',
                     ',tierB_unapproved_feature\r\n'
                 )
-            }, validRequest);
+            }, rawBuffer);
         } catch (error: unknown) {
             errorMessage = error instanceof Error ? error.message : String(error);
         }
-        assert(errorMessage.includes('approved Tier A/B allowlists'), `Unexpected projection result: ${errorMessage}`);
+        assert(errorMessage.includes('checksums') || errorMessage.includes('V3 Archive Error'),
+            `Unexpected projection tamper result: ${errorMessage}`);
     });
 
-    await runTest('Existing M4 ZIP request reaches the unchanged four-member archive path', async () => {
-        const bytes = await AIExporter.createVerifiedDatasetArchive(artifacts, validRequest);
+    await runTest('V3 ZIP production path produces verified four-member archive without Tier C leakage', async () => {
+        const bytes = await AIExporter.createVerifiedV3DatasetArchive(artifacts, rawBuffer);
         const reopened = await JSZip.loadAsync(bytes);
         const names = Object.keys(reopened.files).filter(name => !reopened.files[name].dir).sort();
         const expected = [
             artifacts.continuousFileName,
-            artifacts.eventFileName,
+            artifacts.strategyEventsFileName,
             artifacts.representationFileName,
-            `MLR1_${artifacts.manifest.symbol}_${artifacts.manifest.timeframe}_Manifest.json`
+            artifacts.manifestFileName
         ].sort();
         assert(JSON.stringify(names) === JSON.stringify(expected), `Unexpected archive members: ${names.join(', ')}`);
 
         const representation = await reopened.file(artifacts.representationFileName)!.async('string');
         const headers = representation.split(/\r?\n/, 1)[0].split(',');
-        assert(JSON.stringify(headers) === JSON.stringify(MLR1_REPRESENTATION_COLUMNS),
-            'Model-input CSV must retain the exact approved Tier A/B column ordering.');
-        assert(!headers.some(header => TIER_C_QUARANTINE_LIST.some(field =>
+        assert(JSON.stringify(headers) === JSON.stringify(V3_REPRESENTATION_COLUMNS),
+            'V3 model-input CSV must retain the exact approved V3 representation column ordering.');
+        assert(!headers.some(header => TIER_C_V3_QUARANTINE_LIST.some(field =>
             header.toLowerCase() === field.toLowerCase() ||
-            header.toLowerCase() === `tiera_${field}` ||
-            header.toLowerCase() === `tierb_${field}`
-        )), 'Tier C fields must not be present in the model-input representation.');
-    });
-
-    await runTest('ZIP production boundary rejects valid but unsupported CSV output requests', async () => {
-        let errorMessage = '';
-        try {
-            await AIExporter.createVerifiedDatasetArchive(
-                artifacts,
-                { ...validRequest, requestedOutputType: 'CSV' }
-            );
-        } catch (error: unknown) {
-            errorMessage = error instanceof Error ? error.message : String(error);
-        }
-        assert(errorMessage.includes('supports the canonical ZIP'), `Unexpected output type result: ${errorMessage}`);
+            header.toLowerCase() === `tiera_${field.toLowerCase()}` ||
+            header.toLowerCase() === `tierb_${field.toLowerCase()}`
+        )), 'Tier C fields must not be present in the V3 model-input representation.');
     });
 
     console.log(`\nPhase 5B Acceptance: ${passed} passed, ${failed} failed.`);

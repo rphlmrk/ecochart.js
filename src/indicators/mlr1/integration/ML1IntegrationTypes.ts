@@ -1,8 +1,8 @@
 import type { DatasetDateRange } from '../dataset/DatasetConfig';
 import type { DatasetManifest } from '../dataset/DatasetManifest';
 import {
-    MLR1_MODEL_INPUT_SCHEMA_VERSION,
-    MLR1_REPRESENTATION_SCHEMA_VERSION
+    MLR1_V3_MODEL_INPUT_SCHEMA_VERSION,
+    MLR1_V3_REPRESENTATION_SCHEMA_VERSION
 } from '../dataset/DatasetSchema';
 
 /**
@@ -108,9 +108,9 @@ const DATASET_REFERENCE_KEYS = [
 ] as const;
 const DATE_RANGE_KEYS = ['startTimestamp', 'endTimestamp'] as const;
 const PROFILE_SCHEMA_VERSIONS: Readonly<Record<ML1ExportProfile, string>> = {
-    MODEL_INPUTS: MLR1_MODEL_INPUT_SCHEMA_VERSION,
-    STRUCTURAL_TEACHER: MLR1_REPRESENTATION_SCHEMA_VERSION,
-    FORWARD_OUTCOMES: MLR1_REPRESENTATION_SCHEMA_VERSION
+    MODEL_INPUTS: MLR1_V3_MODEL_INPUT_SCHEMA_VERSION,
+    STRUCTURAL_TEACHER: MLR1_V3_REPRESENTATION_SCHEMA_VERSION,
+    FORWARD_OUTCOMES: MLR1_V3_REPRESENTATION_SCHEMA_VERSION
 };
 
 function assertExactPlainObject(
@@ -171,8 +171,8 @@ function validateDatasetReference(datasetRef: unknown): asserts datasetRef is ML
     ] as const) {
         assertNonEmptyString(datasetRef[key], `datasetRef.${key}`);
     }
-    if (!Number.isSafeInteger(datasetRef.datasetVersion) || (datasetRef.datasetVersion as number) < 1) {
-        throw new Error('ML1 Export Request Error: datasetRef.datasetVersion must be a positive safe integer.');
+    if (datasetRef.datasetVersion !== 3) {
+        throw new Error('ML1 Export Request Error: datasetRef.datasetVersion must be 3.');
     }
     if (datasetRef.integrityStatus !== 'VALIDATED') {
         throw new Error("ML1 Export Request Error: datasetRef.integrityStatus must be 'VALIDATED'.");
@@ -284,14 +284,15 @@ export function createML1ZipExportRequest(manifest: DatasetManifest): ML1ExportR
         !manifest.auditResults.inputOutcomeSeparationValid) {
         throw new Error('ML1 Export Request Error: Cannot reference a dataset that has not passed its integrity audit.');
     }
-    if (manifest.datasetVersion !== manifest.buildConfig.datasetVersion ||
+    if (manifest.datasetVersion !== 3 ||
+        manifest.datasetVersion !== manifest.buildConfig.datasetVersion ||
         manifest.representationSchemaVersion !== manifest.buildConfig.representationSchemaVersion ||
         manifest.modelInputSchemaVersion !== manifest.buildConfig.modelInputSchemaVersion ||
         manifest.symbol !== manifest.buildConfig.symbol ||
         manifest.timeframe !== manifest.buildConfig.baseTimeframe ||
         manifest.startTimestamp !== manifest.buildConfig.dateRange.startTimestamp ||
         manifest.endTimestamp !== manifest.buildConfig.dateRange.endTimestamp) {
-        throw new Error('ML1 Export Request Error: Dataset manifest metadata does not match its build configuration.');
+        throw new Error('ML1 Export Request Error: Dataset manifest metadata must match V3 build configuration.');
     }
 
     return {

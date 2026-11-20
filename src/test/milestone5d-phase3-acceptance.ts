@@ -24,7 +24,6 @@ import { createDefaultPHLConfig, createInitialPHLState, stepPHL } from '../indic
 import { createDefaultDTFXConfig, createInitialDTFXState, stepDTFX } from '../indicators/mlr1/teachers/DTFXAlgoZonesTeacher';
 import { createInitialVAMState, stepVolatilityAdjustedMean } from '../indicators/mlr1/trend/VolatilityAdjustedMean';
 import type { StrictCBCState, StrictZigZagPivot } from '../indicators/plugins/StrictCBCZigZagIndicator';
-import { MLR1_DATASET_VERSION, MLR1_REPRESENTATION_COLUMNS } from '../data/AIExporter';
 import type { ML1Candle } from '../indicators/mlr1/ML1FeatureTypes';
 
 function assert(condition: boolean, msg: string): asserts condition {
@@ -637,10 +636,9 @@ export function runPhase5DPhase3Tests(): boolean {
         const typeSum = Object.values(acc.countsByEventType).reduce((a, b) => a + b, 0);
         assert(stratSum === acc.eligibleEvents && typeSum === acc.eligibleEvents, 'Strategy/event-type sums must equal eligibleEvents');
 
-        // Bounded memory & v2 protection
+        // Bounded memory & v3 dataset version
         assert(passA.runner.getPendingOutcomeCount() === 0 && passA.maxPending < 180, `Pending queue unbounded: ${passA.maxPending}`);
-        assert(MLR1_DATASET_VERSION === 2 && V3_DATASET_VERSION === 3, 'v2 dataset version must stay 2');
-        assert(MLR1_REPRESENTATION_COLUMNS.length === 13, 'v2 representation columns must remain untouched');
+        assert(V3_DATASET_VERSION === 3, 'v3 dataset version must be 3');
     });
 
     console.log(`\nPhase 5D Phase 3 Acceptance: ${passed} passed, ${failed} failed.`);
