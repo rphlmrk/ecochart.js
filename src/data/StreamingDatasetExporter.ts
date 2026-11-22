@@ -14,6 +14,7 @@ import {
 } from '../indicators/mlr1/pipeline/V3CsvSerializer';
 import { V3_DATASET_VERSION } from '../indicators/mlr1/pipeline/MultiHorizonOutcomeEngine';
 import { parseSingleCsvRecord, V3ArtifactAuditor } from '../indicators/mlr1/pipeline/V3ArtifactAuditor';
+import type { DTFXStrictCBCTimeframe } from '../indicators/mlr1/teachers/DTFXStrictCBCTeacher';
 import { AIExporter } from './AIExporter';
 
 const STREAMING_BATCH_ROWS = 500;
@@ -268,6 +269,7 @@ export class StreamingDatasetExporter {
         interval: string;
         intervalMs: number;
         include15mMtf?: boolean;
+        experimentalDtfxCbcTimeframes?: readonly DTFXStrictCBCTimeframe[];
         rootDirHandle?: any;
         destinationFolderName?: string;
         buildTimestamp?: number;
@@ -364,6 +366,7 @@ export class StreamingDatasetExporter {
                 interval,
                 intervalMs,
                 include15mMtf: params.include15mMtf,
+                experimentalDtfxCbcTimeframes: params.experimentalDtfxCbcTimeframes,
                 buildTimestamp: params.buildTimestamp,
                 requireContiguous: params.requireContiguous,
                 sourceTimestampBounds: params.sourceTimestampBounds,
@@ -526,6 +529,7 @@ export class StreamingDatasetExporter {
         interval: string;
         intervalMs: number;
         include15mMtf?: boolean;
+        experimentalDtfxCbcTimeframes?: readonly DTFXStrictCBCTimeframe[];
         buildTimestamp?: number;
         requireContiguous?: boolean;
         sourceTimestampBounds?: RawSourceTimestampBounds;
@@ -546,15 +550,18 @@ export class StreamingDatasetExporter {
             interval,
             intervalMs,
             include15mMtf: params.include15mMtf,
+            experimentalDtfxCbcTimeframes: params.experimentalDtfxCbcTimeframes,
             requireContiguous: params.requireContiguous ?? true,
             sourceTimestampBounds: params.sourceTimestampBounds
         });
         const runner = new V3PipelineRunner(config);
         const include15mMtf = config.mtf15mConfig !== null;
+        const includeExperimentalDtfxCbc = config.experimentalDtfxCbcTimeframes.length > 0;
         const auditor = new V3ArtifactAuditor({
             intervalMs,
             include15mMtf,
-            is1mBase: interval === '1m'
+            is1mBase: interval === '1m',
+            includeExperimentalDtfxCbc
         });
         const mtfCache = new MTF15mSerializerCache();
         let featureKeys: string[] | null = null;

@@ -1,5 +1,43 @@
-import type { StrategyEvent, StrategyId } from '../teachers/StrategyEventTypes';
+import type {
+    StrategyContextValue,
+    StrategyEventType,
+    StrategyId
+} from '../teachers/StrategyEventTypes';
+import type { DTFXStrictCBCEventType } from '../teachers/DTFXStrictCBCTeacher';
 import { TIER_C_QUARANTINE_LIST } from '../dataset/DatasetSchema';
+
+export type V3PipelineStrategyId = StrategyId | 'DTFX_STRICTCBC';
+export type V3PipelineEventType = StrategyEventType | DTFXStrictCBCEventType;
+export type V3PipelineContextValue = StrategyContextValue | null;
+
+export interface V3PipelineStrategyEvent {
+    readonly eventId: string;
+    readonly eventDiscriminator: string;
+    readonly strategyId: V3PipelineStrategyId;
+    readonly strategyVersion: string;
+    readonly eventType: V3PipelineEventType;
+    readonly eventDirection: 'bull' | 'bear';
+    readonly sourceBarIndex: number;
+    readonly sourceTimestamp: number;
+    readonly confirmationBarIndex: number;
+    readonly confirmationTimestamp: number;
+    readonly confirmationLagBars: number;
+    readonly observationBarIndex: number;
+    readonly observationTimestamp: number;
+    readonly entryBarIndex: number;
+    readonly entryTimestamp: number | null;
+    readonly structuralContext: Readonly<Record<string, V3PipelineContextValue>>;
+}
+
+export const V3_FROZEN_TEACHERS = Object.freeze([
+    'STRICT_CBC',
+    'PHL_BOS_MSS',
+    'DTFX_ZONES',
+    'VAM_REVERSAL'
+] as const);
+
+export const V3_TEACHER_VERSION = 'MULTI_TEACHER_CBC_PHL_DTFX_VAM_v1';
+export const V3_EXP_DTFX_TEACHER_VERSION = 'MULTI_TEACHER_CBC_PHL_DTFX_VAM_v1+EXP_DTFX_STRICTCBC_v1';
 
 export const V3_DATASET_VERSION = 3;
 export const V3_REPRESENTATION_SCHEMA_VERSION = 'MLR1_REPRESENTATION_V3';
@@ -259,7 +297,7 @@ export function assertV3RepresentationZeroTierCLeakage(columns: readonly string[
     }
 }
 
-export const V3_STRUCTURAL_CONTEXT_ALLOWLIST: Readonly<Record<StrategyId, readonly string[]>> = Object.freeze({
+export const V3_STRUCTURAL_CONTEXT_ALLOWLIST: Readonly<Record<V3PipelineStrategyId, readonly string[]>> = Object.freeze({
     STRICT_CBC: Object.freeze([
         'pivotId',
         'pivotType',
@@ -303,6 +341,23 @@ export const V3_STRUCTURAL_CONTEXT_ALLOWLIST: Readonly<Record<StrategyId, readon
         'rsi14',
         'buyStreak',
         'sellStreak'
+    ]),
+    DTFX_STRICTCBC: Object.freeze([
+        'zoneTimeframe',
+        'zoneId',
+        'zoneStatus',
+        'isChoch',
+        'retestCount',
+        'zoneCreatedSourceBarIndex',
+        'zoneCreatedConfirmationBarIndex',
+        'zoneTop',
+        'zoneBot',
+        'fib03',
+        'fib05',
+        'fib07',
+        'atr14Valid',
+        'zoneWidthAtr',
+        'fib05DistAtr'
     ])
 });
 
@@ -332,7 +387,7 @@ function assertSafeContextKey(key: string): void {
 }
 
 export function serializeAndValidateStructuralContext(
-    strategyId: StrategyId,
+    strategyId: V3PipelineStrategyId,
     structuralContext: Readonly<Record<string, unknown>>
 ): string {
     if (structuralContext === null || typeof structuralContext !== 'object' || Array.isArray(structuralContext)) {
@@ -358,7 +413,8 @@ export function serializeAndValidateStructuralContext(
         throw new Error(`V3 Structural Context Error: unknown strategyId '${strategyId}'.`);
     }
     const allowedSet = new Set(allowedKeys);
-    const ordered: Record<string, number | string | boolean> = {};
+    const ordered: Record<string, number | string | boolean | null> = {};
+    const validDtfxTimeframes = new Set(['1m', '3m', '5m', '15m']);
 
     for (const key of Object.keys(structuralContext).sort()) {
         assertSafeContextKey(key);
@@ -368,7 +424,15 @@ export function serializeAndValidateStructuralContext(
             );
         }
         const val = structuralContext[key];
-        if (typeof val === 'number') {
+        if (val === null) {
+            if (strategyId !== 'DTFX_STRICTCBC' ||
+                (key !== 'zoneWidthAtr' && key !== 'fib05DistAtr') ||
+                structuralContext['atr14Valid'] !== false) {
+                throw new Error(
+                    `V3 Structural Context Error: null value is not permitted for '${key}' on strategy '${strategyId}'.`
+                );
+            }
+        } else if (typeof val === 'number') {
             if (!Number.isFinite(val)) {
                 throw new Error(`V3 Structural Context Error: non-finite number on '${key}'.`);
             }
@@ -376,6 +440,13 @@ export function serializeAndValidateStructuralContext(
             throw new Error(
                 `V3 Structural Context Error: nested object or unsupported value type on '${key}'.`
             );
+        }
+        if (strategyId === 'DTFX_STRICTCBC' && key === 'zoneTimeframe') {
+            if (typeof val !== 'string' || !validDtfxTimeframes.has(val)) {
+                throw new Error(
+                    `V3 Structural Context Error: invalid DTFX_STRICTCBC zoneTimeframe '${String(val)}'.`
+                );
+            }
         }
         ordered[key] = val;
     }
@@ -394,7 +465,7 @@ export function assertV3RepresentationRowZeroLeakage(row: V3RepresentationRow): 
         throw new Error('V3 Representation Leakage Error: tierB_structural_context_json is invalid JSON.');
     }
     serializeAndValidateStructuralContext(
-        row.tierB_strategy_id as StrategyId,
+        row.tierB_strategy_id as V3PipelineStrategyId,
         parsed as Record<string, unknown>
     );
 }
@@ -433,7 +504,7 @@ export function buildV3RepresentationRow(row: V3StrategyEventRow): V3Representat
 }
 
 interface PendingV3OutcomeEvent {
-    readonly event: StrategyEvent;
+    readonly event: V3PipelineStrategyEvent;
     readonly symbol: string;
     readonly timeframe: string;
     readonly tierA: V3TierAAtConfirmation;
@@ -512,6 +583,11 @@ export class MultiHorizonOutcomeTracker {
     private eligibleCount = 0;
     private readonly countsByStrategy: Record<string, number> = {};
     private readonly countsByEventType: Record<string, number> = {};
+    private readonly ensureStrategyKeys: readonly string[];
+
+    public constructor(ensureStrategyKeys: readonly string[] = []) {
+        this.ensureStrategyKeys = Object.freeze([...ensureStrategyKeys]);
+    }
 
     public getPendingCount(): number {
         return this.pending.length;
@@ -697,7 +773,7 @@ export class MultiHorizonOutcomeTracker {
      * Registers confirmed events from `barIndex` in canonical sorted order.
      */
     public enqueueEvents(
-        sortedBarEvents: readonly StrategyEvent[],
+        sortedBarEvents: readonly V3PipelineStrategyEvent[],
         symbol: string,
         timeframe: string,
         tierA: V3TierAAtConfirmation,
@@ -767,6 +843,12 @@ export class MultiHorizonOutcomeTracker {
             throw new Error(
                 `V3 Outcome Reconciliation Error: accounted=${accounted} !== totalCandidates=${this.totalCandidates}.`
             );
+        }
+
+        for (const stratKey of this.ensureStrategyKeys) {
+            if (!(stratKey in this.countsByStrategy)) {
+                this.countsByStrategy[stratKey] = 0;
+            }
         }
 
         return Object.freeze({

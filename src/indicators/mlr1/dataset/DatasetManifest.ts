@@ -41,6 +41,15 @@ export interface ExportAccounting {
     readonly actualFileRowCounts: Readonly<Record<string, number>>;
 }
 
+export interface ExperimentalTeachersMetadata {
+    readonly dtfxStrictCbc?: {
+        readonly enabled: true;
+        readonly version: 'DTFX_STRICTCBC_v1';
+        readonly baseTimeframe: '1m';
+        readonly zoneTimeframes: readonly ('1m' | '3m' | '5m' | '15m')[];
+    };
+}
+
 export interface DatasetManifest {
     readonly datasetId: string;
     readonly sourceIdentity: string;
@@ -68,4 +77,5 @@ export interface DatasetManifest {
     readonly buildTimestamp: number;
     readonly auditResults: IntegrityAuditResults;
     readonly exportAccounting: ExportAccounting;
+    readonly experimentalTeachers?: ExperimentalTeachersMetadata;
 }

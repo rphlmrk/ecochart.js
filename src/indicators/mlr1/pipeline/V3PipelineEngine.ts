@@ -38,6 +38,15 @@ import {
 } from '../teachers/StrategyEventTypes';
 import { createDefaultPHLConfig, createInitialPHLState, stepPHL, type PHLConfig, type PHLState } from '../teachers/ProtectedHighsLowsTeacher';
 import { createDefaultDTFXConfig, createInitialDTFXState, stepDTFX, type DTFXConfig, type DTFXState } from '../teachers/DTFXAlgoZonesTeacher';
+import {
+    createDefaultDTFXStrictCBCMultiConfigs,
+    createInitialDTFXStrictCBCMultiState,
+    stepDTFXStrictCBCMulti,
+    type DTFXStrictCBCConfig,
+    type DTFXStrictCBCMultiState,
+    type DTFXStrictCBCTeacherEvent,
+    type DTFXStrictCBCTimeframe
+} from '../teachers/DTFXStrictCBCTeacher';
 import { createInitialVAMState, stepVolatilityAdjustedMean } from '../trend/VolatilityAdjustedMean';
 import {
     assertV3RepresentationZeroTierCLeakage,
@@ -45,11 +54,110 @@ import {
     V3_DATASET_VERSION,
     V3_REPRESENTATION_COLUMNS,
     type V3OutcomeAccounting,
+    type V3PipelineStrategyEvent,
+    type V3PipelineStrategyId,
     type V3StrategyEventRow,
     type V3TierAAtConfirmation
 } from './MultiHorizonOutcomeEngine';
 
 export const V3_15M_ONLY_MTF_VERSION = 'M3_15M_ONLY_v1';
+
+function encodeLengthPrefixedField(raw: string): string {
+    return `${raw.length}:${raw}`;
+}
+
+function buildExperimentalStrategyEventId(params: {
+    readonly strategyId: V3PipelineStrategyId;
+    readonly strategyVersion: string;
+    readonly symbol: string;
+    readonly timeframe: string;
+    readonly eventType: string;
+    readonly sourceBarIndex: number;
+    readonly confirmationBarIndex: number;
+    readonly eventDiscriminator: string;
+}): string {
+    const parts = [
+        params.strategyId,
+        params.strategyVersion,
+        params.symbol,
+        params.timeframe,
+        params.eventType,
+        String(params.sourceBarIndex),
+        String(params.confirmationBarIndex),
+        params.eventDiscriminator
+    ];
+    return `SE1|${parts.map(encodeLengthPrefixedField).join('|')}`;
+}
+
+function adaptDTFXStrictCBCtoV3StrategyEvent(
+    ev: DTFXStrictCBCTeacherEvent,
+    intervalMs: number
+): V3PipelineStrategyEvent {
+    const observationTimestamp = ev.confirmationTimestamp + intervalMs;
+    const entryBarIndex = ev.confirmationBarIndex + 1;
+    if (!Number.isSafeInteger(observationTimestamp) || !Number.isSafeInteger(entryBarIndex)) {
+        throw new Error('DTFXStrictCBC Adapter Error: timestamp/barIndex exceeds safe integer range.');
+    }
+    const eventId = buildExperimentalStrategyEventId({
+        strategyId: ev.strategyId,
+        strategyVersion: ev.strategyVersion,
+        symbol: ev.symbol,
+        timeframe: ev.timeframe,
+        eventType: ev.eventType,
+        sourceBarIndex: ev.sourceBarIndex,
+        confirmationBarIndex: ev.confirmationBarIndex,
+        eventDiscriminator: ev.eventDiscriminator
+    });
+    return Object.freeze({
+        eventId,
+        eventDiscriminator: ev.eventDiscriminator,
+        strategyId: ev.strategyId,
+        strategyVersion: ev.strategyVersion,
+        eventType: ev.eventType,
+        eventDirection: ev.eventDirection,
+        sourceBarIndex: ev.sourceBarIndex,
+        sourceTimestamp: ev.sourceTimestamp,
+        confirmationBarIndex: ev.confirmationBarIndex,
+        confirmationTimestamp: ev.confirmationTimestamp,
+        confirmationLagBars: ev.confirmationBarIndex - ev.sourceBarIndex,
+        observationBarIndex: ev.confirmationBarIndex,
+        observationTimestamp,
+        entryBarIndex,
+        entryTimestamp: null,
+        structuralContext: Object.freeze({ ...ev.structuralContext })
+    });
+}
+
+function compareAscii(a: string, b: string): number {
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function sortAndVerifyUniqueV3PipelineEvents(
+    events: readonly V3PipelineStrategyEvent[]
+): readonly V3PipelineStrategyEvent[] {
+    const seenIds = new Set<string>();
+    for (const ev of events) {
+        if (!ev || typeof ev.eventId !== 'string' || ev.eventId.trim() === '') {
+            throw new Error('V3Pipeline Event Uniqueness Error: missing or invalid eventId.');
+        }
+        if (seenIds.has(ev.eventId)) {
+            throw new Error(`V3Pipeline Event Collision Error: duplicate eventId '${ev.eventId}'.`);
+        }
+        seenIds.add(ev.eventId);
+    }
+    return Object.freeze(
+        [...events].sort((a, b) => {
+            if (a.confirmationBarIndex !== b.confirmationBarIndex) {
+                return a.confirmationBarIndex - b.confirmationBarIndex;
+            }
+            const strategyCmp = compareAscii(a.strategyId, b.strategyId);
+            if (strategyCmp !== 0) return strategyCmp;
+            const typeCmp = compareAscii(a.eventType, b.eventType);
+            if (typeCmp !== 0) return typeCmp;
+            return compareAscii(a.eventId, b.eventId);
+        })
+    );
+}
 
 export interface V3PipelineConfig {
     readonly symbol: string;
@@ -60,6 +168,8 @@ export interface V3PipelineConfig {
     readonly mtf15mConfig: MTFTimeframeConfig | null; // 15m only when interval === '1m'; NO 1h
     readonly phlConfig: PHLConfig;
     readonly dtfxConfig: DTFXConfig;
+    readonly experimentalDtfxCbcTimeframes: readonly DTFXStrictCBCTimeframe[];
+    readonly dtfxStrictCbcConfigs: readonly DTFXStrictCBCConfig[];
     readonly integrityPolicy: IntegrityPolicy;
     readonly sourceTimestampBounds?: RawSourceTimestampBounds;
 }
@@ -75,6 +185,7 @@ export interface V3PipelineBarStepOutput {
     readonly context15m: MTFTimeframeContext | null;
     readonly htf15mDiagnostic: HTFIncompleteDiagnostic | null;
     readonly confirmedEvents: readonly StrategyEvent[];       // Emitted on current bar (entryTimestamp === null)
+    readonly experimentalConfirmedEvents: readonly V3PipelineStrategyEvent[];
     readonly resolvedPreviousBarEvents: readonly StrategyEvent[]; // Prior bar's confirmed events with actual entryTimestamp
     readonly completedOutcomeRows: readonly V3StrategyEventRow[];
 }
@@ -84,6 +195,7 @@ export function createV3PipelineConfig(params: {
     readonly interval: string;
     readonly intervalMs: number;
     readonly include15mMtf?: boolean;
+    readonly experimentalDtfxCbcTimeframes?: readonly DTFXStrictCBCTimeframe[];
     readonly requireContiguous?: boolean;
     readonly sourceTimestampBounds?: RawSourceTimestampBounds;
 }): V3PipelineConfig {
@@ -135,6 +247,39 @@ export function createV3PipelineConfig(params: {
         : null;
 
     const requireContiguous = params.requireContiguous ?? true;
+    const rawExpTimeframes = params.experimentalDtfxCbcTimeframes ?? [];
+    if (rawExpTimeframes.length > 0) {
+        if (!is1m || intervalMs !== 60_000) {
+            throw new Error(
+                `V3PipelineConfig Error: experimental DTFX_STRICTCBC requires '1m' base interval (60000ms), got '${interval}' (${intervalMs}ms).`
+            );
+        }
+        const allowedExpTfs = new Set<string>(['1m', '3m', '5m', '15m']);
+        for (const tf of rawExpTimeframes) {
+            if (!allowedExpTfs.has(tf)) {
+                throw new Error(
+                    `V3PipelineConfig Error: unsupported experimental DTFX_STRICTCBC timeframe '${String(tf)}'.`
+                );
+            }
+        }
+        if (new Set(rawExpTimeframes).size !== rawExpTimeframes.length) {
+            throw new Error(
+                'V3PipelineConfig Error: duplicate entries in experimentalDtfxCbcTimeframes are not permitted.'
+            );
+        }
+    }
+    const experimentalDtfxCbcTimeframes = Object.freeze([...rawExpTimeframes]);
+    const dtfxStrictCbcConfigs =
+        experimentalDtfxCbcTimeframes.length > 0
+            ? Object.freeze(
+                  createDefaultDTFXStrictCBCMultiConfigs(
+                      symbol,
+                      interval,
+                      intervalMs,
+                      experimentalDtfxCbcTimeframes
+                  )
+              )
+            : Object.freeze([]);
 
     return Object.freeze({
         symbol,
@@ -145,6 +290,8 @@ export function createV3PipelineConfig(params: {
         mtf15mConfig,
         phlConfig: createDefaultPHLConfig(symbol, interval, intervalMs),
         dtfxConfig: createDefaultDTFXConfig(symbol, interval, intervalMs),
+        experimentalDtfxCbcTimeframes,
+        dtfxStrictCbcConfigs,
         integrityPolicy: Object.freeze({
             rejectInvalidSource: true,
             rejectInvalidOhlcv: true,
@@ -176,8 +323,9 @@ export class V3PipelineRunner {
     private lastCbcPivot: StrictZigZagPivot | null = null;
     private phlState: PHLState = createInitialPHLState();
     private dtfxState: DTFXState = createInitialDTFXState();
+    private dtfxStrictCbcState: DTFXStrictCBCMultiState | null;
     private vamTeacherState = createInitialVAMState();
-    private readonly outcomeTracker = new MultiHorizonOutcomeTracker();
+    private readonly outcomeTracker: MultiHorizonOutcomeTracker;
 
     private acceptedCount = 0;
     private gridAnchor: number | null;
@@ -192,6 +340,11 @@ export class V3PipelineRunner {
         this.config = config;
         this.featureState = createInitialML1FeatureStateV5(config.featureConfig);
         this.mtf15mState = config.mtf15mConfig ? createInitialMTFTimeframeState('15m') : null;
+        this.dtfxStrictCbcState =
+            config.dtfxStrictCbcConfigs.length > 0 ? createInitialDTFXStrictCBCMultiState() : null;
+        this.outcomeTracker = new MultiHorizonOutcomeTracker(
+            config.experimentalDtfxCbcTimeframes.length > 0 ? ['DTFX_STRICTCBC'] : []
+        );
         this.gridAnchor = config.sourceTimestampBounds?.startTimestamp ?? null;
     }
 
@@ -386,14 +539,39 @@ export class V3PipelineRunner {
         });
         if (vamEv) rawBarEvents.push(vamEv);
 
+        // 4e. Optional Experimental DTFX_STRICTCBC Multi-Timeframe Teacher
+        const rawExperimentalEvents: V3PipelineStrategyEvent[] = [];
+        if (this.config.dtfxStrictCbcConfigs.length > 0 && this.dtfxStrictCbcState !== null) {
+            const expStep = stepDTFXStrictCBCMulti(
+                candle,
+                barIndex,
+                this.dtfxStrictCbcState,
+                this.config.dtfxStrictCbcConfigs,
+                isDiscontinuity,
+                atrForContext
+            );
+            this.dtfxStrictCbcState = expStep.nextState;
+            for (const expEv of expStep.events) {
+                rawExperimentalEvents.push(adaptDTFXStrictCBCtoV3StrategyEvent(expEv, intervalMs));
+            }
+        }
+
         // Canonical sort & bar-level eventId uniqueness (global uniqueness follows from barIndex monotonicity)
         if (barIndex <= this.lastConfirmationBar) {
             throw new Error(`V3Pipeline Chronology Error: non-monotonic barIndex ${barIndex}.`);
         }
         this.lastConfirmationBar = barIndex;
         const sortedBarEvents = sortAndVerifyUniqueStrategyEvents(rawBarEvents);
+        const sortedExperimentalEvents =
+            rawExperimentalEvents.length > 0
+                ? sortAndVerifyUniqueV3PipelineEvents(rawExperimentalEvents)
+                : Object.freeze([]);
+        const sortedCombinedEvents =
+            sortedExperimentalEvents.length === 0
+                ? sortedBarEvents
+                : sortAndVerifyUniqueV3PipelineEvents([...sortedBarEvents, ...sortedExperimentalEvents]);
 
-        if (sortedBarEvents.length > 0) {
+        if (sortedCombinedEvents.length > 0) {
             const tierASnapshot: V3TierAAtConfirmation = Object.freeze({
                 tierAObservationId: observationId,
                 atr14: atrValid ? atr14 : 0,
@@ -414,7 +592,7 @@ export class V3PipelineRunner {
                 context15mAvailable: context15m?.isAvailable === true,
                 context15mStatus: context15m?.availabilityStatus ?? 'UNAVAILABLE'
             });
-            this.outcomeTracker.enqueueEvents(sortedBarEvents, symbol, interval, tierASnapshot, atrValid);
+            this.outcomeTracker.enqueueEvents(sortedCombinedEvents, symbol, interval, tierASnapshot, atrValid);
         }
 
         this.pendingEntryResolutionEvents = sortedBarEvents;
@@ -431,6 +609,7 @@ export class V3PipelineRunner {
             context15m,
             htf15mDiagnostic,
             confirmedEvents: sortedBarEvents,
+            experimentalConfirmedEvents: sortedExperimentalEvents,
             resolvedPreviousBarEvents: Object.freeze(resolvedPreviousBarEvents),
             completedOutcomeRows
         };

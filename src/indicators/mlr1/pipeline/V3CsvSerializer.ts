@@ -6,11 +6,13 @@ import {
     assertV3RepresentationZeroTierCLeakage,
     buildV3RepresentationRow,
     V3_DATASET_VERSION,
+    V3_EXP_DTFX_TEACHER_VERSION,
     V3_MODEL_INPUT_SCHEMA_VERSION,
     V3_OUTCOME_CONFIG_VERSION,
     V3_REPRESENTATION_COLUMNS,
     V3_REPRESENTATION_SCHEMA_VERSION,
     V3_STRATEGY_EVENT_COLUMNS,
+    V3_TEACHER_VERSION,
     type V3OutcomeAccounting,
     type V3RepresentationRow,
     type V3StrategyEventRow
@@ -22,7 +24,14 @@ import {
     type V3PipelineRunner
 } from './V3PipelineEngine';
 
-export const V3_TEACHER_VERSION = 'MULTI_TEACHER_CBC_PHL_DTFX_VAM_v1';
+export { V3_TEACHER_VERSION, V3_EXP_DTFX_TEACHER_VERSION };
+
+export function getV3TeacherVersion(config: V3PipelineConfig): string {
+    if (config.experimentalDtfxCbcTimeframes.length === 0) {
+        return V3_TEACHER_VERSION;
+    }
+    return V3_EXP_DTFX_TEACHER_VERSION;
+}
 
 export function v3CsvEscape(value: unknown): string {
     if (value == null) return '';
@@ -247,7 +256,7 @@ export function buildV3DatasetManifest(params: {
             modelInputSchemaVersion: V3_MODEL_INPUT_SCHEMA_VERSION,
             sourceIntervalMs: config.intervalMs,
             featureConfigVersion: getV3FeatureConfigVersion(config),
-            teacherVersion: V3_TEACHER_VERSION,
+            teacherVersion: getV3TeacherVersion(config),
             outcomeConfigVersion: V3_OUTCOME_CONFIG_VERSION,
             dateRange: { startTimestamp, endTimestamp },
             integrityPolicy: config.integrityPolicy,
@@ -273,6 +282,9 @@ export function buildV3DatasetManifest(params: {
                     `excluded(missingOpen=${outcomeAccounting.excludedMissingNextOpen}, unwarmedAtr=${outcomeAccounting.excludedUnwarmedAtr}, incompleteHz180=${outcomeAccounting.excludedIncompleteHorizon}).`,
                 `Strategy Counts: ${JSON.stringify(outcomeAccounting.countsByStrategy)}`,
                 `Event Type Counts: ${JSON.stringify(outcomeAccounting.countsByEventType)}`,
+                ...(config.experimentalDtfxCbcTimeframes.length > 0
+                    ? [`Experimental DTFX_STRICTCBC Timeframes: ${config.experimentalDtfxCbcTimeframes.join(',')}`]
+                    : []),
                 `Tier B + Tier C co-located in ${fileNames.strategyEventsFileName} (separateFiles=false); model-input projection in ${fileNames.representationFileName}.`,
                 `SHA-256 ${fileNames.continuousFileName}: ${params.fileChecksums.continuousSha256}`,
                 `SHA-256 ${fileNames.representationFileName}: ${params.fileChecksums.representationSha256}`,
@@ -291,7 +303,24 @@ export function buildV3DatasetManifest(params: {
         }
     );
 
-    return params.buildTimestamp === undefined
-        ? manifest
-        : { ...manifest, buildTimestamp: params.buildTimestamp };
+    const withBuildTs =
+        params.buildTimestamp === undefined
+            ? manifest
+            : { ...manifest, buildTimestamp: params.buildTimestamp };
+
+    if (config.experimentalDtfxCbcTimeframes.length === 0) {
+        return withBuildTs;
+    }
+
+    return Object.freeze({
+        ...withBuildTs,
+        experimentalTeachers: Object.freeze({
+            dtfxStrictCbc: Object.freeze({
+                enabled: true as const,
+                version: 'DTFX_STRICTCBC_v1' as const,
+                baseTimeframe: '1m' as const,
+                zoneTimeframes: Object.freeze([...config.experimentalDtfxCbcTimeframes])
+            })
+        })
+    });
 }

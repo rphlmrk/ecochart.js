@@ -45,6 +45,7 @@ import {
 } from './data/StreamingDatasetExporter';
 export { AIExporter, DatasetAuditor, StreamingDatasetExporter, runV3StreamingExportParityTest };
 import { BackgroundDataMiner } from './data/BackgroundDataMiner';
+import type { DTFXStrictCBCTimeframe } from './indicators/mlr1/teachers/DTFXStrictCBCTeacher';
 import { AlertUI } from './alerts/AlertUI';
 import { runMilestone1AcceptanceSuite } from './test/milestone1-acceptance';
 export { runMilestone1AcceptanceSuite };
@@ -105,6 +106,8 @@ import { runPhase5DPhase4Tests } from './test/milestone5d-phase4-acceptance';
 export { runPhase5DPhase4Tests };
 import { runPhase5DPhase5Tests } from './test/milestone5d-phase5-acceptance';
 export { runPhase5DPhase5Tests };
+import { runDTFXStrictCBCExportIntegrationTests } from './test/dtfx-strictcbc-export-integration-test';
+export { runDTFXStrictCBCExportIntegrationTests };
 
 const auditBoundButtons = new WeakSet<HTMLElement>();
 
@@ -4637,11 +4640,22 @@ export class WorkspaceManager {
         const loadingOverlay = document.getElementById('ai-export-loading-overlay') as HTMLElement | null;
         const aiSubtitle = document.getElementById('ai-export-subtitle');
 
+        const expDtfxCbcCheck = document.getElementById('check-ai-v3-exp-dtfx-cbc') as HTMLInputElement | null;
+        const expDtfxCbcTfsBox = document.getElementById('ai-export-v3-dtfx-cbc-tfs') as HTMLElement | null;
+        const syncExpDtfxVisibility = () => {
+            if (expDtfxCbcTfsBox) {
+                expDtfxCbcTfsBox.style.display = expDtfxCbcCheck?.checked ? 'flex' : 'none';
+            }
+        };
+        expDtfxCbcCheck?.addEventListener('change', syncExpDtfxVisibility);
+        syncExpDtfxVisibility();
+
         const openModalAndSync = () => {
             if (aiSubtitle && WorkspaceManager.activeChart) {
                 const c = WorkspaceManager.activeChart;
                 aiSubtitle.textContent = `${c.currentSymbol} • ${c.currentInterval} • Ground truth signal outcomes & range detection`;
             }
+            syncExpDtfxVisibility();
             modalAiExport?.showModal();
         };
 
@@ -5029,6 +5043,33 @@ export class WorkspaceManager {
                 alert(`Unsupported chart interval for export: ${exportInterval}`);
                 return;
             }
+            const VALID_EXP_DTFX_TFS = new Set<DTFXStrictCBCTimeframe>(['1m', '3m', '5m', '15m']);
+            const expDtfxEnabled = Boolean(expDtfxCbcCheck?.checked);
+            const rawExpTfs = expDtfxEnabled
+                ? Array.from(document.querySelectorAll('.ai-v3-dtfx-cbc-tf:checked'))
+                    .map(el => (el as HTMLInputElement).value)
+                : [];
+            if (expDtfxEnabled) {
+                if (exportInterval !== '1m') {
+                    alert('Experimental DTFX (StrictCBC) 1m–15m multi-TF teacher requires a 1m base chart.');
+                    return;
+                }
+                if (rawExpTfs.length === 0) {
+                    alert('Select at least one DTFX (StrictCBC) timeframe (1m, 3m, 5m, 15m).');
+                    return;
+                }
+                for (const tf of rawExpTfs) {
+                    if (!VALID_EXP_DTFX_TFS.has(tf as DTFXStrictCBCTimeframe)) {
+                        alert(`Unsupported DTFX (StrictCBC) timeframe: '${tf}'.`);
+                        return;
+                    }
+                }
+                if (new Set(rawExpTfs).size !== rawExpTfs.length) {
+                    alert('Duplicate DTFX (StrictCBC) timeframe entries are not permitted.');
+                    return;
+                }
+            }
+            const selectedExpDtfxTfs = rawExpTfs as DTFXStrictCBCTimeframe[];
             const expectedCandleCount = Math.max(1, Math.ceil(durationMs / intervalMs));
             const expectedEndOpenTimestamp = Math.floor(Date.now() / intervalMs) * intervalMs - intervalMs;
             const expectedStartOpenTimestamp =
@@ -5110,6 +5151,7 @@ export class WorkspaceManager {
                     interval: exportInterval,
                     intervalMs,
                     include15mMtf,
+                    experimentalDtfxCbcTimeframes: selectedExpDtfxTfs,
                     rootDirHandle: selectedDirHandle,
                     sourceTimestampBounds: customStartMs !== undefined && customEndMs !== undefined
                         ? { startTimestamp: customStartMs, endTimestamp: customEndMs }

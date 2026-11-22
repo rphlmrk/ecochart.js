@@ -12,12 +12,14 @@ import {
     V3_REPRESENTATION_COLUMNS,
     V3_STOP_ATR_MULT,
     V3_STRATEGY_EVENT_COLUMNS,
+    V3_STRUCTURAL_CONTEXT_ALLOWLIST,
     V3_TARGET_R_MULT,
     V3_TRADE_COST_R,
     type V3HorizonOutcomeClass,
+    type V3PipelineStrategyId,
     type V3StrategyEventRow
 } from './MultiHorizonOutcomeEngine';
-import { compareStrategyEvents, type StrategyId } from '../teachers/StrategyEventTypes';
+import { compareStrategyEvents } from '../teachers/StrategyEventTypes';
 
 const V3_MTF15M_ALLOWED_FEATURES: ReadonlySet<string> = new Set([
     'IsValidOHLCV', 'IsSynthetic', 'IsFlatCandle', 'IsZeroVolume', 'IsInvalidIndex',
@@ -110,6 +112,24 @@ const VALID_HTF_COMPLETENESS = new Set<string>([
     'INCOMPLETE_UNFINISHED'
 ]);
 const VALID_STRATEGY_IDS = new Set<string>(['STRICT_CBC', 'PHL_BOS_MSS', 'DTFX_ZONES', 'VAM_REVERSAL']);
+const VALID_STRATEGY_IDS_WITH_EXP = new Set<string>([...VALID_STRATEGY_IDS, 'DTFX_STRICTCBC']);
+const VALID_EVENT_TYPES_BY_STRATEGY: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
+    STRICT_CBC: new Set(['CBC_HIGH_HH', 'CBC_HIGH_LH', 'CBC_LOW_HL', 'CBC_LOW_LL']),
+    PHL_BOS_MSS: new Set(['PHL_BOS_BULL', 'PHL_BOS_BEAR', 'PHL_MSS_BULL', 'PHL_MSS_BEAR']),
+    DTFX_ZONES: new Set([
+        'DTFX_DEMAND_CREATED',
+        'DTFX_SUPPLY_CREATED',
+        'DTFX_DEMAND_RETEST',
+        'DTFX_SUPPLY_RETEST'
+    ]),
+    VAM_REVERSAL: new Set(['VAM_BUY', 'VAM_SELL']),
+    DTFX_STRICTCBC: new Set([
+        'DTFX_CBC_DEMAND_CREATED',
+        'DTFX_CBC_SUPPLY_CREATED',
+        'DTFX_CBC_DEMAND_RETEST',
+        'DTFX_CBC_SUPPLY_RETEST'
+    ])
+});
 
 type StrategyEventColType =
     | 'nonempty_string'
@@ -418,6 +438,7 @@ export class V3ArtifactAuditor {
     private readonly intervalMs: number;
     private readonly is1mBase: boolean;
     private readonly include15mMtf: boolean;
+    private readonly includeExperimentalDtfxCbc: boolean;
     private readonly batchRawBuffer: Float64Array | null;
     private readonly batchRawLength: number;
 
@@ -457,6 +478,7 @@ export class V3ArtifactAuditor {
         readonly intervalMs: number;
         readonly include15mMtf: boolean;
         readonly is1mBase: boolean;
+        readonly includeExperimentalDtfxCbc?: boolean;
         readonly batchRawBuffer?: Float64Array;
     }) {
         assertStrategyEventSchemaCoverage();
@@ -469,6 +491,7 @@ export class V3ArtifactAuditor {
         this.intervalMs = params.intervalMs;
         this.include15mMtf = params.include15mMtf;
         this.is1mBase = params.is1mBase;
+        this.includeExperimentalDtfxCbc = params.includeExperimentalDtfxCbc ?? false;
 
         if (params.batchRawBuffer !== undefined) {
             if (!(params.batchRawBuffer instanceof Float64Array) || params.batchRawBuffer.length % 6 !== 0) {
@@ -900,7 +923,8 @@ export class V3ArtifactAuditor {
                 if (colType === 'nonempty_string') {
                     if (!cell || cell.trim() === '') throw new Error(`blank '${String(colName)}'`);
                 } else if (colType === 'strategy_id') {
-                    if (!VALID_STRATEGY_IDS.has(cell)) throw new Error(`unknown strategy_id '${cell}'`);
+                    const validIds = this.includeExperimentalDtfxCbc ? VALID_STRATEGY_IDS_WITH_EXP : VALID_STRATEGY_IDS;
+                    if (!validIds.has(cell)) throw new Error(`unknown strategy_id '${cell}'`);
                 } else if (colType === 'direction') {
                     if (cell !== 'bull' && cell !== 'bear') throw new Error(`invalid direction '${cell}'`);
                 } else if (colType === 'availability') {
@@ -936,12 +960,29 @@ export class V3ArtifactAuditor {
         }
 
         try {
-            const stratId = repMap.get('tierB_strategy_id')! as StrategyId;
+            const stratId = repMap.get('tierB_strategy_id')! as V3PipelineStrategyId;
+            const evType = evMap.get('event_type')!;
+            const allowedTypes = VALID_EVENT_TYPES_BY_STRATEGY[stratId];
+            if (!allowedTypes || !allowedTypes.has(evType)) {
+                this.fail('replay', `Invalid event_type '${evType}' for strategy_id '${stratId}'.`);
+                return;
+            }
             const parsedCtx = JSON.parse(repMap.get('tierB_structural_context_json')!);
             assertRecursiveNoQuarantinedKeys(parsedCtx);
             const canonicalCtx = serializeAndValidateStructuralContext(stratId, parsedCtx);
             if (canonicalCtx !== repMap.get('tierB_structural_context_json')) {
                 this.fail('sep', 'Representation structural_context_json not canonical.');
+            }
+            if (stratId === 'DTFX_STRICTCBC') {
+                if (!evMap.get('event_id')!.startsWith('SE1|')) {
+                    this.fail('id', `Invalid DTFX_STRICTCBC SE1 event_id '${evMap.get('event_id')}'.`);
+                }
+                for (const reqKey of V3_STRUCTURAL_CONTEXT_ALLOWLIST.DTFX_STRICTCBC) {
+                    if (!Object.prototype.hasOwnProperty.call(parsedCtx, reqKey)) {
+                        this.fail('sep', `DTFX_STRICTCBC structural_context missing required key '${reqKey}'.`);
+                        return;
+                    }
+                }
             }
 
             const pairs: Array<[string, string]> = [

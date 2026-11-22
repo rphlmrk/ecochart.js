@@ -22,9 +22,12 @@ import {
     formatV3RepresentationRow,
     formatV3StrategyEventRow,
     getV3FileNames,
-    MTF15mSerializerCache
+    MTF15mSerializerCache,
+    V3_EXP_DTFX_TEACHER_VERSION,
+    V3_TEACHER_VERSION
 } from '../indicators/mlr1/pipeline/V3CsvSerializer';
 import { parseCsvDocumentCRLF, V3ArtifactAuditor } from '../indicators/mlr1/pipeline/V3ArtifactAuditor';
+import type { DTFXStrictCBCTimeframe } from '../indicators/mlr1/teachers/DTFXStrictCBCTeacher';
 
 export class SourceIntegrityError extends Error {
     public readonly sourceReport: RawSourceAccountingReport;
@@ -144,6 +147,7 @@ export class AIExporter {
         interval: string;
         intervalMs: number;
         include15mMtf?: boolean;
+        experimentalDtfxCbcTimeframes?: readonly DTFXStrictCBCTimeframe[];
         buildTimestamp?: number;
         requireContiguous?: boolean;
         sourceTimestampBounds?: RawSourceTimestampBounds;
@@ -163,11 +167,13 @@ export class AIExporter {
             interval,
             intervalMs,
             include15mMtf: params.include15mMtf,
+            experimentalDtfxCbcTimeframes: params.experimentalDtfxCbcTimeframes,
             requireContiguous: params.requireContiguous ?? true,
             sourceTimestampBounds: params.sourceTimestampBounds
         });
         const runner = new V3PipelineRunner(config);
         const include15mMtf = config.mtf15mConfig !== null;
+        const includeExperimentalDtfxCbc = config.experimentalDtfxCbcTimeframes.length > 0;
         const mtfCache = new MTF15mSerializerCache();
 
         let featureKeys: string[] | null = null;
@@ -226,6 +232,7 @@ export class AIExporter {
             representationCsv,
             strategyEventsCsv,
             include15mMtf,
+            includeExperimentalDtfxCbc,
             is1mBase: interval === '1m'
         });
         if (!auditResult.passed) {
@@ -319,6 +326,37 @@ export class AIExporter {
 
         // Independently verify exact CSV bytes entering ZIP against the raw source candles
         const manifestIncludes15m = artifacts.manifest.featureVersion.includes(V3_15M_ONLY_MTF_VERSION);
+        let manifestIncludesExpDtfx = false;
+        if (artifacts.manifest.teacherVersion === V3_TEACHER_VERSION) {
+            if (artifacts.manifest.experimentalTeachers !== undefined) {
+                throw new Error(
+                    'V3 Archive Error: frozen V3_TEACHER_VERSION manifest cannot contain experimentalTeachers metadata.'
+                );
+            }
+            manifestIncludesExpDtfx = false;
+        } else if (artifacts.manifest.teacherVersion === V3_EXP_DTFX_TEACHER_VERSION) {
+            const dtfxMeta = artifacts.manifest.experimentalTeachers?.dtfxStrictCbc;
+            const validTfs = new Set(['1m', '3m', '5m', '15m']);
+            if (!dtfxMeta ||
+                dtfxMeta.enabled !== true ||
+                dtfxMeta.version !== 'DTFX_STRICTCBC_v1' ||
+                dtfxMeta.baseTimeframe !== '1m' ||
+                artifacts.manifest.timeframe !== '1m' ||
+                !Array.isArray(dtfxMeta.zoneTimeframes) ||
+                dtfxMeta.zoneTimeframes.length === 0 ||
+                dtfxMeta.zoneTimeframes.some(tf => !validTfs.has(tf)) ||
+                new Set(dtfxMeta.zoneTimeframes).size !== dtfxMeta.zoneTimeframes.length ||
+                !remarks.includes(`Experimental DTFX_STRICTCBC Timeframes: ${dtfxMeta.zoneTimeframes.join(',')}`)) {
+                throw new Error(
+                    'V3 Archive Error: V3_EXP_DTFX_TEACHER_VERSION manifest requires valid non-empty zoneTimeframes metadata.'
+                );
+            }
+            manifestIncludesExpDtfx = true;
+        } else {
+            throw new Error(
+                `V3 Archive Error: unsupported manifest teacherVersion '${artifacts.manifest.teacherVersion}'.`
+            );
+        }
         const reAudit = DatasetAuditor.runV3CausalityAudit({
             rawCandleBuffer,
             intervalMs: artifacts.manifest.buildConfig.sourceIntervalMs,
@@ -328,6 +366,7 @@ export class AIExporter {
             representationCsv: artifacts.representationCsv,
             strategyEventsCsv: artifacts.strategyEventsCsv,
             include15mMtf: manifestIncludes15m,
+            includeExperimentalDtfxCbc: manifestIncludesExpDtfx,
             is1mBase: artifacts.manifest.timeframe === '1m'
         });
         if (!reAudit.passed) {
@@ -384,11 +423,13 @@ export class DatasetAuditor {
         readonly representationCsv: string;
         readonly strategyEventsCsv: string;
         readonly include15mMtf: boolean;
+        readonly includeExperimentalDtfxCbc?: boolean;
         readonly is1mBase: boolean;
     }): IntegrityAuditResults {
         const auditor = new V3ArtifactAuditor({
             intervalMs: params.intervalMs,
             include15mMtf: params.include15mMtf,
+            includeExperimentalDtfxCbc: params.includeExperimentalDtfxCbc,
             is1mBase: params.is1mBase,
             batchRawBuffer: params.rawCandleBuffer
         });
