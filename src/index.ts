@@ -26,7 +26,8 @@ import {
     VolumeCandleSizeIndicator,
     VolatilityAdjustedMeanIndicator,
     ProtectedHighsLowsIndicator,
-    DTFXAlgoZonesIndicator
+    DTFXAlgoZonesIndicator,
+    DTFXStrictCBCIndicator
 } from './indicators/plugins';
 
 import { DrawingManager, type ToolType } from './tools/DrawingManager';
@@ -5573,6 +5574,7 @@ export class WorkspaceManager {
             { type: 'VAM', name: 'Volatility Adjusted Mean (VAM)', factory: () => new VolatilityAdjustedMeanIndicator() },
             { type: 'PHL_BOS_MSS', name: 'Protected Highs/Lows (BOS/MSS)', factory: () => new ProtectedHighsLowsIndicator() },
             { type: 'DTFX_ZONES', name: 'DTFX Algo Zones', factory: () => new DTFXAlgoZonesIndicator() },
+            { type: 'DTFX_STRICTCBC_ZONES', name: 'DTFX Algo Zones (StrictCBC)', factory: () => new DTFXStrictCBCIndicator() },
             { type: 'HTF_BOX', name: 'HTF Box', factory: () => new HTFBoxIndicator(60) },
             { type: 'HTF_BIAS', name: 'HTF Bias', factory: () => new HTFBiasIndicator(60) },
             { type: 'HTF_PROJ', name: 'HTF Projections', factory: () => new HTFProjectionsIndicator('Custom', 21) },
@@ -5783,6 +5785,12 @@ export class WorkspaceManager {
                     }
                     if (cat.type === 'MS_PULLBACK_DTDB') {
                         return i instanceof PullbackDoubleTopBottomIndicator || i.id === 'MS_PULLBACK_DTDB';
+                    }
+                    if (cat.type === 'DTFX_STRICTCBC_ZONES') {
+                        return i instanceof DTFXStrictCBCIndicator || i.id === 'DTFX_STRICTCBC_ZONES';
+                    }
+                    if (cat.type === 'DTFX_ZONES') {
+                        return (i instanceof DTFXAlgoZonesIndicator) && !(i instanceof DTFXStrictCBCIndicator);
                     }
                     return i.id === cat.type || i.id.startsWith(cat.type);
                 });

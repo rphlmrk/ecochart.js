@@ -18,3 +18,9 @@ export { VolumeCandleSizeIndicator } from './VolumeCandleSizeIndicator';
 export { VolatilityAdjustedMeanIndicator } from './VolatilityAdjustedMeanIndicator';
 export { ProtectedHighsLowsIndicator } from './ProtectedHighsLowsIndicator';
 export { DTFXAlgoZonesIndicator } from './DTFXAlgoZonesIndicator';
+export {
+    DTFXStrictCBCIndicator,
+    type DTFXStrictCBCLineStyle,
+    type DTFXStrictCBCFibLine,
+    type DTFXStrictCBCZone
+} from './DTFXStrictCBCIndicator';
