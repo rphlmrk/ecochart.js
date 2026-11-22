@@ -154,6 +154,13 @@ export class DTFXStrictCBCIndicator extends BaseIndicator {
         return parsedMs <= chartTfMs ? chartTfMs : parsedMs;
     }
 
+    public getTimeframeOptions(chartInterval: string): string[] {
+        const chartMs = TimeframeResampler.parseMs(chartInterval.toLowerCase());
+        const allTfs = ['1m', '3m', '5m', '15m', '30m', '45m', '1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w'];
+        const validHtf = allTfs.filter((tf) => TimeframeResampler.parseMs(tf) > chartMs);
+        return ['Current', ...validHtf, 'Custom HTF'];
+    }
+
     protected override onParamsUpdated(): void {
         this.lastCalculatedLength = -1;
         this.lastStateHash = '';
@@ -501,19 +508,13 @@ export class DTFXStrictCBCIndicator extends BaseIndicator {
             return;
         }
 
-        let nextPivotId = 1;
-        let anchorHigh = htfBars[0].high;
-        let anchorLow = htfBars[0].low;
-        let isBullish = true;
+        const lastHtfBar = htfBars[htfBars.length - 1];
+        const isLastHtfClosed = (data[lastHtfBar.lastChartBar * 6] + chartTfMs) >= (lastHtfBar.time + tfMs);
+        const closedHtfLen = isLastHtfClosed ? htfBars.length : htfBars.length - 1;
 
-        let phaseHigh = htfBars[0].high;
-        let phaseHighChartIdx = htfBars[0].peakChartBar;
-        let phaseLow = htfBars[0].low;
-        let phaseLowChartIdx = htfBars[0].troughChartBar;
-        let lastHighPrice: number | null = null;
-        let lastLowPrice: number | null = null;
-
-        const htfDiscThresholdMs = Math.max(300_000, tfMs * 2);
+        const htfDiscThresholdMs = Math.max(300_000, tfMs * 5);
+        let htfState: StrictCBCState | null = null;
+        let htfPrevPivot: StrictZigZagPivot | null = null;
         let prevHtfTime = -1;
 
         let dir: 1 | -1 | 0 = 0;
@@ -524,21 +525,25 @@ export class DTFXStrictCBCIndicator extends BaseIndicator {
         let bosDownCheck = false;
         let prevClose = htfBars[0].close;
 
-        for (let idx = 0; idx < htfBars.length; idx++) {
+        for (let idx = 0; idx < closedHtfLen; idx++) {
             const bar = htfBars[idx];
             const isHtfDiscontinuity = bar.hasGap || (prevHtfTime !== -1 && (bar.time - prevHtfTime) >= htfDiscThresholdMs);
             prevHtfTime = bar.time;
 
+            const htfCandle: StrictCBCCandle = {
+                time: bar.time,
+                open: bar.open,
+                high: bar.high,
+                low: bar.low,
+                close: bar.close
+            };
+
+            const stepResult = stepStrictCBCWithReset(htfCandle, idx, htfState, htfPrevPivot, isHtfDiscontinuity);
+            const currentHtfState: StrictCBCState = stepResult.nextState;
+            htfState = currentHtfState;
+
             if (isHtfDiscontinuity) {
-                anchorHigh = bar.high;
-                anchorLow = bar.low;
-                isBullish = true;
-                phaseHigh = bar.high;
-                phaseHighChartIdx = bar.peakChartBar;
-                phaseLow = bar.low;
-                phaseLowChartIdx = bar.troughChartBar;
-                lastHighPrice = null;
-                lastLowPrice = null;
+                htfPrevPivot = null;
                 dir = 0;
                 tDir = 0;
                 t = null;
@@ -549,78 +554,30 @@ export class DTFXStrictCBCIndicator extends BaseIndicator {
                 continue;
             }
 
-            const isBuy = bar.close > bar.open;
-            const isSell = bar.close < bar.open;
-
-            const bearishFlip = isBullish && isSell && (bar.close < anchorLow);
-            const bullishFlip = !isBullish && isBuy && (bar.close > anchorHigh);
-
-            if (isBullish) {
-                if (bar.high > phaseHigh) {
-                    phaseHigh = bar.high;
-                    phaseHighChartIdx = bar.peakChartBar;
-                }
-            } else {
-                if (bar.low < phaseLow) {
-                    phaseLow = bar.low;
-                    phaseLowChartIdx = bar.troughChartBar;
-                }
-            }
-
-            if (bearishFlip) {
-                isBullish = false;
-                const label: 'HH' | 'LH' = (lastHighPrice === null || phaseHigh >= lastHighPrice) ? 'HH' : 'LH';
-                lastHighPrice = phaseHigh;
-
-                const highPivot: StrictZigZagPivot = {
-                    id: nextPivotId++,
-                    barIndex: phaseHighChartIdx,
-                    time: data[phaseHighChartIdx * 6],
-                    price: phaseHigh,
-                    type: 'high',
-                    label,
+            const rawHtfPivot = stepResult.confirmedPivot;
+            if (rawHtfPivot) {
+                const srcBar = htfBars[rawHtfPivot.barIndex];
+                const chartBarIdx = rawHtfPivot.type === 'high' ? srcBar.peakChartBar : srcBar.troughChartBar;
+                const mappedPivot: StrictZigZagPivot = {
+                    ...rawHtfPivot,
+                    barIndex: chartBarIdx,
+                    time: data[chartBarIdx * 6],
                     confirmedBarIndex: bar.lastChartBar
                 };
-                pivots.push(highPivot);
-                this.pivotTypes[phaseHighChartIdx] = 1;
-                this.pivotPrices[phaseHighChartIdx] = phaseHigh;
+                htfPrevPivot = rawHtfPivot;
+                pivots.push(mappedPivot);
+                this.pivotTypes[chartBarIdx] = mappedPivot.type === 'high' ? 1 : -1;
+                this.pivotPrices[chartBarIdx] = mappedPivot.price;
 
-                t = { price: phaseHigh, bar: phaseHighChartIdx };
-                bosUpCheck = true;
-                dir = -1;
-
-                phaseLow = bar.low;
-                phaseLowChartIdx = bar.troughChartBar;
-            } else if (bullishFlip) {
-                isBullish = true;
-                const label: 'LL' | 'HL' = (lastLowPrice === null || phaseLow <= lastLowPrice) ? 'LL' : 'HL';
-                lastLowPrice = phaseLow;
-
-                const lowPivot: StrictZigZagPivot = {
-                    id: nextPivotId++,
-                    barIndex: phaseLowChartIdx,
-                    time: data[phaseLowChartIdx * 6],
-                    price: phaseLow,
-                    type: 'low',
-                    label,
-                    confirmedBarIndex: bar.lastChartBar
-                };
-                pivots.push(lowPivot);
-                this.pivotTypes[phaseLowChartIdx] = -1;
-                this.pivotPrices[phaseLowChartIdx] = phaseLow;
-
-                b = { price: phaseLow, bar: phaseLowChartIdx };
-                bosDownCheck = true;
-                dir = 1;
-
-                phaseHigh = bar.high;
-                phaseHighChartIdx = bar.peakChartBar;
-            }
-
-            const validContinuation = (isBullish && bar.close > anchorHigh) || (!isBullish && bar.close < anchorLow);
-            if (validContinuation || bearishFlip || bullishFlip) {
-                anchorHigh = bar.high;
-                anchorLow = bar.low;
+                if (mappedPivot.type === 'high') {
+                    t = { price: mappedPivot.price, bar: chartBarIdx };
+                    bosUpCheck = true;
+                    dir = -1;
+                } else {
+                    b = { price: mappedPivot.price, bar: chartBarIdx };
+                    bosDownCheck = true;
+                    dir = 1;
+                }
             }
 
             if (idx > 0) {
@@ -640,7 +597,7 @@ export class DTFXStrictCBCIndicator extends BaseIndicator {
                     bosUpCheck = false;
                     if (zoneFilter !== 'Bearish Only') {
                         const topPrice = t.price;
-                        const botPrice = dir === -1 ? phaseLow : (b !== null ? b.price : phaseLow);
+                        const botPrice = dir === -1 ? currentHtfState.phaseLow : (b !== null ? b.price : currentHtfState.phaseLow);
                         zones.push({
                             id: nextZoneId++,
                             direction: 1,
@@ -659,7 +616,7 @@ export class DTFXStrictCBCIndicator extends BaseIndicator {
                 if ((bosDown || chochDown) && b !== null) {
                     bosDownCheck = false;
                     if (zoneFilter !== 'Bullish Only') {
-                        const topPrice = dir === 1 ? phaseHigh : (t !== null ? t.price : phaseHigh);
+                        const topPrice = dir === 1 ? currentHtfState.phaseHigh : (t !== null ? t.price : currentHtfState.phaseHigh);
                         const botPrice = b.price;
                         zones.push({
                             id: nextZoneId++,
@@ -686,6 +643,17 @@ export class DTFXStrictCBCIndicator extends BaseIndicator {
                 this.trends[k] = tDir;
             }
             prevClose = bar.close;
+        }
+
+        if (!isLastHtfClosed && htfBars.length > 0) {
+            const unclosed = htfBars[htfBars.length - 1];
+            const lBar = Math.min(len - 1, unclosed.lastChartBar);
+            for (let k = unclosed.firstChartBar; k <= lBar; k++) {
+                this.trends[k] = tDir;
+            }
+            if (zones.length > 0) {
+                zones[zones.length - 1].fibEndBar = lBar;
+            }
         }
 
         this.cachedPivots = pivots;
