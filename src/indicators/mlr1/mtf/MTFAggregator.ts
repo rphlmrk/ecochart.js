@@ -3,11 +3,26 @@ import type {
     MTFCandle,
     HTFIncompleteDiagnostic,
     HTFWindowCompleteness,
-    MTFState
+    MTFState,
+    V4HTFAggregationState,
+    V4MTFCandle,
+    V4HTFIncompleteDiagnostic,
+    V4MTFState
 } from './MTFTypes';
-import type { MTFTimeframeConfig, ValidatedMTFGlobalConfig } from './MTFConfig';
+import type {
+    MTFTimeframeConfig,
+    ValidatedMTFGlobalConfig,
+    V4MTFTimeframeConfig,
+    ValidatedV4MTFGlobalConfig
+} from './MTFConfig';
 import type { ML1Candle } from '../ML1FeatureTypes';
-import { createInitialMTFState, getUTCWindowBoundaries, isSourceTimestampInWindow } from './MTFState';
+import {
+    createInitialMTFState,
+    createInitialV4MTFState,
+    getUTCWindowBoundaries,
+    isSourceTimestampInWindow,
+    validateV4MTFState
+} from './MTFState';
 
 export interface HTFAggregationStepResult {
     readonly nextState: HTFAggregationState;
@@ -31,17 +46,72 @@ export interface MTFAggregatorStepResult {
  * Tracks observed stream chronology and timestamps, diagnoses every closed or
  * skipped window, and executes REJECT_AND_RESET for incomplete windows.
  */
+export interface GenericHTFAggregationState<TF extends string> {
+    readonly currentWindowOpen: number | null;
+    readonly currentWindowClose: number | null;
+    readonly sourceCandles: readonly ML1Candle[];
+    readonly sourceTimestamps: readonly number[];
+    readonly observedTimestamps: readonly number[];
+    readonly actualSourceCount: number;
+    readonly runningOpen: number | null;
+    readonly runningHigh: number | null;
+    readonly runningLow: number | null;
+    readonly runningClose: number | null;
+    readonly runningVolume: number;
+    readonly duplicateCount: number;
+    readonly invalidSourceCount: number;
+    readonly lastObservedSourceTimestamp: number | null;
+    readonly lastAcceptedSourceTimestamp: number | null;
+    readonly lastCompletedCandle: {
+        readonly timeframe: TF;
+        readonly openTimestamp: number;
+        readonly closeTimestamp: number;
+        readonly open: number;
+        readonly high: number;
+        readonly low: number;
+        readonly close: number;
+        readonly volume: number;
+        readonly sourceObservationCount: number;
+        readonly completeness: 'COMPLETE';
+    } | null;
+    readonly lastDiagnostic: {
+        readonly timeframe: TF;
+        readonly openTimestamp: number;
+        readonly closeTimestamp: number;
+        readonly expectedSourceCount: number;
+        readonly actualSourceCount: number;
+        readonly missingTimestamps: readonly number[];
+        readonly duplicateCount: number;
+        readonly invalidSourceCount: number;
+        readonly completeness: HTFWindowCompleteness;
+    } | null;
+}
+
 export function stepHTFAggregation(
     candle: ML1Candle,
     isSourceValid: boolean,
     previousState: HTFAggregationState,
     config: MTFTimeframeConfig
 ): HTFAggregationStepResult {
+    return stepHTFAggregationGeneric(candle, isSourceValid, previousState, config);
+}
+
+function stepHTFAggregationGeneric<TF extends string>(
+    candle: ML1Candle,
+    isSourceValid: boolean,
+    previousState: GenericHTFAggregationState<TF>,
+    config: { readonly timeframe: TF; readonly durationMs: number; readonly gapPolicy: 'REJECT_AND_RESET' }
+): {
+    readonly nextState: GenericHTFAggregationState<TF>;
+    readonly completedCandle: GenericHTFAggregationState<TF>['lastCompletedCandle'];
+    readonly diagnostic: GenericHTFAggregationState<TF>['lastDiagnostic'];
+    readonly diagnostics: readonly NonNullable<GenericHTFAggregationState<TF>['lastDiagnostic']>[];
+} {
     const durationMs = config.durationMs;
     const expectedCount = Math.round(durationMs / 60_000);
 
-    let completedCandle: MTFCandle | null = null;
-    const emittedDiagnostics: HTFIncompleteDiagnostic[] = [];
+    let completedCandle: GenericHTFAggregationState<TF>['lastCompletedCandle'] = null;
+    const emittedDiagnostics: NonNullable<GenericHTFAggregationState<TF>['lastDiagnostic']>[] = [];
     let lastCompleted = previousState.lastCompletedCandle;
     let lastDiag = previousState.lastDiagnostic;
 
@@ -149,7 +219,7 @@ export function stepHTFAggregation(
             for (let t = skipOpen; t < skipClose; t += 60_000) {
                 skippedTimestamps.push(t);
             }
-            const skippedDiagnostic: HTFIncompleteDiagnostic = Object.freeze({
+            const skippedDiagnostic: NonNullable<GenericHTFAggregationState<TF>['lastDiagnostic']> = Object.freeze({
                 timeframe: config.timeframe,
                 openTimestamp: skipOpen,
                 closeTimestamp: skipClose,
@@ -174,7 +244,7 @@ export function stepHTFAggregation(
 
     if (isNewWindow) {
         if (!isSourceValid) {
-            const nextState: HTFAggregationState = Object.freeze({
+            const nextState: GenericHTFAggregationState<TF> = Object.freeze({
                 currentWindowOpen: targetWinOpen,
                 currentWindowClose: targetWinClose,
                 sourceCandles: Object.freeze([]),
@@ -201,7 +271,7 @@ export function stepHTFAggregation(
             };
         }
 
-        const nextState: HTFAggregationState = Object.freeze({
+        const nextState: GenericHTFAggregationState<TF> = Object.freeze({
             currentWindowOpen: targetWinOpen,
             currentWindowClose: targetWinClose,
             sourceCandles: Object.freeze([sourceSnapshot]),
@@ -233,7 +303,7 @@ export function stepHTFAggregation(
         isSourceTimestampInWindow(candle.time, currentWinOpen, currentWinClose);
 
     if (!isSourceValid) {
-        const nextState: HTFAggregationState = Object.freeze({
+        const nextState: GenericHTFAggregationState<TF> = Object.freeze({
             ...previousState,
             observedTimestamps: Object.freeze([...previousState.observedTimestamps, candle.time]),
             invalidSourceCount: previousState.invalidSourceCount + 1,
@@ -250,7 +320,7 @@ export function stepHTFAggregation(
     }
 
     if (!isInside) {
-        const nextState: HTFAggregationState = Object.freeze({
+        const nextState: GenericHTFAggregationState<TF> = Object.freeze({
             ...previousState,
             observedTimestamps: Object.freeze([...previousState.observedTimestamps, candle.time]),
             invalidSourceCount: previousState.invalidSourceCount + 1,
@@ -272,7 +342,7 @@ export function stepHTFAggregation(
     const rClose = candle.close;
     const rVol = previousState.runningVolume + candle.volume;
 
-    const nextState: HTFAggregationState = Object.freeze({
+    const nextState: GenericHTFAggregationState<TF> = Object.freeze({
         ...previousState,
         sourceCandles: Object.freeze([...previousState.sourceCandles, sourceSnapshot]),
         sourceTimestamps: Object.freeze([...previousState.sourceTimestamps, candle.time]),
@@ -412,5 +482,137 @@ export function processMTFAggregationBatch(
         completed1hCandles,
         diagnostics15m,
         diagnostics1h
+    };
+}
+
+// =========================================================================
+// V4 MTF Aggregator (3m & 5m Half-Open UTC Windows + REJECT_AND_RESET)
+// =========================================================================
+export interface V4HTFAggregationStepResult {
+    readonly nextState: V4HTFAggregationState;
+    readonly completedCandle: V4MTFCandle | null;
+    readonly diagnostic: V4HTFIncompleteDiagnostic | null;
+    readonly diagnostics: readonly V4HTFIncompleteDiagnostic[];
+}
+
+export interface V4MTFAggregatorStepResult {
+    readonly nextState: V4MTFState;
+    readonly completed3m: V4MTFCandle | null;
+    readonly diagnostic3m: V4HTFIncompleteDiagnostic | null;
+    readonly diagnostics3m: readonly V4HTFIncompleteDiagnostic[];
+    readonly completed5m: V4MTFCandle | null;
+    readonly diagnostic5m: V4HTFIncompleteDiagnostic | null;
+    readonly diagnostics5m: readonly V4HTFIncompleteDiagnostic[];
+}
+
+export function stepV4HTFAggregation(
+    candle: ML1Candle,
+    isSourceValid: boolean,
+    previousState: V4HTFAggregationState,
+    config: V4MTFTimeframeConfig
+): V4HTFAggregationStepResult {
+    return stepHTFAggregationGeneric(candle, isSourceValid, previousState, config);
+}
+
+export function stepV4MTFAggregation(
+    candle: ML1Candle,
+    isSourceValid: boolean,
+    previousMTFState: V4MTFState,
+    config: ValidatedV4MTFGlobalConfig,
+    barIndex?: number
+): V4MTFAggregatorStepResult {
+    validateV4MTFState(previousMTFState, config);
+    const isBackwardsOrDuplicate = previousMTFState.last1mTimestamp !== null &&
+        candle.time <= previousMTFState.last1mTimestamp;
+    const previousBarIndex = previousMTFState.last1mBarIndex;
+    const isBarIndexInvalid = barIndex !== undefined &&
+        (!Number.isSafeInteger(barIndex) || barIndex < 0);
+    const isBarIndexNonIncreasing = barIndex !== undefined &&
+        previousBarIndex !== null &&
+        !isBarIndexInvalid &&
+        barIndex <= previousBarIndex;
+    const isBarIndexRejected = isBarIndexInvalid || isBarIndexNonIncreasing;
+    const effectiveSourceValid = isSourceValid && !isBarIndexRejected && !isBackwardsOrDuplicate;
+
+    const res3m = stepV4HTFAggregation(
+        candle,
+        effectiveSourceValid,
+        previousMTFState.state3m.aggregation,
+        config.config3m
+    );
+    const res5m = stepV4HTFAggregation(
+        candle,
+        effectiveSourceValid,
+        previousMTFState.state5m.aggregation,
+        config.config5m
+    );
+
+    const next1mTimestamp = isBackwardsOrDuplicate
+        ? previousMTFState.last1mTimestamp
+        : candle.time;
+    const nextBarIndex = isBackwardsOrDuplicate || isBarIndexRejected
+        ? previousBarIndex
+        : (barIndex !== undefined ? barIndex : previousBarIndex);
+
+    const nextState: V4MTFState = Object.freeze({
+        stateVersion: 2 as const,
+        last1mBarIndex: nextBarIndex,
+        last1mTimestamp: next1mTimestamp,
+        state3m: Object.freeze({
+            ...previousMTFState.state3m,
+            aggregation: res3m.nextState
+        }),
+        state5m: Object.freeze({
+            ...previousMTFState.state5m,
+            aggregation: res5m.nextState
+        })
+    });
+
+    return {
+        nextState,
+        completed3m: res3m.completedCandle,
+        diagnostic3m: res3m.diagnostic,
+        diagnostics3m: res3m.diagnostics,
+        completed5m: res5m.completedCandle,
+        diagnostic5m: res5m.diagnostic,
+        diagnostics5m: res5m.diagnostics
+    };
+}
+
+export function processV4MTFAggregationBatch(
+    candles: { candle: ML1Candle; isSourceValid?: boolean }[],
+    config: ValidatedV4MTFGlobalConfig,
+    initialState?: V4MTFState
+): {
+    finalState: V4MTFState;
+    completed3mCandles: V4MTFCandle[];
+    completed5mCandles: V4MTFCandle[];
+    diagnostics3m: V4HTFIncompleteDiagnostic[];
+    diagnostics5m: V4HTFIncompleteDiagnostic[];
+} {
+    let state = initialState ?? createInitialV4MTFState(config);
+    const completed3mCandles: V4MTFCandle[] = [];
+    const completed5mCandles: V4MTFCandle[] = [];
+    const diagnostics3m: V4HTFIncompleteDiagnostic[] = [];
+    const diagnostics5m: V4HTFIncompleteDiagnostic[] = [];
+
+    for (let i = 0; i < candles.length; i++) {
+        const item = candles[i];
+        const valid = item.isSourceValid ?? true;
+        const res = stepV4MTFAggregation(item.candle, valid, state, config);
+        state = res.nextState;
+
+        if (res.completed3m) completed3mCandles.push(res.completed3m);
+        diagnostics3m.push(...res.diagnostics3m);
+        if (res.completed5m) completed5mCandles.push(res.completed5m);
+        diagnostics5m.push(...res.diagnostics5m);
+    }
+
+    return {
+        finalState: state,
+        completed3mCandles,
+        completed5mCandles,
+        diagnostics3m,
+        diagnostics5m
     };
 }

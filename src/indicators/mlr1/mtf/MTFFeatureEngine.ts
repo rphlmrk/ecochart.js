@@ -2,12 +2,32 @@ import type {
     MTFTimeframeState, 
     MTFCandle, 
     HTFIncompleteDiagnostic,
-    MTFState
+    MTFState,
+    V4MTFTimeframeState,
+    V4MTFCandle,
+    V4HTFIncompleteDiagnostic,
+    V4MTFState
 } from './MTFTypes';
-import type { MTFTimeframeConfig, ValidatedMTFGlobalConfig } from './MTFConfig';
+import type {
+    MTFTimeframeConfig,
+    ValidatedMTFGlobalConfig,
+    V4MTFTimeframeConfig,
+    ValidatedV4MTFGlobalConfig
+} from './MTFConfig';
 import type { ML1Candle, ML1Observation } from '../ML1FeatureTypes';
-import { stepML1Features, createInitialML1FeatureState } from '../ML1FeatureEngine';
-import { stepMTFAggregation } from './MTFAggregator';
+import {
+    stepML1Features,
+    createInitialML1FeatureState,
+    stepML1FeaturesV6,
+    createInitialML1FeatureStateV6
+} from '../ML1FeatureEngine';
+import { stepMTFAggregation, stepV4MTFAggregation } from './MTFAggregator';
+import {
+    validateV4CompletedCandle,
+    validateV4Diagnostic,
+    validateV4MTFState,
+    validateV4MTFTimeframeState
+} from './MTFState';
 
 export interface HTFFeatureStepResult {
     readonly nextTimeframeState: MTFTimeframeState;
@@ -255,5 +275,237 @@ export function stepMTFCombined(
         observation1h: featRes.observation1h,
         diagnostic15m: aggRes.diagnostic15m,
         diagnostic1h: aggRes.diagnostic1h
+    };
+}
+
+// =========================================================================
+// V4 MTF Feature Engine (3m & 5m via stepML1FeaturesV6)
+// =========================================================================
+export interface V4HTFFeatureStepResult {
+    readonly nextTimeframeState: V4MTFTimeframeState;
+    readonly observation: ML1Observation | null;
+}
+
+export interface V4MTFFeatureEngineStepResult {
+    readonly nextState: V4MTFState;
+    readonly observation3m: ML1Observation | null;
+    readonly observation5m: ML1Observation | null;
+}
+
+function resetV4FeatureState(
+    state: V4MTFTimeframeState,
+    config: V4MTFTimeframeConfig,
+    diagnostic: V4HTFIncompleteDiagnostic
+): V4MTFTimeframeState {
+    return Object.freeze({
+        ...state,
+        aggregation: Object.freeze({
+            ...state.aggregation,
+            lastCompletedCandle: null,
+            lastDiagnostic: diagnostic
+        }),
+        featureEngineState: createInitialML1FeatureStateV6(config.featureConfig),
+        lastCompletedBarIndex: null,
+        lastCompletedCandleOpenTimestamp: state.lastCompletedCandleOpenTimestamp,
+        latestFeatures: Object.freeze({}),
+        latestValidity: Object.freeze({})
+    });
+}
+
+function processV4CompletedCandle(
+    state: V4MTFTimeframeState,
+    completedCandle: V4MTFCandle,
+    config: V4MTFTimeframeConfig
+): V4HTFFeatureStepResult {
+    if (completedCandle.completeness !== 'COMPLETE') {
+        throw new Error(`V4 MTF Feature Engine Error: Rejected candle with non-COMPLETE status '${completedCandle.completeness}'`);
+    }
+    if (
+        !Number.isSafeInteger(completedCandle.openTimestamp) ||
+        !Number.isSafeInteger(completedCandle.closeTimestamp) ||
+        completedCandle.closeTimestamp <= completedCandle.openTimestamp
+    ) {
+        throw new Error(
+            `V4 MTF Feature Engine Error: Invalid completed candle interval [${completedCandle.openTimestamp}, ${completedCandle.closeTimestamp})`
+        );
+    }
+    if (completedCandle.timeframe !== config.timeframe) {
+        throw new Error(`V4 MTF Feature Engine Error: Candle timeframe '${completedCandle.timeframe}' does not match config '${config.timeframe}'`);
+    }
+    if (
+        state.lastCompletedCandleOpenTimestamp !== null &&
+        completedCandle.openTimestamp <= state.lastCompletedCandleOpenTimestamp
+    ) {
+        throw new Error(
+            `V4 MTF Feature Engine Error: Duplicate or out-of-order completed candle at ${completedCandle.openTimestamp} <= ${state.lastCompletedCandleOpenTimestamp}`
+        );
+    }
+
+    const ml1Candle: ML1Candle = Object.freeze({
+        time: completedCandle.openTimestamp,
+        open: completedCandle.open,
+        high: completedCandle.high,
+        low: completedCandle.low,
+        close: completedCandle.close,
+        volume: completedCandle.volume,
+        isSynthetic: false
+    });
+
+    const nextBarIndex = state.lastCompletedBarIndex !== null ? state.lastCompletedBarIndex + 1 : 0;
+    const v6Res = stepML1FeaturesV6(
+        ml1Candle,
+        nextBarIndex,
+        state.featureEngineState,
+        config.featureConfig
+    );
+
+    const nextTimeframeState: V4MTFTimeframeState = Object.freeze({
+        ...state,
+        aggregation: Object.freeze({
+            ...state.aggregation,
+            lastCompletedCandle: completedCandle
+        }),
+        featureEngineState: v6Res.nextState,
+        lastCompletedBarIndex: nextBarIndex,
+        lastCompletedCandleOpenTimestamp: completedCandle.openTimestamp,
+        latestFeatures: Object.freeze({ ...v6Res.observation.features }),
+        latestValidity: Object.freeze({ ...v6Res.observation.validity })
+    });
+
+    return { nextTimeframeState, observation: v6Res.observation };
+}
+
+export function stepV4TimeframeFeatureEngine(
+    previousState: V4MTFTimeframeState,
+    completedCandle: V4MTFCandle | null,
+    diagnostic: V4HTFIncompleteDiagnostic | null,
+    config: V4MTFTimeframeConfig
+): V4HTFFeatureStepResult {
+    validateV4MTFTimeframeState(previousState, config);
+
+    if (completedCandle !== null) {
+        validateV4CompletedCandle(completedCandle, config);
+    }
+    if (diagnostic !== null) {
+        validateV4Diagnostic(diagnostic, config);
+    }
+
+    if (completedCandle !== null && diagnostic !== null) {
+        if (completedCandle.closeTimestamp <= diagnostic.openTimestamp) {
+            const candleStep = processV4CompletedCandle(previousState, completedCandle, config);
+            return {
+                nextTimeframeState: resetV4FeatureState(candleStep.nextTimeframeState, config, diagnostic),
+                observation: candleStep.observation
+            };
+        }
+        if (diagnostic.closeTimestamp <= completedCandle.openTimestamp) {
+            return processV4CompletedCandle(
+                resetV4FeatureState(previousState, config, diagnostic),
+                completedCandle,
+                config
+            );
+        }
+        throw new Error('V4 MTF Feature Engine Error: Diagnostic and completed candle intervals overlap or have ambiguous ordering');
+    }
+
+    if (diagnostic !== null) {
+        return { nextTimeframeState: resetV4FeatureState(previousState, config, diagnostic), observation: null };
+    }
+    if (completedCandle !== null) {
+        return processV4CompletedCandle(previousState, completedCandle, config);
+    }
+    return { nextTimeframeState: previousState, observation: null };
+}
+
+export function stepV4MTFFeatureEngine(
+    previousMTFState: V4MTFState,
+    completed3m: V4MTFCandle | null,
+    diagnostic3m: V4HTFIncompleteDiagnostic | null,
+    completed5m: V4MTFCandle | null,
+    diagnostic5m: V4HTFIncompleteDiagnostic | null,
+    config: ValidatedV4MTFGlobalConfig
+): V4MTFFeatureEngineStepResult {
+    validateV4MTFState(previousMTFState, config);
+    if (completed3m !== null) validateV4CompletedCandle(completed3m, config.config3m);
+    if (diagnostic3m !== null) validateV4Diagnostic(diagnostic3m, config.config3m);
+    if (completed5m !== null) validateV4CompletedCandle(completed5m, config.config5m);
+    if (diagnostic5m !== null) validateV4Diagnostic(diagnostic5m, config.config5m);
+
+    const res3m = stepV4TimeframeFeatureEngine(
+        previousMTFState.state3m,
+        completed3m,
+        diagnostic3m,
+        config.config3m
+    );
+    const res5m = stepV4TimeframeFeatureEngine(
+        previousMTFState.state5m,
+        completed5m,
+        diagnostic5m,
+        config.config5m
+    );
+
+    const nextState: V4MTFState = Object.freeze({
+        ...previousMTFState,
+        state3m: res3m.nextTimeframeState,
+        state5m: res5m.nextTimeframeState
+    });
+
+    return {
+        nextState,
+        observation3m: res3m.observation,
+        observation5m: res5m.observation
+    };
+}
+
+export function stepV4MTFCombined(
+    candle: ML1Candle,
+    isSourceValid: boolean,
+    previousMTFState: V4MTFState,
+    config: ValidatedV4MTFGlobalConfig,
+    barIndex?: number
+): {
+    nextState: V4MTFState;
+    completed3m: V4MTFCandle | null;
+    completed5m: V4MTFCandle | null;
+    observation3m: ML1Observation | null;
+    observation5m: ML1Observation | null;
+    diagnostic3m: V4HTFIncompleteDiagnostic | null;
+    diagnostic5m: V4HTFIncompleteDiagnostic | null;
+} {
+    validateV4MTFState(previousMTFState, config);
+    const aggRes = stepV4MTFAggregation(candle, isSourceValid, previousMTFState, config, barIndex);
+    const featRes = stepV4MTFFeatureEngine(
+        previousMTFState,
+        aggRes.completed3m,
+        aggRes.diagnostic3m,
+        aggRes.completed5m,
+        aggRes.diagnostic5m,
+        config
+    );
+
+    const nextState: V4MTFState = Object.freeze({
+        stateVersion: 2 as const,
+        last1mBarIndex: aggRes.nextState.last1mBarIndex,
+        last1mTimestamp: aggRes.nextState.last1mTimestamp,
+        state3m: Object.freeze({
+            ...featRes.nextState.state3m,
+            aggregation: aggRes.nextState.state3m.aggregation
+        }),
+        state5m: Object.freeze({
+            ...featRes.nextState.state5m,
+            aggregation: aggRes.nextState.state5m.aggregation
+        })
+    });
+
+    validateV4MTFState(nextState, config);
+
+    return {
+        nextState,
+        completed3m: aggRes.completed3m,
+        completed5m: aggRes.completed5m,
+        observation3m: featRes.observation3m,
+        observation5m: featRes.observation5m,
+        diagnostic3m: aggRes.diagnostic3m,
+        diagnostic5m: aggRes.diagnostic5m
     };
 }
