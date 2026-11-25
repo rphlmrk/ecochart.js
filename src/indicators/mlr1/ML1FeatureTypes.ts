@@ -193,3 +193,58 @@ export interface ML1FeatureStateV5 {
     readonly vamState: VAMState | null;
 }
 
+export interface SMAPeriodState {
+    readonly closeHistory: readonly number[];
+    readonly smaHistory: readonly number[];
+    readonly unbrokenRun: number;
+}
+
+export interface MACDState {
+    readonly fastEma: EMAPeriodState | null;
+    readonly slowEma: EMAPeriodState | null;
+    readonly signalEma: EMAPeriodState | null;
+}
+
+export interface BollingerBandState {
+    readonly closeHistory: readonly number[];
+    readonly unbrokenRun: number;
+}
+
+export interface ML1FeatureConfigV6 extends ML1FeatureConfigV5 {
+    smaPeriods: number[];
+    enableMACD: boolean;
+    bbPeriod: number | null;
+    bbStdMult: number;
+}
+
+declare const validatedConfigV6Brand: unique symbol;
+
+export type ValidatedML1FeatureConfigV6 = {
+    readonly symbol: string;
+    readonly timeframe: string;
+    readonly expectedIntervalMs: number;
+    readonly gapDiscontinuityThresholdMs: number;
+    readonly emaPeriods: readonly number[];
+    readonly atrPeriods: readonly number[];
+    readonly rollingRangePeriods: readonly number[];
+    readonly momentumPeriods: readonly number[];
+    readonly volumeSmaPeriods: readonly number[];
+    readonly cciPeriods: readonly number[];
+    readonly volumeCandleSizePeriods: readonly number[];
+    readonly enableVAM: boolean;
+    readonly smaPeriods: readonly number[];
+    readonly enableMACD: boolean;
+    readonly bbPeriod: number | null;
+    readonly bbStdMult: number;
+    readonly [validatedConfigV6Brand]: true;
+};
+
+export interface ML1FeatureStateV6 {
+    readonly stateVersion: 6;
+    readonly configFingerprint: string;
+    readonly v5State: ML1FeatureStateV5;
+    readonly smaState: Readonly<Record<number, SMAPeriodState>>;
+    readonly macdState: MACDState | null;
+    readonly bbState: BollingerBandState | null;
+}
+

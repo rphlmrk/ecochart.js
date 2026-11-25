@@ -1,5 +1,9 @@
-import { validateML1Config, validateML1ConfigV5 } from './ML1FeatureEngine';
-import type { ValidatedML1FeatureConfig, ValidatedML1FeatureConfigV5 } from './ML1FeatureTypes';
+import { validateML1Config, validateML1ConfigV5, validateML1ConfigV6 } from './ML1FeatureEngine';
+import type {
+    ValidatedML1FeatureConfig,
+    ValidatedML1FeatureConfigV5,
+    ValidatedML1FeatureConfigV6
+} from './ML1FeatureTypes';
 
 export const ML1_CONFIG_B_VERSION = 'ML1_CONFIG_B_v1';
 
@@ -84,5 +88,49 @@ export const ML1_CONFIG_C: ValidatedML1FeatureConfigV5 = validateML1ConfigV5({
     cciPeriods: [20],
     volumeCandleSizePeriods: [360],
     enableVAM: true
+});
+
+export const ML1_CONFIG_D_VERSION = 'ML1_CONFIG_D_v1';
+
+const CONFIG_D_INDICATORS = {
+    emaPeriods: [9, 20, 50, 100, 200],
+    cciPeriods: [14, 20],
+    enableVAM: true,
+    smaPeriods: [20, 50, 100, 200],
+    enableMACD: true,
+    bbPeriod: 20,
+    bbStdMult: 2.0
+};
+
+/**
+ * CONFIGURATION D — V4 Full 1m Context (stateVersion: 6, 150 features)
+ * Preserves all Configuration C features and adds CCI(14), SMA(20/50/100/200),
+ * MACD(12, 26, 9), and Bollinger(20, 2).
+ */
+export const ML1_CONFIG_D: ValidatedML1FeatureConfigV6 = validateML1ConfigV6({
+    ...COMMON_CONFIG,
+    ...CONFIG_D_INDICATORS,
+    volumeCandleSizePeriods: [360]
+});
+
+/**
+ * CONFIGURATION D HTF (3m & 5m) — Full indicator parity without 1m-only VCS_360 (147 features).
+ */
+export const ML1_CONFIG_D_3M: ValidatedML1FeatureConfigV6 = validateML1ConfigV6({
+    ...COMMON_CONFIG,
+    ...CONFIG_D_INDICATORS,
+    timeframe: '3m',
+    expectedIntervalMs: 180_000,
+    gapDiscontinuityThresholdMs: 900_000,
+    volumeCandleSizePeriods: []
+});
+
+export const ML1_CONFIG_D_5M: ValidatedML1FeatureConfigV6 = validateML1ConfigV6({
+    ...COMMON_CONFIG,
+    ...CONFIG_D_INDICATORS,
+    timeframe: '5m',
+    expectedIntervalMs: 300_000,
+    gapDiscontinuityThresholdMs: 1_500_000,
+    volumeCandleSizePeriods: []
 });
 

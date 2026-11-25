@@ -30,12 +30,20 @@ import type { EMAPeriodState, MomentumState, VolumeState } from './ML1FeatureTyp
 import { updateExhaustionCCI } from './momentum/Exhaustion';
 import { updateVolumeCandleSize } from './volume/VolumeCandleSize';
 import { createInitialVAMState, stepVolatilityAdjustedMean } from './trend/VolatilityAdjustedMean';
+import { updateSMA, calculateSMASlope } from './trend/SMA';
+import { createInitialMACDState, updateMACD } from './momentum/MACD';
+import { createInitialBollingerBandState, updateBollingerBands } from './volatility/BollingerBands';
 import type {
     ExhaustionPeriodState,
     VolumeCandleSizeState,
     VAMState,
     ML1FeatureStateV5,
-    ValidatedML1FeatureConfigV5
+    ValidatedML1FeatureConfigV5,
+    SMAPeriodState,
+    MACDState,
+    BollingerBandState,
+    ML1FeatureStateV6,
+    ValidatedML1FeatureConfigV6
 } from './ML1FeatureTypes';
 
 /**
@@ -1201,6 +1209,406 @@ export function stepML1FeaturesV5(
 
     return {
         observation: { ...baseResult.observation, features, validity },
+        nextState
+    };
+}
+
+// =========================================================================
+// ML-R1 V4 / Phase 1 (stateVersion: 6) — Isolated CONFIG_D Engine
+// =========================================================================
+
+export function validateML1ConfigV6(config: any): ValidatedML1FeatureConfigV6 {
+    const v5Validated = validateML1ConfigV5(config);
+
+    if (!Array.isArray(config.smaPeriods)) {
+        throw new Error('Configuration V6 Error: smaPeriods must be an array.');
+    }
+    const seenSma = new Set<number>();
+    for (const p of config.smaPeriods) {
+        if (!Number.isSafeInteger(p) || p < 2) {
+            throw new Error(`Configuration V6 Error: smaPeriods must contain integers >= 2, got ${p}.`);
+        }
+        if (seenSma.has(p)) {
+            throw new Error('Configuration V6 Error: smaPeriods contains duplicate periods.');
+        }
+        seenSma.add(p);
+    }
+    if (typeof config.enableMACD !== 'boolean') {
+        throw new Error('Configuration V6 Error: enableMACD must be a boolean.');
+    }
+    if (config.bbPeriod !== null && (!Number.isSafeInteger(config.bbPeriod) || config.bbPeriod < 2)) {
+        throw new Error(`Configuration V6 Error: bbPeriod must be null or integer >= 2, got ${config.bbPeriod}.`);
+    }
+    if (typeof config.bbStdMult !== 'number' || !Number.isFinite(config.bbStdMult) || config.bbStdMult <= 0) {
+        throw new Error(`Configuration V6 Error: bbStdMult must be finite > 0, got ${config.bbStdMult}.`);
+    }
+
+    return Object.freeze({
+        symbol: v5Validated.symbol,
+        timeframe: v5Validated.timeframe,
+        expectedIntervalMs: v5Validated.expectedIntervalMs,
+        gapDiscontinuityThresholdMs: v5Validated.gapDiscontinuityThresholdMs,
+        emaPeriods: v5Validated.emaPeriods,
+        atrPeriods: v5Validated.atrPeriods,
+        rollingRangePeriods: v5Validated.rollingRangePeriods,
+        momentumPeriods: v5Validated.momentumPeriods,
+        volumeSmaPeriods: v5Validated.volumeSmaPeriods,
+        cciPeriods: v5Validated.cciPeriods,
+        volumeCandleSizePeriods: v5Validated.volumeCandleSizePeriods,
+        enableVAM: v5Validated.enableVAM,
+        smaPeriods: Object.freeze([...config.smaPeriods]),
+        enableMACD: config.enableMACD,
+        bbPeriod: config.bbPeriod,
+        bbStdMult: config.bbStdMult
+    }) as ValidatedML1FeatureConfigV6;
+}
+
+export function computeML1ConfigV6Fingerprint(config: ValidatedML1FeatureConfigV6): string {
+    return JSON.stringify({
+        v5: computeML1ConfigV5Fingerprint(config as unknown as ValidatedML1FeatureConfigV5),
+        smaPeriods: config.smaPeriods,
+        enableMACD: config.enableMACD,
+        bbPeriod: config.bbPeriod,
+        bbStdMult: config.bbStdMult
+    });
+}
+
+export function createInitialML1FeatureStateV6(config: ValidatedML1FeatureConfigV6): ML1FeatureStateV6 {
+    return Object.freeze({
+        stateVersion: 6 as const,
+        configFingerprint: computeML1ConfigV6Fingerprint(config),
+        v5State: createInitialML1FeatureStateV5(config as unknown as ValidatedML1FeatureConfigV5),
+        smaState: Object.freeze({}),
+        macdState: config.enableMACD ? createInitialMACDState() : null,
+        bbState: config.bbPeriod !== null ? createInitialBollingerBandState() : null
+    });
+}
+
+function validateNestedEMAState(eState: EMAPeriodState, period: number, label: string): void {
+    if (!eState || typeof eState !== 'object') {
+        throw new Error(`State Integrity Error: Malformed ${label}.`);
+    }
+    if (!Number.isSafeInteger(eState.count) || eState.count < 0) {
+        throw new Error(`State Integrity Error: Corrupted count in ${label}.`);
+    }
+    if (!Number.isFinite(eState.seedMean)) {
+        throw new Error(`State Integrity Error: Corrupted seedMean in ${label}.`);
+    }
+    if (typeof eState.isSeeded !== 'boolean') {
+        throw new Error(`State Integrity Error: Corrupted isSeeded in ${label}.`);
+    }
+    if (!Array.isArray(eState.history) || eState.history.length > 11 ||
+        eState.history.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
+        throw new Error(`State Integrity Error: Invalid history in ${label}.`);
+    }
+    if (eState.isSeeded) {
+        if (eState.count < period || eState.ema === null || !Number.isFinite(eState.ema)) {
+            throw new Error(`State Integrity Error: Seeded ${label} requires count >= ${period} and finite ema.`);
+        }
+        if (eState.history.length === 0 || eState.history[eState.history.length - 1] !== eState.ema) {
+            throw new Error(`State Integrity Error: ${label} history does not match current EMA.`);
+        }
+    } else {
+        if (eState.count >= period || eState.ema !== null || eState.history.length !== 0) {
+            throw new Error(`State Integrity Error: Unseeded ${label} has inconsistent count/ema/history.`);
+        }
+    }
+    if (!Number.isSafeInteger(eState.unbrokenRun) || eState.unbrokenRun < 0 || eState.unbrokenRun > eState.count) {
+        throw new Error(`State Integrity Error: Corrupted unbrokenRun in ${label}.`);
+    }
+}
+
+function validateRestoredV6State(
+    previousState: ML1FeatureStateV6,
+    config: ValidatedML1FeatureConfigV6
+): void {
+    if (!previousState || previousState.stateVersion !== 6) {
+        throw new Error(`State Integrity Error: Incompatible V6 state version. Expected 6, got ${(previousState as any)?.stateVersion}.`);
+    }
+    if (previousState.configFingerprint !== computeML1ConfigV6Fingerprint(config)) {
+        throw new Error('State Integrity Error: V6 state configFingerprint does not match provided configuration.');
+    }
+    validateRestoredV5State(previousState.v5State, config as unknown as ValidatedML1FeatureConfigV5);
+
+    const hasAcceptedBars = previousState.v5State.baseState.lastBarIndex !== null;
+
+    if (!previousState.smaState || typeof previousState.smaState !== 'object') {
+        throw new Error('State Integrity Error: Missing or malformed smaState container.');
+    }
+    if (!hasAcceptedBars) {
+        if (Object.keys(previousState.smaState).length !== 0) {
+            throw new Error('State Integrity Error: Initial smaState must be empty before bar 0.');
+        }
+    } else {
+        for (const p of config.smaPeriods) {
+            if (!Object.prototype.hasOwnProperty.call(previousState.smaState, String(p))) {
+                throw new Error(`State Integrity Error: Missing configured smaState for period ${p}.`);
+            }
+        }
+    }
+    for (const [periodStr, sState] of Object.entries(previousState.smaState)) {
+        const period = Number(periodStr);
+        if (!Number.isSafeInteger(period) || !config.smaPeriods.includes(period)) {
+            throw new Error(`State Integrity Error: Unexpected smaPeriod key '${periodStr}' in smaState.`);
+        }
+        if (!sState || typeof sState !== 'object' ||
+            !Array.isArray(sState.closeHistory) || sState.closeHistory.length > period ||
+            !Array.isArray(sState.smaHistory) || sState.smaHistory.length > 11 ||
+            !Number.isSafeInteger(sState.unbrokenRun) || sState.unbrokenRun < 0) {
+            throw new Error(`State Integrity Error: Corrupted smaState for period ${period}.`);
+        }
+        if (sState.closeHistory.some(v => typeof v !== 'number' || !Number.isFinite(v)) ||
+            sState.smaHistory.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
+            throw new Error(`State Integrity Error: Non-finite values in smaState for period ${period}.`);
+        }
+        if (hasAcceptedBars && (sState.closeHistory.length === 0 || sState.unbrokenRun === 0)) {
+            throw new Error(`State Integrity Error: Active smaState for period ${period} cannot be empty.`);
+        }
+        if (sState.closeHistory.length === 0 && (sState.unbrokenRun !== 0 || sState.smaHistory.length !== 0)) {
+            throw new Error(`State Integrity Error: Empty smaState closeHistory must have unbrokenRun=0 and empty smaHistory.`);
+        }
+        if (sState.closeHistory.length > 0 && sState.closeHistory.length < period) {
+            if (sState.smaHistory.length !== 0 || sState.unbrokenRun !== sState.closeHistory.length) {
+                throw new Error(`State Integrity Error: Unseeded smaState for period ${period} has inconsistent run/history.`);
+            }
+        }
+        if (sState.closeHistory.length === period) {
+            const expectedSmaHistLen = Math.min(11, sState.unbrokenRun - period + 1);
+            if (sState.unbrokenRun < period || sState.smaHistory.length !== expectedSmaHistLen) {
+                throw new Error(`State Integrity Error: Seeded smaState for period ${period} has inconsistent run/history.`);
+            }
+        }
+    }
+
+    if (config.enableMACD) {
+        const ms = previousState.macdState;
+        if (!ms || typeof ms !== 'object') {
+            throw new Error('State Integrity Error: macdState must be present when enableMACD is true.');
+        }
+        if ((ms.fastEma === null) !== (ms.slowEma === null)) {
+            throw new Error('State Integrity Error: macdState fastEma and slowEma must both be null or both populated.');
+        }
+        if (!hasAcceptedBars) {
+            if (ms.fastEma !== null || ms.slowEma !== null || ms.signalEma !== null) {
+                throw new Error('State Integrity Error: Initial macdState must have null EMAs before bar 0.');
+            }
+        } else {
+            if (ms.fastEma === null || ms.slowEma === null) {
+                throw new Error('State Integrity Error: Active macdState cannot have null fastEma/slowEma.');
+            }
+            validateNestedEMAState(ms.fastEma, 12, 'macdState.fastEma');
+            validateNestedEMAState(ms.slowEma, 26, 'macdState.slowEma');
+            if (ms.fastEma.count !== ms.slowEma.count || ms.fastEma.unbrokenRun !== ms.slowEma.unbrokenRun) {
+                throw new Error('State Integrity Error: macdState fastEma and slowEma counts/runs diverged.');
+            }
+            if (!(ms.fastEma.isSeeded && ms.slowEma.isSeeded)) {
+                if (ms.signalEma !== null) {
+                    throw new Error('State Integrity Error: macdState signalEma must be null before slow EMA seeds.');
+                }
+            } else {
+                if (ms.signalEma === null) {
+                    throw new Error('State Integrity Error: macdState signalEma must be initialized once MACD line seeds.');
+                }
+                validateNestedEMAState(ms.signalEma, 9, 'macdState.signalEma');
+                const expectedSignalCount = ms.slowEma.count - 25;
+                if (ms.signalEma.count !== expectedSignalCount || ms.signalEma.unbrokenRun !== expectedSignalCount) {
+                    throw new Error(
+                        `State Integrity Error: macdState signalEma count/run (${ms.signalEma.count}/${ms.signalEma.unbrokenRun}) ` +
+                        `must match MACD-line observations since reset (${expectedSignalCount}).`
+                    );
+                }
+            }
+        }
+    } else if (previousState.macdState !== null) {
+        throw new Error('State Integrity Error: macdState must be null when enableMACD is false.');
+    }
+
+    if (config.bbPeriod !== null) {
+        const bs = previousState.bbState;
+        if (!bs || typeof bs !== 'object' ||
+            !Array.isArray(bs.closeHistory) || bs.closeHistory.length > config.bbPeriod ||
+            !Number.isSafeInteger(bs.unbrokenRun) || bs.unbrokenRun < 0 ||
+            bs.closeHistory.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
+            throw new Error('State Integrity Error: Corrupted bbState.');
+        }
+        if (!hasAcceptedBars) {
+            if (bs.closeHistory.length !== 0 || bs.unbrokenRun !== 0) {
+                throw new Error('State Integrity Error: Initial bbState must be empty before bar 0.');
+            }
+        } else if (bs.closeHistory.length === 0 || bs.unbrokenRun === 0) {
+            throw new Error('State Integrity Error: Active bbState cannot be empty.');
+        }
+        if (bs.closeHistory.length === 0 && bs.unbrokenRun !== 0) {
+            throw new Error('State Integrity Error: Empty bbState requires unbrokenRun=0.');
+        }
+        if (bs.closeHistory.length > 0 && bs.closeHistory.length < config.bbPeriod && bs.unbrokenRun !== bs.closeHistory.length) {
+            throw new Error('State Integrity Error: Unseeded bbState unbrokenRun must equal closeHistory length.');
+        }
+        if (bs.closeHistory.length === config.bbPeriod && bs.unbrokenRun < config.bbPeriod) {
+            throw new Error('State Integrity Error: Seeded bbState unbrokenRun cannot be smaller than bbPeriod.');
+        }
+    } else if (previousState.bbState !== null) {
+        throw new Error('State Integrity Error: bbState must be null when bbPeriod is null.');
+    }
+}
+
+export function stepML1FeaturesV6(
+    candle: ML1Candle,
+    barIndex: number,
+    previousState: ML1FeatureStateV6,
+    config: ValidatedML1FeatureConfigV6
+): {
+    observation: ML1Observation;
+    nextState: ML1FeatureStateV6;
+} {
+    validateRestoredV6State(previousState, config);
+
+    const v5Result = stepML1FeaturesV5(
+        candle,
+        barIndex,
+        previousState.v5State,
+        config as unknown as ValidatedML1FeatureConfigV5
+    );
+
+    const isRejected = v5Result.nextState === previousState.v5State;
+    const isDiscontinuity = v5Result.observation.features['IsDiscontinuity'] === 1;
+    const hasDataGap = v5Result.observation.features['HasDataGap'] === 1;
+
+    const features: ML1FeatureValues = { ...v5Result.observation.features };
+    const validity: ML1FeatureValidity = { ...v5Result.observation.validity };
+
+    if (isRejected) {
+        for (const p of config.smaPeriods) {
+            features[`SMA_${p}_Distance`] = 0;
+            validity[`SMA_${p}_Distance`] = false;
+            features[`SMA_${p}_Slope_3`] = 0;
+            validity[`SMA_${p}_Slope_3`] = false;
+        }
+        if (config.smaPeriods.includes(20) && config.smaPeriods.includes(50)) {
+            features['SMA_20_Above_SMA_50'] = 0;
+            validity['SMA_20_Above_SMA_50'] = false;
+        }
+        if (config.smaPeriods.includes(50) && config.smaPeriods.includes(200)) {
+            features['SMA_50_Above_SMA_200'] = 0;
+            validity['SMA_50_Above_SMA_200'] = false;
+        }
+        if (config.enableMACD) {
+            features['MACD_Line_ATR'] = 0;
+            validity['MACD_Line_ATR'] = false;
+            features['MACD_Signal_ATR'] = 0;
+            validity['MACD_Signal_ATR'] = false;
+            features['MACD_Hist_ATR'] = 0;
+            validity['MACD_Hist_ATR'] = false;
+        }
+        if (config.bbPeriod !== null) {
+            features[`BB_Width_${config.bbPeriod}`] = 0;
+            validity[`BB_Width_${config.bbPeriod}`] = false;
+            features[`BB_PctB_${config.bbPeriod}`] = 0;
+            validity[`BB_PctB_${config.bbPeriod}`] = false;
+        }
+        return {
+            observation: { ...v5Result.observation, features, validity },
+            nextState: previousState
+        };
+    }
+
+    const atr14Val = features['ATR_14'];
+    const isAtr14Usable = validity['ATR_14'] === true && Number.isFinite(atr14Val) && atr14Val > 0;
+
+    // 1. SMA (20, 50, 100, 200) — resets on both isDiscontinuity and hasDataGap
+    const nextSmaState: Record<number, SMAPeriodState> = { ...previousState.smaState };
+    const smaVals: Record<number, number | null> = {};
+    for (const period of config.smaPeriods) {
+        const res = updateSMA(candle.close, period, previousState.smaState[period], isDiscontinuity, hasDataGap);
+        nextSmaState[period] = res.nextState;
+        smaVals[period] = res.isValid ? res.smaValue : null;
+
+        const dist = res.isValid && isAtr14Usable ? (candle.close - res.smaValue) / atr14Val : NaN;
+        const isDistValid = Number.isFinite(dist);
+        features[`SMA_${period}_Distance`] = isDistValid ? dist : 0;
+        validity[`SMA_${period}_Distance`] = isDistValid;
+
+        const slope3 = calculateSMASlope(res.nextState.smaHistory, 3, atr14Val, res.nextState.unbrokenRun);
+        features[`SMA_${period}_Slope_3`] = slope3.isValid ? slope3.slope : 0;
+        validity[`SMA_${period}_Slope_3`] = slope3.isValid;
+    }
+
+    // 3-state SMA alignment contract (matches EMA_p1_Above_EMA_p2):
+    // +1 = fast SMA > slow SMA, -1 = fast SMA < slow SMA, 0 = equal (or invalid fallback with valid_* = false)
+    const setSmaAlign = (fastP: number, slowP: number) => {
+        if (!config.smaPeriods.includes(fastP) || !config.smaPeriods.includes(slowP)) return;
+        const f = smaVals[fastP];
+        const s = smaVals[slowP];
+        const ok = f !== null && s !== null && Number.isFinite(f) && Number.isFinite(s);
+        features[`SMA_${fastP}_Above_SMA_${slowP}`] = ok ? (f! > s! ? 1 : f! < s! ? -1 : 0) : 0;
+        validity[`SMA_${fastP}_Above_SMA_${slowP}`] = ok;
+    };
+    setSmaAlign(20, 50);
+    setSmaAlign(50, 200);
+
+    // 2. MACD (12, 26, 9)
+    let nextMacdState: MACDState | null = previousState.macdState;
+    let macdReady = true;
+    if (config.enableMACD) {
+        const mRes = updateMACD(candle.close, previousState.macdState ?? undefined, isDiscontinuity, hasDataGap);
+        nextMacdState = mRes.nextState;
+
+        const mLineAtr = mRes.isMacdValid && isAtr14Usable ? mRes.macdLine / atr14Val : NaN;
+        const mSigAtr = mRes.isSignalValid && isAtr14Usable ? mRes.signalLine / atr14Val : NaN;
+        const mHistAtr = mRes.isSignalValid && isAtr14Usable ? mRes.histogram / atr14Val : NaN;
+
+        const mLineOk = Number.isFinite(mLineAtr);
+        const mSigOk = Number.isFinite(mSigAtr);
+        const mHistOk = Number.isFinite(mHistAtr);
+
+        features['MACD_Line_ATR'] = mLineOk ? mLineAtr : 0;
+        validity['MACD_Line_ATR'] = mLineOk;
+        features['MACD_Signal_ATR'] = mSigOk ? mSigAtr : 0;
+        validity['MACD_Signal_ATR'] = mSigOk;
+        features['MACD_Hist_ATR'] = mHistOk ? mHistAtr : 0;
+        validity['MACD_Hist_ATR'] = mHistOk;
+        macdReady = mRes.isSignalValid;
+    }
+
+    // 3. Bollinger Bands (20, 2) — resets on both isDiscontinuity and hasDataGap
+    let nextBbState: BollingerBandState | null = previousState.bbState;
+    let bbReady = true;
+    if (config.bbPeriod !== null) {
+        const bRes = updateBollingerBands(
+            candle.close,
+            config.bbPeriod,
+            config.bbStdMult,
+            previousState.bbState ?? undefined,
+            isDiscontinuity,
+            hasDataGap
+        );
+        nextBbState = bRes.nextState;
+        features[`BB_Width_${config.bbPeriod}`] = bRes.isWidthValid ? bRes.bbWidth : 0;
+        validity[`BB_Width_${config.bbPeriod}`] = bRes.isWidthValid;
+        features[`BB_PctB_${config.bbPeriod}`] = bRes.isPctBValid ? bRes.bbPctB : 0;
+        validity[`BB_PctB_${config.bbPeriod}`] = bRes.isPctBValid;
+        bbReady = bRes.nextState.closeHistory.length >= config.bbPeriod;
+    }
+
+    // Enforce V4 base warmup + CCI(14/20) + VAM(ADX) + SMA + MACD + BB (all <= bar 199; VCS_360 stays independently masked until bar 360)
+    const cciReady = config.cciPeriods.every(p => (v5Result.nextState.exhaustionState[p]?.tpHistory.length ?? 0) >= p);
+    const vamAdx = v5Result.nextState.vamState?.adx;
+    const vamReady = !config.enableVAM || (vamAdx !== null && vamAdx !== undefined && Number.isFinite(vamAdx));
+    const smaReady = config.smaPeriods.every(p => (nextSmaState[p]?.closeHistory.length ?? 0) >= p);
+    const v5Warmup = features['IsWarmupComplete'] === 1;
+    features['IsWarmupComplete'] = v5Warmup && cciReady && vamReady && smaReady && macdReady && bbReady ? 1 : 0;
+
+    const nextState: ML1FeatureStateV6 = Object.freeze({
+        stateVersion: 6 as const,
+        configFingerprint: previousState.configFingerprint,
+        v5State: v5Result.nextState,
+        smaState: Object.freeze(nextSmaState),
+        macdState: nextMacdState,
+        bbState: nextBbState
+    });
+
+    return {
+        observation: { ...v5Result.observation, features, validity },
         nextState
     };
 }
