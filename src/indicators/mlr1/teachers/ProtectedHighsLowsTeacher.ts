@@ -1088,12 +1088,18 @@ function stepCompletedPHLBucket(
     const mapHighSlot = (slot: PHLPivotSlot | null): PHLPivotSlot | null => {
         if (!slot) return null;
         const a = nextAnchorsMutable[slot.barIndex];
-        return a ? Object.freeze({ price: slot.price, barIndex: a.peakBar, time: a.peakTime }) : slot;
+        if (!a) {
+            throw new Error(`PHL V4 State Error: missing HTF-to-chart anchor for high slot ${slot.barIndex}.`);
+        }
+        return Object.freeze({ price: slot.price, barIndex: a.peakBar, time: a.peakTime });
     };
     const mapLowSlot = (slot: PHLPivotSlot | null): PHLPivotSlot | null => {
         if (!slot) return null;
         const a = nextAnchorsMutable[slot.barIndex];
-        return a ? Object.freeze({ price: slot.price, barIndex: a.troughBar, time: a.troughTime }) : slot;
+        if (!a) {
+            throw new Error(`PHL V4 State Error: missing HTF-to-chart anchor for low slot ${slot.barIndex}.`);
+        }
+        return Object.freeze({ price: slot.price, barIndex: a.troughBar, time: a.troughTime });
     };
 
     const atr14Valid = effectiveAtr14 !== null && Number.isFinite(effectiveAtr14) && effectiveAtr14 > 0;
@@ -1105,6 +1111,9 @@ function stepCompletedPHLBucket(
     }
 
     for (const rawEv of step.events) {
+        if (rawEv.eventDirection !== 'bull' && rawEv.eventDirection !== 'bear') {
+            throw new Error(`PHL V4 Contract Error: invalid eventDirection '${String(rawEv.eventDirection)}'.`);
+        }
         const ctx = rawEv.structuralContext;
         if (!ctx || typeof ctx !== 'object') {
             throw new Error('PHL V4 Contract Error: missing rawEv.structuralContext.');
@@ -1129,9 +1138,13 @@ function stepCompletedPHLBucket(
         }
 
         const isBull = rawEv.eventDirection === 'bull';
+        // rawEv.sourceBarIndex from stepPHL is an HTF bar index; require valid anchor mapping
         const srcAnchor = nextAnchorsMutable[rawEv.sourceBarIndex];
-        const sourceBarIndex = srcAnchor ? (isBull ? srcAnchor.peakBar : srcAnchor.troughBar) : rawEv.sourceBarIndex;
-        const sourceTimestamp = srcAnchor ? (isBull ? srcAnchor.peakTime : srcAnchor.troughTime) : rawEv.sourceTimestamp;
+        if (!srcAnchor) {
+            throw new Error(`PHL V4 State Error: missing HTF-to-chart anchor for sourceBarIndex ${rawEv.sourceBarIndex}.`);
+        }
+        const sourceBarIndex = isBull ? srcAnchor.peakBar : srcAnchor.troughBar;
+        const sourceTimestamp = isBull ? srcAnchor.peakTime : srcAnchor.troughTime;
 
         let protPrice: number | null = null;
         let protBarIndex: number | null = null;
@@ -1142,19 +1155,19 @@ function stepCompletedPHLBucket(
 
         if (hasProtectedLevel) {
             if (typeof rawProtPrice !== 'number' || !Number.isFinite(rawProtPrice) || rawProtPrice <= 0) {
-                throw new Error(`PHL V4 Contract Error: hasProtectedLevel=true requires finite positive protectedLevelPrice.`);
+                throw new Error('PHL V4 Contract Error: hasProtectedLevel=true requires finite positive protectedLevelPrice.');
             }
             protPrice = rawProtPrice;
 
+            // Optional protectedLevelBarIndex/Timestamp, if present on ctx, are already in 1m chart coordinates
             if (rawOptBar !== undefined && rawOptBar !== null) {
-                if (typeof rawOptBar !== 'number' || !Number.isSafeInteger(rawOptBar) || rawOptBar < 0) {
-                    throw new Error(`PHL V4 Contract Error: invalid protectedLevelBarIndex '${String(rawOptBar)}'.`);
+                if (typeof rawOptBar !== 'number' || !Number.isSafeInteger(rawOptBar) || rawOptBar < 0 || rawOptBar > confirmChartBarIndex) {
+                    throw new Error(`PHL V4 Contract Error: invalid chart protectedLevelBarIndex '${String(rawOptBar)}'.`);
                 }
-                const optAnchor = nextAnchorsMutable[rawOptBar];
-                protBarIndex = optAnchor ? (isBull ? optAnchor.troughBar : optAnchor.peakBar) : rawOptBar;
+                protBarIndex = rawOptBar;
             }
             if (rawOptTime !== undefined && rawOptTime !== null) {
-                if (typeof rawOptTime !== 'number' || !Number.isSafeInteger(rawOptTime) || rawOptTime <= 0) {
+                if (typeof rawOptTime !== 'number' || !Number.isSafeInteger(rawOptTime) || rawOptTime <= 0 || rawOptTime > confirmChartTimestamp) {
                     throw new Error(`PHL V4 Contract Error: invalid protectedLevelTimestamp '${String(rawOptTime)}'.`);
                 }
                 protTimestamp = rawOptTime;
@@ -1163,7 +1176,7 @@ function stepCompletedPHLBucket(
             if (protBarIndex === null || protTimestamp === null) {
                 const stepSlot = isBull ? step.activeProtectedLow : step.activeProtectedHigh;
                 const mappedProt = isBull ? mapLowSlot(stepSlot) : mapHighSlot(stepSlot);
-                // Only use final step slot as fallback when it demonstrably identifies the exact same protected level
+                // Fallback to stepSlot (HTF index mapped to chart coords) only when price & optional coords match identically
                 if (stepSlot !== null &&
                     mappedProt !== null &&
                     stepSlot.price === protPrice &&
@@ -1174,10 +1187,11 @@ function stepCompletedPHLBucket(
                 }
             }
         } else {
+            // Frozen stepPHL emits 0 sentinel when hasProtectedLevel=false; V4 normalizes output to null
             if ((rawProtPrice !== undefined && rawProtPrice !== null && rawProtPrice !== 0) ||
                 (rawOptBar !== undefined && rawOptBar !== null) ||
                 (rawOptTime !== undefined && rawOptTime !== null)) {
-                throw new Error('PHL V4 Contract Error: hasProtectedLevel=false must not carry protected-level metadata.');
+                throw new Error('PHL V4 Contract Error: hasProtectedLevel=false must not carry non-zero protected-level metadata.');
             }
         }
 

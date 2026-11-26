@@ -14,6 +14,7 @@ import {
     stepPHL,
     stepPHLV4,
     stepPHLV4Multi,
+    validatePHLV4MultiState,
     validatePHLV4State
 } from '../indicators/mlr1/teachers/ProtectedHighsLowsTeacher';
 import { ProtectedHighsLowsIndicator } from '../indicators/plugins/ProtectedHighsLowsIndicator';
@@ -123,6 +124,7 @@ export function runPhase3V4TeachersAcceptanceTests(): boolean {
         const base5mCfg = createDefaultPHLV4Config('SOLUSDT', '5m', 300_000, '5m');
         expectThrow(() => stepPHLV4Multi(stream[0], 0, createInitialPHLV4MultiState(), [phlCfgs[0], base5mCfg], false, null), 'stepPHLV4Multi mixed-base-timeframe configs');
         expectThrow(() => stepPHLV4Multi(stream[0], 0, createInitialPHLV4MultiState(), [], false, null), 'stepPHLV4Multi empty configs');
+        expectThrow(() => validatePHLV4MultiState(createInitialPHLV4MultiState(), []), 'validatePHLV4MultiState empty configs');
         assert(phlCfgs[0].baseIntervalMs === 60_000 && phlCfgs[1].baseIntervalMs === 60_000, 'Base interval precondition');
         const badIntervalCfg = { ...phlCfgs[1], baseIntervalMs: 120_000 };
         expectThrow(() => stepPHLV4Multi(stream[0], 0, createInitialPHLV4MultiState(), [phlCfgs[0], badIntervalCfg], false, null), 'stepPHLV4Multi mismatched baseIntervalMs');
@@ -252,6 +254,7 @@ export function runPhase3V4TeachersAcceptanceTests(): boolean {
                 const barsPerB = tfMs / dt;
                 let sReset = createInitialPHLV4State();
                 const postResetBuckets: ML1Candle[] = [];
+                const bucketSourceCounts: number[] = [];
                 let curB = null as ML1Candle | null;
                 let countInB = 0;
 
@@ -271,12 +274,14 @@ export function runPhase3V4TeachersAcceptanceTests(): boolean {
                         const bStart = Math.floor(c.time / tfMs) * tfMs;
                         if (curB === null) {
                             if (c.time === bStart) { curB = { ...c }; countInB = 1; }
-                        } else {
+                        } else if (Math.floor(curB.time / tfMs) * tfMs === bStart) {
                             curB = { ...curB, high: Math.max(curB.high, c.high), low: Math.min(curB.low, c.low), close: c.close, volume: curB.volume + c.volume };
                             countInB++;
                         }
-                        if (curB !== null && countInB === barsPerB && c.time === bStart + tfMs - dt) {
+                        if (curB !== null && c.time === bStart + tfMs - dt) {
+                            assert(countInB === barsPerB, `${tf} reference bucket at ${curB.time} closed with ${countInB} !== ${barsPerB} candles`);
                             postResetBuckets.push(curB);
+                            bucketSourceCounts.push(countInB);
                             if (postResetBuckets.length === 1) {
                                 assert(curB.time === Math.ceil((sub[151].time + 1) / tfMs) * tfMs,
                                     `${tf} first complete post-reset bucket must align to next HTF boundary`);
@@ -300,9 +305,47 @@ export function runPhase3V4TeachersAcceptanceTests(): boolean {
                         }
                     }
                 }
-                assert(postResetBuckets.length >= 15, 'Expected >= 15 post-reset HTF buckets for ATR parity');
+                assert(postResetBuckets.length >= 15 && bucketSourceCounts.every(cnt => cnt === barsPerB),
+                    `${tf} every completed post-reset reference bucket must contain exact ${barsPerB} candles`);
             }
         }
+
+        // 3d. Deterministic non-identity HTF-to-chart mapping proof (3m, pivotStrength=1, useValidPullbacks=false)
+        // HTF idx=1 peaks at 1m bar 4 (high=115, != 1); HTF idx=3 troughs at 1m bar 10 (low=92, != 3); HTF idx=5 closes 120 > 115 at bar 17
+        const det3mBars: Array<[number, number, number, number]> = [
+            // Bucket 0 (htfIdx=0, bars 0..2)
+            [100, 102, 99, 101], [101, 104, 100, 103], [103, 103, 100, 102],
+            // Bucket 1 (htfIdx=1, bars 3..5 -> peak @ 1m bar 4 = 115)
+            [102, 105, 101, 104], [104, 115, 103, 112], [112, 113, 108, 110],
+            // Bucket 2 (htfIdx=2, bars 6..8 -> confirms PH @ htfIdx=1 -> 1m bar 4)
+            [110, 111, 104, 106], [106, 107, 100, 102], [102, 105, 101, 104],
+            // Bucket 3 (htfIdx=3, bars 9..11 -> trough @ 1m bar 10 = 92)
+            [104, 106, 101, 103], [103, 104, 92, 95], [95, 98, 94, 97],
+            // Bucket 4 (htfIdx=4, bars 12..14 -> confirms PL @ htfIdx=3 -> 1m bar 10)
+            [97, 105, 96, 104], [104, 112, 103, 110], [110, 114, 109, 113],
+            // Bucket 5 (htfIdx=5, bars 15..17 -> close=120 breaks 115 at bar 17)
+            [113, 116, 112, 115], [115, 119, 114, 118], [118, 121, 117, 120]
+        ];
+        const detCfg = createDefaultPHLV4Config('SOLUSDT', '1m', dt, '3m', { pivotStrength: 1, useValidPullbacks: false });
+        let detSt = createInitialPHLV4State();
+        const detEvs: any[] = [];
+        for (let i = 0; i < det3mBars.length; i++) {
+            const [o, h, l, c] = det3mBars[i];
+            const r = stepPHLV4({ time: t0 + i * dt, open: o, high: h, low: l, close: c, volume: 100, isSynthetic: false }, i, detSt, detCfg, false, null);
+            detSt = r.nextState;
+            detEvs.push(...r.events);
+        }
+        assert(detEvs.length === 1, `Expected 1 deterministic break event, got ${detEvs.length}`);
+        const de = detEvs[0];
+        assert(
+            de.eventType === 'PHL_MSS_BULL' &&
+            de.sourceBarIndex === 4 && de.sourceTimestamp === t0 + 4 * dt && // HTF idx=1 -> 1m peakBar=4
+            de.structuralContext.brokenLevelPrice === 115 &&
+            de.structuralContext.protectedLevelBarIndex === 10 && de.structuralContext.protectedLevelTimestamp === t0 + 10 * dt && // HTF idx=3 -> 1m troughBar=10
+            de.structuralContext.protectedLevelPrice === 92 &&
+            de.confirmationBarIndex === 17 && de.confirmationTimestamp === t0 + 17 * dt,
+            `Non-identity HTF-to-chart mapping mismatch: ${JSON.stringify(de)}`
+        );
     });
 
     runTest('4. State resets (boundary, mid-bucket, pre-close gaps + explicit isDiscontinuity), corrupt state rejection & discriminators', () => {
@@ -660,6 +703,121 @@ export function runPhase3V4TeachersAcceptanceTests(): boolean {
         } catch { atomThrew = true; }
         assert(atomThrew && atomCached.length === 0 && atomPivots.length === 0 && atomTargets.length === 0,
             'applyBarEvents must reject atomically with zero partial mutations');
+
+        // Atomicity on conflicting existing pivot price (must reject BEFORE pushing cachedEvents or closing activeTarget)
+        const conflictCached: any[] = [];
+        const conflictPivots: any[] = [{ barIndex: 48, confirmedBarIndex: 50, price: 90, type: 'low' }];
+        const conflictTargets: any[] = [];
+        let conflictThrew = false;
+        try {
+            ProtectedHighsLowsIndicator.applyBarEvents({
+                events: [ev1],
+                activeProtectedLow: { barIndex: 48, price: 95, time: t0 + 48 * dt },
+                activeProtectedHigh: null,
+                confirmationBar: 50, closePrice: 100, atrVal: 2.0, stepAtr: 2.0,
+                targetReset: 'MSS & BOS', targetStepMult: 2.0,
+                cachedEvents: conflictCached, confirmedPivots: conflictPivots, targetSegments: conflictTargets,
+                activeTarget: { startBar: 30, price: 120, entryPrice: 105, stepNum: 1, dir: 1 },
+                curTrailPrice: 100, curTrailDir: 1
+            });
+        } catch { conflictThrew = true; }
+        assert(
+            conflictThrew &&
+            conflictCached.length === 0 &&
+            conflictTargets.length === 0 &&
+            conflictPivots.length === 1 &&
+            conflictPivots[0].price === 90,
+            'Conflicting existing pivot must reject atomically before any array mutation'
+        );
+
+        // Atomicity on same-batch conflicting pivot keys (ev1 vs ev1DiffPrice sharing protBar=48, type='low', confirmationBar=50)
+        const batchConflictCached: any[] = [];
+        const batchConflictPivots: any[] = [];
+        const batchConflictTargets: any[] = [];
+        const ev1DiffPrice: any = {
+            ...ev1,
+            eventId: 'E1C',
+            eventDiscriminator: 'D1C',
+            structuralContext: { ...ev1.structuralContext, protectedLevelPrice: 92, protectedLevelBarIndex: 48 }
+        };
+        let batchConflictThrew = false;
+        try {
+            ProtectedHighsLowsIndicator.applyBarEvents({
+                events: [ev1, ev1DiffPrice],
+                activeProtectedLow: { barIndex: 48, price: 95, time: t0 + 48 * dt },
+                activeProtectedHigh: null,
+                confirmationBar: 50, closePrice: 100, atrVal: 2.0, stepAtr: 2.0,
+                targetReset: 'MSS & BOS', targetStepMult: 2.0,
+                cachedEvents: batchConflictCached, confirmedPivots: batchConflictPivots, targetSegments: batchConflictTargets,
+                activeTarget: null, curTrailPrice: 0, curTrailDir: 0
+            });
+        } catch { batchConflictThrew = true; }
+        assert(
+            batchConflictThrew &&
+            batchConflictCached.length === 0 &&
+            batchConflictPivots.length === 0 &&
+            batchConflictTargets.length === 0,
+            'Same-batch conflicting pivot prices must reject atomically before any array mutation'
+        );
+
+        // Atomicity when confirmedPivots already contains contradictory duplicate entries
+        const dupExistingCached: any[] = [];
+        const dupExistingPivots: any[] = [
+            { barIndex: 48, confirmedBarIndex: 50, price: 95, type: 'low' },
+            { barIndex: 48, confirmedBarIndex: 50, price: 91, type: 'low' }
+        ];
+        const dupExistingTargets: any[] = [];
+        let dupExistingThrew = false;
+        try {
+            ProtectedHighsLowsIndicator.applyBarEvents({
+                events: [ev1],
+                activeProtectedLow: { barIndex: 48, price: 95, time: t0 + 48 * dt },
+                activeProtectedHigh: null,
+                confirmationBar: 50, closePrice: 100, atrVal: 2.0, stepAtr: 2.0,
+                targetReset: 'MSS & BOS', targetStepMult: 2.0,
+                cachedEvents: dupExistingCached, confirmedPivots: dupExistingPivots, targetSegments: dupExistingTargets,
+                activeTarget: null, curTrailPrice: 0, curTrailDir: 0
+            });
+        } catch { dupExistingThrew = true; }
+        assert(
+            dupExistingThrew &&
+            dupExistingCached.length === 0 &&
+            dupExistingTargets.length === 0 &&
+            dupExistingPivots.length === 2,
+            'Contradictory duplicate entries in confirmedPivots must reject atomically before any mutation'
+        );
+
+        // Reject non-writable array length & non-positive calculated target price
+        const roArr: any[] = [];
+        Object.defineProperty(roArr, 'length', { writable: false });
+        let roThrew = false;
+        try {
+            ProtectedHighsLowsIndicator.applyBarEvents({
+                events: [ev1],
+                activeProtectedLow: { barIndex: 48, price: 95, time: t0 + 48 * dt },
+                activeProtectedHigh: null,
+                confirmationBar: 50, closePrice: 100, atrVal: 2.0, stepAtr: 2.0,
+                targetReset: 'MSS & BOS', targetStepMult: 2.0,
+                cachedEvents: roArr, confirmedPivots: [], targetSegments: [],
+                activeTarget: null, curTrailPrice: 0, curTrailDir: 0
+            });
+        } catch { roThrew = true; }
+        assert(roThrew, 'Non-writable length output array must be rejected');
+
+        const negTargetEv: any = { ...ev2, structuralContext: { ...ev2.structuralContext, brokenLevelPrice: 1 } };
+        let negTargetThrew = false;
+        try {
+            ProtectedHighsLowsIndicator.applyBarEvents({
+                events: [negTargetEv],
+                activeProtectedLow: null,
+                activeProtectedHigh: { barIndex: 49, price: 115, time: t0 + 49 * dt },
+                confirmationBar: 50, closePrice: 100, atrVal: 2.0, stepAtr: 2.0,
+                targetReset: 'MSS & BOS', targetStepMult: 2.0,
+                cachedEvents: [], confirmedPivots: [], targetSegments: [],
+                activeTarget: null, curTrailPrice: 0, curTrailDir: 0
+            });
+        } catch { negTargetThrew = true; }
+        assert(negTargetThrew, 'Calculated non-positive bearish target price must be rejected');
 
         // IndicatorRegistry: legacy DTFX_ZONES ignored; DTFX_STRICTCBC_ZONES & PHL_BOS_MSS round-trip
         assert(IndicatorRegistry.deserialize({ type: 'DTFX_ZONES', visible: true, params: {} }) === null,

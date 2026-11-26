@@ -146,12 +146,16 @@ export class ProtectedHighsLowsIndicator extends BaseIndicator {
     }
 
     /**
-     * Atomically validates and applies one bar's confirmed PHL events in original order,
-     * mutating `cachedEvents`, `confirmedPivots`, and `targetSegments` in place only after
-     * all parameters and events pass validation.
+     * Validates all inputs/events and precomputes the complete commit plan
+     * (`preparedCachedEvents`, `preparedPivots`, `preparedClosedTargets`, `simActiveTarget`,
+     * `simTrailPrice`, `simTrailDir`) before any array mutation.
      *
-     * Ownership rule: `distToProtectedAtr` is intentionally recomputed at confirmation close
-     * using `closePrice` and `atrVal`, matching `stepCompletedPHLBucket` in `ProtectedHighsLowsTeacher.ts`.
+     * Contracts:
+     * - Rollback guarantees apply to ordinary mutable arrays (`length` writable, not frozen/sealed),
+     *   not arbitrary proxies or hostile custom array overrides.
+     * - `distToProtectedAtr` is intentionally recomputed at confirmation close using `closePrice` and `atrVal`.
+     * - Prospective target prices are pre-checked to be finite and positive (> 0) defensively on every event.
+     * - Optional `protectedLevelTimestamp` is validated as a positive safe integer (bar-index helper has no wall-clock confirmation timestamp).
      */
     public static applyBarEvents(params: {
         events: readonly StrategyEvent[];
@@ -174,6 +178,31 @@ export class ProtectedHighsLowsIndicator extends BaseIndicator {
         curTrailPrice: number;
         curTrailDir: 1 | -1 | 0;
     } {
+        if (!Array.isArray(params.events) ||
+            !Array.isArray(params.cachedEvents) ||
+            !Array.isArray(params.confirmedPivots) ||
+            !Array.isArray(params.targetSegments)) {
+            throw new Error('PHL Indicator Error: events and output arrays must be arrays.');
+        }
+        for (const [name, arr] of [
+            ['cachedEvents', params.cachedEvents],
+            ['confirmedPivots', params.confirmedPivots],
+            ['targetSegments', params.targetSegments]
+        ] as const) {
+            const lengthDesc = Object.getOwnPropertyDescriptor(arr, 'length');
+            if (Object.isFrozen(arr) || Object.isSealed(arr) || !Object.isExtensible(arr) || !lengthDesc?.writable) {
+                throw new Error(`PHL Indicator Error: output array '${name}' must be an ordinary mutable extensible array with writable length.`);
+            }
+        }
+        if (params.targetReset !== 'MSS & BOS' && params.targetReset !== 'MSS Only') {
+            throw new Error(`PHL Indicator Error: invalid targetReset '${String(params.targetReset)}'.`);
+        }
+        if (typeof params.curTrailPrice !== 'number' || !Number.isFinite(params.curTrailPrice) || params.curTrailPrice < 0) {
+            throw new Error(`PHL Indicator Error: invalid curTrailPrice '${String(params.curTrailPrice)}'.`);
+        }
+        if (params.curTrailDir !== -1 && params.curTrailDir !== 0 && params.curTrailDir !== 1) {
+            throw new Error(`PHL Indicator Error: invalid curTrailDir '${String(params.curTrailDir)}'.`);
+        }
         if (!Number.isSafeInteger(params.confirmationBar) || params.confirmationBar < 0) {
             throw new Error(`PHL Indicator Error: invalid confirmationBar '${String(params.confirmationBar)}'.`);
         }
@@ -188,21 +217,65 @@ export class ProtectedHighsLowsIndicator extends BaseIndicator {
             throw new Error('PHL Indicator Error: stepAtr and targetStepMult must be finite positive numbers.');
         }
 
-        const atr14Valid = params.atrVal !== null;
-
-        // Pre-validate every event before mutating any caller-owned output arrays (atomic)
-        interface PreparedEvent {
-            readonly ev: StrategyEvent;
-            readonly isBullEv: boolean;
-            readonly hasProt: boolean;
-            readonly evProtPrice: number | null;
-            readonly protBar: number | null;
-            readonly protTime: number | null;
-            readonly distProtAtr: number | null;
-            readonly brokenPrice: number;
-            readonly isMss: boolean;
+        // Copy & validate initial caller-owned activeTarget before simulation (never read during commit)
+        let simActiveTarget: { startBar: number; price: number; entryPrice: number; stepNum: number; dir: 1 | -1 } | null = null;
+        if (params.activeTarget !== null) {
+            const at = params.activeTarget;
+            if (!at || typeof at !== 'object' ||
+                !Number.isSafeInteger(at.startBar) || at.startBar < 0 || at.startBar > params.confirmationBar ||
+                (at.dir !== 1 && at.dir !== -1) ||
+                typeof at.price !== 'number' || !Number.isFinite(at.price) || at.price <= 0 ||
+                typeof at.entryPrice !== 'number' || !Number.isFinite(at.entryPrice) || at.entryPrice <= 0 ||
+                !Number.isSafeInteger(at.stepNum) || at.stepNum < 1) {
+                throw new Error('PHL Indicator Error: invalid activeTarget.');
+            }
+            simActiveTarget = {
+                startBar: at.startBar,
+                price: at.price,
+                entryPrice: at.entryPrice,
+                stepNum: at.stepNum,
+                dir: at.dir
+            };
         }
-        const prepared: PreparedEvent[] = [];
+
+        for (const [label, slot] of [
+            ['activeProtectedLow', params.activeProtectedLow],
+            ['activeProtectedHigh', params.activeProtectedHigh]
+        ] as const) {
+            if (slot !== null) {
+                if (!slot || typeof slot !== 'object' ||
+                    !Number.isSafeInteger(slot.barIndex) || slot.barIndex < 0 || slot.barIndex > params.confirmationBar ||
+                    typeof slot.price !== 'number' || !Number.isFinite(slot.price) || slot.price <= 0 ||
+                    !Number.isSafeInteger(slot.time) || slot.time <= 0) {
+                    throw new Error(`PHL Indicator Error: invalid ${label}.`);
+                }
+            }
+        }
+
+        const atr14Valid = params.atrVal !== null;
+        const knownPivotPriceByKey = new Map<string, number>();
+        for (const p of params.confirmedPivots) {
+            if (!p || typeof p !== 'object' ||
+                !Number.isSafeInteger(p.barIndex) || p.barIndex < 0 ||
+                !Number.isSafeInteger(p.confirmedBarIndex) || p.confirmedBarIndex < p.barIndex ||
+                p.confirmedBarIndex > params.confirmationBar ||
+                (p.type !== 'high' && p.type !== 'low') ||
+                typeof p.price !== 'number' || !Number.isFinite(p.price) || p.price <= 0) {
+                throw new Error('PHL Indicator Error: malformed or out-of-order existing entry in confirmedPivots.');
+            }
+            const k = `${p.barIndex}|${p.confirmedBarIndex}|${p.type}`;
+            const prevPrice = knownPivotPriceByKey.get(k);
+            if (prevPrice !== undefined && prevPrice !== p.price) {
+                throw new Error(`PHL Indicator Error: contradictory duplicate pivot key '${k}' in confirmedPivots.`);
+            }
+            knownPivotPriceByKey.set(k, p.price);
+        }
+
+        const preparedCachedEvents: StrategyEvent[] = [];
+        const preparedPivots: PHLConfirmedPivotMarker[] = [];
+        const preparedClosedTargets: PHLTargetSegment[] = [];
+        let simTrailPrice = params.curTrailPrice;
+        let simTrailDir: 1 | -1 | 0 = params.curTrailDir;
 
         for (const ev of params.events) {
             if (!ev || (ev.eventDirection !== 'bull' && ev.eventDirection !== 'bear')) {
@@ -226,6 +299,12 @@ export class ProtectedHighsLowsIndicator extends BaseIndicator {
             }
 
             const isBullEv = ev.eventDirection === 'bull';
+            const dir: 1 | -1 = isBullEv ? 1 : -1;
+            const targetPrice = brokenPrice + dir * params.stepAtr * params.targetStepMult;
+            if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
+                throw new Error('PHL Indicator Error: calculated target price must be finite and positive.');
+            }
+
             const rawProtPrice = ctx['protectedLevelPrice'];
             const rawOptBar = (ctx as Record<string, unknown>)['protectedLevelBarIndex'];
             const rawOptTime = (ctx as Record<string, unknown>)['protectedLevelTimestamp'];
@@ -267,7 +346,7 @@ export class ProtectedHighsLowsIndicator extends BaseIndicator {
                 if ((rawProtPrice !== undefined && rawProtPrice !== null && rawProtPrice !== 0) ||
                     (rawOptBar !== undefined && rawOptBar !== null) ||
                     (rawOptTime !== undefined && rawOptTime !== null)) {
-                    throw new Error('PHL Indicator Error: hasProtectedLevel=false cannot carry protected-level metadata.');
+                    throw new Error('PHL Indicator Error: hasProtectedLevel=false cannot carry non-zero protected-level metadata.');
                 }
             }
 
@@ -275,71 +354,81 @@ export class ProtectedHighsLowsIndicator extends BaseIndicator {
                 hasProt && evProtPrice !== null && atr14Valid
                     ? (isBullEv ? (params.closePrice - evProtPrice) / params.atrVal! : (evProtPrice - params.closePrice) / params.atrVal!)
                     : null;
-
-            prepared.push({
-                ev,
-                isBullEv,
-                hasProt,
-                evProtPrice,
-                protBar,
-                protTime,
-                distProtAtr,
-                brokenPrice,
-                isMss: breakType === 'MSS'
-            });
-        }
-
-        let { activeTarget, curTrailPrice, curTrailDir } = params;
-
-        for (const item of prepared) {
-            params.cachedEvents.push({
-                ...item.ev,
-                structuralContext: {
-                    ...item.ev.structuralContext,
-                    hasProtectedLevel: item.hasProt,
-                    protectedLevelPrice: item.evProtPrice as any,
-                    protectedLevelBarIndex: item.protBar as any,
-                    protectedLevelTimestamp: item.protTime as any,
-                    atr14Valid,
-                    distToProtectedAtr: item.distProtAtr as any
-                }
-            });
-
-            if (item.hasProt && item.evProtPrice !== null && item.protBar !== null) {
-                const pType: 'high' | 'low' = item.isBullEv ? 'low' : 'high';
-                const existing = params.confirmedPivots.find(
-                    p => p.barIndex === item.protBar && p.confirmedBarIndex === params.confirmationBar && p.type === pType
-                );
-                if (!existing) {
-                    params.confirmedPivots.push({
-                        barIndex: item.protBar,
-                        confirmedBarIndex: params.confirmationBar,
-                        price: item.evProtPrice,
-                        type: pType
-                    });
-                } else if (existing.price !== item.evProtPrice) {
-                    throw new Error('PHL Indicator Error: conflicting pivot price on same barIndex/confirmationBar/type.');
-                }
-                curTrailPrice = item.evProtPrice;
-                curTrailDir = item.isBullEv ? 1 : -1;
+            if (distProtAtr !== null && !Number.isFinite(distProtAtr)) {
+                throw new Error('PHL Indicator Error: computed distToProtectedAtr is non-finite.');
             }
 
-            if (params.targetReset === 'MSS & BOS' || item.isMss || !activeTarget) {
-                if (activeTarget) {
-                    params.targetSegments.push({ ...activeTarget, endBar: params.confirmationBar, hit: false });
+            preparedCachedEvents.push({
+                ...ev,
+                structuralContext: {
+                    ...ctx,
+                    hasProtectedLevel: hasProt,
+                    protectedLevelPrice: evProtPrice as any,
+                    protectedLevelBarIndex: protBar as any,
+                    protectedLevelTimestamp: protTime as any,
+                    atr14Valid,
+                    distToProtectedAtr: distProtAtr as any
                 }
-                const dir: 1 | -1 = item.isBullEv ? 1 : -1;
-                activeTarget = {
+            });
+
+            if (hasProt && evProtPrice !== null && protBar !== null) {
+                const pType: 'high' | 'low' = isBullEv ? 'low' : 'high';
+                const pKey = `${protBar}|${params.confirmationBar}|${pType}`;
+                const knownPrice = knownPivotPriceByKey.get(pKey);
+                if (knownPrice !== undefined) {
+                    if (knownPrice !== evProtPrice) {
+                        throw new Error('PHL Indicator Error: conflicting pivot price for matching deduplication key.');
+                    }
+                } else {
+                    knownPivotPriceByKey.set(pKey, evProtPrice);
+                    preparedPivots.push({
+                        barIndex: protBar,
+                        confirmedBarIndex: params.confirmationBar,
+                        price: evProtPrice,
+                        type: pType
+                    });
+                }
+                simTrailPrice = evProtPrice;
+                simTrailDir = dir;
+            }
+
+            if (params.targetReset === 'MSS & BOS' || breakType === 'MSS' || !simActiveTarget) {
+                if (simActiveTarget) {
+                    preparedClosedTargets.push({ ...simActiveTarget, endBar: params.confirmationBar, hit: false });
+                }
+                simActiveTarget = {
                     startBar: params.confirmationBar,
-                    price: item.brokenPrice + dir * params.stepAtr * params.targetStepMult,
-                    entryPrice: item.brokenPrice,
+                    price: targetPrice,
+                    entryPrice: brokenPrice,
                     stepNum: 1,
                     dir
                 };
             }
         }
 
-        return { activeTarget, curTrailPrice, curTrailDir };
+        // Pure commit phase: appends precomputed objects only (no caller-object property reads or validation)
+        const origCachedLen = params.cachedEvents.length;
+        const origPivotsLen = params.confirmedPivots.length;
+        const origTargetsLen = params.targetSegments.length;
+
+        try {
+            for (const item of preparedCachedEvents) {
+                params.cachedEvents.push(item);
+            }
+            for (const item of preparedPivots) {
+                params.confirmedPivots.push(item);
+            }
+            for (const item of preparedClosedTargets) {
+                params.targetSegments.push(item);
+            }
+        } catch (commitErr) {
+            params.cachedEvents.length = origCachedLen;
+            params.confirmedPivots.length = origPivotsLen;
+            params.targetSegments.length = origTargetsLen;
+            throw commitErr;
+        }
+
+        return { activeTarget: simActiveTarget, curTrailPrice: simTrailPrice, curTrailDir: simTrailDir };
     }
 
     public calculate(ds: DataStore): void {
