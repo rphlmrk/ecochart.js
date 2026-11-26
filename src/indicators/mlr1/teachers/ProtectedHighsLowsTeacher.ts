@@ -934,6 +934,8 @@ export function validatePHLV4State(state: PHLV4State, config: PHLV4Config): void
         if (state.phlState.pl) requiredIndices.push(state.phlState.pl.barIndex);
         if (state.phlState.trackHighIdx !== null) requiredIndices.push(state.phlState.trackHighIdx);
         if (state.phlState.trackLowIdx !== null) requiredIndices.push(state.phlState.trackLowIdx);
+        if (state.phlState.lastHighIdx !== null) requiredIndices.push(state.phlState.lastHighIdx);
+        if (state.phlState.lastLowIdx !== null) requiredIndices.push(state.phlState.lastLowIdx);
         for (const reqIdx of requiredIndices) {
             if (!Object.prototype.hasOwnProperty.call(state.htfBarAnchors, String(reqIdx))) {
                 throw new Error(`PHL V4 State Error: missing chart anchor for active PHL HTF index ${reqIdx}.`);
@@ -1097,24 +1099,95 @@ function stepCompletedPHLBucket(
     const atr14Valid = effectiveAtr14 !== null && Number.isFinite(effectiveAtr14) && effectiveAtr14 > 0;
     const outEvents: PHLV4TeacherEvent[] = [];
 
+    // stepPHL uses mutually exclusive if/else-if single-break-per-bar semantics; enforce explicitly
+    if (step.events.length > 1) {
+        throw new Error(`PHL V4 Contract Error: expected <= 1 event per step, got ${step.events.length}.`);
+    }
+
     for (const rawEv of step.events) {
+        const ctx = rawEv.structuralContext;
+        if (!ctx || typeof ctx !== 'object') {
+            throw new Error('PHL V4 Contract Error: missing rawEv.structuralContext.');
+        }
+        const breakType = ctx['breakType'];
+        const brokenLevelPrice = ctx['brokenLevelPrice'];
+        const hasProtectedLevel = ctx['hasProtectedLevel'];
+        const rawProtPrice = ctx['protectedLevelPrice'];
+        const pbFromLowValid = ctx['pbFromLowValid'];
+        const pbFromHighValid = ctx['pbFromHighValid'];
+
+        if (breakType !== 'BOS' && breakType !== 'MSS') {
+            throw new Error(`PHL V4 Contract Error: invalid breakType '${String(breakType)}'.`);
+        }
+        if (typeof brokenLevelPrice !== 'number' || !Number.isFinite(brokenLevelPrice) || brokenLevelPrice <= 0) {
+            throw new Error(`PHL V4 Contract Error: invalid brokenLevelPrice '${String(brokenLevelPrice)}'.`);
+        }
+        if (typeof hasProtectedLevel !== 'boolean' ||
+            typeof pbFromLowValid !== 'boolean' ||
+            typeof pbFromHighValid !== 'boolean') {
+            throw new Error('PHL V4 Contract Error: hasProtectedLevel and pullback flags must be strict booleans.');
+        }
+
         const isBull = rawEv.eventDirection === 'bull';
         const srcAnchor = nextAnchorsMutable[rawEv.sourceBarIndex];
         const sourceBarIndex = srcAnchor ? (isBull ? srcAnchor.peakBar : srcAnchor.troughBar) : rawEv.sourceBarIndex;
         const sourceTimestamp = srcAnchor ? (isBull ? srcAnchor.peakTime : srcAnchor.troughTime) : rawEv.sourceTimestamp;
 
-        const protSlot = isBull ? step.activeProtectedLow : step.activeProtectedHigh;
-        const mappedProt = isBull ? mapLowSlot(protSlot) : mapHighSlot(protSlot);
-        const hasProtectedLevel = mappedProt !== null;
+        let protPrice: number | null = null;
+        let protBarIndex: number | null = null;
+        let protTimestamp: number | null = null;
+
+        const rawOptBar = (ctx as Record<string, unknown>)['protectedLevelBarIndex'];
+        const rawOptTime = (ctx as Record<string, unknown>)['protectedLevelTimestamp'];
+
+        if (hasProtectedLevel) {
+            if (typeof rawProtPrice !== 'number' || !Number.isFinite(rawProtPrice) || rawProtPrice <= 0) {
+                throw new Error(`PHL V4 Contract Error: hasProtectedLevel=true requires finite positive protectedLevelPrice.`);
+            }
+            protPrice = rawProtPrice;
+
+            if (rawOptBar !== undefined && rawOptBar !== null) {
+                if (typeof rawOptBar !== 'number' || !Number.isSafeInteger(rawOptBar) || rawOptBar < 0) {
+                    throw new Error(`PHL V4 Contract Error: invalid protectedLevelBarIndex '${String(rawOptBar)}'.`);
+                }
+                const optAnchor = nextAnchorsMutable[rawOptBar];
+                protBarIndex = optAnchor ? (isBull ? optAnchor.troughBar : optAnchor.peakBar) : rawOptBar;
+            }
+            if (rawOptTime !== undefined && rawOptTime !== null) {
+                if (typeof rawOptTime !== 'number' || !Number.isSafeInteger(rawOptTime) || rawOptTime <= 0) {
+                    throw new Error(`PHL V4 Contract Error: invalid protectedLevelTimestamp '${String(rawOptTime)}'.`);
+                }
+                protTimestamp = rawOptTime;
+            }
+
+            if (protBarIndex === null || protTimestamp === null) {
+                const stepSlot = isBull ? step.activeProtectedLow : step.activeProtectedHigh;
+                const mappedProt = isBull ? mapLowSlot(stepSlot) : mapHighSlot(stepSlot);
+                // Only use final step slot as fallback when it demonstrably identifies the exact same protected level
+                if (stepSlot !== null &&
+                    mappedProt !== null &&
+                    stepSlot.price === protPrice &&
+                    (protBarIndex === null || protBarIndex === mappedProt.barIndex) &&
+                    (protTimestamp === null || protTimestamp === mappedProt.time)) {
+                    protBarIndex = protBarIndex ?? mappedProt.barIndex;
+                    protTimestamp = protTimestamp ?? mappedProt.time;
+                }
+            }
+        } else {
+            if ((rawProtPrice !== undefined && rawProtPrice !== null && rawProtPrice !== 0) ||
+                (rawOptBar !== undefined && rawOptBar !== null) ||
+                (rawOptTime !== undefined && rawOptTime !== null)) {
+                throw new Error('PHL V4 Contract Error: hasProtectedLevel=false must not carry protected-level metadata.');
+            }
+        }
 
         const distToProtectedAtr =
-            hasProtectedLevel && atr14Valid
+            hasProtectedLevel && protPrice !== null && atr14Valid
                 ? (isBull
-                    ? (completedBucket.close - mappedProt!.price) / effectiveAtr14!
-                    : (mappedProt!.price - completedBucket.close) / effectiveAtr14!)
+                    ? (completedBucket.close - protPrice) / effectiveAtr14!
+                    : (protPrice - completedBucket.close) / effectiveAtr14!)
                 : null;
 
-        const breakType = rawEv.structuralContext['breakType'] as 'BOS' | 'MSS';
         const eventDiscriminator = [
             config.symbol,
             config.baseTimeframe,
@@ -1142,15 +1215,15 @@ function stepCompletedPHLBucket(
                 structuralContext: Object.freeze({
                     phlTimeframe: config.phlTimeframe,
                     breakType,
-                    brokenLevelPrice: Number(rawEv.structuralContext['brokenLevelPrice']),
+                    brokenLevelPrice,
                     hasProtectedLevel,
-                    protectedLevelPrice: hasProtectedLevel ? mappedProt!.price : null,
-                    protectedLevelBarIndex: hasProtectedLevel ? mappedProt!.barIndex : null,
-                    protectedLevelTimestamp: hasProtectedLevel ? mappedProt!.time : null,
+                    protectedLevelPrice: protPrice,
+                    protectedLevelBarIndex: protBarIndex,
+                    protectedLevelTimestamp: protTimestamp,
                     atr14Valid,
                     distToProtectedAtr,
-                    pbFromLowValid: Boolean(rawEv.structuralContext['pbFromLowValid']),
-                    pbFromHighValid: Boolean(rawEv.structuralContext['pbFromHighValid'])
+                    pbFromLowValid,
+                    pbFromHighValid
                 })
             })
         );
@@ -1382,9 +1455,19 @@ export function validatePHLV4MultiState(
     if (!Array.isArray(configs as unknown) || configs.length === 0) {
         throw new Error('PHL V4 Multi Config Error: configs must be non-empty.');
     }
+    const baseCfg = configs[0];
+    validatePHLV4Config(baseCfg);
     const seen = new Set<PHLTimeframe>();
     for (const cfg of configs) {
         validatePHLV4Config(cfg);
+        if (cfg.symbol !== baseCfg.symbol ||
+            cfg.baseTimeframe !== baseCfg.baseTimeframe ||
+            cfg.baseIntervalMs !== baseCfg.baseIntervalMs) {
+            throw new Error(
+                `PHL V4 Multi Config Error: mixed symbol/baseTimeframe configs rejected ` +
+                `('${cfg.symbol}/${cfg.baseTimeframe}/${cfg.baseIntervalMs}' vs '${baseCfg.symbol}/${baseCfg.baseTimeframe}/${baseCfg.baseIntervalMs}').`
+            );
+        }
         if (seen.has(cfg.phlTimeframe)) {
             throw new Error(`PHL V4 Multi Config Error: duplicate timeframe config '${cfg.phlTimeframe}'.`);
         }

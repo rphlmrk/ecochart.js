@@ -145,6 +145,203 @@ export class ProtectedHighsLowsIndicator extends BaseIndicator {
         super.reset();
     }
 
+    /**
+     * Atomically validates and applies one bar's confirmed PHL events in original order,
+     * mutating `cachedEvents`, `confirmedPivots`, and `targetSegments` in place only after
+     * all parameters and events pass validation.
+     *
+     * Ownership rule: `distToProtectedAtr` is intentionally recomputed at confirmation close
+     * using `closePrice` and `atrVal`, matching `stepCompletedPHLBucket` in `ProtectedHighsLowsTeacher.ts`.
+     */
+    public static applyBarEvents(params: {
+        events: readonly StrategyEvent[];
+        activeProtectedLow: { barIndex: number; price: number; time: number } | null;
+        activeProtectedHigh: { barIndex: number; price: number; time: number } | null;
+        confirmationBar: number;
+        closePrice: number;
+        atrVal: number | null;
+        stepAtr: number;
+        targetReset: string;
+        targetStepMult: number;
+        cachedEvents: StrategyEvent[];
+        confirmedPivots: PHLConfirmedPivotMarker[];
+        targetSegments: PHLTargetSegment[];
+        activeTarget: { startBar: number; price: number; entryPrice: number; stepNum: number; dir: 1 | -1 } | null;
+        curTrailPrice: number;
+        curTrailDir: 1 | -1 | 0;
+    }): {
+        activeTarget: { startBar: number; price: number; entryPrice: number; stepNum: number; dir: 1 | -1 } | null;
+        curTrailPrice: number;
+        curTrailDir: 1 | -1 | 0;
+    } {
+        if (!Number.isSafeInteger(params.confirmationBar) || params.confirmationBar < 0) {
+            throw new Error(`PHL Indicator Error: invalid confirmationBar '${String(params.confirmationBar)}'.`);
+        }
+        if (typeof params.closePrice !== 'number' || !Number.isFinite(params.closePrice) || params.closePrice <= 0) {
+            throw new Error(`PHL Indicator Error: invalid closePrice '${String(params.closePrice)}'.`);
+        }
+        if (params.atrVal !== null && (typeof params.atrVal !== 'number' || !Number.isFinite(params.atrVal) || params.atrVal <= 0)) {
+            throw new Error(`PHL Indicator Error: atrVal must be null or finite positive, got '${String(params.atrVal)}'.`);
+        }
+        if (typeof params.stepAtr !== 'number' || !Number.isFinite(params.stepAtr) || params.stepAtr <= 0 ||
+            typeof params.targetStepMult !== 'number' || !Number.isFinite(params.targetStepMult) || params.targetStepMult <= 0) {
+            throw new Error('PHL Indicator Error: stepAtr and targetStepMult must be finite positive numbers.');
+        }
+
+        const atr14Valid = params.atrVal !== null;
+
+        // Pre-validate every event before mutating any caller-owned output arrays (atomic)
+        interface PreparedEvent {
+            readonly ev: StrategyEvent;
+            readonly isBullEv: boolean;
+            readonly hasProt: boolean;
+            readonly evProtPrice: number | null;
+            readonly protBar: number | null;
+            readonly protTime: number | null;
+            readonly distProtAtr: number | null;
+            readonly brokenPrice: number;
+            readonly isMss: boolean;
+        }
+        const prepared: PreparedEvent[] = [];
+
+        for (const ev of params.events) {
+            if (!ev || (ev.eventDirection !== 'bull' && ev.eventDirection !== 'bear')) {
+                throw new Error(`PHL Indicator Error: unsupported eventDirection '${String((ev as any)?.eventDirection)}'.`);
+            }
+            const ctx = ev.structuralContext;
+            if (!ctx || typeof ctx !== 'object') {
+                throw new Error('PHL Indicator Error: missing event structuralContext.');
+            }
+            const breakType = ctx['breakType'];
+            if (breakType !== 'BOS' && breakType !== 'MSS') {
+                throw new Error(`PHL Indicator Error: invalid breakType '${String(breakType)}'.`);
+            }
+            const brokenPrice = ctx['brokenLevelPrice'];
+            if (typeof brokenPrice !== 'number' || !Number.isFinite(brokenPrice) || brokenPrice <= 0) {
+                throw new Error(`PHL Indicator Error: invalid brokenLevelPrice '${String(brokenPrice)}'.`);
+            }
+            const hasProt = ctx['hasProtectedLevel'];
+            if (typeof hasProt !== 'boolean') {
+                throw new Error(`PHL Indicator Error: hasProtectedLevel must be boolean, got '${String(hasProt)}'.`);
+            }
+
+            const isBullEv = ev.eventDirection === 'bull';
+            const rawProtPrice = ctx['protectedLevelPrice'];
+            const rawOptBar = (ctx as Record<string, unknown>)['protectedLevelBarIndex'];
+            const rawOptTime = (ctx as Record<string, unknown>)['protectedLevelTimestamp'];
+
+            let evProtPrice: number | null = null;
+            let protBar: number | null = null;
+            let protTime: number | null = null;
+
+            if (hasProt) {
+                if (typeof rawProtPrice !== 'number' || !Number.isFinite(rawProtPrice) || rawProtPrice <= 0) {
+                    throw new Error(`PHL Indicator Error: invalid protectedLevelPrice '${String(rawProtPrice)}'.`);
+                }
+                evProtPrice = rawProtPrice;
+
+                if (rawOptBar !== undefined && rawOptBar !== null) {
+                    if (typeof rawOptBar !== 'number' || !Number.isSafeInteger(rawOptBar) || rawOptBar < 0 || rawOptBar > params.confirmationBar) {
+                        throw new Error(`PHL Indicator Error: invalid protectedLevelBarIndex '${String(rawOptBar)}'.`);
+                    }
+                    protBar = rawOptBar;
+                }
+                if (rawOptTime !== undefined && rawOptTime !== null) {
+                    if (typeof rawOptTime !== 'number' || !Number.isSafeInteger(rawOptTime) || rawOptTime <= 0) {
+                        throw new Error(`PHL Indicator Error: invalid protectedLevelTimestamp '${String(rawOptTime)}'.`);
+                    }
+                    protTime = rawOptTime;
+                }
+
+                if (protBar === null || protTime === null) {
+                    const stepSlot = isBullEv ? params.activeProtectedLow : params.activeProtectedHigh;
+                    if (stepSlot !== null &&
+                        stepSlot.price === evProtPrice &&
+                        (protBar === null || protBar === stepSlot.barIndex) &&
+                        (protTime === null || protTime === stepSlot.time)) {
+                        protBar = protBar ?? stepSlot.barIndex;
+                        protTime = protTime ?? stepSlot.time;
+                    }
+                }
+            } else {
+                if ((rawProtPrice !== undefined && rawProtPrice !== null && rawProtPrice !== 0) ||
+                    (rawOptBar !== undefined && rawOptBar !== null) ||
+                    (rawOptTime !== undefined && rawOptTime !== null)) {
+                    throw new Error('PHL Indicator Error: hasProtectedLevel=false cannot carry protected-level metadata.');
+                }
+            }
+
+            const distProtAtr =
+                hasProt && evProtPrice !== null && atr14Valid
+                    ? (isBullEv ? (params.closePrice - evProtPrice) / params.atrVal! : (evProtPrice - params.closePrice) / params.atrVal!)
+                    : null;
+
+            prepared.push({
+                ev,
+                isBullEv,
+                hasProt,
+                evProtPrice,
+                protBar,
+                protTime,
+                distProtAtr,
+                brokenPrice,
+                isMss: breakType === 'MSS'
+            });
+        }
+
+        let { activeTarget, curTrailPrice, curTrailDir } = params;
+
+        for (const item of prepared) {
+            params.cachedEvents.push({
+                ...item.ev,
+                structuralContext: {
+                    ...item.ev.structuralContext,
+                    hasProtectedLevel: item.hasProt,
+                    protectedLevelPrice: item.evProtPrice as any,
+                    protectedLevelBarIndex: item.protBar as any,
+                    protectedLevelTimestamp: item.protTime as any,
+                    atr14Valid,
+                    distToProtectedAtr: item.distProtAtr as any
+                }
+            });
+
+            if (item.hasProt && item.evProtPrice !== null && item.protBar !== null) {
+                const pType: 'high' | 'low' = item.isBullEv ? 'low' : 'high';
+                const existing = params.confirmedPivots.find(
+                    p => p.barIndex === item.protBar && p.confirmedBarIndex === params.confirmationBar && p.type === pType
+                );
+                if (!existing) {
+                    params.confirmedPivots.push({
+                        barIndex: item.protBar,
+                        confirmedBarIndex: params.confirmationBar,
+                        price: item.evProtPrice,
+                        type: pType
+                    });
+                } else if (existing.price !== item.evProtPrice) {
+                    throw new Error('PHL Indicator Error: conflicting pivot price on same barIndex/confirmationBar/type.');
+                }
+                curTrailPrice = item.evProtPrice;
+                curTrailDir = item.isBullEv ? 1 : -1;
+            }
+
+            if (params.targetReset === 'MSS & BOS' || item.isMss || !activeTarget) {
+                if (activeTarget) {
+                    params.targetSegments.push({ ...activeTarget, endBar: params.confirmationBar, hit: false });
+                }
+                const dir: 1 | -1 = item.isBullEv ? 1 : -1;
+                activeTarget = {
+                    startBar: params.confirmationBar,
+                    price: item.brokenPrice + dir * params.stepAtr * params.targetStepMult,
+                    entryPrice: item.brokenPrice,
+                    stepNum: 1,
+                    dir
+                };
+            }
+        }
+
+        return { activeTarget, curTrailPrice, curTrailDir };
+    }
+
     public calculate(ds: DataStore): void {
         const len = ds.length;
         if (len === 0) return;
@@ -470,60 +667,26 @@ export class ProtectedHighsLowsIndicator extends BaseIndicator {
             acceptedIdx++;
 
             if (step.events.length > 0) {
-                const ev = step.events[0];
-                const isBullEv = ev.eventDirection === 'bull';
-                const protSlot = isBullEv ? step.activeProtectedLow : step.activeProtectedHigh;
-                const atr14Valid = atrVal !== null;
-                this.cachedEvents.push({
-                    ...ev,
-                    structuralContext: {
-                        ...ev.structuralContext,
-                        hasProtectedLevel: protSlot !== null,
-                        protectedLevelPrice: protSlot ? protSlot.price : (null as any),
-                        protectedLevelBarIndex: protSlot ? protSlot.barIndex : (null as any),
-                        protectedLevelTimestamp: protSlot ? protSlot.time : (null as any),
-                        atr14Valid,
-                        distToProtectedAtr: protSlot && atr14Valid
-                            ? (isBullEv ? (c - protSlot.price) / atrVal! : (protSlot.price - c) / atrVal!)
-                            : (null as any)
-                    }
+                const applied = ProtectedHighsLowsIndicator.applyBarEvents({
+                    events: step.events,
+                    activeProtectedLow: step.activeProtectedLow,
+                    activeProtectedHigh: step.activeProtectedHigh,
+                    confirmationBar: i,
+                    closePrice: c,
+                    atrVal,
+                    stepAtr,
+                    targetReset,
+                    targetStepMult,
+                    cachedEvents: this.cachedEvents,
+                    confirmedPivots: this.confirmedPivots,
+                    targetSegments: this.targetSegments,
+                    activeTarget,
+                    curTrailPrice,
+                    curTrailDir
                 });
-                const brokenPrice = Number(ev.structuralContext['brokenLevelPrice']);
-
-                if (isBullEv && step.activeProtectedLow) {
-                    this.confirmedPivots.push({
-                        barIndex: step.activeProtectedLow.barIndex,
-                        confirmedBarIndex: i,
-                        price: step.activeProtectedLow.price,
-                        type: 'low'
-                    });
-                    curTrailPrice = step.activeProtectedLow.price;
-                    curTrailDir = 1;
-                } else if (!isBullEv && step.activeProtectedHigh) {
-                    this.confirmedPivots.push({
-                        barIndex: step.activeProtectedHigh.barIndex,
-                        confirmedBarIndex: i,
-                        price: step.activeProtectedHigh.price,
-                        type: 'high'
-                    });
-                    curTrailPrice = step.activeProtectedHigh.price;
-                    curTrailDir = -1;
-                }
-
-                const isMss = ev.structuralContext['breakType'] === 'MSS';
-                if (targetReset === 'MSS & BOS' || isMss || !activeTarget) {
-                    if (activeTarget) {
-                        this.targetSegments.push({ ...activeTarget, endBar: i, hit: false });
-                    }
-                    const dir: 1 | -1 = isBullEv ? 1 : -1;
-                    activeTarget = {
-                        startBar: i,
-                        price: brokenPrice + dir * stepAtr * targetStepMult,
-                        entryPrice: brokenPrice,
-                        stepNum: 1,
-                        dir
-                    };
-                }
+                activeTarget = applied.activeTarget;
+                curTrailPrice = applied.curTrailPrice;
+                curTrailDir = applied.curTrailDir;
             } else if (activeTarget && i > activeTarget.startBar) {
                 const hit = targetTrigger === 'Wick (High/Low)'
                     ? (activeTarget.dir === 1 ? h >= activeTarget.price : l <= activeTarget.price)

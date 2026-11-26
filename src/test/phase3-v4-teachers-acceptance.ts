@@ -64,6 +64,9 @@ function normalizePHLEvent(e: any) {
         protectedLevelBarIndex: e.structuralContext.protectedLevelBarIndex,
         protectedLevelTimestamp: e.structuralContext.protectedLevelTimestamp,
         atr14Valid: e.structuralContext.atr14Valid,
+        distToProtectedAtr: e.structuralContext.distToProtectedAtr === null || e.structuralContext.distToProtectedAtr === undefined
+            ? null
+            : Math.round(Number(e.structuralContext.distToProtectedAtr) * 1e9) / 1e9,
         pbFromLowValid: e.structuralContext.pbFromLowValid,
         pbFromHighValid: e.structuralContext.pbFromHighValid
     };
@@ -115,6 +118,14 @@ export function runPhase3V4TeachersAcceptanceTests(): boolean {
         expectThrow(() => createDefaultPHLV4Config('SOLUSDT', '5m', 300_000, '1m'), 'PHL HTF < base interval');
         expectThrow(() => createDefaultPHLV4Config('SOLUSDT', '5m', 60_000, '3m'), 'PHL baseTf vs ms mismatch');
         expectThrow(() => stepPHLV4Multi(stream[0], 0, createInitialPHLV4MultiState(), [phlCfgs[0], phlCfgs[0]], false, null), 'stepPHLV4Multi duplicate config');
+        const btcCfg3m = createDefaultPHLV4Config('BTCUSDT', '1m', dt, '3m');
+        expectThrow(() => stepPHLV4Multi(stream[0], 0, createInitialPHLV4MultiState(), [phlCfgs[0], btcCfg3m], false, null), 'stepPHLV4Multi mixed-symbol configs');
+        const base5mCfg = createDefaultPHLV4Config('SOLUSDT', '5m', 300_000, '5m');
+        expectThrow(() => stepPHLV4Multi(stream[0], 0, createInitialPHLV4MultiState(), [phlCfgs[0], base5mCfg], false, null), 'stepPHLV4Multi mixed-base-timeframe configs');
+        expectThrow(() => stepPHLV4Multi(stream[0], 0, createInitialPHLV4MultiState(), [], false, null), 'stepPHLV4Multi empty configs');
+        assert(phlCfgs[0].baseIntervalMs === 60_000 && phlCfgs[1].baseIntervalMs === 60_000, 'Base interval precondition');
+        const badIntervalCfg = { ...phlCfgs[1], baseIntervalMs: 120_000 };
+        expectThrow(() => stepPHLV4Multi(stream[0], 0, createInitialPHLV4MultiState(), [phlCfgs[0], badIntervalCfg], false, null), 'stepPHLV4Multi mismatched baseIntervalMs');
     });
 
     runTest('2. Complete native 1m parity against original stepPHL (pivotStrength=8)', () => {
@@ -180,6 +191,24 @@ export function runPhase3V4TeachersAcceptanceTests(): boolean {
                     if (tf !== '1m') {
                         if (s.htfBarIndex < 14 && s.htfBarIndex > 0) assert(s.htfAtrState!.isSeeded === false, `${tf} HTF ATR must stay unseeded before 14th HTF candle`);
                         if (s.htfBarIndex === 14) assert(s.htfAtrState!.isSeeded === true, `${tf} HTF ATR seeds strictly on 14th HTF candle`);
+                        if (s.htfBarIndex >= 14 && (i + 1) % (tfMs / dt) === 0) {
+                            // Independent brute-force HTF Wilder ATR(14) over completed buckets
+                            const barsPerB = tfMs / dt;
+                            const numB = (i + 1) / barsPerB;
+                            const trs: number[] = [];
+                            let prevHtfC: number | null = null;
+                            for (let b = 0; b < numB; b++) {
+                                const slice = arr.slice(b * barsPerB, (b + 1) * barsPerB);
+                                const bh = Math.max(...slice.map(x => x.high));
+                                const bl = Math.min(...slice.map(x => x.low));
+                                const bc = slice[slice.length - 1].close;
+                                trs.push(prevHtfC === null ? bh - bl : Math.max(bh - bl, Math.abs(bh - prevHtfC), Math.abs(bl - prevHtfC)));
+                                prevHtfC = bc;
+                            }
+                            let refAtr = trs.slice(0, 14).reduce((a, b) => a + b, 0) / 14;
+                            for (let b = 14; b < trs.length; b++) refAtr = refAtr + (trs[b] - refAtr) / 14;
+                            assert(Math.abs(s.htfAtrState!.atr! - refAtr) < 1e-10, `${tf} HTF Wilder ATR numerical mismatch at HTF bar ${numB}`);
+                        }
                     }
                 }
                 return evs;
@@ -216,6 +245,62 @@ export function runPhase3V4TeachersAcceptanceTests(): boolean {
                 const pref = gappedRun(sub.slice(0, k));
                 const exp = fullDisc.filter(e => e.confirmationBarIndex < k);
                 assert(JSON.stringify(pref) === JSON.stringify(exp), `${tf} discontinuity prefix lookahead at k=${k}`);
+            }
+
+            // 3c. Reset-aware numerical HTF ATR parity (3m & 5m) after explicit discontinuity at bar 150
+            if (tf !== '1m') {
+                const barsPerB = tfMs / dt;
+                let sReset = createInitialPHLV4State();
+                const postResetBuckets: ML1Candle[] = [];
+                let curB = null as ML1Candle | null;
+                let countInB = 0;
+
+                // Discontinuity at bar 151 (mid-bucket for both 3m [02:30,02:33) and 5m [02:30,02:35)) proves partial bucket is discarded and ATR restarts cleanly at first aligned post-reset bucket
+                for (let i = 0; i < 300; i++) {
+                    const isDisc = i === 151;
+                    const r = stepPHLV4(sub[i], i, sReset, cfg, isDisc, null);
+                    sReset = r.nextState;
+
+                    if (isDisc) {
+                        assert(sReset.htfAtrState === null && sReset.prevHtfClose === null && sReset.formingBucket === null && sReset.htfBarIndex === 0,
+                            `${tf} mid-bucket discontinuity @151 must discard forming bucket and reset HTF ATR state`);
+                        curB = null;
+                        countInB = 0;
+                    } else if (i > 151) {
+                        const c = sub[i];
+                        const bStart = Math.floor(c.time / tfMs) * tfMs;
+                        if (curB === null) {
+                            if (c.time === bStart) { curB = { ...c }; countInB = 1; }
+                        } else {
+                            curB = { ...curB, high: Math.max(curB.high, c.high), low: Math.min(curB.low, c.low), close: c.close, volume: curB.volume + c.volume };
+                            countInB++;
+                        }
+                        if (curB !== null && countInB === barsPerB && c.time === bStart + tfMs - dt) {
+                            postResetBuckets.push(curB);
+                            if (postResetBuckets.length === 1) {
+                                assert(curB.time === Math.ceil((sub[151].time + 1) / tfMs) * tfMs,
+                                    `${tf} first complete post-reset bucket must align to next HTF boundary`);
+                            }
+                            curB = null;
+                            countInB = 0;
+                            if (postResetBuckets.length >= 14) {
+                                assert(sReset.htfAtrState !== null && sReset.htfAtrState.isSeeded &&
+                                    sReset.htfAtrState.atr !== null && Number.isFinite(sReset.htfAtrState.atr),
+                                    `${tf} post-reset htfAtrState must be valid & seeded`);
+                                const trs: number[] = [];
+                                for (let b = 0; b < postResetBuckets.length; b++) {
+                                    const kb = postResetBuckets[b];
+                                    trs.push(b === 0 ? kb.high - kb.low : Math.max(kb.high - kb.low, Math.abs(kb.high - postResetBuckets[b - 1].close), Math.abs(kb.low - postResetBuckets[b - 1].close)));
+                                }
+                                let refResetAtr = trs.slice(0, 14).reduce((a, b) => a + b, 0) / 14;
+                                for (let b = 14; b < trs.length; b++) refResetAtr = refResetAtr + (trs[b] - refResetAtr) / 14;
+                                assert(Math.abs(sReset.htfAtrState.atr - refResetAtr) < 1e-10,
+                                    `${tf} post-reset HTF Wilder ATR mismatch at post-reset HTF bar ${postResetBuckets.length}`);
+                            }
+                        }
+                    }
+                }
+                assert(postResetBuckets.length >= 15, 'Expected >= 15 post-reset HTF buckets for ATR parity');
             }
         }
     });
@@ -278,17 +363,21 @@ export function runPhase3V4TeachersAcceptanceTests(): boolean {
         let st = createInitialPHLV4State();
         const fullEvs: any[] = [];
         let cp242 = '';
-        for (let i = 0; i < 400; i++) {
+        let cpWithLastHigh = '';
+        let cpWithLastLow = '';
+        for (let i = 0; i < 600; i++) {
             const r = stepPHLV4(stream[i], i, st, cfg5, false, null);
             st = r.nextState;
             fullEvs.push(...r.events);
             if (i === 242) cp242 = JSON.stringify(st); // Mid-5m forming bucket (242 = 04:02)
+            if (cpWithLastHigh === '' && st.phlState.lastHighIdx !== null) cpWithLastHigh = JSON.stringify(st);
+            if (cpWithLastLow === '' && st.phlState.lastLowIdx !== null) cpWithLastLow = JSON.stringify(st);
         }
         const restored = JSON.parse(cp242);
         validatePHLV4State(restored, cfg5);
         let stRest = restored;
         const restEvs: any[] = [];
-        for (let i = 243; i < 400; i++) {
+        for (let i = 243; i < 600; i++) {
             const r = stepPHLV4(stream[i], i, stRest, cfg5, false, null);
             stRest = r.nextState;
             restEvs.push(...r.events);
@@ -308,6 +397,17 @@ export function runPhase3V4TeachersAcceptanceTests(): boolean {
         expectStateErr({ ...restored, htfAtrState: { ...restored.htfAtrState, count: 1 } }, 'corrupt htfAtrState count');
         expectStateErr({ ...restored, prevHtfClose: 99999 }, 'prevHtfClose mismatch');
         expectStateErr({ ...restored, htfBarAnchors: {} }, 'missing active htfBarAnchors');
+
+        assert(cpWithLastHigh !== '' && cpWithLastLow !== '', 'Stream must populate both lastHighIdx and lastLowIdx');
+        const stH = JSON.parse(cpWithLastHigh);
+        const withoutLastHigh = { ...stH.htfBarAnchors };
+        delete withoutLastHigh[String(stH.phlState.lastHighIdx)];
+        expectStateErr({ ...stH, htfBarAnchors: withoutLastHigh }, 'missing lastHighIdx anchor');
+
+        const stL = JSON.parse(cpWithLastLow);
+        const withoutLastLow = { ...stL.htfBarAnchors };
+        delete withoutLastLow[String(stL.phlState.lastLowIdx)];
+        expectStateErr({ ...stL, htfBarAnchors: withoutLastLow }, 'missing lastLowIdx anchor');
         expectStateErr({ ...restored, formingBucket: { ...restored.formingBucket, barCount: 99 } }, 'bad formingBucket barCount');
         expectStateErr({ ...restored, formingBucket: { ...restored.formingBucket, high: 1, low: 500 } }, 'bad formingBucket OHLC');
 
@@ -379,43 +479,187 @@ export function runPhase3V4TeachersAcceptanceTests(): boolean {
             }
         }
 
-        // Gapped stream chart-vs-teacher parity + activeTarget clearing on reset
-        const gappedStream = stream.filter((_, i) => i !== 400);
-        const gapDs = new DataStore(gappedStream.length);
-        gapDs.setAll(gappedStream.map(c => [c.time, c.open, c.high, c.low, c.close, c.volume]));
-        const indGap = new ProtectedHighsLowsIndicator();
-        indGap.currentSymbol = 'SOLUSDT';
-        indGap.updateParams({ timeframe: '5m' });
-        indGap.calculate(gapDs);
+        // Multi-case chart-vs-teacher reset parity (boundary drop 400, mid-bucket drop 402, incomplete-bucket drop 404)
+        for (const [label, dropIdx] of [['boundary', 400], ['mid-bucket', 402], ['pre-close-incomplete', 404]] as const) {
+            const gappedStream = stream.filter((_, i) => i !== dropIdx);
+            const gapDs = new DataStore(gappedStream.length);
+            gapDs.setAll(gappedStream.map(c => [c.time, c.open, c.high, c.low, c.close, c.volume]));
+            const indGap = new ProtectedHighsLowsIndicator();
+            indGap.currentSymbol = 'SOLUSDT';
+            indGap.updateParams({ timeframe: '5m' });
+            indGap.calculate(gapDs);
 
-        const cfg5 = createDefaultPHLV4Config('SOLUSDT', '1m', dt, '5m');
-        let sGap = createInitialPHLV4State();
-        const tGapEvs: any[] = [];
-        for (let i = 0; i < gappedStream.length; i++) {
-            const r = stepPHLV4(gappedStream[i], i, sGap, cfg5, false, null);
-            sGap = r.nextState;
-            tGapEvs.push(...r.events);
+            const cfg5 = createDefaultPHLV4Config('SOLUSDT', '1m', dt, '5m');
+            let sGap = createInitialPHLV4State();
+            const tGapEvs: any[] = [];
+            for (let i = 0; i < gappedStream.length; i++) {
+                const r = stepPHLV4(gappedStream[i], i, sGap, cfg5, false, null);
+                sGap = r.nextState;
+                tGapEvs.push(...r.events);
+            }
+            assert(indGap.cachedEvents.length === tGapEvs.length && tGapEvs.length > 0, `${label} 5m chart-vs-teacher count`);
+            for (let k = 0; k < tGapEvs.length; k++) {
+                assert(
+                    JSON.stringify(normalizePHLEvent(indGap.cachedEvents[k])) === JSON.stringify(normalizePHLEvent(tGapEvs[k])),
+                    `${label} 5m chart-vs-teacher mismatch at event ${k}`
+                );
+            }
         }
-        assert(indGap.cachedEvents.length === tGapEvs.length && tGapEvs.length > 0, 'Gapped 5m chart-vs-teacher count');
-        for (let k = 0; k < tGapEvs.length; k++) {
-            assert(
-                JSON.stringify(normalizePHLEvent(indGap.cachedEvents[k])) === JSON.stringify(normalizePHLEvent(tGapEvs[k])),
-                `Gapped 5m chart-vs-teacher mismatch at event ${k}`
-            );
+
+        // Corrupt-bucket recovery parity: run identical corrupt stream (corrupt OHLCV @451 inside 5m [07:30, 07:35)) through BOTH Chart & Teacher
+        const corruptCandles = stream.map((c, idx) => (idx === 451 ? { ...c, high: c.low - 1 } : c));
+        let tailP = corruptCandles[corruptCandles.length - 1].close;
+        let tailTs = corruptCandles[corruptCandles.length - 1].time + dt;
+        for (let j = 0; j < 120; j++) {
+            const open = tailP;
+            const close = open + 0.4;
+            corruptCandles.push({ time: tailTs, open, high: close + 0.5, low: open - 0.5, close, volume: 120, isSynthetic: false });
+            tailP = close;
+            tailTs += dt;
         }
-        // Corrupt OHLCV candle mid-stream in chart DataStore resets without leaking stale targets
-        const corruptDs = new DataStore(stream.slice(0, 600).length);
-        const corruptCandles = stream.slice(0, 600).map((c, idx) =>
-            idx === 450 ? { ...c, high: c.low - 1 } : c
-        );
+        const corruptDs = new DataStore(corruptCandles.length);
         corruptDs.setAll(corruptCandles.map(c => [c.time, c.open, c.high, c.low, c.close, c.volume]));
         const indCorrupt = new ProtectedHighsLowsIndicator();
         indCorrupt.currentSymbol = 'SOLUSDT';
         indCorrupt.updateParams({ timeframe: '5m' });
         indCorrupt.calculate(corruptDs);
-        for (const seg of indCorrupt.targetSegments) {
-            assert(!(seg.startBar < 450 && seg.endBar >= 450), 'Corrupt candle at 450 must close pre-gap active target segment');
+
+        // Teacher processes accepted valid candles (skipping corrupt bar 451 upstream)
+        const cfg5Corrupt = createDefaultPHLV4Config('SOLUSDT', '1m', dt, '5m');
+        let sCorrupt = createInitialPHLV4State();
+        const tCorruptEvs: any[] = [];
+        let acceptIdx = 0;
+        for (let i = 0; i < corruptCandles.length; i++) {
+            if (i === 451) continue;
+            const r = stepPHLV4(corruptCandles[i], acceptIdx, sCorrupt, cfg5Corrupt, false, null);
+            sCorrupt = r.nextState;
+            tCorruptEvs.push(...r.events);
+            if (i === 452) {
+                assert(sCorrupt.formingBucket === null && sCorrupt.htfBarIndex === 0 &&
+                    sCorrupt.phlState.ph === null && sCorrupt.phlState.pl === null && sCorrupt.htfAtrState === null,
+                    'Teacher must discard corrupt bucket and clear all pre-corruption PHL/ATR state at bar 452');
+            }
+            if (i === 455) {
+                assert(sCorrupt.formingBucket !== null && sCorrupt.formingBucket.bucketStart === t0 + 455 * dt &&
+                    sCorrupt.formingBucket.barCount === 1,
+                    'First clean 5m bucket [07:35, 07:40) must start at bar 455');
+            }
+            if (i === 459) {
+                assert(sCorrupt.formingBucket === null && sCorrupt.htfBarIndex === 1,
+                    'First clean post-corruption 5m bucket must complete at bar 459');
+            }
+            acceptIdx++;
         }
+
+        for (const seg of indCorrupt.targetSegments) {
+            assert(!(seg.startBar < 451 && seg.endBar >= 451), 'Corrupt candle @451 must close pre-gap active target');
+        }
+        assert(!indCorrupt.cachedEvents.some(e => e.confirmationBarIndex >= 450 && e.confirmationBarIndex <= 454),
+            'Corrupt bucket [450..454] must emit zero events');
+        const chartPre = indCorrupt.cachedEvents.filter(e => e.confirmationBarIndex < 450).map(normalizePHLEvent);
+        const teacherPre = tCorruptEvs.filter(e => e.confirmationBarIndex < 450).map(normalizePHLEvent);
+        assert(chartPre.length > 0 && JSON.stringify(chartPre) === JSON.stringify(teacherPre),
+            'Pre-corruption chart vs teacher normalized parity');
+
+        const chartPost = indCorrupt.cachedEvents.filter(e => e.confirmationBarIndex >= 455).map(e => ({
+            ...normalizePHLEvent(e),
+            sourceBarIndex: e.sourceBarIndex - 1, // Account for skipped bar 451 in teacher accepted index
+            confirmationBarIndex: e.confirmationBarIndex - 1,
+            protectedLevelBarIndex: e.structuralContext['protectedLevelBarIndex'] !== null
+                ? Number(e.structuralContext['protectedLevelBarIndex']) - 1
+                : null
+        }));
+        const teacherPost = tCorruptEvs.filter(e => e.confirmationBarIndex >= 454).map(normalizePHLEvent);
+        assert(chartPost.length > 0 && JSON.stringify(chartPost) === JSON.stringify(teacherPost),
+            'Post-corruption chart vs teacher recovery parity');
+
+        // Deterministic same-candle multi-event order, per-event context, pivot dedup, and target reset policy check
+        const multiCached: any[] = [];
+        const multiPivots: any[] = [];
+        const multiTargets: any[] = [];
+        const ev1: any = {
+            eventId: 'E1', eventDiscriminator: 'D1', strategyId: 'PHL_BOS_MSS', strategyVersion: 'PHL_BOS_MSS_v1',
+            eventType: 'PHL_MSS_BULL', eventDirection: 'bull', sourceBarIndex: 10, sourceTimestamp: t0 + 10 * dt,
+            confirmationBarIndex: 50, confirmationTimestamp: t0 + 50 * dt, confirmationLagBars: 40,
+            observationBarIndex: 50, observationTimestamp: t0 + 51 * dt, entryBarIndex: 51, entryTimestamp: null,
+            structuralContext: { breakType: 'MSS', brokenLevelPrice: 110, hasProtectedLevel: true, protectedLevelPrice: 95, distToProtectedAtr: 2.0, pbFromLowValid: true, pbFromHighValid: true }
+        };
+        const ev2: any = {
+            eventId: 'E2', eventDiscriminator: 'D2', strategyId: 'PHL_BOS_MSS', strategyVersion: 'PHL_BOS_MSS_v1',
+            eventType: 'PHL_MSS_BEAR', eventDirection: 'bear', sourceBarIndex: 12, sourceTimestamp: t0 + 12 * dt,
+            confirmationBarIndex: 50, confirmationTimestamp: t0 + 50 * dt, confirmationLagBars: 38,
+            observationBarIndex: 50, observationTimestamp: t0 + 51 * dt, entryBarIndex: 51, entryTimestamp: null,
+            structuralContext: { breakType: 'MSS', brokenLevelPrice: 98, hasProtectedLevel: true, protectedLevelPrice: 115, distToProtectedAtr: 1.5, pbFromLowValid: true, pbFromHighValid: true }
+        };
+        const multiRes = ProtectedHighsLowsIndicator.applyBarEvents({
+            events: [ev1, ev2],
+            activeProtectedLow: { barIndex: 48, price: 95, time: t0 + 48 * dt },
+            activeProtectedHigh: { barIndex: 49, price: 115, time: t0 + 49 * dt },
+            confirmationBar: 50, closePrice: 100, atrVal: 2.0, stepAtr: 2.0,
+            targetReset: 'MSS & BOS', targetStepMult: 2.0,
+            cachedEvents: multiCached, confirmedPivots: multiPivots, targetSegments: multiTargets,
+            activeTarget: { startBar: 30, price: 120, entryPrice: 105, stepNum: 1, dir: 1 },
+            curTrailPrice: 100, curTrailDir: 1
+        });
+        assert(multiCached.length === 2 && multiCached[0].eventType === 'PHL_MSS_BULL' && multiCached[1].eventType === 'PHL_MSS_BEAR',
+            'Multi-event order preserved');
+        assert(multiCached[0].structuralContext.protectedLevelPrice === 95 &&
+            multiCached[0].structuralContext.distToProtectedAtr === 2.5 &&
+            multiCached[1].structuralContext.protectedLevelPrice === 115 &&
+            multiCached[1].structuralContext.distToProtectedAtr === 7.5,
+            'Each event retained its own protectedLevelPrice & confirmation-bar distToProtectedAtr');
+        assert(multiPivots.length === 2 && multiTargets.length === 2, 'Expected 2 pivots & 2 closed target segments');
+        assert(
+            multiTargets[0].startBar === 30 && multiTargets[0].endBar === 50 && multiTargets[0].dir === 1 &&
+            multiTargets[0].price === 120 && multiTargets[0].entryPrice === 105 && multiTargets[0].hit === false,
+            'First closed segment must close original active target at confirmation bar 50'
+        );
+        assert(
+            multiTargets[1].startBar === 50 && multiTargets[1].endBar === 50 && multiTargets[1].dir === 1 &&
+            multiTargets[1].entryPrice === 110 && multiTargets[1].price === 114 && multiTargets[1].hit === false,
+            'Second closed segment must close ev1 target at confirmation bar 50'
+        );
+        assert(
+            multiRes.activeTarget?.startBar === 50 && multiRes.activeTarget?.dir === -1 &&
+            multiRes.activeTarget?.entryPrice === 98 && multiRes.activeTarget?.price === 94,
+            'Final active target must reflect ev2'
+        );
+
+        // Duplicate pivot suppression: two events referencing same protected pivot on same confirmation bar -> 1 pivot marker
+        const dupCached: any[] = [];
+        const dupPivots: any[] = [];
+        const dupTargets: any[] = [];
+        const ev1b: any = { ...ev1, eventId: 'E1B', eventDiscriminator: 'D1B' };
+        ProtectedHighsLowsIndicator.applyBarEvents({
+            events: [ev1, ev1b],
+            activeProtectedLow: { barIndex: 48, price: 95, time: t0 + 48 * dt },
+            activeProtectedHigh: null,
+            confirmationBar: 50, closePrice: 100, atrVal: 2.0, stepAtr: 2.0,
+            targetReset: 'MSS & BOS', targetStepMult: 2.0,
+            cachedEvents: dupCached, confirmedPivots: dupPivots, targetSegments: dupTargets,
+            activeTarget: null, curTrailPrice: 0, curTrailDir: 0
+        });
+        assert(dupCached.length === 2 && dupPivots.length === 1, 'Duplicate pivot marker must be suppressed');
+
+        // Atomicity on malformed second event: throws without leaving partial side effects from event 1
+        const atomCached: any[] = [];
+        const atomPivots: any[] = [];
+        const atomTargets: any[] = [];
+        const badEv2: any = { ...ev2, structuralContext: { ...ev2.structuralContext, protectedLevelPrice: Number.NaN } };
+        let atomThrew = false;
+        try {
+            ProtectedHighsLowsIndicator.applyBarEvents({
+                events: [ev1, badEv2],
+                activeProtectedLow: { barIndex: 48, price: 95, time: t0 + 48 * dt },
+                activeProtectedHigh: { barIndex: 49, price: 115, time: t0 + 49 * dt },
+                confirmationBar: 50, closePrice: 100, atrVal: 2.0, stepAtr: 2.0,
+                targetReset: 'MSS & BOS', targetStepMult: 2.0,
+                cachedEvents: atomCached, confirmedPivots: atomPivots, targetSegments: atomTargets,
+                activeTarget: null, curTrailPrice: 0, curTrailDir: 0
+            });
+        } catch { atomThrew = true; }
+        assert(atomThrew && atomCached.length === 0 && atomPivots.length === 0 && atomTargets.length === 0,
+            'applyBarEvents must reject atomically with zero partial mutations');
 
         // IndicatorRegistry: legacy DTFX_ZONES ignored; DTFX_STRICTCBC_ZONES & PHL_BOS_MSS round-trip
         assert(IndicatorRegistry.deserialize({ type: 'DTFX_ZONES', visible: true, params: {} }) === null,
