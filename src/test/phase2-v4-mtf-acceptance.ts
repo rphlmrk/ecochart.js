@@ -293,22 +293,55 @@ export function runPhase2V4MTFAcceptanceTests(): boolean {
             !alignedDuringDiag.context5m.isAvailable && alignedDuringDiag.context5m.lastCompletedCandle === null,
             'Aligner must expose zero stale candles after combined diagnostic');
 
-        // Feed contiguous candles from 00:11..00:15 -> verify clean recovery in both 3m (at 00:15 for [00:12,00:15) since [00:09,00:12) lacked 00:09) and 5m (at 00:15)
+        // Track exact diagnostics emitted across skip, incomplete close, and partial end
+        const emittedDiags: Array<{ tf: string; open: number; comp: string }> = [];
+        if (combDiag.diagnostic3m) emittedDiags.push({ tf: '3m', open: combDiag.diagnostic3m.openTimestamp, comp: combDiag.diagnostic3m.completeness });
+        if (combDiag.diagnostic5m) emittedDiags.push({ tf: '5m', open: combDiag.diagnostic5m.openTimestamp, comp: combDiag.diagnostic5m.completeness });
+
+        // Feed contiguous candles from 00:11..00:15:
+        // - At 00:12, 3m [00:09, 00:12) is missing 00:09 -> closes INCOMPLETE (not recovered yet)
+        // - At 00:15, 3m [00:12, 00:15) AND 5m [00:10, 00:15) both complete cleanly (recovered barIndex === 0)
         let recSt = combDiag.nextState;
         for (let k = 11; k <= 15; k++) {
             const r = stepV4MTFCombined(makeCandle(t0 + k * dt, 100 + k, 102 + k, 99 + k, 101 + k, 100), true, recSt, MTF_V4_CONFIG_D, k - 4);
             recSt = r.nextState;
             validateV4MTFState(recSt, MTF_V4_CONFIG_D);
-            if (k === 12) assert(r.diagnostic3m !== null && recSt.state3m.lastCompletedBarIndex === null, '3m [00:09,00:12) incomplete @ 00:12 due to missing 00:09');
+            if (r.diagnostic3m) emittedDiags.push({ tf: '3m', open: r.diagnostic3m.openTimestamp, comp: r.diagnostic3m.completeness });
+            if (r.diagnostic5m) emittedDiags.push({ tf: '5m', open: r.diagnostic5m.openTimestamp, comp: r.diagnostic5m.completeness });
+
+            if (k === 12) {
+                assert(
+                    r.completed3m === null &&
+                    r.diagnostic3m !== null &&
+                    r.diagnostic3m.openTimestamp === t0 + 9 * dt &&
+                    recSt.state3m.lastCompletedBarIndex === null &&
+                    recSt.state3m.aggregation.lastCompletedCandle === null,
+                    '3m [00:09, 00:12) must close incomplete at 00:12'
+                );
+            }
             if (k === 15) {
-                assert(r.completed3m !== null && recSt.state3m.lastCompletedBarIndex === 0, '3m recovered @ 00:15');
-                assert(r.completed5m !== null && recSt.state5m.lastCompletedBarIndex === 0, '5m recovered @ 00:15');
+                assert(
+                    r.completed3m !== null &&
+                    r.completed3m.openTimestamp === t0 + 12 * dt &&
+                    recSt.state3m.lastCompletedBarIndex === 0,
+                    '3m recovered @ 00:15'
+                );
+                assert(
+                    r.completed5m !== null &&
+                    r.completed5m.openTimestamp === t0 + 10 * dt &&
+                    recSt.state5m.lastCompletedBarIndex === 0,
+                    '5m recovered @ 00:15'
+                );
             }
         }
-        // Partial forming window at stream end never emits INCOMPLETE_UNFINISHED
-        assert((recSt.state3m.aggregation.lastDiagnostic?.completeness as string) !== 'INCOMPLETE_UNFINISHED' &&
-            (recSt.state5m.aggregation.lastDiagnostic?.completeness as string) !== 'INCOMPLETE_UNFINISHED',
-            'Aggregator never emits INCOMPLETE_UNFINISHED');
+        assert(
+            JSON.stringify(emittedDiags) === JSON.stringify([
+                { tf: '3m', open: t0 + 6 * dt, comp: 'INCOMPLETE_MISSING' },
+                { tf: '5m', open: t0 + 5 * dt, comp: 'INCOMPLETE_MISSING' },
+                { tf: '3m', open: t0 + 9 * dt, comp: 'INCOMPLETE_MISSING' }
+            ]),
+            `Unexpected emitted diagnostic sequence: ${JSON.stringify(emittedDiags)}`
+        );
 
         const rDD1 = stepV4TimeframeFeatureEngine(sSeed, null, dWin1, tfCfg).nextTimeframeState;
         validateV4MTFTimeframeState(rDD1, tfCfg);
@@ -502,6 +535,57 @@ export function runPhase2V4MTFAcceptanceTests(): boolean {
                 }
             }
         }, 'obsolete INCOMPLETE_UNFINISHED diagnostic rejected');
+        // Isolate the % 60_000 check: update lastAcceptedSourceTimestamp, sourceTimestamps[-1], sourceCandles[-1], and observedTimestamps together
+        // inside [00:09, 00:12) and > 00:10 while keeping lastObservedSourceTimestamp = 00:11
+        const offGridTs = m.state3m.aggregation.lastAcceptedSourceTimestamp! - 30_000; // 00:10:30
+        const origCandles = m.state3m.aggregation.sourceCandles;
+        const origSrcTs = m.state3m.aggregation.sourceTimestamps;
+        const origObsTs = m.state3m.aggregation.observedTimestamps;
+        expectAllReject({
+            ...m,
+            state3m: {
+                ...m.state3m,
+                aggregation: {
+                    ...m.state3m.aggregation,
+                    lastAcceptedSourceTimestamp: offGridTs,
+                    sourceTimestamps: [...origSrcTs.slice(0, -1), offGridTs],
+                    sourceCandles: [...origCandles.slice(0, -1), { ...origCandles[origCandles.length - 1], time: offGridTs }],
+                    observedTimestamps: [...origObsTs.slice(0, -1), offGridTs, origObsTs[origObsTs.length - 1]]
+                }
+            }
+        }, 'isolated off-grid (% 60000) accepted source timestamp');
+
+        // Accepted timestamp missing from observedTimestamps (isolated: length, ordering, and watermarks all remain valid)
+        assert(origObsTs.length === 3 && origSrcTs.length === 3, 'Fixture requires 3 forming entries at bar 11');
+        const modifiedObsTs = [origObsTs[0], origObsTs[1] + 30_000, origObsTs[2]];
+        assert(
+            modifiedObsTs[0] < modifiedObsTs[1] && modifiedObsTs[1] < modifiedObsTs[2] &&
+            modifiedObsTs[2] === m.state3m.aggregation.lastObservedSourceTimestamp &&
+            !modifiedObsTs.includes(origSrcTs[1]),
+            'Fixture must isolate missing observedTimestamps membership'
+        );
+        expectAllReject({
+            ...m,
+            state3m: {
+                ...m.state3m,
+                aggregation: {
+                    ...m.state3m.aggregation,
+                    observedTimestamps: modifiedObsTs
+                }
+            }
+        }, 'isolated accepted timestamp missing from observedTimestamps');
+
+        // sourceCandles[i].time disagreeing with sourceTimestamps[i]
+        expectAllReject({
+            ...m,
+            state3m: {
+                ...m.state3m,
+                aggregation: {
+                    ...m.state3m.aggregation,
+                    sourceCandles: [...origCandles.slice(0, -1), { ...origCandles[origCandles.length - 1], time: origSrcTs[0] }]
+                }
+            }
+        }, 'sourceCandles[i].time disagrees with sourceTimestamps[i]');
 
         // Clean checkpoint round-trip from bar 6
         let st6 = createInitialIntegratedV4MTFState(cfg);

@@ -934,3 +934,38 @@ export function stepDTFXStrictCBCMulti(
 
     return { nextState: mutableState, events: allEvents };
 }
+
+// =========================================================================
+// V4 Contract (1m, 3m, 5m Only — 15m Excluded)
+// =========================================================================
+export type V4DTFXStrictCBCTimeframe = '1m' | '3m' | '5m';
+
+export const V4_DTFX_STRICTCBC_TIMEFRAMES: readonly V4DTFXStrictCBCTimeframe[] = Object.freeze([
+    '1m',
+    '3m',
+    '5m'
+]);
+
+export function createDefaultV4DTFXStrictCBCMultiConfigs(
+    symbol: string,
+    baseTimeframe: string,
+    baseIntervalMs: number,
+    timeframes: readonly V4DTFXStrictCBCTimeframe[] = V4_DTFX_STRICTCBC_TIMEFRAMES,
+    options?: { maxActiveZones?: number; maxRetestsPerZone?: number; emitRetests?: boolean }
+): DTFXStrictCBCConfig[] {
+    if (!Array.isArray(timeframes) || timeframes.length === 0) {
+        throw new Error('V4 DTFXStrictCBC Config Error: timeframes must be a non-empty array of 1m/3m/5m.');
+    }
+    const allowed = new Set<string>(V4_DTFX_STRICTCBC_TIMEFRAMES);
+    const seen = new Set<string>();
+    for (const tf of timeframes) {
+        if (!allowed.has(tf)) {
+            throw new Error(`V4 DTFXStrictCBC Config Error: unsupported timeframe '${String(tf)}' (15m excluded in V4).`);
+        }
+        if (seen.has(tf)) {
+            throw new Error(`V4 DTFXStrictCBC Config Error: duplicate timeframe '${tf}'.`);
+        }
+        seen.add(tf);
+    }
+    return createDefaultDTFXStrictCBCMultiConfigs(symbol, baseTimeframe, baseIntervalMs, timeframes, options);
+}

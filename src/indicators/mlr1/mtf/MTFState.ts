@@ -522,8 +522,8 @@ export function validateV4MTFTimeframeState(
     if (agg.sourceCandles.length !== agg.actualSourceCount || agg.sourceTimestamps.length !== agg.actualSourceCount) {
         throw new Error(`V4 MTF State Integrity Error: ${config.timeframe} sourceCandles/sourceTimestamps count mismatch.`);
     }
-    if (agg.observedTimestamps.length < agg.actualSourceCount || agg.observedTimestamps.length > expectedSourceCount) {
-        throw new Error(`V4 MTF State Integrity Error: ${config.timeframe} observedTimestamps length out of bounds.`);
+    if (agg.observedTimestamps.length < agg.actualSourceCount) {
+        throw new Error(`V4 MTF State Integrity Error: ${config.timeframe} observedTimestamps shorter than actualSourceCount.`);
     }
     if (agg.lastObservedSourceTimestamp !== null &&
         (!Number.isSafeInteger(agg.lastObservedSourceTimestamp) || agg.lastObservedSourceTimestamp < 0)) {
@@ -554,6 +554,14 @@ export function validateV4MTFTimeframeState(
             agg.observedTimestamps[agg.observedTimestamps.length - 1] !== agg.lastObservedSourceTimestamp) {
             throw new Error(`V4 MTF State Integrity Error: ${config.timeframe} lastObservedSourceTimestamp inconsistent with forming window.`);
         }
+        let prevObsTs = -1;
+        for (const ot of agg.observedTimestamps) {
+            if (!Number.isSafeInteger(ot) || ot < agg.currentWindowOpen || ot >= agg.currentWindowClose ||
+                (prevObsTs !== -1 && ot <= prevObsTs)) {
+                throw new Error(`V4 MTF State Integrity Error: invalid or non-ascending ${config.timeframe} observedTimestamp.`);
+            }
+            prevObsTs = ot;
+        }
         if (agg.actualSourceCount === 0) {
             if (agg.lastAcceptedSourceTimestamp !== null ||
                 agg.runningOpen !== null || agg.runningHigh !== null || agg.runningLow !== null || agg.runningClose !== null ||
@@ -563,7 +571,9 @@ export function validateV4MTFTimeframeState(
         } else {
             if (agg.lastAcceptedSourceTimestamp === null ||
                 agg.lastAcceptedSourceTimestamp < agg.currentWindowOpen ||
+                agg.lastAcceptedSourceTimestamp >= agg.currentWindowClose ||
                 agg.lastAcceptedSourceTimestamp > agg.lastObservedSourceTimestamp ||
+                agg.lastAcceptedSourceTimestamp % 60_000 !== 0 ||
                 agg.sourceTimestamps[agg.sourceTimestamps.length - 1] !== agg.lastAcceptedSourceTimestamp ||
                 agg.runningOpen === null || !Number.isFinite(agg.runningOpen) || agg.runningOpen <= 0 ||
                 agg.runningHigh === null || !Number.isFinite(agg.runningHigh) || agg.runningHigh <= 0 ||
@@ -573,6 +583,38 @@ export function validateV4MTFTimeframeState(
                 agg.runningHigh < Math.max(agg.runningOpen, agg.runningClose) ||
                 agg.runningLow > Math.min(agg.runningOpen, agg.runningClose)) {
                 throw new Error(`V4 MTF State Integrity Error: invalid ${config.timeframe} forming-window OHLCV or accepted watermark.`);
+            }
+            const observedSet = new Set(agg.observedTimestamps);
+            let prevSrcTs = -1;
+            for (let idx = 0; idx < agg.sourceTimestamps.length; idx++) {
+                const st = agg.sourceTimestamps[idx];
+                const sc = agg.sourceCandles[idx];
+                if (!Number.isSafeInteger(st) ||
+                    st < agg.currentWindowOpen ||
+                    st >= agg.currentWindowClose ||
+                    (prevSrcTs !== -1 && st <= prevSrcTs)) {
+                    throw new Error(`V4 MTF State Integrity Error: invalid or out-of-window ${config.timeframe} sourceTimestamp.`);
+                }
+                if (st % 60_000 !== 0) {
+                    throw new Error(`V4 MTF State Integrity Error: unaligned ${config.timeframe} sourceTimestamp (${st}).`);
+                }
+                if (!observedSet.has(st)) {
+                    throw new Error(
+                        `V4 MTF State Integrity Error: ${config.timeframe} accepted source timestamp (${st}) missing from observedTimestamps.`
+                    );
+                }
+                if (!sc || typeof sc !== 'object' || sc.time !== st ||
+                    !Number.isFinite(sc.open) || sc.open <= 0 ||
+                    !Number.isFinite(sc.high) || sc.high <= 0 ||
+                    !Number.isFinite(sc.low) || sc.low <= 0 ||
+                    !Number.isFinite(sc.close) || sc.close <= 0 ||
+                    !Number.isFinite(sc.volume) || sc.volume < 0 ||
+                    sc.high < sc.low || sc.high < Math.max(sc.open, sc.close) || sc.low > Math.min(sc.open, sc.close)) {
+                    throw new Error(
+                        `V4 MTF State Integrity Error: ${config.timeframe} sourceCandles[${idx}] disagrees with sourceTimestamps[${idx}].`
+                    );
+                }
+                prevSrcTs = st;
             }
         }
     }

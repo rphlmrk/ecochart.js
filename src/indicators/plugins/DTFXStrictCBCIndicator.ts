@@ -81,7 +81,7 @@ export class DTFXStrictCBCIndicator extends BaseIndicator {
                 name: 'Timeframe',
                 type: 'select',
                 value: 'Current',
-                options: ['Current', '1m', '3m', '5m', '15m', '30m', '45m', '1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', 'Custom HTF']
+                options: ['Current', '1m', '3m', '5m', '30m', '45m', '1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', 'Custom HTF']
             },
             { id: 'customTfMins', name: 'Custom HTF Minutes', type: 'number', value: 60, min: 1, max: 43200, step: 1 },
 
@@ -156,7 +156,7 @@ export class DTFXStrictCBCIndicator extends BaseIndicator {
 
     public getTimeframeOptions(chartInterval: string): string[] {
         const chartMs = TimeframeResampler.parseMs(chartInterval.toLowerCase());
-        const allTfs = ['1m', '3m', '5m', '15m', '30m', '45m', '1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w'];
+        const allTfs = ['1m', '3m', '5m', '30m', '45m', '1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w'];
         const validHtf = allTfs.filter((tf) => TimeframeResampler.parseMs(tf) > chartMs);
         return ['Current', ...validHtf, 'Custom HTF'];
     }

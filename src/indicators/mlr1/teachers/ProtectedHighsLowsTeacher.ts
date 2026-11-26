@@ -1,4 +1,5 @@
-import type { ML1Candle } from '../ML1FeatureTypes';
+import type { ATRPeriodState, ML1Candle } from '../ML1FeatureTypes';
+import { updateWilderATR } from '../volatility/ATR';
 import { createStrategyEvent, type StrategyEvent } from './StrategyEventTypes';
 
 export const PHL_TEACHER_VERSION = 'PHL_BOS_MSS_v1';
@@ -673,4 +674,751 @@ export function stepPHL(
         activeProtectedHigh: ph,
         activeProtectedLow: pl
     };
+}
+
+// =========================================================================
+// V4 HTF Multi-Timeframe PHL Teacher (1m, 3m, 5m — Default pivotStrength = 8)
+// =========================================================================
+export type PHLTimeframe = '1m' | '3m' | '5m';
+
+export const PHL_V4_TEACHER_VERSION = 'PHL_BOS_MSS_HTF_v2';
+
+export const PHL_TIMEFRAME_MS: Readonly<Record<PHLTimeframe, number>> = Object.freeze({
+    '1m': 60_000,
+    '3m': 180_000,
+    '5m': 300_000
+});
+
+export interface PHLV4StructuralContext {
+    readonly phlTimeframe: PHLTimeframe;
+    readonly breakType: 'BOS' | 'MSS';
+    readonly brokenLevelPrice: number;
+    readonly hasProtectedLevel: boolean;
+    readonly protectedLevelPrice: number | null;
+    readonly protectedLevelBarIndex: number | null;
+    readonly protectedLevelTimestamp: number | null;
+    readonly atr14Valid: boolean;
+    readonly distToProtectedAtr: number | null;
+    readonly pbFromLowValid: boolean;
+    readonly pbFromHighValid: boolean;
+}
+
+export interface PHLV4TeacherEvent {
+    readonly strategyId: 'PHL_BOS_MSS';
+    readonly strategyVersion: typeof PHL_V4_TEACHER_VERSION;
+    readonly symbol: string;
+    readonly timeframe: string;
+    readonly phlTimeframe: PHLTimeframe;
+    readonly eventType: 'PHL_BOS_BULL' | 'PHL_BOS_BEAR' | 'PHL_MSS_BULL' | 'PHL_MSS_BEAR';
+    readonly eventDirection: 'bull' | 'bear';
+    readonly eventDiscriminator: string;
+    readonly sourceBarIndex: number;
+    readonly sourceTimestamp: number;
+    readonly confirmationBarIndex: number;
+    readonly confirmationTimestamp: number;
+    readonly structuralContext: PHLV4StructuralContext;
+}
+
+export interface PHLV4Config {
+    readonly symbol: string;
+    readonly baseTimeframe: string;
+    readonly baseIntervalMs: number;
+    readonly phlTimeframe: PHLTimeframe;
+    readonly phlIntervalMs: number;
+    readonly expectedBarsPerBucket: number;
+    readonly pivotStrength: number; // Default 8
+    readonly useValidPullbacks: boolean;
+    readonly extraValidPullbacks: boolean;
+}
+
+interface FormingPHLBucket {
+    readonly bucketStart: number;
+    readonly open: number;
+    readonly high: number;
+    readonly low: number;
+    readonly close: number;
+    readonly volume: number;
+    readonly peakChartBar: number;
+    readonly peakChartTime: number;
+    readonly troughChartBar: number;
+    readonly troughChartTime: number;
+    readonly lastCandleTime: number;
+    readonly barCount: number;
+    readonly isCorrupt: boolean;
+}
+
+interface PHLChartBarAnchor {
+    readonly peakBar: number;
+    readonly peakTime: number;
+    readonly troughBar: number;
+    readonly troughTime: number;
+}
+
+export interface PHLV4State {
+    readonly stateVersion: 2;
+    readonly phlState: PHLState;
+    readonly htfAtrState: ATRPeriodState | null;
+    readonly prevHtfClose: number | null;
+    readonly htfBarIndex: number;
+    readonly htfBarAnchors: Readonly<Record<number, PHLChartBarAnchor>>;
+    readonly formingBucket: FormingPHLBucket | null;
+    readonly lastProcessedTimestamp: number | null;
+    readonly lastProcessedBarIndex: number | null;
+}
+
+function parsePHLBaseTfToMs(tf: string): number {
+    const match = /^([1-9]\d*)(m|h|d)$/.exec(tf.trim());
+    if (!match) throw new Error(`Unsupported PHL baseTimeframe '${tf}'.`);
+    const count = Number(match[1]);
+    const unitMs = match[2] === 'm' ? 60_000 : match[2] === 'h' ? 3_600_000 : 86_400_000;
+    return count * unitMs;
+}
+
+export function validatePHLV4Config(config: PHLV4Config): void {
+    if (!config || typeof config !== 'object') {
+        throw new Error('PHL V4 Config Error: config must be an object.');
+    }
+    if (typeof config.symbol !== 'string' || config.symbol.trim().length === 0 ||
+        typeof config.baseTimeframe !== 'string' || config.baseTimeframe.trim().length === 0) {
+        throw new Error('PHL V4 Config Error: symbol and baseTimeframe must be non-empty strings.');
+    }
+    if (!Number.isSafeInteger(config.baseIntervalMs) || config.baseIntervalMs <= 0) {
+        throw new Error(`PHL V4 Config Error: invalid baseIntervalMs ${config.baseIntervalMs}.`);
+    }
+    if (parsePHLBaseTfToMs(config.baseTimeframe) !== config.baseIntervalMs) {
+        throw new Error(`PHL V4 Config Error: baseTimeframe '${config.baseTimeframe}' disagrees with baseIntervalMs ${config.baseIntervalMs}.`);
+    }
+    const expectedMs = PHL_TIMEFRAME_MS[config.phlTimeframe];
+    if (!expectedMs || config.phlIntervalMs !== expectedMs) {
+        throw new Error(`PHL V4 Config Error: invalid phlTimeframe '${String(config.phlTimeframe)}' or phlIntervalMs ${config.phlIntervalMs}.`);
+    }
+    if (config.phlIntervalMs < config.baseIntervalMs ||
+        config.phlIntervalMs % config.baseIntervalMs !== 0 ||
+        config.expectedBarsPerBucket !== config.phlIntervalMs / config.baseIntervalMs) {
+        throw new Error('PHL V4 Config Error: expectedBarsPerBucket must equal phlIntervalMs / baseIntervalMs.');
+    }
+    if (!Number.isSafeInteger(config.pivotStrength) || config.pivotStrength < 1) {
+        throw new Error(`PHL V4 Config Error: pivotStrength must be >= 1, got ${config.pivotStrength}.`);
+    }
+    if (typeof config.useValidPullbacks !== 'boolean' || typeof config.extraValidPullbacks !== 'boolean') {
+        throw new Error('PHL V4 Config Error: boolean flags required.');
+    }
+}
+
+export function createDefaultPHLV4Config(
+    symbol: string,
+    baseTimeframe: string,
+    baseIntervalMs: number,
+    phlTimeframe: PHLTimeframe,
+    options?: {
+        pivotStrength?: number;
+        useValidPullbacks?: boolean;
+        extraValidPullbacks?: boolean;
+    }
+): PHLV4Config {
+    const phlIntervalMs = PHL_TIMEFRAME_MS[phlTimeframe];
+    if (!phlIntervalMs) {
+        throw new Error(`PHL V4 Config Error: unsupported phlTimeframe '${String(phlTimeframe)}'.`);
+    }
+    const cfg: PHLV4Config = Object.freeze({
+        symbol,
+        baseTimeframe,
+        baseIntervalMs,
+        phlTimeframe,
+        phlIntervalMs,
+        expectedBarsPerBucket: phlIntervalMs / baseIntervalMs,
+        pivotStrength: options?.pivotStrength ?? 8,
+        useValidPullbacks: options?.useValidPullbacks ?? true,
+        extraValidPullbacks: options?.extraValidPullbacks ?? false
+    });
+    validatePHLV4Config(cfg);
+    return cfg;
+}
+
+export function createInitialPHLV4State(): PHLV4State {
+    return Object.freeze({
+        stateVersion: 2 as const,
+        phlState: createInitialPHLState(),
+        htfAtrState: null,
+        prevHtfClose: null,
+        htfBarIndex: 0,
+        htfBarAnchors: Object.freeze({}),
+        formingBucket: null,
+        lastProcessedTimestamp: null,
+        lastProcessedBarIndex: null
+    });
+}
+
+export function validatePHLV4State(state: PHLV4State, config: PHLV4Config): void {
+    validatePHLV4Config(config);
+    if (!state || typeof state !== 'object' || state.stateVersion !== 2) {
+        throw new Error(`PHL V4 State Error: expected stateVersion=2, got ${(state as any)?.stateVersion}.`);
+    }
+    if (!Number.isSafeInteger(state.htfBarIndex) || state.htfBarIndex < 0) {
+        throw new Error(`PHL V4 State Error: invalid htfBarIndex ${String(state.htfBarIndex)}.`);
+    }
+    const hasTs = state.lastProcessedTimestamp !== null;
+    const hasIdx = state.lastProcessedBarIndex !== null;
+    if (hasTs !== hasIdx) {
+        throw new Error('PHL V4 State Error: lastProcessedTimestamp and lastProcessedBarIndex must both be null or both populated.');
+    }
+    if (hasIdx) {
+        if (!Number.isSafeInteger(state.lastProcessedBarIndex) || state.lastProcessedBarIndex! < 0 ||
+            !Number.isSafeInteger(state.lastProcessedTimestamp) || state.lastProcessedTimestamp! <= 0 ||
+            state.lastProcessedTimestamp! % config.baseIntervalMs !== 0) {
+            throw new Error('PHL V4 State Error: invalid lastProcessedBarIndex or lastProcessedTimestamp.');
+        }
+    } else if (state.htfBarIndex !== 0 || state.formingBucket !== null || state.htfAtrState !== null || state.prevHtfClose !== null) {
+        throw new Error('PHL V4 State Error: initial state before bar 0 must have zero htfBarIndex, null bucket, and null HTF ATR.');
+    }
+
+    const maxWindowLen = 2 * config.pivotStrength + 4;
+    validatePHLState(state.phlState, maxWindowLen, config.phlIntervalMs);
+    if (state.htfBarIndex === 0) {
+        if (state.phlState.window.length !== 0) {
+            throw new Error('PHL V4 State Error: phlState window must be empty when htfBarIndex === 0.');
+        }
+    } else {
+        if (state.phlState.window.length === 0 ||
+            state.phlState.window[state.phlState.window.length - 1].barIndex !== state.htfBarIndex - 1) {
+            throw new Error('PHL V4 State Error: htfBarIndex disagrees with phlState latest window bar.');
+        }
+    }
+
+    // Validate HTF ATR state
+    if (config.expectedBarsPerBucket === 1) {
+        if (state.htfAtrState !== null || state.prevHtfClose !== null) {
+            throw new Error('PHL V4 State Error: 1m PHL state must keep htfAtrState and prevHtfClose null.');
+        }
+    } else if (state.htfBarIndex === 0) {
+        if (state.htfAtrState !== null || state.prevHtfClose !== null) {
+            throw new Error('PHL V4 State Error: htfAtrState and prevHtfClose must be null when htfBarIndex === 0.');
+        }
+    } else {
+        const latestHtfClose = state.phlState.window[state.phlState.window.length - 1].close;
+        if (state.prevHtfClose === null || !Number.isFinite(state.prevHtfClose) || state.prevHtfClose !== latestHtfClose) {
+            throw new Error('PHL V4 State Error: prevHtfClose disagrees with latest completed HTF candle.');
+        }
+        const atr = state.htfAtrState;
+        if (!atr || typeof atr !== 'object' ||
+            !Number.isSafeInteger(atr.count) || atr.count !== state.htfBarIndex ||
+            !Number.isFinite(atr.seedMean) || atr.seedMean < 0 ||
+            typeof atr.isSeeded !== 'boolean' || atr.isSeeded !== (atr.count >= 14) ||
+            (atr.isSeeded ? (atr.atr === null || !Number.isFinite(atr.atr) || atr.atr < 0) : atr.atr !== null)) {
+            throw new Error('PHL V4 State Error: corrupted htfAtrState.');
+        }
+    }
+
+    // Validate htfBarAnchors
+    if (!state.htfBarAnchors || typeof state.htfBarAnchors !== 'object' || Array.isArray(state.htfBarAnchors)) {
+        throw new Error('PHL V4 State Error: malformed htfBarAnchors.');
+    }
+    for (const [kStr, anchor] of Object.entries(state.htfBarAnchors)) {
+        const k = Number(kStr);
+        if (!Number.isSafeInteger(k) || k < 0 || k >= state.htfBarIndex) {
+            throw new Error(`PHL V4 State Error: out-of-range anchor key '${kStr}'.`);
+        }
+        if (!anchor || typeof anchor !== 'object' ||
+            !Number.isSafeInteger(anchor.peakBar) || anchor.peakBar < 0 || anchor.peakBar > state.lastProcessedBarIndex! ||
+            !Number.isSafeInteger(anchor.troughBar) || anchor.troughBar < 0 || anchor.troughBar > state.lastProcessedBarIndex! ||
+            !Number.isSafeInteger(anchor.peakTime) || anchor.peakTime <= 0 || anchor.peakTime > state.lastProcessedTimestamp! ||
+            anchor.peakTime % config.baseIntervalMs !== 0 ||
+            !Number.isSafeInteger(anchor.troughTime) || anchor.troughTime <= 0 || anchor.troughTime > state.lastProcessedTimestamp! ||
+            anchor.troughTime % config.baseIntervalMs !== 0) {
+            throw new Error(`PHL V4 State Error: invalid anchor entry at HTF index ${kStr}.`);
+        }
+    }
+    if (state.htfBarIndex > 0) {
+        const requiredIndices: number[] = [];
+        if (state.phlState.ph) requiredIndices.push(state.phlState.ph.barIndex);
+        if (state.phlState.pl) requiredIndices.push(state.phlState.pl.barIndex);
+        if (state.phlState.trackHighIdx !== null) requiredIndices.push(state.phlState.trackHighIdx);
+        if (state.phlState.trackLowIdx !== null) requiredIndices.push(state.phlState.trackLowIdx);
+        for (const reqIdx of requiredIndices) {
+            if (!Object.prototype.hasOwnProperty.call(state.htfBarAnchors, String(reqIdx))) {
+                throw new Error(`PHL V4 State Error: missing chart anchor for active PHL HTF index ${reqIdx}.`);
+            }
+        }
+    }
+
+    // Validate formingBucket
+    if (state.formingBucket !== null) {
+        if (config.expectedBarsPerBucket === 1) {
+            throw new Error('PHL V4 State Error: 1m PHL cannot have an open formingBucket.');
+        }
+        const fb = state.formingBucket;
+        if (!fb || typeof fb !== 'object' ||
+            typeof fb.isCorrupt !== 'boolean' ||
+            !Number.isSafeInteger(fb.bucketStart) || fb.bucketStart <= 0 || fb.bucketStart % config.phlIntervalMs !== 0 ||
+            !Number.isSafeInteger(fb.barCount) || fb.barCount < 1 || fb.barCount >= config.expectedBarsPerBucket ||
+            !Number.isSafeInteger(fb.lastCandleTime) || fb.lastCandleTime !== fb.bucketStart + (fb.barCount - 1) * config.baseIntervalMs ||
+            fb.lastCandleTime !== state.lastProcessedTimestamp ||
+            !Number.isFinite(fb.open) || fb.open <= 0 ||
+            !Number.isFinite(fb.high) || fb.high <= 0 ||
+            !Number.isFinite(fb.low) || fb.low <= 0 ||
+            !Number.isFinite(fb.close) || fb.close <= 0 ||
+            !Number.isFinite(fb.volume) || fb.volume < 0 ||
+            fb.high < fb.low || fb.high < Math.max(fb.open, fb.close) || fb.low > Math.min(fb.open, fb.close) ||
+            !Number.isSafeInteger(fb.peakChartBar) || fb.peakChartBar < 0 || fb.peakChartBar > state.lastProcessedBarIndex! ||
+            !Number.isSafeInteger(fb.troughChartBar) || fb.troughChartBar < 0 || fb.troughChartBar > state.lastProcessedBarIndex! ||
+            !Number.isSafeInteger(fb.peakChartTime) || fb.peakChartTime < fb.bucketStart || fb.peakChartTime > fb.lastCandleTime ||
+            fb.peakChartTime % config.baseIntervalMs !== 0 ||
+            !Number.isSafeInteger(fb.troughChartTime) || fb.troughChartTime < fb.bucketStart || fb.troughChartTime > fb.lastCandleTime ||
+            fb.troughChartTime % config.baseIntervalMs !== 0) {
+            throw new Error('PHL V4 State Error: corrupted formingBucket.');
+        }
+    }
+}
+
+function validatePHLV4InputBoundary(
+    candle: ML1Candle,
+    barIndex: number,
+    state: PHLV4State,
+    config: PHLV4Config,
+    isDiscontinuity: boolean,
+    atr14: number | null
+): void {
+    validatePHLV4State(state, config);
+    if (typeof isDiscontinuity !== 'boolean') {
+        throw new Error('PHL V4 Input Error: isDiscontinuity must be a boolean.');
+    }
+    if (atr14 !== null && (typeof atr14 !== 'number' || !Number.isFinite(atr14) || atr14 <= 0)) {
+        throw new Error('PHL V4 Input Error: atr14 must be null or a positive finite number.');
+    }
+    if (!Number.isSafeInteger(barIndex) || barIndex < 0) {
+        throw new Error(`PHL V4 Chronology Error: invalid barIndex ${barIndex}.`);
+    }
+    if (state.lastProcessedBarIndex === null) {
+        if (barIndex !== 0) {
+            throw new Error(`PHL V4 Chronology Error: initial barIndex must be 0, got ${barIndex}.`);
+        }
+    } else if (barIndex !== state.lastProcessedBarIndex + 1) {
+        throw new Error(
+            `PHL V4 Chronology Error: barIndex must increment by 1 (expected ${state.lastProcessedBarIndex + 1}, got ${barIndex}).`
+        );
+    }
+    if (!candle || typeof candle !== 'object' ||
+        !Number.isSafeInteger(candle.time) || candle.time <= 0 ||
+        candle.time % config.baseIntervalMs !== 0 ||
+        !Number.isFinite(candle.open) || candle.open <= 0 ||
+        !Number.isFinite(candle.high) || candle.high <= 0 ||
+        !Number.isFinite(candle.low) || candle.low <= 0 ||
+        !Number.isFinite(candle.close) || candle.close <= 0 ||
+        !Number.isFinite(candle.volume) || candle.volume < 0 ||
+        candle.high < candle.low ||
+        candle.high < Math.max(candle.open, candle.close) ||
+        candle.low > Math.min(candle.open, candle.close)) {
+        throw new Error(`PHL V4 Input Error: invalid candle OHLCV or off-grid timestamp at bar ${barIndex}.`);
+    }
+    if (state.lastProcessedTimestamp !== null && candle.time <= state.lastProcessedTimestamp) {
+        throw new Error(
+            `PHL V4 Chronology Error: out-of-order or duplicate timestamp ${candle.time} <= ${state.lastProcessedTimestamp}.`
+        );
+    }
+}
+
+function stepCompletedPHLBucket(
+    completedBucket: FormingPHLBucket,
+    confirmChartBarIndex: number,
+    confirmChartTimestamp: number,
+    callerAtr14: number | null,
+    config: PHLV4Config,
+    prevState: PHLV4State,
+    isBucketDiscontinuity: boolean
+): {
+    readonly nextState: PHLV4State;
+    readonly events: readonly PHLV4TeacherEvent[];
+    readonly confirmedPivotHigh: PHLPivotSlot | null;
+    readonly confirmedPivotLow: PHLPivotSlot | null;
+} {
+    const htfIdx = prevState.htfBarIndex;
+    const htfCandle: ML1Candle = {
+        time: completedBucket.bucketStart,
+        open: completedBucket.open,
+        high: completedBucket.high,
+        low: completedBucket.low,
+        close: completedBucket.close,
+        volume: completedBucket.volume,
+        isSynthetic: false
+    };
+
+    // For 1m: use caller-supplied native 1m ATR; for 3m/5m HTF: compute canonical HTF Wilder ATR(14) from completed HTF buckets
+    let effectiveAtr14: number | null = callerAtr14;
+    let nextHtfAtrState: ATRPeriodState | null = null;
+    let nextPrevHtfClose: number | null = null;
+
+    if (config.expectedBarsPerBucket > 1) {
+        const atrStep = updateWilderATR(
+            completedBucket.high,
+            completedBucket.low,
+            prevState.prevHtfClose,
+            14,
+            prevState.htfAtrState ?? undefined,
+            isBucketDiscontinuity
+        );
+        nextHtfAtrState = atrStep.nextState;
+        nextPrevHtfClose = completedBucket.close;
+        effectiveAtr14 = atrStep.isValid && atrStep.atrValue > 0 ? atrStep.atrValue : null;
+    }
+
+    const nextAnchorsMutable: Record<number, PHLChartBarAnchor> = {
+        ...prevState.htfBarAnchors,
+        [htfIdx]: Object.freeze({
+            peakBar: completedBucket.peakChartBar,
+            peakTime: completedBucket.peakChartTime,
+            troughBar: completedBucket.troughChartBar,
+            troughTime: completedBucket.troughChartTime
+        })
+    };
+
+    const innerCfg: PHLConfig = {
+        symbol: config.symbol,
+        timeframe: config.phlTimeframe,
+        intervalMs: config.phlIntervalMs,
+        pivotStrength: config.pivotStrength,
+        useValidPullbacks: config.useValidPullbacks,
+        extraValidPullbacks: config.extraValidPullbacks
+    };
+
+    const step = stepPHL(htfCandle, htfIdx, prevState.phlState, innerCfg, isBucketDiscontinuity, effectiveAtr14, null);
+    const nextPhl = step.nextState;
+
+    const mapHighSlot = (slot: PHLPivotSlot | null): PHLPivotSlot | null => {
+        if (!slot) return null;
+        const a = nextAnchorsMutable[slot.barIndex];
+        return a ? Object.freeze({ price: slot.price, barIndex: a.peakBar, time: a.peakTime }) : slot;
+    };
+    const mapLowSlot = (slot: PHLPivotSlot | null): PHLPivotSlot | null => {
+        if (!slot) return null;
+        const a = nextAnchorsMutable[slot.barIndex];
+        return a ? Object.freeze({ price: slot.price, barIndex: a.troughBar, time: a.troughTime }) : slot;
+    };
+
+    const atr14Valid = effectiveAtr14 !== null && Number.isFinite(effectiveAtr14) && effectiveAtr14 > 0;
+    const outEvents: PHLV4TeacherEvent[] = [];
+
+    for (const rawEv of step.events) {
+        const isBull = rawEv.eventDirection === 'bull';
+        const srcAnchor = nextAnchorsMutable[rawEv.sourceBarIndex];
+        const sourceBarIndex = srcAnchor ? (isBull ? srcAnchor.peakBar : srcAnchor.troughBar) : rawEv.sourceBarIndex;
+        const sourceTimestamp = srcAnchor ? (isBull ? srcAnchor.peakTime : srcAnchor.troughTime) : rawEv.sourceTimestamp;
+
+        const protSlot = isBull ? step.activeProtectedLow : step.activeProtectedHigh;
+        const mappedProt = isBull ? mapLowSlot(protSlot) : mapHighSlot(protSlot);
+        const hasProtectedLevel = mappedProt !== null;
+
+        const distToProtectedAtr =
+            hasProtectedLevel && atr14Valid
+                ? (isBull
+                    ? (completedBucket.close - mappedProt!.price) / effectiveAtr14!
+                    : (mappedProt!.price - completedBucket.close) / effectiveAtr14!)
+                : null;
+
+        const breakType = rawEv.structuralContext['breakType'] as 'BOS' | 'MSS';
+        const eventDiscriminator = [
+            config.symbol,
+            config.baseTimeframe,
+            config.phlTimeframe,
+            breakType,
+            rawEv.eventDirection,
+            sourceTimestamp,
+            confirmChartTimestamp
+        ].join(':');
+
+        outEvents.push(
+            Object.freeze({
+                strategyId: 'PHL_BOS_MSS' as const,
+                strategyVersion: PHL_V4_TEACHER_VERSION,
+                symbol: config.symbol,
+                timeframe: config.baseTimeframe,
+                phlTimeframe: config.phlTimeframe,
+                eventType: rawEv.eventType as PHLV4TeacherEvent['eventType'],
+                eventDirection: rawEv.eventDirection,
+                eventDiscriminator,
+                sourceBarIndex,
+                sourceTimestamp,
+                confirmationBarIndex: confirmChartBarIndex,
+                confirmationTimestamp: confirmChartTimestamp,
+                structuralContext: Object.freeze({
+                    phlTimeframe: config.phlTimeframe,
+                    breakType,
+                    brokenLevelPrice: Number(rawEv.structuralContext['brokenLevelPrice']),
+                    hasProtectedLevel,
+                    protectedLevelPrice: hasProtectedLevel ? mappedProt!.price : null,
+                    protectedLevelBarIndex: hasProtectedLevel ? mappedProt!.barIndex : null,
+                    protectedLevelTimestamp: hasProtectedLevel ? mappedProt!.time : null,
+                    atr14Valid,
+                    distToProtectedAtr,
+                    pbFromLowValid: Boolean(rawEv.structuralContext['pbFromLowValid']),
+                    pbFromHighValid: Boolean(rawEv.structuralContext['pbFromHighValid'])
+                })
+            })
+        );
+    }
+
+    const keepMinIndices: number[] = [];
+    if (nextPhl.window.length > 0) keepMinIndices.push(nextPhl.window[0].barIndex);
+    if (nextPhl.ph) keepMinIndices.push(nextPhl.ph.barIndex);
+    if (nextPhl.pl) keepMinIndices.push(nextPhl.pl.barIndex);
+    if (nextPhl.trackHighIdx !== null) keepMinIndices.push(nextPhl.trackHighIdx);
+    if (nextPhl.trackLowIdx !== null) keepMinIndices.push(nextPhl.trackLowIdx);
+    if (nextPhl.lastHighIdx !== null) keepMinIndices.push(nextPhl.lastHighIdx);
+    if (nextPhl.lastLowIdx !== null) keepMinIndices.push(nextPhl.lastLowIdx);
+    const minKeep = keepMinIndices.length > 0 ? Math.min(...keepMinIndices) : htfIdx;
+    for (const k of Object.keys(nextAnchorsMutable)) {
+        if (Number(k) < minKeep) delete nextAnchorsMutable[Number(k)];
+    }
+
+    return {
+        nextState: Object.freeze({
+            stateVersion: 2 as const,
+            phlState: nextPhl,
+            htfAtrState: nextHtfAtrState,
+            prevHtfClose: nextPrevHtfClose,
+            htfBarIndex: htfIdx + 1,
+            htfBarAnchors: Object.freeze(nextAnchorsMutable),
+            formingBucket: null,
+            lastProcessedTimestamp: confirmChartTimestamp,
+            lastProcessedBarIndex: confirmChartBarIndex
+        }),
+        events: Object.freeze(outEvents),
+        confirmedPivotHigh: mapHighSlot(step.confirmedPivotHigh),
+        confirmedPivotLow: mapLowSlot(step.confirmedPivotLow)
+    };
+}
+
+export function stepPHLV4(
+    candle: ML1Candle,
+    barIndex: number,
+    state: PHLV4State,
+    config: PHLV4Config,
+    isDiscontinuity: boolean,
+    atr14: number | null
+): {
+    readonly nextState: PHLV4State;
+    readonly events: readonly PHLV4TeacherEvent[];
+    readonly confirmedPivotHigh: PHLPivotSlot | null;
+    readonly confirmedPivotLow: PHLPivotSlot | null;
+} {
+    validatePHLV4InputBoundary(candle, barIndex, state, config, isDiscontinuity, atr14);
+
+    const bucketStart = Math.floor(candle.time / config.phlIntervalMs) * config.phlIntervalMs;
+    const hasMissingBaseCandle =
+        state.lastProcessedTimestamp !== null &&
+        candle.time !== state.lastProcessedTimestamp + config.baseIntervalMs;
+    const effectiveDiscontinuity = isDiscontinuity || hasMissingBaseCandle;
+
+    if (effectiveDiscontinuity) {
+        const clean = createInitialPHLV4State();
+        if (config.expectedBarsPerBucket === 1) {
+            const singleBucket: FormingPHLBucket = {
+                bucketStart: candle.time,
+                open: candle.open,
+                high: candle.high,
+                low: candle.low,
+                close: candle.close,
+                volume: candle.volume,
+                peakChartBar: barIndex,
+                peakChartTime: candle.time,
+                troughChartBar: barIndex,
+                troughChartTime: candle.time,
+                lastCandleTime: candle.time,
+                barCount: 1,
+                isCorrupt: false
+            };
+            const stepped = stepCompletedPHLBucket(singleBucket, barIndex, candle.time, atr14, config, clean, true);
+            return { nextState: stepped.nextState, events: Object.freeze([]), confirmedPivotHigh: null, confirmedPivotLow: null };
+        }
+
+        const startsOnBucket = candle.time === bucketStart;
+        return {
+            nextState: Object.freeze({
+                ...clean,
+                lastProcessedTimestamp: candle.time,
+                lastProcessedBarIndex: barIndex,
+                formingBucket: startsOnBucket
+                    ? Object.freeze({
+                        bucketStart,
+                        open: candle.open,
+                        high: candle.high,
+                        low: candle.low,
+                        close: candle.close,
+                        volume: candle.volume,
+                        peakChartBar: barIndex,
+                        peakChartTime: candle.time,
+                        troughChartBar: barIndex,
+                        troughChartTime: candle.time,
+                        lastCandleTime: candle.time,
+                        barCount: 1,
+                        isCorrupt: false
+                    })
+                    : null
+            }),
+            events: Object.freeze([]),
+            confirmedPivotHigh: null,
+            confirmedPivotLow: null
+        };
+    }
+
+    let workingState = state;
+    let activeBucket = state.formingBucket;
+    if (activeBucket !== null && bucketStart > activeBucket.bucketStart) {
+        workingState = {
+            ...createInitialPHLV4State(),
+            lastProcessedTimestamp: state.lastProcessedTimestamp,
+            lastProcessedBarIndex: state.lastProcessedBarIndex
+        };
+        activeBucket = null;
+    }
+
+    if (activeBucket === null) {
+        if (candle.time === bucketStart) {
+            activeBucket = Object.freeze({
+                bucketStart,
+                open: candle.open,
+                high: candle.high,
+                low: candle.low,
+                close: candle.close,
+                volume: candle.volume,
+                peakChartBar: barIndex,
+                peakChartTime: candle.time,
+                troughChartBar: barIndex,
+                troughChartTime: candle.time,
+                lastCandleTime: candle.time,
+                barCount: 1,
+                isCorrupt: false
+            });
+        }
+    } else if (bucketStart === activeBucket.bucketStart && !activeBucket.isCorrupt) {
+        const newHigh = candle.high > activeBucket.high;
+        const newLow = candle.low < activeBucket.low;
+        activeBucket = Object.freeze({
+            ...activeBucket,
+            high: newHigh ? candle.high : activeBucket.high,
+            low: newLow ? candle.low : activeBucket.low,
+            close: candle.close,
+            volume: activeBucket.volume + candle.volume,
+            peakChartBar: newHigh ? barIndex : activeBucket.peakChartBar,
+            peakChartTime: newHigh ? candle.time : activeBucket.peakChartTime,
+            troughChartBar: newLow ? barIndex : activeBucket.troughChartBar,
+            troughChartTime: newLow ? candle.time : activeBucket.troughChartTime,
+            lastCandleTime: candle.time,
+            barCount: activeBucket.barCount + 1
+        });
+    }
+
+    const expectedCloseTime = bucketStart + config.phlIntervalMs - config.baseIntervalMs;
+    const isBucketComplete =
+        activeBucket !== null &&
+        !activeBucket.isCorrupt &&
+        activeBucket.barCount === config.expectedBarsPerBucket &&
+        candle.time === expectedCloseTime;
+
+    if (!isBucketComplete) {
+        return {
+            nextState: Object.freeze({
+                ...workingState,
+                formingBucket: activeBucket,
+                lastProcessedTimestamp: candle.time,
+                lastProcessedBarIndex: barIndex
+            }),
+            events: Object.freeze([]),
+            confirmedPivotHigh: null,
+            confirmedPivotLow: null
+        };
+    }
+
+    // If this completed bucket is the first HTF candle after a reset (htfBarIndex === 0), propagate isBucketDiscontinuity=true
+    const isBucketDisc = workingState.htfBarIndex === 0;
+    return stepCompletedPHLBucket(activeBucket!, barIndex, candle.time, atr14, config, workingState, isBucketDisc);
+}
+
+// =========================================================================
+// V4 PHL Multi-Timeframe Coordinator (1m, 3m, 5m)
+// =========================================================================
+export const V4_PHL_TIMEFRAMES: readonly PHLTimeframe[] = Object.freeze(['1m', '3m', '5m']);
+
+export type PHLV4MultiState = Readonly<Record<PHLTimeframe, PHLV4State>>;
+
+export function createDefaultPHLV4MultiConfigs(
+    symbol: string,
+    baseTimeframe: string,
+    baseIntervalMs: number,
+    timeframes: readonly PHLTimeframe[] = V4_PHL_TIMEFRAMES,
+    options?: { pivotStrength?: number; useValidPullbacks?: boolean; extraValidPullbacks?: boolean }
+): PHLV4Config[] {
+    if (!Array.isArray(timeframes) || timeframes.length === 0) {
+        throw new Error('PHL V4 Multi Config Error: timeframes must be a non-empty array of 1m/3m/5m.');
+    }
+    const allowed = new Set<string>(V4_PHL_TIMEFRAMES);
+    const seen = new Set<string>();
+    for (const tf of timeframes) {
+        if (!allowed.has(tf)) {
+            throw new Error(`PHL V4 Multi Config Error: unsupported timeframe '${String(tf)}'.`);
+        }
+        if (seen.has(tf)) {
+            throw new Error(`PHL V4 Multi Config Error: duplicate timeframe '${tf}'.`);
+        }
+        seen.add(tf);
+    }
+    return timeframes.map(tf => createDefaultPHLV4Config(symbol, baseTimeframe, baseIntervalMs, tf, options));
+}
+
+export function createInitialPHLV4MultiState(): PHLV4MultiState {
+    return Object.freeze({
+        '1m': createInitialPHLV4State(),
+        '3m': createInitialPHLV4State(),
+        '5m': createInitialPHLV4State()
+    });
+}
+
+export function validatePHLV4MultiState(
+    state: PHLV4MultiState,
+    configs: readonly PHLV4Config[]
+): void {
+    if (!state || typeof state !== 'object') {
+        throw new Error('PHL V4 Multi State Error: state must be an object.');
+    }
+    if (!Array.isArray(configs as unknown) || configs.length === 0) {
+        throw new Error('PHL V4 Multi Config Error: configs must be non-empty.');
+    }
+    const seen = new Set<PHLTimeframe>();
+    for (const cfg of configs) {
+        validatePHLV4Config(cfg);
+        if (seen.has(cfg.phlTimeframe)) {
+            throw new Error(`PHL V4 Multi Config Error: duplicate timeframe config '${cfg.phlTimeframe}'.`);
+        }
+        seen.add(cfg.phlTimeframe);
+        validatePHLV4State(state[cfg.phlTimeframe], cfg);
+    }
+}
+
+export function stepPHLV4Multi(
+    candle: ML1Candle,
+    barIndex: number,
+    state: PHLV4MultiState,
+    configs: readonly PHLV4Config[],
+    isDiscontinuity: boolean,
+    atr14: number | null
+): {
+    readonly nextState: PHLV4MultiState;
+    readonly events: readonly PHLV4TeacherEvent[];
+} {
+    validatePHLV4MultiState(state, configs);
+    const mutableState: Record<PHLTimeframe, PHLV4State> = { ...state };
+    const allEvents: PHLV4TeacherEvent[] = [];
+
+    for (const cfg of configs) {
+        const res = stepPHLV4(candle, barIndex, mutableState[cfg.phlTimeframe], cfg, isDiscontinuity, atr14);
+        mutableState[cfg.phlTimeframe] = res.nextState;
+        allEvents.push(...res.events);
+    }
+
+    allEvents.sort((a, b) =>
+        a.confirmationBarIndex - b.confirmationBarIndex ||
+        a.eventType.localeCompare(b.eventType) ||
+        a.eventDiscriminator.localeCompare(b.eventDiscriminator)
+    );
+
+    return { nextState: Object.freeze(mutableState), events: Object.freeze(allEvents) };
 }

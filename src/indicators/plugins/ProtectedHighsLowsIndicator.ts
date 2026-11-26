@@ -3,6 +3,7 @@ import { BaseIndicator, parseColor, parseColorAndAlpha, type IndicatorLayout } f
 import type { DataStore } from '../../data/DataStore';
 import type { ChartRenderer } from '../../renderer/ChartRenderer';
 import { StrokeEngine } from '../../renderer/StrokeEngine';
+import { TimeframeResampler } from '../../data/TimeframeResampler';
 import { createDefaultPHLConfig, createInitialPHLState, stepPHL } from '../mlr1/teachers/ProtectedHighsLowsTeacher';
 import { updateWilderATR } from '../mlr1/volatility/ATR';
 import type { ATRPeriodState } from '../mlr1/ML1FeatureTypes';
@@ -46,7 +47,15 @@ export class ProtectedHighsLowsIndicator extends BaseIndicator {
         this.layerType = 'main';
 
         this.params = [
-            { id: 'pivotStrength', name: 'Pivot Strength (1m: 8–15)', type: 'number', value: 10, min: 1, max: 50, step: 1 },
+            {
+                id: 'timeframe',
+                name: 'Timeframe',
+                type: 'select',
+                value: 'Current',
+                options: ['Current', '3m', '5m', 'Custom HTF']
+            },
+            { id: 'customTfMins', name: 'Custom HTF Minutes', type: 'number', value: 5, min: 1, max: 43200, step: 1 },
+            { id: 'pivotStrength', name: 'Pivot Strength (Default: 8)', type: 'number', value: 8, min: 1, max: 50, step: 1 },
             { id: 'useValidPullbacks', name: 'Use Valid Pullback Criteria', type: 'boolean', value: true },
             { id: 'extraValidPullbacks', name: 'Specific Pullback Candle', type: 'boolean', value: false },
             { id: 'bullColor', name: 'Bullish BOS/MSS Color', type: 'color', value: '#089981' },
@@ -64,12 +73,47 @@ export class ProtectedHighsLowsIndicator extends BaseIndicator {
         ];
     }
 
+    public static getTimeframeOptions(currentInterval: string): string[] {
+        const ALL = ['1m', '3m', '5m', '30m', '45m', '1h', '2h', '3h', '4h', '6h', '8h', '12h', '1d', '3d', '1w'];
+        const currentMs = TimeframeResampler.parseMs(currentInterval);
+        const filtered = ALL.filter(tf => {
+            const ms = TimeframeResampler.parseMs(tf);
+            return ms > currentMs && ms % currentMs === 0;
+        });
+        return ['Current', ...filtered, 'Custom HTF'];
+    }
+
+    public getTimeframeOptions(currentInterval: string): string[] {
+        return ProtectedHighsLowsIndicator.getTimeframeOptions(currentInterval);
+    }
+
+    public getEffectiveTfMs(chartTfMs: number): number {
+        const mode = this.getParam<string>('timeframe', 'Current');
+        if (mode === 'Current') return chartTfMs;
+        if (mode === 'Custom' || mode === 'Custom HTF') {
+            const rawMins = this.getParam<number>('customTfMins', 5);
+            if (!Number.isSafeInteger(rawMins) || rawMins < 1 || rawMins > 43200) {
+                return chartTfMs;
+            }
+            const customMs = rawMins * 60_000;
+            if (customMs <= chartTfMs || customMs % chartTfMs !== 0) {
+                return chartTfMs; // Option A: disallow partial/non-multiple custom HTF
+            }
+            return customMs;
+        }
+        const parsedMs = TimeframeResampler.parseMs(mode.toLowerCase());
+        if (parsedMs <= chartTfMs || parsedMs % chartTfMs !== 0) return chartTfMs;
+        return parsedMs;
+    }
+
     protected override onParamsUpdated(): void {
         this.lastCalculatedLength = -1;
         this.lastStateHash = '';
         this.cachedEvents = [];
         this.confirmedPivots = [];
         this.targetSegments = [];
+        const tf = this.getParam<string>('timeframe', 'Current');
+        this.name = tf === 'Current' ? 'Protected Highs/Lows' : `Protected Highs/Lows [${tf}]`;
     }
 
     private ensureCapacity(len: number): void {
@@ -106,19 +150,21 @@ export class ProtectedHighsLowsIndicator extends BaseIndicator {
         if (len === 0) return;
         this.ensureCapacity(len);
 
-        const pivotStrength = Math.max(1, Math.round(this.getParam<number>('pivotStrength', 10)));
+        const pivotStrength = Math.max(1, Math.round(this.getParam<number>('pivotStrength', 8)));
         const useValidPullbacks = this.getParam<boolean>('useValidPullbacks', true);
         const extraValidPullbacks = this.getParam<boolean>('extraValidPullbacks', false);
         const targetReset = this.getParam<string>('targetReset', 'MSS & BOS');
         const targetTrigger = this.getParam<string>('targetTrigger', 'Close Only');
         const targetAtrLen = Math.max(2, Math.round(this.getParam<number>('targetAtrLen', 14)));
         const targetStepMult = Math.max(0.1, this.getParam<number>('targetStepMult', 2.0));
-        const intervalMs = (len >= 2 && ds.data[6] > ds.data[0]) ? (ds.data[6] - ds.data[0]) : 60_000;
-        const discThresholdMs = Math.max(300_000, intervalMs * 5);
+        const chartTfMs = (len >= 2 && ds.data[6] > ds.data[0]) ? (ds.data[6] - ds.data[0]) : 60_000;
+        const tfMs = this.getEffectiveTfMs(chartTfMs);
+        const isHTF = tfMs > chartTfMs;
+        const discThresholdMs = Math.max(300_000, tfMs * 5);
 
         const lastBase = (len - 1) * 6;
         const rev = (ds as any).revision ?? 0;
-        const hash = `${this.currentSymbol}:${intervalMs}:${pivotStrength}:${useValidPullbacks}:${extraValidPullbacks}:${targetReset}:${targetTrigger}:${targetAtrLen}:${targetStepMult}:${len}:${rev}:${ds.data[0]}:${ds.data[lastBase]}:${ds.data[lastBase + 4]}`;
+        const hash = `${this.currentSymbol}:${chartTfMs}:${tfMs}:${pivotStrength}:${useValidPullbacks}:${extraValidPullbacks}:${targetReset}:${targetTrigger}:${targetAtrLen}:${targetStepMult}:${len}:${rev}:${ds.data[0]}:${ds.data[lastBase]}:${ds.data[lastBase + 4]}`;
         if (this.lastStateHash === hash && this.lastCalculatedLength === len) return;
 
         this.cachedEvents = [];
@@ -129,6 +175,239 @@ export class ProtectedHighsLowsIndicator extends BaseIndicator {
         this.bullStates.fill(0, 0, len);
         this.discontinuityBreaks.fill(0, 0, len);
 
+        if (isHTF) {
+            interface HtfPhlBucket {
+                time: number;
+                open: number;
+                high: number;
+                low: number;
+                close: number;
+                volume: number;
+                firstChartBar: number;
+                lastChartBar: number;
+                peakChartBar: number;
+                troughChartBar: number;
+                barCount: number;
+                isCorrupt: boolean;
+            }
+            const htfCfg = {
+                ...createDefaultPHLConfig(this.currentSymbol, `${Math.round(tfMs / 60_000)}m`, tfMs),
+                pivotStrength,
+                useValidPullbacks,
+                extraValidPullbacks
+            };
+            const expectedPerBucket = tfMs / chartTfMs; // Guaranteed positive integer by getEffectiveTfMs
+
+            let phlState = createInitialPHLState();
+            let htfAtrState: ATRPeriodState | undefined;
+            let chartTargetAtrState: ATRPeriodState | undefined;
+            let prevChartClose: number | null = null;
+            let prevHtfClose: number | null = null;
+            let prevChartTime = -1;
+            let prevBucketTime = -1;
+            let htfIdx = 0;
+            const anchors = new Map<number, { peak: number; trough: number }>();
+
+            let curTrailPrice = 0;
+            let curTrailDir: 1 | -1 | 0 = 0;
+            let activeTarget: { startBar: number; price: number; entryPrice: number; stepNum: number; dir: 1 | -1 } | null = null;
+            let activeBucket: HtfPhlBucket | null = null;
+
+            const resetAllHtfState = (resetEndBar: number) => {
+                phlState = createInitialPHLState();
+                htfAtrState = undefined;
+                prevHtfClose = null;
+                htfIdx = 0;
+                anchors.clear();
+                curTrailPrice = 0;
+                curTrailDir = 0;
+                if (activeTarget) {
+                    this.targetSegments.push({ ...activeTarget, endBar: Math.max(activeTarget.startBar, resetEndBar), hit: false });
+                    activeTarget = null;
+                }
+            };
+
+            const flushBucket = (b: HtfPhlBucket) => {
+                const isComplete = !b.isCorrupt &&
+                    b.barCount === expectedPerBucket &&
+                    ds.data[b.lastChartBar * 6] === b.time + tfMs - chartTfMs;
+                if (!isComplete) {
+                    resetAllHtfState(b.lastChartBar);
+                    return;
+                }
+                const isHtfDisc = prevBucketTime !== -1 && (b.time - prevBucketTime) >= discThresholdMs;
+                if (isHtfDisc) {
+                    this.discontinuityBreaks[b.firstChartBar] = 1;
+                    resetAllHtfState(b.firstChartBar - 1);
+                }
+                prevBucketTime = b.time;
+                anchors.set(htfIdx, { peak: b.peakChartBar, trough: b.troughChartBar });
+
+                const isResetStep = isHtfDisc || htfIdx === 0;
+                const atrRes = updateWilderATR(b.high, b.low, prevHtfClose, 14, htfAtrState, isResetStep);
+                htfAtrState = atrRes.nextState;
+                prevHtfClose = b.close;
+                const atrVal = atrRes.isValid && atrRes.atrValue > 0 ? atrRes.atrValue : null;
+
+                const step = stepPHL(
+                    { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume },
+                    htfIdx,
+                    phlState,
+                    htfCfg,
+                    isResetStep,
+                    atrVal,
+                    null
+                );
+                phlState = step.nextState;
+                htfIdx++;
+
+                if (step.events.length > 0) {
+                    const atr14Valid = atrVal !== null;
+                    for (const ev of step.events) {
+                        const isBullEv = ev.eventDirection === 'bull';
+                        const srcA = anchors.get(ev.sourceBarIndex);
+                        const mappedSrcBar = srcA ? (isBullEv ? srcA.peak : srcA.trough) : b.firstChartBar;
+
+                        const protSlot = isBullEv ? step.activeProtectedLow : step.activeProtectedHigh;
+                        const pa = protSlot ? anchors.get(protSlot.barIndex) : undefined;
+                        const protBar = protSlot ? (pa ? (isBullEv ? pa.trough : pa.peak) : b.lastChartBar) : null;
+                        const protTime = protBar !== null ? ds.data[protBar * 6] : null;
+                        const distProtAtr = protSlot && atr14Valid
+                            ? (isBullEv ? (b.close - protSlot.price) / atrVal! : (protSlot.price - b.close) / atrVal!)
+                            : null;
+
+                        this.cachedEvents.push({
+                            ...ev,
+                            sourceBarIndex: mappedSrcBar,
+                            sourceTimestamp: ds.data[mappedSrcBar * 6],
+                            confirmationBarIndex: b.lastChartBar,
+                            confirmationTimestamp: ds.data[b.lastChartBar * 6],
+                            structuralContext: {
+                                ...ev.structuralContext,
+                                hasProtectedLevel: protSlot !== null,
+                                protectedLevelPrice: protSlot ? protSlot.price : (null as any),
+                                protectedLevelBarIndex: protBar as any,
+                                protectedLevelTimestamp: protTime as any,
+                                atr14Valid,
+                                distToProtectedAtr: distProtAtr as any
+                            }
+                        });
+
+                        const brokenPrice = Number(ev.structuralContext['brokenLevelPrice']);
+                        if (isBullEv && step.activeProtectedLow && protBar !== null) {
+                            this.confirmedPivots.push({ barIndex: protBar, confirmedBarIndex: b.lastChartBar, price: step.activeProtectedLow.price, type: 'low' });
+                            curTrailPrice = step.activeProtectedLow.price;
+                            curTrailDir = 1;
+                        } else if (!isBullEv && step.activeProtectedHigh && protBar !== null) {
+                            this.confirmedPivots.push({ barIndex: protBar, confirmedBarIndex: b.lastChartBar, price: step.activeProtectedHigh.price, type: 'high' });
+                            curTrailPrice = step.activeProtectedHigh.price;
+                            curTrailDir = -1;
+                        }
+
+                        const isMss = ev.structuralContext['breakType'] === 'MSS';
+                        if (targetReset === 'MSS & BOS' || isMss || !activeTarget) {
+                            if (activeTarget) this.targetSegments.push({ ...activeTarget, endBar: b.lastChartBar, hit: false });
+                            const dir: 1 | -1 = isBullEv ? 1 : -1;
+                            const stepAtr = atrVal ?? (b.high - b.low);
+                            activeTarget = { startBar: b.lastChartBar, price: brokenPrice + dir * stepAtr * targetStepMult, entryPrice: brokenPrice, stepNum: 1, dir };
+                        }
+                    }
+                }
+
+                // Prune anchors strictly older than any active PHL reference or retained window bar
+                const keepMin: number[] = [];
+                if (phlState.window.length > 0) keepMin.push(phlState.window[0].barIndex);
+                if (phlState.ph) keepMin.push(phlState.ph.barIndex);
+                if (phlState.pl) keepMin.push(phlState.pl.barIndex);
+                if (phlState.trackHighIdx !== null) keepMin.push(phlState.trackHighIdx);
+                if (phlState.trackLowIdx !== null) keepMin.push(phlState.trackLowIdx);
+                if (phlState.lastHighIdx !== null) keepMin.push(phlState.lastHighIdx);
+                if (phlState.lastLowIdx !== null) keepMin.push(phlState.lastLowIdx);
+                const minKeep = keepMin.length > 0 ? Math.min(...keepMin) : htfIdx;
+                for (const k of anchors.keys()) {
+                    if (k < minKeep) anchors.delete(k);
+                }
+            };
+
+            for (let i = 0; i < len; i++) {
+                const base = i * 6;
+                const t = ds.data[base], o = ds.data[base + 1], h = ds.data[base + 2], l = ds.data[base + 3], c = ds.data[base + 4], v = ds.data[base + 5];
+                const validOhlcv = Number.isFinite(t) && t >= 0 && Number.isFinite(o) && o > 0 && Number.isFinite(h) && h > 0 &&
+                    Number.isFinite(l) && l > 0 && Number.isFinite(c) && c > 0 && Number.isFinite(v) && v >= 0 &&
+                    h >= l && h >= Math.max(o, c) && l <= Math.min(o, c);
+                if (!validOhlcv || (prevChartTime !== -1 && t <= prevChartTime)) {
+                    if (activeBucket !== null) activeBucket.isCorrupt = true;
+                    resetAllHtfState(i - 1);
+                    this.trailPrices[i] = 0;
+                    this.trailDirs[i] = 0;
+                    this.bullStates[i] = 0;
+                    continue;
+                }
+
+                const missingRaw = prevChartTime !== -1 && t !== prevChartTime + chartTfMs;
+                prevChartTime = t;
+
+                const tAtrRes = updateWilderATR(h, l, prevChartClose, targetAtrLen, chartTargetAtrState, missingRaw);
+                chartTargetAtrState = tAtrRes.nextState;
+                prevChartClose = c;
+                const chartStepAtr = (tAtrRes.isValid && tAtrRes.atrValue > 0 ? tAtrRes.atrValue : null) ?? (h - l);
+
+                const bStart = TimeframeResampler.getBucketStart(t, tfMs);
+                if (activeBucket !== null && bStart !== activeBucket.time) {
+                    flushBucket(activeBucket);
+                    activeBucket = null;
+                }
+                if (missingRaw) {
+                    this.discontinuityBreaks[i] = 1;
+                    resetAllHtfState(i - 1);
+                    activeBucket = t === bStart
+                        ? { time: bStart, open: o, high: h, low: l, close: c, volume: v, firstChartBar: i, lastChartBar: i, peakChartBar: i, troughChartBar: i, barCount: 1, isCorrupt: false }
+                        : null;
+                } else if (activeBucket === null) {
+                    if (t === bStart) {
+                        activeBucket = { time: bStart, open: o, high: h, low: l, close: c, volume: v, firstChartBar: i, lastChartBar: i, peakChartBar: i, troughChartBar: i, barCount: 1, isCorrupt: false };
+                    }
+                } else {
+                    if (h > activeBucket.high) { activeBucket.high = h; activeBucket.peakChartBar = i; }
+                    if (l < activeBucket.low) { activeBucket.low = l; activeBucket.troughChartBar = i; }
+                    activeBucket.close = c;
+                    activeBucket.volume += v;
+                    activeBucket.lastChartBar = i;
+                    activeBucket.barCount++;
+                }
+
+                if (activeBucket !== null && activeBucket.barCount === expectedPerBucket && t === bStart + tfMs - chartTfMs) {
+                    flushBucket(activeBucket);
+                    activeBucket = null;
+                } else if (activeTarget && i > activeTarget.startBar) {
+                    const hit = targetTrigger === 'Wick (High/Low)'
+                        ? (activeTarget.dir === 1 ? h >= activeTarget.price : l <= activeTarget.price)
+                        : (activeTarget.dir === 1 ? c >= activeTarget.price : c <= activeTarget.price);
+                    if (hit) {
+                        this.targetSegments.push({ ...activeTarget, endBar: i, hit: true });
+                        activeTarget = {
+                            startBar: i,
+                            price: activeTarget.price + activeTarget.dir * chartStepAtr * targetStepMult,
+                            entryPrice: activeTarget.entryPrice,
+                            stepNum: activeTarget.stepNum + 1,
+                            dir: activeTarget.dir
+                        };
+                    }
+                }
+
+                this.trailPrices[i] = curTrailPrice;
+                this.trailDirs[i] = curTrailDir;
+                this.bullStates[i] = phlState.bull === true ? 1 : phlState.bull === false ? -1 : 0;
+            }
+            if (activeTarget) {
+                this.targetSegments.push({ ...activeTarget, endBar: len - 1 + 10, hit: false });
+            }
+            this.lastCalculatedLength = len;
+            this.lastStateHash = hash;
+            return;
+        }
+
+        const intervalMs = chartTfMs;
         const baseCfg = createDefaultPHLConfig(this.currentSymbol, `${Math.round(intervalMs / 60000)}m`, intervalMs);
         const phlCfg = { ...baseCfg, pivotStrength, useValidPullbacks, extraValidPullbacks };
 
@@ -191,10 +470,25 @@ export class ProtectedHighsLowsIndicator extends BaseIndicator {
             acceptedIdx++;
 
             if (step.events.length > 0) {
-                this.cachedEvents.push(...step.events);
                 const ev = step.events[0];
-                const brokenPrice = Number(ev.structuralContext['brokenLevelPrice']);
                 const isBullEv = ev.eventDirection === 'bull';
+                const protSlot = isBullEv ? step.activeProtectedLow : step.activeProtectedHigh;
+                const atr14Valid = atrVal !== null;
+                this.cachedEvents.push({
+                    ...ev,
+                    structuralContext: {
+                        ...ev.structuralContext,
+                        hasProtectedLevel: protSlot !== null,
+                        protectedLevelPrice: protSlot ? protSlot.price : (null as any),
+                        protectedLevelBarIndex: protSlot ? protSlot.barIndex : (null as any),
+                        protectedLevelTimestamp: protSlot ? protSlot.time : (null as any),
+                        atr14Valid,
+                        distToProtectedAtr: protSlot && atr14Valid
+                            ? (isBullEv ? (c - protSlot.price) / atrVal! : (protSlot.price - c) / atrVal!)
+                            : (null as any)
+                    }
+                });
+                const brokenPrice = Number(ev.structuralContext['brokenLevelPrice']);
 
                 if (isBullEv && step.activeProtectedLow) {
                     this.confirmedPivots.push({

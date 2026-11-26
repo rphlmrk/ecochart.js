@@ -10,7 +10,6 @@ import {
     VolumeCandleSizeIndicator,
     VolatilityAdjustedMeanIndicator,
     ProtectedHighsLowsIndicator,
-    DTFXAlgoZonesIndicator,
     DTFXStrictCBCIndicator
 } from './plugins';
 
@@ -41,7 +40,6 @@ export class IndicatorRegistry {
         else if (ind instanceof VolatilityAdjustedMeanIndicator) type = 'VAM';
         else if (ind instanceof ProtectedHighsLowsIndicator) type = 'PHL_BOS_MSS';
         else if (ind instanceof DTFXStrictCBCIndicator) type = 'DTFX_STRICTCBC_ZONES';
-        else if (ind instanceof DTFXAlgoZonesIndicator) type = 'DTFX_ZONES';
         else if (ind instanceof MarketStructurePullbackZonesIndicator) type = 'PULLBACK_ZONES';
         else if (ind instanceof PullbackDoubleTopBottomIndicator) type = 'MS_PULLBACK_DTDB';
 
@@ -78,7 +76,6 @@ export class IndicatorRegistry {
             case 'VAM': ind = new VolatilityAdjustedMeanIndicator(); break;
             case 'PHL_BOS_MSS': ind = new ProtectedHighsLowsIndicator(); break;
             case 'DTFX_STRICTCBC_ZONES': ind = new DTFXStrictCBCIndicator(); break;
-            case 'DTFX_ZONES': ind = new DTFXAlgoZonesIndicator(); break;
         }
 
         if (ind) {

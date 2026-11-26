@@ -26,7 +26,6 @@ import {
     VolumeCandleSizeIndicator,
     VolatilityAdjustedMeanIndicator,
     ProtectedHighsLowsIndicator,
-    DTFXAlgoZonesIndicator,
     DTFXStrictCBCIndicator
 } from './indicators/plugins';
 
@@ -5615,7 +5614,6 @@ export class WorkspaceManager {
             { type: 'VCS_360', name: 'Volume Candle Size (360)', factory: () => new VolumeCandleSizeIndicator() },
             { type: 'VAM', name: 'Volatility Adjusted Mean (VAM)', factory: () => new VolatilityAdjustedMeanIndicator() },
             { type: 'PHL_BOS_MSS', name: 'Protected Highs/Lows (BOS/MSS)', factory: () => new ProtectedHighsLowsIndicator() },
-            { type: 'DTFX_ZONES', name: 'DTFX Algo Zones', factory: () => new DTFXAlgoZonesIndicator() },
             { type: 'DTFX_STRICTCBC_ZONES', name: 'DTFX Algo Zones (StrictCBC)', factory: () => new DTFXStrictCBCIndicator() },
             { type: 'HTF_BOX', name: 'HTF Box', factory: () => new HTFBoxIndicator(60) },
             { type: 'HTF_BIAS', name: 'HTF Bias', factory: () => new HTFBiasIndicator(60) },
@@ -5830,9 +5828,6 @@ export class WorkspaceManager {
                     }
                     if (cat.type === 'DTFX_STRICTCBC_ZONES') {
                         return i instanceof DTFXStrictCBCIndicator || i.id === 'DTFX_STRICTCBC_ZONES';
-                    }
-                    if (cat.type === 'DTFX_ZONES') {
-                        return (i instanceof DTFXAlgoZonesIndicator) && !(i instanceof DTFXStrictCBCIndicator);
                     }
                     return i.id === cat.type || i.id.startsWith(cat.type);
                 });
