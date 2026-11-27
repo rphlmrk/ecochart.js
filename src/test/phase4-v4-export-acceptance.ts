@@ -131,6 +131,21 @@ export async function runPhase4V4ExportAcceptanceTests(): Promise<boolean> {
         expectThrow(() => serializeAndValidateV4StructuralContext('DTFX_ZONES' as any, {}), 'retired DTFX_ZONES');
         expectThrow(() => serializeAndValidateV4StructuralContext('DTFX_STRICTCBC', { zoneTimeframe: '15m', atr14Valid: true }), '15m in DTFX_STRICTCBC context');
         expectThrow(() => serializeAndValidateV4StructuralContext('PHL_BOS_MSS', { phlTimeframe: '15m', hasProtectedLevel: false, atr14Valid: false }), '15m in PHL context');
+
+        if (typeof document !== 'undefined') {
+            assert(
+                document.querySelector('#ai-export-schema-version') === null &&
+                document.querySelector('#check-ai-v3-15m-mtf') === null &&
+                document.querySelector('#check-ai-v4-3m5m-mtf') !== null &&
+                document.querySelectorAll('.ai-v4-teacher-tf').length === 3 &&
+                document.querySelectorAll('.ai-v4-teacher-tf[value="15m"]').length === 0 &&
+                document.querySelectorAll('.ai-pack-card[data-pack="stream_folder"]').length === 1,
+                'Live V4 export modal must expose 3m/5m MTF and 1m/3m/5m teacher TFs without 15m or V2/V3 selectors'
+            );
+            const infoBody = document.querySelector('#ai-export-info-body')?.textContent || '';
+            assert(infoBody.includes('ML1_CONFIG_D_v1') && !infoBody.includes('ML1_CONFIG_C_v1'),
+                'Live V4 export modal info body must reflect ML1_CONFIG_D_v1');
+        }
     });
 
     await runTest('2. Outcome tracker atomic validation, cross-bar duplicate IDs, immutable copies, H60/120/180 boundaries & stop-first', () => {

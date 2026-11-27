@@ -109,6 +109,16 @@ import { runPhase5DPhase5Tests } from './test/milestone5d-phase5-acceptance';
 export { runPhase5DPhase5Tests };
 import { runDTFXStrictCBCExportIntegrationTests } from './test/dtfx-strictcbc-export-integration-test';
 export { runDTFXStrictCBCExportIntegrationTests };
+import { runPhase1V6AcceptanceTests } from './test/phase1-v6-acceptance';
+import { runPhase2V4MTFAcceptanceTests } from './test/phase2-v4-mtf-acceptance';
+import { runPhase3V4TeachersAcceptanceTests } from './test/phase3-v4-teachers-acceptance';
+import { runPhase4V4ExportAcceptanceTests } from './test/phase4-v4-export-acceptance';
+export {
+    runPhase1V6AcceptanceTests,
+    runPhase2V4MTFAcceptanceTests,
+    runPhase3V4TeachersAcceptanceTests,
+    runPhase4V4ExportAcceptanceTests
+};
 
 const auditBoundButtons = new WeakSet<HTMLElement>();
 
@@ -4641,22 +4651,11 @@ export class WorkspaceManager {
         const loadingOverlay = document.getElementById('ai-export-loading-overlay') as HTMLElement | null;
         const aiSubtitle = document.getElementById('ai-export-subtitle');
 
-        const expDtfxCbcCheck = document.getElementById('check-ai-v3-exp-dtfx-cbc') as HTMLInputElement | null;
-        const expDtfxCbcTfsBox = document.getElementById('ai-export-v3-dtfx-cbc-tfs') as HTMLElement | null;
-        const syncExpDtfxVisibility = () => {
-            if (expDtfxCbcTfsBox) {
-                expDtfxCbcTfsBox.style.display = expDtfxCbcCheck?.checked ? 'flex' : 'none';
-            }
-        };
-        expDtfxCbcCheck?.addEventListener('change', syncExpDtfxVisibility);
-        syncExpDtfxVisibility();
-
         const openModalAndSync = () => {
             if (aiSubtitle && WorkspaceManager.activeChart) {
                 const c = WorkspaceManager.activeChart;
                 aiSubtitle.textContent = `${c.currentSymbol} • ${c.currentInterval} • Ground truth signal outcomes & range detection`;
             }
-            syncExpDtfxVisibility();
             modalAiExport?.showModal();
         };
 
@@ -4921,6 +4920,11 @@ export class WorkspaceManager {
                 recordGate('Phase 5D Phase 4 (V3 Exporters & Artifact Auditor)', await runPhase5DPhase4Tests());
                 recordGate('Phase 5D Phase 5 (Chart Plugins & Engine Parity)', runPhase5DPhase5Tests());
                 recordGate('V3 Streaming Parity (Synthetic 650-Candle CSV/SHA-256/Manifest)', await runV3StreamingExportParityTest(650));
+                recordGate('V4 Phase 1 (V6 / ML1_CONFIG_D)', runPhase1V6AcceptanceTests());
+                recordGate('V4 Phase 2 (3m & 5m MTF)', runPhase2V4MTFAcceptanceTests());
+                recordGate('V4 Phase 3 (Teachers & Plugins)', runPhase3V4TeachersAcceptanceTests());
+                recordGate('V4 Phase 4 (Pipeline, Auditor & Parity)', await runPhase4V4ExportAcceptanceTests());
+                recordGate('V4 Streaming Parity (Synthetic 900-Candle CSV/SHA-256/Manifest)', await runV4StreamingExportParityTest(900));
 
                 // V3 Deterministic Reconstruction Verification
                 if (loadingDetail) loadingDetail.textContent = 'Verifying V3 Deterministic Reconstruction parity...';
@@ -4975,8 +4979,8 @@ export class WorkspaceManager {
                 );
 
                 const phase5dFailed = phase5dGates.filter(g => !g.passed).length;
-                if (phase5dFailed > 0 || phase5dGates.length !== 6) {
-                    throw new Error(`Stage 1 incomplete: ${phase5dFailed} Phase 5D gates failed.`);
+                if (phase5dFailed > 0 || phase5dGates.length !== 11) {
+                    throw new Error(`Stage 1 incomplete: ${phase5dFailed} Phase 5D / V4 gates failed.`);
                 }
 
                 console.log('\n======================================================');
@@ -5049,11 +5053,23 @@ export class WorkspaceManager {
                 return;
             }
             const VALID_V4_TFS = new Set<V4DTFXStrictCBCTimeframe>(['1m', '3m', '5m']);
-            const checkedTfs = Array.from(document.querySelectorAll('.ai-v3-dtfx-cbc-tf:checked'))
-                .map(el => (el as HTMLInputElement).value)
-                .filter(tf => VALID_V4_TFS.has(tf as V4DTFXStrictCBCTimeframe));
-            const selectedV4Tfs: V4DTFXStrictCBCTimeframe[] =
-                checkedTfs.length > 0 ? (Array.from(new Set(checkedTfs)) as V4DTFXStrictCBCTimeframe[]) : ['1m', '3m', '5m'];
+            const rawV4Tfs = Array.from(document.querySelectorAll('.ai-v4-teacher-tf:checked'))
+                .map(el => (el as HTMLInputElement).value);
+            if (rawV4Tfs.length === 0) {
+                alert('Select at least one V4 teacher timeframe (1m, 3m, 5m).');
+                return;
+            }
+            for (const tf of rawV4Tfs) {
+                if (!VALID_V4_TFS.has(tf as V4DTFXStrictCBCTimeframe)) {
+                    alert(`Unsupported V4 teacher timeframe: '${tf}'.`);
+                    return;
+                }
+            }
+            if (new Set(rawV4Tfs).size !== rawV4Tfs.length) {
+                alert('Duplicate V4 teacher timeframe entries are not permitted.');
+                return;
+            }
+            const selectedV4Tfs = rawV4Tfs as V4DTFXStrictCBCTimeframe[];
             const expectedCandleCount = Math.max(1, Math.ceil(durationMs / intervalMs));
             const expectedEndOpenTimestamp = Math.floor(Date.now() / intervalMs) * intervalMs - intervalMs;
             const expectedStartOpenTimestamp =
@@ -5121,7 +5137,7 @@ export class WorkspaceManager {
                         expectedCandleCount
                     );
                 }
-                const mtfV4Check = (document.getElementById('check-ai-v4-3m5m-mtf') ?? document.getElementById('check-ai-v3-15m-mtf')) as HTMLInputElement | null;
+                const mtfV4Check = document.getElementById('check-ai-v4-3m5m-mtf') as HTMLInputElement | null;
                 const include3m5mMtf = exportInterval === '1m' && (mtfV4Check?.checked ?? true);
 
                 if (loadingTitle) {
@@ -5149,7 +5165,7 @@ export class WorkspaceManager {
                     }
                 });
                 rawCandleBuffer = null;
-                console.log('✅ Streaming V3 Export Complete:', streamResult);
+                console.log('✅ Streaming V4 Export Complete:', streamResult);
                 if (loadingDetail) {
                     loadingDetail.textContent = `Exported ${streamResult.telemetry.totalEvents} events (${streamResult.telemetry.durationMs}ms, peak heap ${streamResult.telemetry.peakHeapMB ?? 'N/A'} MB).`;
                 }
@@ -6124,5 +6140,9 @@ export class WorkspaceManager {
         (window as any).runPhase5DPhase5Tests = runPhase5DPhase5Tests;
         (window as any).runV3StreamingExportParityTest = runV3StreamingExportParityTest;
         (window as any).runV4StreamingExportParityTest = runV4StreamingExportParityTest;
+        (window as any).runPhase1V6AcceptanceTests = runPhase1V6AcceptanceTests;
+        (window as any).runPhase2V4MTFAcceptanceTests = runPhase2V4MTFAcceptanceTests;
+        (window as any).runPhase3V4TeachersAcceptanceTests = runPhase3V4TeachersAcceptanceTests;
+        (window as any).runPhase4V4ExportAcceptanceTests = runPhase4V4ExportAcceptanceTests;
     }
 }
