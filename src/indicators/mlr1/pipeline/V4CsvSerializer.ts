@@ -316,6 +316,33 @@ export function buildV4DatasetManifest(params: {
     return finalizedManifest;
 }
 
+function assertStrictPlainObjectDescriptorValues(
+    obj: unknown,
+    label: string,
+    expectedKeys: readonly string[]
+): Record<string, unknown> {
+    if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
+        throw new Error(`V4 Manifest Error: ${label} must be a non-null plain object.`);
+    }
+    const proto = Object.getPrototypeOf(obj);
+    if (proto !== Object.prototype && proto !== null) {
+        throw new Error(`V4 Manifest Error: ${label} has an unexpected prototype.`);
+    }
+    const ownKeys = Reflect.ownKeys(obj);
+    if (ownKeys.length !== expectedKeys.length || ownKeys.some(k => typeof k !== 'string')) {
+        throw new Error(`V4 Manifest Error: ${label} keys do not match exact expected string keys.`);
+    }
+    const out: Record<string, unknown> = {};
+    for (const key of expectedKeys) {
+        const desc = Object.getOwnPropertyDescriptor(obj, key);
+        if (!desc || !('value' in desc) || !desc.enumerable) {
+            throw new Error(`V4 Manifest Error: ${label}.${key} must be an own enumerable data property.`);
+        }
+        out[key] = desc.value;
+    }
+    return out;
+}
+
 export function validateV4DatasetManifest(manifest: DatasetManifest): void {
     if (!manifest || typeof manifest !== 'object') {
         throw new Error('V4 Manifest Error: manifest must be an object.');
@@ -342,10 +369,6 @@ export function validateV4DatasetManifest(manifest: DatasetManifest): void {
         throw new Error('V4 Manifest Error: invalid teacherTimeframes.');
     }
 
-    const oa = manifest.outcomeAccounting;
-    if (!oa || typeof oa !== 'object') {
-        throw new Error('V4 Manifest Error: missing outcomeAccounting.');
-    }
     const oaKeys = [
         'totalCandidateEvents',
         'eligibleEvents',
@@ -353,25 +376,88 @@ export function validateV4DatasetManifest(manifest: DatasetManifest): void {
         'excludedUnwarmedAtr',
         'excludedIncompleteHorizon'
     ] as const;
-    if (Object.keys(oa).length !== oaKeys.length ||
-        oaKeys.some(k => !Number.isSafeInteger(oa[k]) || oa[k] < 0)) {
-        throw new Error('V4 Manifest Error: outcomeAccounting fields must be nonnegative safe integers.');
+    const oaVals = assertStrictPlainObjectDescriptorValues(manifest.outcomeAccounting, 'outcomeAccounting', oaKeys);
+    for (const k of oaKeys) {
+        const v = oaVals[k];
+        if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) {
+            throw new Error(`V4 Manifest Error: outcomeAccounting.${k} must be a nonnegative safe integer.`);
+        }
     }
-    const expectedTotal =
-        oa.eligibleEvents + oa.excludedMissingNextOpen + oa.excludedUnwarmedAtr + oa.excludedIncompleteHorizon;
-    if (oa.totalCandidateEvents !== expectedTotal) {
+    const totalCandidates = oaVals['totalCandidateEvents'] as number;
+    const eligibleEvents = oaVals['eligibleEvents'] as number;
+    const exclMissing = oaVals['excludedMissingNextOpen'] as number;
+    const exclAtr = oaVals['excludedUnwarmedAtr'] as number;
+    const exclHorizon = oaVals['excludedIncompleteHorizon'] as number;
+
+    const s1 = eligibleEvents + exclMissing;
+    const s2 = s1 + exclAtr;
+    const expectedTotal = s2 + exclHorizon;
+    if (!Number.isSafeInteger(s1) || !Number.isSafeInteger(s2) || !Number.isSafeInteger(expectedTotal) ||
+        totalCandidates !== expectedTotal) {
         throw new Error(
-            `V4 Manifest Error: totalCandidateEvents (${oa.totalCandidateEvents}) != sum (${expectedTotal}).`
+            `V4 Manifest Error: totalCandidateEvents (${totalCandidates}) != safe sum (${expectedTotal}).`
         );
     }
 
-    const ea = manifest.exportAccounting;
+    const eaCounterKeys = [
+        'rawSourceCandleCount',
+        'acceptedSourceObservationCount',
+        'rejectedSourceObservationCount',
+        'tierAContinuousObservationCount',
+        'tierAEventRepresentationRowCount',
+        'tierBConfirmedTeacherEventCount',
+        'tierCOutcomeRowCount'
+    ] as const;
+    const eaVals = assertStrictPlainObjectDescriptorValues(
+        manifest.exportAccounting,
+        'exportAccounting',
+        [...eaCounterKeys, 'actualFileRowCounts']
+    );
+    for (const k of eaCounterKeys) {
+        const v = eaVals[k];
+        if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) {
+            throw new Error(`V4 Manifest Error: exportAccounting.${k} must be a nonnegative safe integer.`);
+        }
+    }
+    const rawCount = eaVals['rawSourceCandleCount'] as number;
+    const accCount = eaVals['acceptedSourceObservationCount'] as number;
+    const rejCount = eaVals['rejectedSourceObservationCount'] as number;
+    const tierAContCount = eaVals['tierAContinuousObservationCount'] as number;
+    const tierARepCount = eaVals['tierAEventRepresentationRowCount'] as number;
+    const tierBCount = eaVals['tierBConfirmedTeacherEventCount'] as number;
+    const tierCCount = eaVals['tierCOutcomeRowCount'] as number;
+
+    const rawSum = accCount + rejCount;
+    if (!Number.isSafeInteger(rawSum) || rawCount !== rawSum) {
+        throw new Error('V4 Manifest Error: rawSourceCandleCount !== accepted + rejected.');
+    }
+
     const fileNames = getV4FileNames(manifest.symbol, manifest.timeframe);
-    if (ea.tierBConfirmedTeacherEventCount !== oa.totalCandidateEvents ||
-        ea.tierCOutcomeRowCount !== oa.eligibleEvents ||
-        ea.tierAEventRepresentationRowCount !== oa.eligibleEvents ||
-        ea.actualFileRowCounts[fileNames.strategyEventsFileName] !== oa.eligibleEvents ||
-        ea.actualFileRowCounts[fileNames.representationFileName] !== oa.eligibleEvents) {
-        throw new Error('V4 Manifest Error: exportAccounting disagrees with outcomeAccounting or file row counts.');
+    const expectedFileKeys = [
+        fileNames.continuousFileName,
+        fileNames.representationFileName,
+        fileNames.strategyEventsFileName
+    ] as const;
+    const countVals = assertStrictPlainObjectDescriptorValues(
+        eaVals['actualFileRowCounts'],
+        'actualFileRowCounts',
+        expectedFileKeys
+    );
+    for (const fk of expectedFileKeys) {
+        const v = countVals[fk];
+        if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) {
+            throw new Error(`V4 Manifest Error: invalid row count on '${fk}'.`);
+        }
+    }
+
+    if (accCount !== manifest.acceptedObservationCount ||
+        tierAContCount !== manifest.acceptedObservationCount ||
+        countVals[fileNames.continuousFileName] !== manifest.acceptedObservationCount ||
+        tierBCount !== totalCandidates ||
+        tierCCount !== eligibleEvents ||
+        tierARepCount !== eligibleEvents ||
+        countVals[fileNames.representationFileName] !== eligibleEvents ||
+        countVals[fileNames.strategyEventsFileName] !== eligibleEvents) {
+        throw new Error('V4 Manifest Error: exportAccounting disagrees with accepted/candidate/eligible file row populations.');
     }
 }

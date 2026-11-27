@@ -331,7 +331,7 @@ export class V4PipelineRunner {
     private phlMultiState: PHLV4MultiState = createInitialPHLV4MultiState();
     private dtfxStrictCbcState: DTFXStrictCBCMultiState = createInitialDTFXStrictCBCMultiState();
     private vamTeacherState = createInitialVAMState();
-    private readonly outcomeTracker = new V4MultiHorizonOutcomeTracker();
+    private readonly outcomeTracker: V4MultiHorizonOutcomeTracker;
 
     private acceptedCount = 0;
     private gridAnchor: number | null;
@@ -347,6 +347,7 @@ export class V4PipelineRunner {
 
     public constructor(config: V4PipelineConfig) {
         this.config = config;
+        this.outcomeTracker = new V4MultiHorizonOutcomeTracker(config.requireContiguous);
         this.featureState = createInitialML1FeatureStateV6(config.featureConfig);
         this.mtfState = config.mtfConfig ? createInitialV4MTFState(config.mtfConfig) : null;
         this.gridAnchor = config.sourceTimestampBounds?.startTimestamp ?? null;

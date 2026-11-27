@@ -620,6 +620,22 @@ const VALID_V4_EVENT_TYPES_BY_STRATEGY: Readonly<Record<V4PipelineStrategyId, Re
     DTFX_STRICTCBC: new Set(['DTFX_CBC_DEMAND_CREATED', 'DTFX_CBC_SUPPLY_CREATED', 'DTFX_CBC_DEMAND_RETEST', 'DTFX_CBC_SUPPLY_RETEST']),
     VAM_REVERSAL: new Set(['VAM_BUY', 'VAM_SELL'])
 });
+const EXPECTED_DIRECTION_BY_V4_EVENT_TYPE: Readonly<Record<string, 'bull' | 'bear'>> = Object.freeze({
+    CBC_HIGH_HH: 'bear',
+    CBC_HIGH_LH: 'bear',
+    CBC_LOW_HL: 'bull',
+    CBC_LOW_LL: 'bull',
+    PHL_BOS_BULL: 'bull',
+    PHL_MSS_BULL: 'bull',
+    PHL_BOS_BEAR: 'bear',
+    PHL_MSS_BEAR: 'bear',
+    DTFX_CBC_DEMAND_CREATED: 'bull',
+    DTFX_CBC_DEMAND_RETEST: 'bull',
+    DTFX_CBC_SUPPLY_CREATED: 'bear',
+    DTFX_CBC_SUPPLY_RETEST: 'bear',
+    VAM_BUY: 'bull',
+    VAM_SELL: 'bear'
+});
 const TIER_A_V4_EXPECTED_KEYS = [
     'tierAObservationId', 'atr14',
     'exhaustion14', 'exhaustion14Valid', 'exhaustion20', 'exhaustion20Valid',
@@ -641,6 +657,7 @@ export class V4MultiHorizonOutcomeTracker {
     private lastEnqueuedOrder: { confirmationBarIndex: number; strategyId: string; eventType: string; eventId: string } | null = null;
     private lastStepBarIndex: number | null = null;
     private lastStepBarTimestamp: number | null = null;
+    private readonly requireContiguous: boolean;
     private totalCandidates = 0;
     private excludedMissingNextOpen = 0;
     private excludedUnwarmedAtr = 0;
@@ -648,6 +665,10 @@ export class V4MultiHorizonOutcomeTracker {
     private eligibleCount = 0;
     private readonly countsByStrategy: Record<string, number> = {};
     private readonly countsByEventType: Record<string, number> = {};
+
+    public constructor(requireContiguous = true) {
+        this.requireContiguous = requireContiguous;
+    }
 
     public getPendingCount(): number {
         return this.pending.length;
@@ -838,13 +859,23 @@ export class V4MultiHorizonOutcomeTracker {
         if (typeof atrValid !== 'boolean') {
             throw new Error('V4 Outcome Contract Error: atrValid must be a boolean.');
         }
-        if (!tierA || typeof tierA !== 'object' || Array.isArray(tierA)) {
+        if (tierA === null || typeof tierA !== 'object' || Array.isArray(tierA)) {
             throw new Error('V4 Outcome Contract Error: tierA snapshot must be a plain object.');
         }
-        const tierAKeys = Object.keys(tierA);
-        if (tierAKeys.length !== TIER_A_V4_EXPECTED_KEYS.length ||
-            TIER_A_V4_EXPECTED_KEYS.some(k => !Object.prototype.hasOwnProperty.call(tierA, k))) {
-            throw new Error('V4 Outcome Contract Error: tierA snapshot does not match exact 35-key allowlist.');
+        const tierAProto = Object.getPrototypeOf(tierA);
+        if (tierAProto !== Object.prototype && tierAProto !== null) {
+            throw new Error('V4 Outcome Contract Error: tierA snapshot has an unexpected prototype.');
+        }
+        const tierAOwnKeys = Reflect.ownKeys(tierA);
+        if (tierAOwnKeys.length !== TIER_A_V4_EXPECTED_KEYS.length ||
+            tierAOwnKeys.some(k => typeof k !== 'string')) {
+            throw new Error('V4 Outcome Contract Error: tierA snapshot must contain exact 35 string keys and no symbols.');
+        }
+        for (const expectedKey of TIER_A_V4_EXPECTED_KEYS) {
+            const desc = Object.getOwnPropertyDescriptor(tierA, expectedKey);
+            if (!desc || !('value' in desc) || !desc.enumerable) {
+                throw new Error(`V4 Outcome Contract Error: tierA missing enumerable key '${expectedKey}'.`);
+            }
         }
         if (typeof tierA.tierAObservationId !== 'string' || tierA.tierAObservationId.trim().length === 0) {
             throw new Error('V4 Outcome Contract Error: invalid tierAObservationId.');
@@ -912,6 +943,12 @@ export class V4MultiHorizonOutcomeTracker {
             if (ev.eventDirection !== 'bull' && ev.eventDirection !== 'bear') {
                 throw new Error(`V4 Outcome Contract Error: invalid eventDirection '${String(ev.eventDirection)}'.`);
             }
+            const expectedDirection = EXPECTED_DIRECTION_BY_V4_EVENT_TYPE[ev.eventType];
+            if (ev.eventDirection !== expectedDirection) {
+                throw new Error(
+                    `V4 Outcome Contract Error: eventType '${ev.eventType}' contradicts eventDirection '${ev.eventDirection}' (expected '${expectedDirection}').`
+                );
+            }
             if (!Number.isSafeInteger(ev.sourceBarIndex) || ev.sourceBarIndex < 0 ||
                 !Number.isSafeInteger(ev.confirmationBarIndex) || ev.confirmationBarIndex < 0 ||
                 !Number.isSafeInteger(ev.observationBarIndex) || ev.observationBarIndex < 0 ||
@@ -923,6 +960,16 @@ export class V4MultiHorizonOutcomeTracker {
                 ev.observationBarIndex !== ev.confirmationBarIndex ||
                 ev.entryBarIndex !== ev.confirmationBarIndex + 1) {
                 throw new Error(`V4 Outcome Contract Error: chronology index invariant violated on '${ev.eventId}'.`);
+            }
+            if (this.lastStepBarIndex === null || this.lastStepBarTimestamp === null) {
+                throw new Error('V4 Outcome Contract Error: stepBar(barIndex, candle) must be called before enqueueEvents().');
+            }
+            if (ev.confirmationBarIndex !== this.lastStepBarIndex ||
+                ev.confirmationTimestamp !== this.lastStepBarTimestamp) {
+                throw new Error(
+                    `V4 Outcome Contract Error: per-current-bar API requires confirmationBarIndex/Timestamp ` +
+                    `(${ev.confirmationBarIndex}/${ev.confirmationTimestamp}) to match last processed bar (${this.lastStepBarIndex}/${this.lastStepBarTimestamp}).`
+                );
             }
             if (!Number.isSafeInteger(ev.sourceTimestamp) || ev.sourceTimestamp <= 0 ||
                 !Number.isSafeInteger(ev.confirmationTimestamp) || ev.confirmationTimestamp < ev.sourceTimestamp ||
@@ -937,14 +984,13 @@ export class V4MultiHorizonOutcomeTracker {
             } else if (tsSpan < ev.confirmationLagBars * intervalMs || tsSpan % intervalMs !== 0) {
                 throw new Error(`V4 Outcome Contract Error: source-to-confirmation timestamp span disagrees with lag on '${ev.eventId}'.`);
             }
-            if (this.lastStepBarIndex !== null && this.lastStepBarTimestamp !== null &&
-                ev.confirmationBarIndex === this.lastStepBarIndex &&
-                ev.confirmationTimestamp !== this.lastStepBarTimestamp) {
-                throw new Error(`V4 Outcome Contract Error: confirmationTimestamp disagrees with barIndex ${ev.confirmationBarIndex} clock.`);
-            }
-            if (ev.entryTimestamp !== null &&
-                (!Number.isSafeInteger(ev.entryTimestamp) || ev.entryTimestamp <= ev.confirmationTimestamp)) {
-                throw new Error(`V4 Outcome Contract Error: invalid entryTimestamp on '${ev.eventId}'.`);
+            if (ev.entryTimestamp !== null) {
+                if (!Number.isSafeInteger(ev.entryTimestamp) ||
+                    ev.entryTimestamp < ev.observationTimestamp ||
+                    (ev.entryTimestamp - ev.confirmationTimestamp) % intervalMs !== 0 ||
+                    (this.requireContiguous && ev.entryTimestamp !== ev.observationTimestamp)) {
+                    throw new Error(`V4 Outcome Contract Error: invalid entryTimestamp ${String(ev.entryTimestamp)} on '${ev.eventId}'.`);
+                }
             }
 
             // Validate structuralContext completely (including required keys for PHL/DTFX_STRICTCBC)

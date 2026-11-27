@@ -137,6 +137,13 @@ export async function runPhase4V4ExportAcceptanceTests(): Promise<boolean> {
         const tracker = new V4MultiHorizonOutcomeTracker();
         const tierA = makeDummyTierA('OBS_0', 2.0);
         const ev0 = makeDummyEvent(0, t0, dt, 'OK');
+
+        // Calling enqueueEvents before stepBar(0) must be rejected cleanly
+        let preStepThrew = false;
+        try { tracker.enqueueEvents([ev0], 'SOLUSDT', '1m', tierA, true); } catch { preStepThrew = true; }
+        assert(preStepThrew && tracker.getPendingCount() === 0 && tracker.getAccountingSnapshot().totalCandidateEvents === 0,
+            'enqueueEvents before stepBar(0) must throw without mutating state');
+
         tracker.stepBar(0, { time: t0, open: 100, high: 100.5, low: 99.5, close: 100 });
         tracker.enqueueEvents([ev0], 'SOLUSDT', '1m', tierA, true);
 
@@ -161,17 +168,48 @@ export async function runPhase4V4ExportAcceptanceTests(): Promise<boolean> {
         expectEnqueueReject([{ ...ev0, eventType: 'PHL_BOS_BULL' }], 'mismatched eventType for VAM_REVERSAL');
         expectEnqueueReject([{ ...ev0, strategyVersion: '' }], 'blank strategyVersion');
         expectEnqueueReject([{ ...ev0, eventDirection: 'sideways' }], 'invalid direction');
+
+        // Directional contradiction checks across all 4 V4 teachers
+        expectEnqueueReject([{ ...ev0, eventType: 'VAM_BUY', eventDirection: 'bear' }], 'VAM_BUY bear contradiction');
+        expectEnqueueReject([{ ...ev0, eventType: 'VAM_SELL', eventDirection: 'bull' }], 'VAM_SELL bull contradiction');
+        expectEnqueueReject([{ ...ev0, strategyId: 'PHL_BOS_MSS', eventType: 'PHL_BOS_BULL', eventDirection: 'bear', structuralContext: { phlTimeframe: '1m', breakType: 'BOS', brokenLevelPrice: 105, hasProtectedLevel: false, protectedLevelPrice: null, protectedLevelBarIndex: null, protectedLevelTimestamp: null, atr14Valid: true, distToProtectedAtr: null, pbFromLowValid: true, pbFromHighValid: false } }], 'PHL_BOS_BULL bear contradiction');
+        expectEnqueueReject([{ ...ev0, strategyId: 'DTFX_STRICTCBC', eventType: 'DTFX_CBC_SUPPLY_CREATED', eventDirection: 'bull', structuralContext: { zoneTimeframe: '1m', zoneId: 1, zoneStatus: 'CREATED', isChoch: false, retestCount: 0, zoneCreatedSourceBarIndex: 0, zoneCreatedConfirmationBarIndex: 0, zoneTop: 105, zoneBot: 100, fib03: 103.5, fib05: 102.5, fib07: 101.5, atr14Valid: true, zoneWidthAtr: 2.5, fib05DistAtr: 1.0 } }], 'DTFX_CBC_SUPPLY_CREATED bull contradiction');
+        expectEnqueueReject([{ ...ev0, strategyId: 'STRICT_CBC', eventType: 'CBC_HIGH_HH', eventDirection: 'bull', structuralContext: { pivotId: 1, pivotType: 'high', pivotLabel: 'HH', pivotPrice: 105, hasPrevPivot: false, prevPivotPrice: 0, barsSinceLastPivot: 0, legDistanceAtr: 0 } }], 'CBC_HIGH_HH bull contradiction');
+
         expectEnqueueReject([{ ...ev0, sourceBarIndex: 5, confirmationBarIndex: 4 }], 'source > confirmation');
         expectEnqueueReject([{ ...ev0, confirmationLagBars: 99 }], 'bad lag');
         expectEnqueueReject([{ ...ev0, entryBarIndex: 99 }], 'bad entryBarIndex');
         expectEnqueueReject([{ ...ev0, observationTimestamp: t0 }], 'bad observationTimestamp');
+        expectEnqueueReject([{ ...makeDummyEvent(5, t0, dt, 'FUT') }], 'future confirmationBarIndex > lastStepBarIndex(0)');
+        expectEnqueueReject([{ ...ev0, eventId: 'BAD_ENT1', entryTimestamp: t0 + 30_000 }], 'non-aligned entryTimestamp (t0 + 30s)');
+        expectEnqueueReject([{ ...ev0, eventId: 'BAD_ENT2', entryTimestamp: t0 + 2 * dt }], 'skipped entryTimestamp on contiguous tracker');
         expectEnqueueReject([{ ...ev0, confirmationTimestamp: t0 + dt }], 'confirmationTimestamp disagrees with stepBar(0) clock');
         expectEnqueueReject([{ ...ev0, structuralContext: { badKey: 1 } }], 'malformed structuralContext');
         expectEnqueueReject([{ ...makeDummyEvent(5, t0, dt, 'DUP'), eventId: ev0.eventId }], 'duplicate eventId at different bar/tuple');
-        expectEnqueueReject([makeDummyEvent(1, t0, dt, 'B1'), makeDummyEvent(1, t0, dt, 'B1')], 'duplicate eventId within batch');
-        expectEnqueueReject([makeDummyEvent(1, t0, dt, 'T1')], 'non-finite tierA', { ...tierA, atr14: Number.NaN });
-        expectEnqueueReject([makeDummyEvent(1, t0, dt, 'T2')], 'extra key in tierA', { ...tierA, extraField: 1 });
-        expectEnqueueReject([makeDummyEvent(1, t0, dt, 'T3')], 'inconsistent tierA context3mAvailable vs status', { ...tierA, context3mAvailable: false, context3mStatus: 'AVAILABLE_VALID' });
+        expectEnqueueReject([makeDummyEvent(0, t0, dt, 'B1'), makeDummyEvent(0, t0, dt, 'B1')], 'duplicate eventId within batch');
+
+        // Exact 35-key Tier A object boundary checks (non-finite, extra enumerable, non-enumerable, symbol key, custom prototype)
+        expectEnqueueReject([makeDummyEvent(0, t0, dt, 'T1')], 'non-finite tierA', { ...tierA, atr14: Number.NaN });
+        expectEnqueueReject([makeDummyEvent(0, t0, dt, 'T2')], 'extra enumerable key in tierA', { ...tierA, extraField: 1 });
+        const nonEnumTierA = { ...tierA };
+        Object.defineProperty(nonEnumTierA, 'hiddenKey', { value: 1, enumerable: false });
+        expectEnqueueReject([makeDummyEvent(0, t0, dt, 'T3')], 'non-enumerable extra key in tierA', nonEnumTierA);
+        const symTierA = { ...tierA, [Symbol('leak')]: 1 };
+        expectEnqueueReject([makeDummyEvent(0, t0, dt, 'T4')], 'symbol key in tierA', symTierA);
+        class CustomTierA {}
+        const protoTierA = Object.assign(new CustomTierA(), tierA);
+        expectEnqueueReject([makeDummyEvent(0, t0, dt, 'T5')], 'unexpected prototype on tierA', protoTierA);
+        expectEnqueueReject([makeDummyEvent(0, t0, dt, 'T6')], 'inconsistent tierA context3mAvailable vs status', { ...tierA, context3mAvailable: false, context3mStatus: 'AVAILABLE_VALID' });
+
+        // Positive non-null entryTimestamp accepted on contiguous (exact observationTimestamp) & gapped (aligned >= observationTimestamp)
+        const tPosEnt = new V4MultiHorizonOutcomeTracker(true);
+        tPosEnt.stepBar(0, { time: t0, open: 100, high: 101, low: 99, close: 100 });
+        tPosEnt.enqueueEvents([{ ...makeDummyEvent(0, t0, dt, 'POS_ENT'), entryTimestamp: t0 + dt }], 'SOLUSDT', '1m', tierA, true);
+        assert(tPosEnt.getPendingCount() === 1, 'Valid non-null entryTimestamp accepted on contiguous tracker');
+        const tGapEnt = new V4MultiHorizonOutcomeTracker(false);
+        tGapEnt.stepBar(0, { time: t0, open: 100, high: 101, low: 99, close: 100 });
+        tGapEnt.enqueueEvents([{ ...makeDummyEvent(0, t0, dt, 'GAP_ENT'), entryTimestamp: t0 + 2 * dt }], 'SOLUSDT', '1m', tierA, true);
+        assert(tGapEnt.getPendingCount() === 1, 'Valid gapped entryTimestamp accepted on non-contiguous tracker');
 
         // Post-enqueue mutation of caller objects must NOT affect queued ev0
         const evMutable = makeDummyEvent(1, t0, dt, 'MUT');
@@ -182,8 +220,9 @@ export async function runPhase4V4ExportAcceptanceTests(): Promise<boolean> {
         (evMutable.structuralContext as any).rsi14 = -999;
         (tierAMutable as any).atr14 = 9999;
 
-        // No-barrier test: distinct closes at bars 60 (H60), 120 (H120), 180 (H180), and wild spikes at 61, 121, 181 (must be excluded for prior horizon!)
+        // No-barrier test: stepBar(0) then enqueue at bar 0; distinct closes at bars 60/120/180 and spikes at 61/121/181
         const tNoBarrier = new V4MultiHorizonOutcomeTracker();
+        tNoBarrier.stepBar(0, { time: t0, open: 100, high: 100.5, low: 99.5, close: 100 });
         tNoBarrier.enqueueEvents([makeDummyEvent(0, t0, dt, 'NB')], 'SOLUSDT', '1m', makeDummyTierA('OBS_NB', 2.0), true);
         let nbRow!: ReturnType<V4MultiHorizonOutcomeTracker['stepBar']>[number];
         for (let b = 1; b <= 181; b++) {
@@ -219,6 +258,24 @@ export async function runPhase4V4ExportAcceptanceTests(): Promise<boolean> {
                 }
             }
         }
+
+        // Also test 3-class end-of-stream exclusions following exact stepBar(b) -> enqueueEvents(b) order
+        const t2 = new V4MultiHorizonOutcomeTracker();
+        for (let b = 0; b <= 50; b++) {
+            t2.stepBar(b, { time: t0 + b * dt, open: 100, high: 101, low: 99, close: 100 });
+            if (b === 2) t2.enqueueEvents([makeDummyEvent(2, t0, dt, 'UNW')], 'SOLUSDT', '1m', makeDummyTierA('OBS_2', 0), false);
+            if (b === 10) t2.enqueueEvents([makeDummyEvent(10, t0, dt, 'INC')], 'SOLUSDT', '1m', makeDummyTierA('OBS_10', 2), true);
+            if (b === 50) t2.enqueueEvents([makeDummyEvent(50, t0, dt, 'MIS')], 'SOLUSDT', '1m', makeDummyTierA('OBS_50', 2), true);
+        }
+        const t2Acc = t2.finalizeEndOfStream(51);
+        assert(
+            t2Acc.totalCandidateEvents === 3 &&
+            t2Acc.eligibleEvents === 0 &&
+            t2Acc.excludedUnwarmedAtr === 1 &&
+            t2Acc.excludedIncompleteHorizon === 1 &&
+            t2Acc.excludedMissingNextOpen === 1,
+            '3-class end-of-stream exclusions must partition cleanly'
+        );
     });
 
     await runTest('3. Four-teacher roster, aligned MTF gap/invalid/duplicate counter separation & manifest validation', async () => {
@@ -239,21 +296,150 @@ export async function runPhase4V4ExportAcceptanceTests(): Promise<boolean> {
             assert(artifacts.strategyEventRows.some(r => r.strategy_id === 'DTFX_STRICTCBC' && JSON.parse(r.structural_context_json).zoneTimeframe === tf), `DTFX ${tf}`);
         }
 
+        // Verify live teacher-to-direction parity across emitted events (including DTFX DEMAND/SUPPLY CREATED & RETEST)
+        const expectedDirMap: Record<string, 'bull' | 'bear'> = {
+            CBC_HIGH_HH: 'bear', CBC_HIGH_LH: 'bear', CBC_LOW_HL: 'bull', CBC_LOW_LL: 'bull',
+            PHL_BOS_BULL: 'bull', PHL_MSS_BULL: 'bull', PHL_BOS_BEAR: 'bear', PHL_MSS_BEAR: 'bear',
+            DTFX_CBC_DEMAND_CREATED: 'bull', DTFX_CBC_DEMAND_RETEST: 'bull',
+            DTFX_CBC_SUPPLY_CREATED: 'bear', DTFX_CBC_SUPPLY_RETEST: 'bear',
+            VAM_BUY: 'bull', VAM_SELL: 'bear'
+        };
+        for (const row of artifacts.strategyEventRows) {
+            assert(expectedDirMap[row.event_type] === row.event_direction,
+                `Live teacher direction parity mismatch: ${row.event_type} emitted ${row.event_direction}`);
+        }
+        assert(
+            artifacts.strategyEventRows.some(r => r.event_type === 'DTFX_CBC_DEMAND_RETEST' && r.event_direction === 'bull') &&
+            artifacts.strategyEventRows.some(r => r.event_type === 'DTFX_CBC_SUPPLY_RETEST' && r.event_direction === 'bear'),
+            'Expected both DTFX_CBC_DEMAND_RETEST (bull) and DTFX_CBC_SUPPLY_RETEST (bear) in live 1400-bar export'
+        );
+
         const m = artifacts.manifest;
         validateV4DatasetManifest(m);
         assert(m.exportAccounting.tierBConfirmedTeacherEventCount === m.outcomeAccounting!.totalCandidateEvents &&
             m.exportAccounting.tierCOutcomeRowCount === m.outcomeAccounting!.eligibleEvents,
             'Manifest accounting contract');
 
-        // Runtime manifest validation rejects tampered outcomeAccounting
-        let badManifestThrew = false;
-        try {
-            validateV4DatasetManifest({
-                ...m,
-                outcomeAccounting: { ...m.outcomeAccounting!, totalCandidateEvents: m.outcomeAccounting!.totalCandidateEvents + 1 }
-            });
-        } catch { badManifestThrew = true; }
-        assert(badManifestThrew, 'validateV4DatasetManifest must reject accounting sum mismatch');
+        // Runtime manifest validation rejects tampering on every outcomeAccounting field & actualFileRowCounts
+        const expectManifestReject = (badManifest: any, label: string) => {
+            let threw = false;
+            try { validateV4DatasetManifest(badManifest); } catch { threw = true; }
+            assert(threw, `${label}: validateV4DatasetManifest must reject`);
+        };
+        expectManifestReject({ ...m, outcomeAccounting: { ...m.outcomeAccounting!, totalCandidateEvents: m.outcomeAccounting!.totalCandidateEvents + 1 } }, 'tampered totalCandidateEvents');
+        expectManifestReject({ ...m, outcomeAccounting: { ...m.outcomeAccounting!, eligibleEvents: m.outcomeAccounting!.eligibleEvents + 1 } }, 'tampered eligibleEvents');
+        expectManifestReject({ ...m, outcomeAccounting: { ...m.outcomeAccounting!, excludedMissingNextOpen: -1 } }, 'negative excludedMissingNextOpen');
+        expectManifestReject({ ...m, outcomeAccounting: { ...m.outcomeAccounting!, excludedUnwarmedAtr: m.outcomeAccounting!.excludedUnwarmedAtr + 1 } }, 'tampered excludedUnwarmedAtr');
+        expectManifestReject({ ...m, outcomeAccounting: { ...m.outcomeAccounting!, excludedIncompleteHorizon: m.outcomeAccounting!.excludedIncompleteHorizon + 1 } }, 'tampered excludedIncompleteHorizon');
+        expectManifestReject({
+            ...m,
+            exportAccounting: {
+                ...m.exportAccounting,
+                actualFileRowCounts: { ...m.exportAccounting.actualFileRowCounts, [artifacts.continuousFileName]: 1 }
+            }
+        }, 'tampered continuous actualFileRowCounts');
+        expectManifestReject({
+            ...m,
+            exportAccounting: {
+                ...m.exportAccounting,
+                actualFileRowCounts: { ...m.exportAccounting.actualFileRowCounts, [artifacts.strategyEventsFileName]: m.outcomeAccounting!.eligibleEvents + 1 }
+            }
+        }, 'tampered strategyEvents actualFileRowCounts');
+        expectManifestReject({
+            ...m,
+            exportAccounting: {
+                ...m.exportAccounting,
+                actualFileRowCounts: { ...m.exportAccounting.actualFileRowCounts, extra_file: 0 }
+            }
+        }, 'unexpected key in actualFileRowCounts');
+        // Positive excludedMissingNextOpen tampering + unsafe-integer sum + acceptedSourceObservationCount mismatch
+        expectManifestReject({ ...m, outcomeAccounting: { ...m.outcomeAccounting!, excludedMissingNextOpen: m.outcomeAccounting!.excludedMissingNextOpen + 1 } }, 'tampered +1 excludedMissingNextOpen');
+        expectManifestReject({
+            ...m,
+            outcomeAccounting: {
+                totalCandidateEvents: Number.MAX_SAFE_INTEGER,
+                eligibleEvents: Number.MAX_SAFE_INTEGER,
+                excludedMissingNextOpen: 1,
+                excludedUnwarmedAtr: 0,
+                excludedIncompleteHorizon: 0
+            }
+        }, 'unsafe-integer outcomeAccounting sum');
+        expectManifestReject({
+            ...m,
+            exportAccounting: {
+                ...m.exportAccounting,
+                acceptedSourceObservationCount: m.exportAccounting.acceptedSourceObservationCount - 1,
+                rejectedSourceObservationCount: m.exportAccounting.rejectedSourceObservationCount + 1
+            }
+        }, 'acceptedSourceObservationCount disagrees with manifest.acceptedObservationCount');
+
+        // Extra, missing, symbol, custom-prototype, getter, non-enumerable keys on exportAccounting & actualFileRowCounts
+        expectManifestReject({ ...m, exportAccounting: { ...m.exportAccounting, extraKey: 1 } }, 'extra key in exportAccounting');
+        const eaMissing = { ...m.exportAccounting } as any;
+        delete eaMissing.tierCOutcomeRowCount;
+        expectManifestReject({ ...m, exportAccounting: eaMissing }, 'missing key in exportAccounting');
+
+        const eaSym = { ...m.exportAccounting, [Symbol('sym')]: 1 };
+        expectManifestReject({ ...m, exportAccounting: eaSym }, 'symbol key in exportAccounting');
+
+        class CustomAcc {}
+        const eaProto = Object.assign(new CustomAcc(), m.exportAccounting);
+        expectManifestReject({ ...m, exportAccounting: eaProto }, 'custom prototype on exportAccounting');
+
+        const eaGetter = { ...m.exportAccounting } as any;
+        Object.defineProperty(eaGetter, 'tierCOutcomeRowCount', { get: () => m.outcomeAccounting!.eligibleEvents, enumerable: true });
+        expectManifestReject({ ...m, exportAccounting: eaGetter }, 'getter accessor on exportAccounting');
+
+        const eaNonEnum = { ...m.exportAccounting } as any;
+        Object.defineProperty(eaNonEnum, 'tierCOutcomeRowCount', { value: m.outcomeAccounting!.eligibleEvents, enumerable: false });
+        expectManifestReject({ ...m, exportAccounting: eaNonEnum }, 'non-enumerable property on exportAccounting');
+
+        const countsMissing = { ...m.exportAccounting.actualFileRowCounts } as any;
+        delete countsMissing[artifacts.continuousFileName];
+        expectManifestReject({ ...m, exportAccounting: { ...m.exportAccounting, actualFileRowCounts: countsMissing } }, 'missing canonical filename in actualFileRowCounts');
+        expectManifestReject({
+            ...m,
+            exportAccounting: {
+                ...m.exportAccounting,
+                actualFileRowCounts: { ...m.exportAccounting.actualFileRowCounts, [artifacts.continuousFileName]: -1 }
+            }
+        }, 'negative row count in actualFileRowCounts');
+        expectManifestReject({
+            ...m,
+            exportAccounting: {
+                ...m.exportAccounting,
+                actualFileRowCounts: { ...m.exportAccounting.actualFileRowCounts, [artifacts.continuousFileName]: Number.MAX_SAFE_INTEGER + 1 }
+            }
+        }, 'unsafe-integer row count in actualFileRowCounts');
+
+        const countsSym = { ...m.exportAccounting.actualFileRowCounts, [Symbol('sym')]: 1 };
+        expectManifestReject({ ...m, exportAccounting: { ...m.exportAccounting, actualFileRowCounts: countsSym } }, 'symbol key in actualFileRowCounts');
+        const countsProto = Object.assign(new CustomAcc(), m.exportAccounting.actualFileRowCounts);
+        expectManifestReject({ ...m, exportAccounting: { ...m.exportAccounting, actualFileRowCounts: countsProto } }, 'custom prototype on actualFileRowCounts');
+        const countsGetter = { ...m.exportAccounting.actualFileRowCounts } as any;
+        Object.defineProperty(countsGetter, artifacts.continuousFileName, { get: () => m.acceptedObservationCount, enumerable: true });
+        expectManifestReject({ ...m, exportAccounting: { ...m.exportAccounting, actualFileRowCounts: countsGetter } }, 'getter accessor on actualFileRowCounts');
+
+        const countsNonEnum = { ...m.exportAccounting.actualFileRowCounts } as any;
+        Object.defineProperty(countsNonEnum, artifacts.continuousFileName, { value: m.acceptedObservationCount, enumerable: false });
+        expectManifestReject({ ...m, exportAccounting: { ...m.exportAccounting, actualFileRowCounts: countsNonEnum } }, 'non-enumerable property on actualFileRowCounts');
+
+        // Isolate unsafe accepted+rejected sum check (order-independent: all accepted/continuous fields agree with MAX_SAFE_INTEGER)
+        expectManifestReject({
+            ...m,
+            acceptedObservationCount: Number.MAX_SAFE_INTEGER,
+            exportAccounting: {
+                ...m.exportAccounting,
+                rawSourceCandleCount: Number.MAX_SAFE_INTEGER,
+                acceptedSourceObservationCount: Number.MAX_SAFE_INTEGER,
+                rejectedSourceObservationCount: 1,
+                tierAContinuousObservationCount: Number.MAX_SAFE_INTEGER,
+                actualFileRowCounts: {
+                    ...m.exportAccounting.actualFileRowCounts,
+                    [artifacts.continuousFileName]: Number.MAX_SAFE_INTEGER
+                }
+            }
+        }, 'unsafe-integer rawSourceCandleCount sum');
 
         const repRows = parseCsvDocumentCRLF(artifacts.representationCsv);
         assertV4RepresentationZeroTierCLeakage(repRows[0]);
@@ -412,13 +598,32 @@ export async function runPhase4V4ExportAcceptanceTests(): Promise<boolean> {
             }).passed, `Mutated real diagnostic ${JSON.stringify(mutatedDiag)} must be rejected`);
         }
 
-        // 4e. Replay precision test across small (0.0001x) and large (1000x) price scales
-        for (const scale of [0.0001, 1000]) {
+        // Verify non-contiguous baseline gapped export also produced eligible events and passed validateV4DatasetManifest
+        validateV4DatasetManifest(base.manifest);
+        assert(base.strategyEventRows.length > 0 && base.manifest.missingDataStats.htf3mGapCount! >= 1,
+            'Non-contiguous gapped export must produce eligible events and pass manifest validation');
+
+        // 4e. Replay precision test across extreme small (1e-5x) and large (1e3x) price scales (valid passes <= 1e-12; 1e-9 corruption rejected)
+        for (const scale of [1e-5, 0.0001, 1000]) {
             const scaledBuf = makeWaveBuffer(420, t0, dt, scale);
             const scaledArt = await buildV4ExportArtifacts({
                 rawCandleBuffer: scaledBuf, symbol: 'SOLUSDT', interval: '1m', intervalMs: dt, buildTimestamp: 1_700_000_000_000
             });
             assert(scaledArt.auditResult.passed, `Scale=${scale} export must pass 1e-12 replay tolerance`);
+
+            const sRecs = parseCsvDocumentCRLF(scaledArt.continuousCsv);
+            const sSmaCol = sRecs[0].indexOf('SMA_20_Distance');
+            const sSmaValidCol = sRecs[0].indexOf('valid_SMA_20_Distance');
+            assert(sSmaCol >= 0 && sSmaValidCol >= 0 && sRecs[100][sSmaValidCol] === 'true',
+                `Scale=${scale} row 100 must have valid SMA_20_Distance`);
+            const origVal = Number(sRecs[100][sSmaCol]);
+            assert(Number.isFinite(origVal), `Scale=${scale} SMA_20_Distance must be finite`);
+            const badSRecs = sRecs.map((r, i) => (i === 100 ? r.map((c, ci) => (ci === sSmaCol ? String(origVal + 1e-9) : c)) : r));
+            assert(!DatasetAuditor.runV4CausalityAudit({
+                expectedSymbol: 'SOLUSDT', expectedTimeframe: '1m', rawCandleBuffer: scaledBuf, intervalMs: dt,
+                expectedContinuousRows: 420, expectedEventRows: scaledArt.strategyEventRows.length,
+                continuousCsv: toCsv(badSRecs), representationCsv: scaledArt.representationCsv, strategyEventsCsv: scaledArt.strategyEventsCsv, include3m5mMtf: true
+            }).passed, `Scale=${scale} must reject 1e-9 feature corruption`);
         }
     });
 
