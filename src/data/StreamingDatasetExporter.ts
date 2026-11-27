@@ -14,8 +14,23 @@ import {
 } from '../indicators/mlr1/pipeline/V3CsvSerializer';
 import { V3_DATASET_VERSION } from '../indicators/mlr1/pipeline/MultiHorizonOutcomeEngine';
 import { parseSingleCsvRecord, V3ArtifactAuditor } from '../indicators/mlr1/pipeline/V3ArtifactAuditor';
-import type { DTFXStrictCBCTimeframe } from '../indicators/mlr1/teachers/DTFXStrictCBCTeacher';
-import { AIExporter } from './AIExporter';
+import type { DTFXStrictCBCTimeframe, V4DTFXStrictCBCTimeframe } from '../indicators/mlr1/teachers/DTFXStrictCBCTeacher';
+import type { PHLTimeframe } from '../indicators/mlr1/teachers/ProtectedHighsLowsTeacher';
+import { V4_DATASET_VERSION } from '../indicators/mlr1/pipeline/V4OutcomeContracts';
+import { createV4PipelineConfig, V4PipelineRunner } from '../indicators/mlr1/pipeline/V4PipelineEngine';
+import {
+    buildV4ContinuousHeader,
+    buildV4DatasetManifest,
+    buildV4RepresentationHeader,
+    buildV4StrategyEventHeader,
+    formatV4ContinuousRow,
+    formatV4RepresentationRow,
+    formatV4StrategyEventRow,
+    getV4FileNames,
+    MTFV4SerializerCache
+} from '../indicators/mlr1/pipeline/V4CsvSerializer';
+import { V4ArtifactAuditor } from '../indicators/mlr1/pipeline/V4ArtifactAuditor';
+import { AIExporter, buildV4ExportArtifacts } from './AIExporter';
 
 const STREAMING_BATCH_ROWS = 500;
 
@@ -735,6 +750,373 @@ export class StreamingDatasetExporter {
             throw coreErr;
         }
     }
+
+    public static async exportV4ToFolderOrOpfs(params: {
+        rawCandleBuffer: Float64Array;
+        symbol: string;
+        interval: string;
+        intervalMs: number;
+        include3m5mMtf?: boolean;
+        phlTimeframes?: readonly PHLTimeframe[];
+        dtfxStrictCbcTimeframes?: readonly V4DTFXStrictCBCTimeframe[];
+        rootDirHandle?: any;
+        destinationFolderName?: string;
+        buildTimestamp?: number;
+        requireContiguous?: boolean;
+        sourceTimestampBounds?: RawSourceTimestampBounds;
+        signal?: AbortSignal;
+        onProgress?: (pct: number, detail: string) => void;
+    }): Promise<StreamingExportResult> {
+        const startPerf = performance.now();
+        let peakHeapMB = getHeapUsedMB();
+        const updatePeakHeap = () => {
+            const h = getHeapUsedMB();
+            if (h !== null && (peakHeapMB === null || h > peakHeapMB)) peakHeapMB = h;
+        };
+        const { rawCandleBuffer, symbol, interval, intervalMs } = params;
+        if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) throw new Error(`Unsupported interval: ${interval}`);
+        if (!(rawCandleBuffer instanceof Float64Array) || rawCandleBuffer.length === 0 || rawCandleBuffer.length % 6 !== 0) {
+            throw new Error('V4 Export Error: malformed or empty candle buffer.');
+        }
+
+        const totalCandles = rawCandleBuffer.length / 6;
+        const executionId =
+            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                ? crypto.randomUUID()
+                : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        const folderName =
+            params.destinationFolderName ??
+            `MLR1_${symbol}_${interval}_V${V4_DATASET_VERSION}_Dataset_${executionId}`;
+        const fileNames = getV4FileNames(symbol, interval);
+
+        let destinationType: 'directory_picker' | 'opfs' = 'opfs';
+        let targetDirHandle: any;
+        let opfsStagingDirName: string | null = null;
+        let opfsRoot: any = null;
+        const stagingDirName = `.tmp_${folderName}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        let hasReservation = false;
+        if (params.rootDirHandle) {
+            destinationType = 'directory_picker';
+            this.acquireV3FolderReservation(params.rootDirHandle, folderName);
+            hasReservation = true;
+        }
+
+        const assertDirAbsent = async (parent: any, name: string) => {
+            try {
+                await parent.getDirectoryHandle(name, { create: false });
+                throw new Error(`V4 Export Error: destination '${name}' already exists.`);
+            } catch (e: any) {
+                if (e?.name !== 'NotFoundError') throw e;
+            }
+        };
+
+        let finalDirHandle: any = null;
+        const publishedDestinationFiles: string[] = [];
+        const createSink = async (fileName: string): Promise<BufferedTextSink> => {
+            const fileHandle = await targetDirHandle.getFileHandle(fileName, { create: true });
+            const writable = await fileHandle.createWritable();
+            return new BufferedTextSink({
+                write: (bytes: Uint8Array) => writable.write(bytes),
+                close: () => writable.close(),
+                abort: () => writable.abort()
+            }, STREAMING_BATCH_ROWS);
+        };
+
+        let continuousSink: BufferedTextSink | null = null;
+        let representationSink: BufferedTextSink | null = null;
+        let strategyEventSink: BufferedTextSink | null = null;
+
+        try {
+            if (params.rootDirHandle) {
+                await assertDirAbsent(params.rootDirHandle, folderName);
+                targetDirHandle = await params.rootDirHandle.getDirectoryHandle(stagingDirName, { create: true });
+            } else if (this.isOpfsSupported()) {
+                destinationType = 'opfs';
+                opfsRoot = await navigator.storage.getDirectory();
+                opfsStagingDirName = stagingDirName;
+                targetDirHandle = await opfsRoot.getDirectoryHandle(opfsStagingDirName, { create: true });
+            } else {
+                throw new Error('Neither File System Access API nor OPFS supported.');
+            }
+            if (params.signal?.aborted) throw new Error('V4 Export cancelled by user.');
+
+            continuousSink = await createSink(fileNames.continuousFileName);
+            representationSink = await createSink(fileNames.representationFileName);
+            strategyEventSink = await createSink(fileNames.strategyEventsFileName);
+
+            const coreResult = await this.runV4StreamingCore({
+                rawCandleBuffer,
+                symbol,
+                interval,
+                intervalMs,
+                include3m5mMtf: params.include3m5mMtf,
+                phlTimeframes: params.phlTimeframes,
+                dtfxStrictCbcTimeframes: params.dtfxStrictCbcTimeframes,
+                buildTimestamp: params.buildTimestamp,
+                requireContiguous: params.requireContiguous,
+                sourceTimestampBounds: params.sourceTimestampBounds,
+                signal: params.signal,
+                continuousSink,
+                representationSink,
+                strategyEventSink,
+                onProgress: (pct, detail) => {
+                    updatePeakHeap();
+                    params.onProgress?.(pct, detail);
+                }
+            });
+
+            if (params.signal?.aborted) throw new Error('V4 Export cancelled before manifest.');
+
+            const manifestBytes = new TextEncoder().encode(JSON.stringify(coreResult.manifest, null, 2));
+            const manifestHasher = new IncrementalSha256();
+            manifestHasher.update(manifestBytes);
+            const manifestHandle = await targetDirHandle.getFileHandle(fileNames.manifestFileName, { create: true });
+            const manifestWritable = await manifestHandle.createWritable();
+            try {
+                await manifestWritable.write(manifestBytes);
+                await manifestWritable.close();
+            } catch (err) {
+                await manifestWritable.abort().catch(() => {});
+                throw err;
+            }
+
+            if (destinationType === 'directory_picker') {
+                await assertDirAbsent(params.rootDirHandle, folderName);
+                finalDirHandle = await params.rootDirHandle.getDirectoryHandle(folderName, { create: true });
+                for (const name of [
+                    fileNames.continuousFileName,
+                    fileNames.representationFileName,
+                    fileNames.strategyEventsFileName,
+                    fileNames.manifestFileName
+                ]) {
+                    const srcHandle = await targetDirHandle.getFileHandle(name);
+                    const srcFile: File = await srcHandle.getFile();
+                    const dstHandle = await finalDirHandle.getFileHandle(name, { create: true });
+                    publishedDestinationFiles.push(name);
+                    const dstWritable = await dstHandle.createWritable();
+                    try {
+                        await dstWritable.write(await srcFile.arrayBuffer());
+                        await dstWritable.close();
+                    } catch (pubErr) {
+                        await dstWritable.abort().catch(() => {});
+                        throw pubErr;
+                    }
+                }
+                if (typeof params.rootDirHandle.removeEntry === 'function') {
+                    await params.rootDirHandle.removeEntry(stagingDirName, { recursive: true }).catch(() => {});
+                }
+            } else if (opfsRoot) {
+                for (const name of [
+                    fileNames.manifestFileName,
+                    fileNames.continuousFileName,
+                    fileNames.representationFileName,
+                    fileNames.strategyEventsFileName
+                ]) {
+                    const h = await targetDirHandle.getFileHandle(name);
+                    const diskFile: File = await h.getFile();
+                    const url = URL.createObjectURL(diskFile);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = name;
+                    document.body.appendChild(a);
+                    a.click();
+                    setTimeout(() => {
+                        if (a.parentNode) document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                    }, 1500);
+                    await new Promise(r => setTimeout(r, 250));
+                }
+                setTimeout(() => {
+                    opfsRoot.removeEntry(opfsStagingDirName!, { recursive: true }).catch(() => {});
+                }, 10_000);
+            }
+
+            updatePeakHeap();
+            return {
+                destinationType,
+                folderName,
+                manifest: coreResult.manifest,
+                fileChecksums: {
+                    ...coreResult.fileChecksums,
+                    [fileNames.manifestFileName]: { sha256: manifestHasher.digestHex(), bytesWritten: manifestBytes.length }
+                },
+                telemetry: {
+                    durationMs: Math.round(performance.now() - startPerf),
+                    peakHeapMB,
+                    postExportHeapMB: getHeapUsedMB(),
+                    batchSizeRows: STREAMING_BATCH_ROWS,
+                    totalCandles,
+                    totalEvents: coreResult.manifest.exportAccounting.tierBConfirmedTeacherEventCount
+                }
+            };
+        } catch (err) {
+            await Promise.allSettled([
+                continuousSink ? continuousSink.abort() : Promise.resolve(),
+                representationSink ? representationSink.abort() : Promise.resolve(),
+                strategyEventSink ? strategyEventSink.abort() : Promise.resolve()
+            ]);
+            if (destinationType === 'directory_picker') {
+                if (finalDirHandle && typeof finalDirHandle.removeEntry === 'function') {
+                    for (const fName of publishedDestinationFiles) await finalDirHandle.removeEntry(fName).catch(() => {});
+                }
+                if (params.rootDirHandle && typeof params.rootDirHandle.removeEntry === 'function') {
+                    await params.rootDirHandle.removeEntry(stagingDirName, { recursive: true }).catch(() => {});
+                }
+            }
+            if (destinationType === 'opfs' && opfsRoot && opfsStagingDirName) {
+                await opfsRoot.removeEntry(opfsStagingDirName, { recursive: true }).catch(() => {});
+            }
+            throw err;
+        } finally {
+            if (hasReservation && params.rootDirHandle) this.releaseV3FolderReservation(params.rootDirHandle, folderName);
+        }
+    }
+
+    public static async runV4StreamingCore(params: {
+        rawCandleBuffer: Float64Array;
+        symbol: string;
+        interval: string;
+        intervalMs: number;
+        include3m5mMtf?: boolean;
+        phlTimeframes?: readonly PHLTimeframe[];
+        dtfxStrictCbcTimeframes?: readonly V4DTFXStrictCBCTimeframe[];
+        buildTimestamp?: number;
+        requireContiguous?: boolean;
+        sourceTimestampBounds?: RawSourceTimestampBounds;
+        signal?: AbortSignal;
+        continuousSink: BufferedTextSink;
+        representationSink: BufferedTextSink;
+        strategyEventSink: BufferedTextSink;
+        onProgress?: (pct: number, detail: string) => void;
+    }): Promise<{
+        manifest: DatasetManifest;
+        fileChecksums: Record<string, { sha256: string; bytesWritten: number }>;
+    }> {
+        const { rawCandleBuffer, symbol, interval, intervalMs, continuousSink, representationSink, strategyEventSink } = params;
+        const totalCandles = rawCandleBuffer.length / 6;
+
+        const config = createV4PipelineConfig({
+            symbol,
+            interval,
+            intervalMs,
+            include3m5mMtf: params.include3m5mMtf,
+            phlTimeframes: params.phlTimeframes,
+            dtfxStrictCbcTimeframes: params.dtfxStrictCbcTimeframes,
+            requireContiguous: params.requireContiguous ?? true,
+            sourceTimestampBounds: params.sourceTimestampBounds
+        });
+        const runner = new V4PipelineRunner(config);
+        const include3m5mMtf = config.mtfConfig !== null;
+        const auditor = new V4ArtifactAuditor({
+            expectedSymbol: symbol,
+            expectedTimeframe: interval,
+            intervalMs,
+            include3m5mMtf
+        });
+        const mtfCache = new MTFV4SerializerCache();
+        let featureKeys: string[] | null = null;
+        let headersWritten = false;
+        let emittedEvents = 0;
+
+        try {
+            for (let i = 0; i < totalCandles; i++) {
+                if (params.signal?.aborted) throw new Error('V4 Export cancelled by user.');
+                const off = i * 6;
+                const stepOut = runner.stepCandle({
+                    time: rawCandleBuffer[off],
+                    open: rawCandleBuffer[off + 1],
+                    high: rawCandleBuffer[off + 2],
+                    low: rawCandleBuffer[off + 3],
+                    close: rawCandleBuffer[off + 4],
+                    volume: rawCandleBuffer[off + 5],
+                    isSynthetic: false as const
+                });
+                auditor.pushRawCandle(stepOut.acceptedBarIndex, {
+                    time: stepOut.sourceTimestamp,
+                    open: stepOut.candle.open,
+                    high: stepOut.candle.high,
+                    low: stepOut.candle.low,
+                    close: stepOut.candle.close,
+                    volume: stepOut.candle.volume
+                });
+
+                if (!headersWritten) {
+                    featureKeys = Object.keys(stepOut.observation.features).sort();
+                    const contHdr = buildV4ContinuousHeader(featureKeys, include3m5mMtf);
+                    const repHdr = buildV4RepresentationHeader();
+                    const evHdr = buildV4StrategyEventHeader();
+                    auditor.validateContinuousHeader(parseSingleCsvRecord(contHdr));
+                    auditor.validateRepresentationHeader(parseSingleCsvRecord(repHdr));
+                    auditor.validateStrategyEventsHeader(parseSingleCsvRecord(evHdr));
+                    await continuousSink.writeHeader(contHdr);
+                    await representationSink.writeHeader(repHdr);
+                    await strategyEventSink.writeHeader(evHdr);
+                    headersWritten = true;
+                }
+
+                const contLine = formatV4ContinuousRow(stepOut, featureKeys!, mtfCache, include3m5mMtf);
+                auditor.validateContinuousLine(contLine);
+                await continuousSink.appendRow(contLine);
+
+                for (const row of stepOut.completedOutcomeRows) {
+                    const evLine = formatV4StrategyEventRow(row);
+                    const repLine = formatV4RepresentationRow(row).csvLine;
+                    auditor.validateSerializedEventPairLines(repLine, evLine);
+                    await strategyEventSink.appendRow(evLine);
+                    await representationSink.appendRow(repLine);
+                    emittedEvents++;
+                }
+
+                if (i % STREAMING_BATCH_ROWS === 0 || i === totalCandles - 1) {
+                    params.onProgress?.(Math.round(((i + 1) / totalCandles) * 100), `Streaming V4 ${i + 1} / ${totalCandles} candles (${emittedEvents} events)...`);
+                    await new Promise(r => setTimeout(r, 0));
+                }
+            }
+
+            if (params.signal?.aborted) throw new Error('V4 Export cancelled.');
+            const fin = runner.finalize();
+            if (emittedEvents === 0) throw new Error('V4 Streaming Export Error: no eligible events.');
+
+            const auditResult = auditor.finalizeAudit(totalCandles, emittedEvents);
+            if (!auditResult.passed) throw new Error(`V4 Streaming Audit Failed: ${auditResult.remarks.join('; ')}`);
+
+            const contStats = await continuousSink.finalize();
+            const repStats = await representationSink.finalize();
+            const evStats = await strategyEventSink.finalize();
+
+            const fileNames = getV4FileNames(symbol, interval);
+            const manifest = buildV4DatasetManifest({
+                runner,
+                config,
+                totalRawCandles: totalCandles,
+                startTimestamp: rawCandleBuffer[0],
+                endTimestamp: rawCandleBuffer[(totalCandles - 1) * 6],
+                outcomeAccounting: fin.outcomeAccounting,
+                continuousRowCount: contStats.rowCount,
+                representationRowCount: repStats.rowCount,
+                strategyEventRowCount: evStats.rowCount,
+                auditResults: auditResult,
+                fileChecksums: {
+                    continuousSha256: contStats.sha256,
+                    representationSha256: repStats.sha256,
+                    strategyEventsSha256: evStats.sha256
+                },
+                buildTimestamp: params.buildTimestamp
+            });
+
+            return {
+                manifest,
+                fileChecksums: {
+                    [fileNames.continuousFileName]: { sha256: contStats.sha256, bytesWritten: contStats.bytesWritten },
+                    [fileNames.representationFileName]: { sha256: repStats.sha256, bytesWritten: repStats.bytesWritten },
+                    [fileNames.strategyEventsFileName]: { sha256: evStats.sha256, bytesWritten: evStats.bytesWritten }
+                }
+            };
+        } catch (coreErr) {
+            await Promise.allSettled([continuousSink.abort(), representationSink.abort(), strategyEventSink.abort()]);
+            throw coreErr;
+        }
+    }
 }
 
 // =========================================================================
@@ -827,5 +1209,55 @@ export async function runV3StreamingExportParityTest(candleCount = 650): Promise
     }
 
     console.log(`✅ Streaming V3 Parity PASSED (${candleCount} candles): 100% byte-for-byte CSV + SHA-256 + manifest parity!`);
+    return true;
+}
+
+export async function runV4StreamingExportParityTest(candleCount = 900): Promise<boolean> {
+    const intervalMs = 60_000;
+    const start = 1_700_000_040_000;
+    const buf = new Float64Array(candleCount * 6);
+    let price = 100;
+    for (let i = 0; i < candleCount; i++) {
+        const major = Math.floor(i / 180) % 2 === 0 ? 1 : -1;
+        const swing = (i % 60) < 35 ? major : -0.65 * major;
+        const micro = (i % 5 === 0) ? -0.4 * swing : 0.65 * swing;
+        const open = price;
+        const close = Math.max(20, open + micro);
+        buf.set([start + i * intervalMs, open, Math.max(open, close) + 0.5, Math.min(open, close) - 0.5, close, 100 + (i % 7) * 15], i * 6);
+        price = close;
+    }
+
+    const fixedTs = 1_700_000_000_000;
+    const batch = await buildV4ExportArtifacts({
+        rawCandleBuffer: buf,
+        symbol: 'SOLUSDT',
+        interval: '1m',
+        intervalMs,
+        buildTimestamp: fixedTs
+    });
+
+    const memCont = new MemoryCaptureStream();
+    const memRep = new MemoryCaptureStream();
+    const memEv = new MemoryCaptureStream();
+    const streamed = await StreamingDatasetExporter.runV4StreamingCore({
+        rawCandleBuffer: buf,
+        symbol: 'SOLUSDT',
+        interval: '1m',
+        intervalMs,
+        buildTimestamp: fixedTs,
+        continuousSink: new BufferedTextSink(memCont, 128),
+        representationSink: new BufferedTextSink(memRep, 128),
+        strategyEventSink: new BufferedTextSink(memEv, 128)
+    });
+
+    if (memCont.toStringUtf8() !== batch.continuousCsv) throw new Error('V4 Parity FAIL: Continuous CSV differs.');
+    if (memRep.toStringUtf8() !== batch.representationCsv) throw new Error('V4 Parity FAIL: Representation CSV differs.');
+    if (memEv.toStringUtf8() !== batch.strategyEventsCsv) throw new Error('V4 Parity FAIL: StrategyEvents CSV differs.');
+    if (streamed.fileChecksums[batch.continuousFileName].sha256 !== await sha256Utf8(batch.continuousCsv)) throw new Error('V4 Continuous SHA-256 mismatch.');
+    if (streamed.fileChecksums[batch.representationFileName].sha256 !== await sha256Utf8(batch.representationCsv)) throw new Error('V4 Representation SHA-256 mismatch.');
+    if (streamed.fileChecksums[batch.strategyEventsFileName].sha256 !== await sha256Utf8(batch.strategyEventsCsv)) throw new Error('V4 StrategyEvents SHA-256 mismatch.');
+    if (JSON.stringify(streamed.manifest) !== JSON.stringify(batch.manifest)) throw new Error('V4 Parity FAIL: manifest mismatch.');
+
+    console.log(`✅ Streaming V4 Parity PASSED (${candleCount} candles): 100% byte-for-byte CSV + SHA-256 + manifest parity!`);
     return true;
 }

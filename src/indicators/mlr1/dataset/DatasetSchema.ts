@@ -108,3 +108,19 @@ export const TIER_C_V3_QUARANTINE_LIST = [
     'long_exit_price_180', 'long_net_r_180', 'long_outcome_180',
     'short_exit_price_180', 'short_net_r_180', 'short_outcome_180'
 ] as const;
+
+// =========================================================================
+// V4 Multi-Teacher Schema Constants (3m & 5m MTF + 60/120/180 Horizons)
+// =========================================================================
+
+export const MLR1_V4_REPRESENTATION_SCHEMA_VERSION = 'MLR1_REPRESENTATION_V4';
+export const MLR1_V4_MODEL_INPUT_SCHEMA_VERSION = 'MLR1_MODEL_INPUT_V4';
+
+export const TIER_A_V4_CONTINUOUS_MTF_COLUMNS = [
+    'context3m',
+    'htf3mDiagnostic',
+    'context5m',
+    'htf5mDiagnostic'
+] as const;
+
+export const TIER_C_V4_QUARANTINE_LIST = TIER_C_V3_QUARANTINE_LIST;

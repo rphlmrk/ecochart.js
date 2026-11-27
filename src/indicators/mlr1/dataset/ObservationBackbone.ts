@@ -1008,7 +1008,13 @@ export function createDatasetManifest(
         htf15mResetCount: htfStatsOverhead?.htf15mResetCount ?? 0,
         htf1hResetCount: htfStatsOverhead?.htf1hResetCount ?? 0,
         htf15mIncompleteWindowCount: htfStatsOverhead?.htf15mIncompleteWindowCount ?? 0,
-        htf1hIncompleteWindowCount: htfStatsOverhead?.htf1hIncompleteWindowCount ?? 0
+        htf1hIncompleteWindowCount: htfStatsOverhead?.htf1hIncompleteWindowCount ?? 0,
+        ...(htfStatsOverhead?.htf3mGapCount !== undefined ? { htf3mGapCount: htfStatsOverhead.htf3mGapCount } : {}),
+        ...(htfStatsOverhead?.htf5mGapCount !== undefined ? { htf5mGapCount: htfStatsOverhead.htf5mGapCount } : {}),
+        ...(htfStatsOverhead?.htf3mResetCount !== undefined ? { htf3mResetCount: htfStatsOverhead.htf3mResetCount } : {}),
+        ...(htfStatsOverhead?.htf5mResetCount !== undefined ? { htf5mResetCount: htfStatsOverhead.htf5mResetCount } : {}),
+        ...(htfStatsOverhead?.htf3mIncompleteWindowCount !== undefined ? { htf3mIncompleteWindowCount: htfStatsOverhead.htf3mIncompleteWindowCount } : {}),
+        ...(htfStatsOverhead?.htf5mIncompleteWindowCount !== undefined ? { htf5mIncompleteWindowCount: htfStatsOverhead.htf5mIncompleteWindowCount } : {})
     });
 
     return Object.freeze({

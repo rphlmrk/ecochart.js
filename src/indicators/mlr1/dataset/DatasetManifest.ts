@@ -15,6 +15,12 @@ export interface MissingDataStatistics {
     readonly htf1hResetCount: number;
     readonly htf15mIncompleteWindowCount: number;
     readonly htf1hIncompleteWindowCount: number;
+    readonly htf3mGapCount?: number;
+    readonly htf5mGapCount?: number;
+    readonly htf3mResetCount?: number;
+    readonly htf5mResetCount?: number;
+    readonly htf3mIncompleteWindowCount?: number;
+    readonly htf5mIncompleteWindowCount?: number;
 }
 
 export interface IntegrityAuditResults {
@@ -78,4 +84,15 @@ export interface DatasetManifest {
     readonly auditResults: IntegrityAuditResults;
     readonly exportAccounting: ExportAccounting;
     readonly experimentalTeachers?: ExperimentalTeachersMetadata;
+    readonly teacherTimeframes?: {
+        readonly phl: readonly ('1m' | '3m' | '5m')[];
+        readonly dtfxStrictCbc: readonly ('1m' | '3m' | '5m')[];
+    };
+    readonly outcomeAccounting?: {
+        readonly totalCandidateEvents: number;
+        readonly eligibleEvents: number;
+        readonly excludedMissingNextOpen: number;
+        readonly excludedUnwarmedAtr: number;
+        readonly excludedIncompleteHorizon: number;
+    };
 }

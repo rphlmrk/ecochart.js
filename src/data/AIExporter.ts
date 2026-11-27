@@ -27,7 +27,23 @@ import {
     V3_TEACHER_VERSION
 } from '../indicators/mlr1/pipeline/V3CsvSerializer';
 import { parseCsvDocumentCRLF, V3ArtifactAuditor } from '../indicators/mlr1/pipeline/V3ArtifactAuditor';
-import type { DTFXStrictCBCTimeframe } from '../indicators/mlr1/teachers/DTFXStrictCBCTeacher';
+import type { DTFXStrictCBCTimeframe, V4DTFXStrictCBCTimeframe } from '../indicators/mlr1/teachers/DTFXStrictCBCTeacher';
+import type { PHLTimeframe } from '../indicators/mlr1/teachers/ProtectedHighsLowsTeacher';
+import type { V4StrategyEventRow } from '../indicators/mlr1/pipeline/V4OutcomeContracts';
+import { createV4PipelineConfig, V4_3M5M_MTF_VERSION, V4PipelineRunner } from '../indicators/mlr1/pipeline/V4PipelineEngine';
+import {
+    buildV4ContinuousHeader,
+    buildV4DatasetManifest,
+    validateV4DatasetManifest,
+    buildV4RepresentationHeader,
+    buildV4StrategyEventHeader,
+    formatV4ContinuousRow,
+    formatV4RepresentationRow,
+    formatV4StrategyEventRow,
+    getV4FileNames,
+    MTFV4SerializerCache
+} from '../indicators/mlr1/pipeline/V4CsvSerializer';
+import { V4ArtifactAuditor } from '../indicators/mlr1/pipeline/V4ArtifactAuditor';
 
 export class SourceIntegrityError extends Error {
     public readonly sourceReport: RawSourceAccountingReport;
@@ -469,4 +485,220 @@ export class DatasetAuditor {
 
         return auditor.finalizeAudit(params.expectedContinuousRows, params.expectedEventRows);
     }
+
+    public static runV4CausalityAudit(params: {
+        readonly rawCandleBuffer: Float64Array;
+        readonly expectedSymbol: string;
+        readonly expectedTimeframe: string;
+        readonly intervalMs: number;
+        readonly expectedContinuousRows: number;
+        readonly expectedEventRows: number;
+        readonly continuousCsv: string;
+        readonly representationCsv: string;
+        readonly strategyEventsCsv: string;
+        readonly include3m5mMtf: boolean;
+    }): IntegrityAuditResults {
+        return V4ArtifactAuditor.runBatchAudit(params);
+    }
+}
+
+export async function buildV4ExportArtifacts(params: {
+    rawCandleBuffer: Float64Array;
+    symbol: string;
+    interval: string;
+    intervalMs: number;
+    include3m5mMtf?: boolean;
+    phlTimeframes?: readonly PHLTimeframe[];
+    dtfxStrictCbcTimeframes?: readonly V4DTFXStrictCBCTimeframe[];
+    buildTimestamp?: number;
+    requireContiguous?: boolean;
+    sourceTimestampBounds?: RawSourceTimestampBounds;
+    onProgress?: (detail: string) => void;
+}) {
+    const { rawCandleBuffer, symbol, interval, intervalMs } = params;
+    if (!(rawCandleBuffer instanceof Float64Array) || rawCandleBuffer.length === 0 || rawCandleBuffer.length % 6 !== 0) {
+        throw new Error('V4 Export Error: malformed or empty candle buffer.');
+    }
+
+    const rawCandleCount = rawCandleBuffer.length / 6;
+    const config = createV4PipelineConfig({
+        symbol,
+        interval,
+        intervalMs,
+        include3m5mMtf: params.include3m5mMtf,
+        phlTimeframes: params.phlTimeframes,
+        dtfxStrictCbcTimeframes: params.dtfxStrictCbcTimeframes,
+        requireContiguous: params.requireContiguous ?? true,
+        sourceTimestampBounds: params.sourceTimestampBounds
+    });
+    const runner = new V4PipelineRunner(config);
+    const include3m5mMtf = config.mtfConfig !== null;
+    const mtfCache = new MTFV4SerializerCache();
+
+    let featureKeys: string[] | null = null;
+    const continuousLines: string[] = [];
+    const representationLines: string[] = [buildV4RepresentationHeader()];
+    const strategyEventLines: string[] = [buildV4StrategyEventHeader()];
+    const strategyEventRows: V4StrategyEventRow[] = [];
+
+    params.onProgress?.(`Running V4 pipeline on ${rawCandleCount.toLocaleString()} candles...`);
+    for (let i = 0; i < rawCandleCount; i++) {
+        const off = i * 6;
+        const stepOut = runner.stepCandle({
+            time: rawCandleBuffer[off],
+            open: rawCandleBuffer[off + 1],
+            high: rawCandleBuffer[off + 2],
+            low: rawCandleBuffer[off + 3],
+            close: rawCandleBuffer[off + 4],
+            volume: rawCandleBuffer[off + 5],
+            isSynthetic: false as const
+        });
+        if (featureKeys === null) {
+            featureKeys = Object.keys(stepOut.observation.features).sort();
+            continuousLines.push(buildV4ContinuousHeader(featureKeys, include3m5mMtf));
+        }
+        continuousLines.push(formatV4ContinuousRow(stepOut, featureKeys, mtfCache, include3m5mMtf));
+        for (const row of stepOut.completedOutcomeRows) {
+            strategyEventRows.push(row);
+            strategyEventLines.push(formatV4StrategyEventRow(row));
+            representationLines.push(formatV4RepresentationRow(row).csvLine);
+        }
+    }
+
+    const fin = runner.finalize();
+    if (strategyEventRows.length === 0) {
+        throw new Error('V4 Export Error: no eligible confirmed events with complete 180-bar horizons.');
+    }
+
+    const continuousCsv = continuousLines.join('\r\n');
+    const representationCsv = representationLines.join('\r\n');
+    const strategyEventsCsv = strategyEventLines.join('\r\n');
+
+    params.onProgress?.('Running V4 zero-leakage & 180-bar replay audits...');
+    const auditResult = DatasetAuditor.runV4CausalityAudit({
+        rawCandleBuffer,
+        expectedSymbol: symbol,
+        expectedTimeframe: interval,
+        intervalMs,
+        expectedContinuousRows: rawCandleCount,
+        expectedEventRows: strategyEventRows.length,
+        continuousCsv,
+        representationCsv,
+        strategyEventsCsv,
+        include3m5mMtf
+    });
+    if (!auditResult.passed) {
+        throw new Error(`V4 Pre-flight audit failed: ${auditResult.remarks.join('; ')}`);
+    }
+
+    const sha = async (text: string) => {
+        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+        return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    };
+    const verifiedFileChecksums = Object.freeze({
+        continuousSha256: await sha(continuousCsv),
+        representationSha256: await sha(representationCsv),
+        strategyEventsSha256: await sha(strategyEventsCsv)
+    });
+
+    const fileNames = getV4FileNames(symbol, interval);
+    const manifest = buildV4DatasetManifest({
+        runner,
+        config,
+        totalRawCandles: rawCandleCount,
+        startTimestamp: rawCandleBuffer[0],
+        endTimestamp: rawCandleBuffer[(rawCandleCount - 1) * 6],
+        outcomeAccounting: fin.outcomeAccounting,
+        continuousRowCount: rawCandleCount,
+        representationRowCount: strategyEventRows.length,
+        strategyEventRowCount: strategyEventRows.length,
+        auditResults: auditResult,
+        fileChecksums: verifiedFileChecksums,
+        buildTimestamp: params.buildTimestamp
+    });
+
+    return {
+        manifest,
+        continuousCsv,
+        representationCsv,
+        strategyEventsCsv,
+        continuousFileName: fileNames.continuousFileName,
+        representationFileName: fileNames.representationFileName,
+        strategyEventsFileName: fileNames.strategyEventsFileName,
+        manifestFileName: fileNames.manifestFileName,
+        strategyEventRows,
+        outcomeAccounting: fin.outcomeAccounting,
+        auditResult,
+        verifiedFileChecksums
+    };
+}
+
+export async function createVerifiedV4DatasetArchive(
+    artifacts: {
+        manifest: DatasetManifest;
+        continuousCsv: string;
+        representationCsv: string;
+        strategyEventsCsv: string;
+        continuousFileName: string;
+        representationFileName: string;
+        strategyEventsFileName: string;
+        manifestFileName: string;
+        verifiedFileChecksums: {
+            readonly continuousSha256: string;
+            readonly representationSha256: string;
+            readonly strategyEventsSha256: string;
+        };
+    },
+    rawCandleBuffer: Float64Array
+): Promise<Uint8Array> {
+    validateV4DatasetManifest(artifacts.manifest);
+    const expectedNames = getV4FileNames(artifacts.manifest.symbol, artifacts.manifest.timeframe);
+    if (artifacts.continuousFileName !== expectedNames.continuousFileName ||
+        artifacts.representationFileName !== expectedNames.representationFileName ||
+        artifacts.strategyEventsFileName !== expectedNames.strategyEventsFileName ||
+        artifacts.manifestFileName !== expectedNames.manifestFileName) {
+        throw new Error('V4 Archive Error: file names do not match V4 contract.');
+    }
+    const sha = async (text: string) => {
+        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+        return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    };
+    const cH = await sha(artifacts.continuousCsv), rH = await sha(artifacts.representationCsv), eH = await sha(artifacts.strategyEventsCsv);
+    if (cH !== artifacts.verifiedFileChecksums.continuousSha256 ||
+        rH !== artifacts.verifiedFileChecksums.representationSha256 ||
+        eH !== artifacts.verifiedFileChecksums.strategyEventsSha256) {
+        throw new Error('V4 Archive Error: CSV contents do not match SHA-256 checksums.');
+    }
+    const include3m5mMtf = artifacts.manifest.featureVersion.includes(V4_3M5M_MTF_VERSION);
+    const reAudit = DatasetAuditor.runV4CausalityAudit({
+        rawCandleBuffer,
+        expectedSymbol: artifacts.manifest.symbol,
+        expectedTimeframe: artifacts.manifest.timeframe,
+        intervalMs: artifacts.manifest.buildConfig.sourceIntervalMs,
+        expectedContinuousRows: artifacts.manifest.acceptedObservationCount,
+        expectedEventRows: artifacts.manifest.exportAccounting.tierCOutcomeRowCount,
+        continuousCsv: artifacts.continuousCsv,
+        representationCsv: artifacts.representationCsv,
+        strategyEventsCsv: artifacts.strategyEventsCsv,
+        include3m5mMtf
+    });
+    if (!reAudit.passed) throw new Error(`V4 Archive Error: pre-ZIP audit failed (${reAudit.remarks.join('; ')}).`);
+
+    const entries = [
+        { name: artifacts.manifestFileName, content: JSON.stringify(artifacts.manifest, null, 2) },
+        { name: artifacts.continuousFileName, content: artifacts.continuousCsv },
+        { name: artifacts.representationFileName, content: artifacts.representationCsv },
+        { name: artifacts.strategyEventsFileName, content: artifacts.strategyEventsCsv }
+    ];
+    const fixedDate = new Date(artifacts.manifest.buildTimestamp);
+    const zip = new JSZip();
+    for (const entry of entries) zip.file(entry.name, entry.content, { date: fixedDate });
+    const bytes = await zip.generateAsync({ type: 'uint8array' });
+    const reopened = await JSZip.loadAsync(bytes);
+    for (const entry of entries) {
+        if ((await reopened.file(entry.name)?.async('string')) !== entry.content) {
+            throw new Error(`V4 Archive Verification Error: byte mismatch on '${entry.name}'.`);
+        }
+    }
+    return bytes;
 }

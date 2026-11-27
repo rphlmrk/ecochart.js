@@ -40,11 +40,13 @@ export { alertManager } from './alerts/AlertManager';
 import { AIExporter, DatasetAuditor } from './data/AIExporter';
 import {
     StreamingDatasetExporter,
-    runV3StreamingExportParityTest
+    runV3StreamingExportParityTest,
+    runV4StreamingExportParityTest
 } from './data/StreamingDatasetExporter';
-export { AIExporter, DatasetAuditor, StreamingDatasetExporter, runV3StreamingExportParityTest };
+export { AIExporter, DatasetAuditor, StreamingDatasetExporter, runV3StreamingExportParityTest, runV4StreamingExportParityTest };
 import { BackgroundDataMiner } from './data/BackgroundDataMiner';
-import type { DTFXStrictCBCTimeframe } from './indicators/mlr1/teachers/DTFXStrictCBCTeacher';
+import type { V4DTFXStrictCBCTimeframe } from './indicators/mlr1/teachers/DTFXStrictCBCTeacher';
+import type { PHLTimeframe } from './indicators/mlr1/teachers/ProtectedHighsLowsTeacher';
 import { AlertUI } from './alerts/AlertUI';
 import { runMilestone1AcceptanceSuite } from './test/milestone1-acceptance';
 export { runMilestone1AcceptanceSuite };
@@ -5042,33 +5044,16 @@ export class WorkspaceManager {
                 alert(`Unsupported chart interval for export: ${exportInterval}`);
                 return;
             }
-            const VALID_EXP_DTFX_TFS = new Set<DTFXStrictCBCTimeframe>(['1m', '3m', '5m', '15m']);
-            const expDtfxEnabled = Boolean(expDtfxCbcCheck?.checked);
-            const rawExpTfs = expDtfxEnabled
-                ? Array.from(document.querySelectorAll('.ai-v3-dtfx-cbc-tf:checked'))
-                    .map(el => (el as HTMLInputElement).value)
-                : [];
-            if (expDtfxEnabled) {
-                if (exportInterval !== '1m') {
-                    alert('Experimental DTFX (StrictCBC) 1m–15m multi-TF teacher requires a 1m base chart.');
-                    return;
-                }
-                if (rawExpTfs.length === 0) {
-                    alert('Select at least one DTFX (StrictCBC) timeframe (1m, 3m, 5m, 15m).');
-                    return;
-                }
-                for (const tf of rawExpTfs) {
-                    if (!VALID_EXP_DTFX_TFS.has(tf as DTFXStrictCBCTimeframe)) {
-                        alert(`Unsupported DTFX (StrictCBC) timeframe: '${tf}'.`);
-                        return;
-                    }
-                }
-                if (new Set(rawExpTfs).size !== rawExpTfs.length) {
-                    alert('Duplicate DTFX (StrictCBC) timeframe entries are not permitted.');
-                    return;
-                }
+            if (exportInterval !== '1m') {
+                alert('V4 Multi-Teacher Dataset export requires a 1m base chart.');
+                return;
             }
-            const selectedExpDtfxTfs = rawExpTfs as DTFXStrictCBCTimeframe[];
+            const VALID_V4_TFS = new Set<V4DTFXStrictCBCTimeframe>(['1m', '3m', '5m']);
+            const checkedTfs = Array.from(document.querySelectorAll('.ai-v3-dtfx-cbc-tf:checked'))
+                .map(el => (el as HTMLInputElement).value)
+                .filter(tf => VALID_V4_TFS.has(tf as V4DTFXStrictCBCTimeframe));
+            const selectedV4Tfs: V4DTFXStrictCBCTimeframe[] =
+                checkedTfs.length > 0 ? (Array.from(new Set(checkedTfs)) as V4DTFXStrictCBCTimeframe[]) : ['1m', '3m', '5m'];
             const expectedCandleCount = Math.max(1, Math.ceil(durationMs / intervalMs));
             const expectedEndOpenTimestamp = Math.floor(Date.now() / intervalMs) * intervalMs - intervalMs;
             const expectedStartOpenTimestamp =
@@ -5136,21 +5121,22 @@ export class WorkspaceManager {
                         expectedCandleCount
                     );
                 }
-                const mtf15mCheck = document.getElementById('check-ai-v3-15m-mtf') as HTMLInputElement | null;
-                const include15mMtf = exportInterval === '1m' && (mtf15mCheck?.checked ?? true);
+                const mtfV4Check = (document.getElementById('check-ai-v4-3m5m-mtf') ?? document.getElementById('check-ai-v3-15m-mtf')) as HTMLInputElement | null;
+                const include3m5mMtf = exportInterval === '1m' && (mtfV4Check?.checked ?? true);
 
                 if (loadingTitle) {
-                    loadingTitle.textContent = 'Streaming 4-File V3 Multi-Teacher Dataset...';
+                    loadingTitle.textContent = 'Streaming 4-File V4 Multi-Teacher Dataset...';
                 }
-                if (loadingDetail) loadingDetail.textContent = 'Processing rolling features & writing chunks...';
+                if (loadingDetail) loadingDetail.textContent = 'Processing V4 1m/3m/5m features & writing chunks...';
 
-                const streamResult = await StreamingDatasetExporter.exportV3ToFolderOrOpfs({
+                const streamResult = await StreamingDatasetExporter.exportV4ToFolderOrOpfs({
                     rawCandleBuffer,
                     symbol: exportSymbol,
                     interval: exportInterval,
                     intervalMs,
-                    include15mMtf,
-                    experimentalDtfxCbcTimeframes: selectedExpDtfxTfs,
+                    include3m5mMtf,
+                    phlTimeframes: selectedV4Tfs as readonly PHLTimeframe[],
+                    dtfxStrictCbcTimeframes: selectedV4Tfs,
                     rootDirHandle: selectedDirHandle,
                     sourceTimestampBounds: customStartMs !== undefined && customEndMs !== undefined
                         ? { startTimestamp: customStartMs, endTimestamp: customEndMs }
@@ -6137,5 +6123,6 @@ export class WorkspaceManager {
         (window as any).runPhase5DPhase4Tests = runPhase5DPhase4Tests;
         (window as any).runPhase5DPhase5Tests = runPhase5DPhase5Tests;
         (window as any).runV3StreamingExportParityTest = runV3StreamingExportParityTest;
+        (window as any).runV4StreamingExportParityTest = runV4StreamingExportParityTest;
     }
 }
