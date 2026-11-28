@@ -5,6 +5,17 @@ import {
     type StrictZigZagPivot
 } from '../../plugins/StrictCBCZigZagIndicator';
 import { stepStrictCBCWithReset } from './StrategyEventTypes';
+import {
+    buildV5DtfxRetestEpisodeId,
+    buildV5ZoneId,
+    computeV5DepthMetrics,
+    validateV5ZoneLifecycleRecord,
+    type V5Direction,
+    type V5DTFXLifecycleEventType,
+    type V5ZoneActivityState,
+    type V5ZoneTimeframe,
+    type V5ZoneLifecycleRecord
+} from '../pipeline/V5OutcomeContracts';
 
 export type DTFXStrictCBCTimeframe = '1m' | '3m' | '5m' | '15m';
 
@@ -968,4 +979,593 @@ export function createDefaultV4DTFXStrictCBCMultiConfigs(
         seen.add(tf);
     }
     return createDefaultDTFXStrictCBCMultiConfigs(symbol, baseTimeframe, baseIntervalMs, timeframes, options);
+}
+
+// =========================================================================
+// V5 Lifecycle Extension (Preserves V4 Logic; Captures Breaks, Evictions & Gaps)
+// =========================================================================
+
+export interface V5DTFXZoneMeta {
+    readonly v5ZoneId: string;
+    readonly numericZoneId: number;
+    readonly symbol: string;
+    readonly zoneTimeframe: V5ZoneTimeframe;
+    readonly zoneSide: 'DEMAND' | 'SUPPLY';
+    readonly zoneDirection: V5Direction;
+    readonly isChoch: boolean;
+    readonly zoneTop: number;
+    readonly zoneBot: number;
+    readonly fib03: number;
+    readonly fib05: number;
+    readonly fib07: number;
+    readonly createdSourceBarIndex: number;
+    readonly createdSourceTimestamp: number;
+    readonly createdBaseBarIndex: number;
+    readonly createdConfirmationTimestamp: number;
+    readonly createdNativeBarIndex: number;
+    readonly v5RetestCount: number;
+    readonly v5WasOutsideSinceLastEvent: boolean;
+    readonly v5LastRetestBaseBarIndex: number;
+}
+
+export interface V5DTFXLifecycleEvent extends V5ZoneLifecycleRecord {
+    readonly source: 'DTFX_STRICTCBC';
+    readonly zoneSide: 'DEMAND' | 'SUPPLY';
+    readonly eventType: V5DTFXLifecycleEventType;
+    readonly isChoch: boolean;
+    readonly fib03: number;
+    readonly fib05: number;
+    readonly fib07: number;
+    readonly createdSourceBarIndex: number;
+    readonly touchExtremePrice: number | null;
+    readonly eventClosePrice: number;
+}
+
+export interface V5DTFXActiveZoneView {
+    readonly meta: V5DTFXZoneMeta;
+    readonly retestCount: number;
+    readonly wasOutsideSinceLastEvent: boolean;
+    readonly zoneAgeBaseBars: number;
+    readonly zoneAgeHtfBars: number;
+}
+
+export interface V5DTFXStrictCBCState {
+    readonly cbcState: DTFXStrictCBCState;
+    readonly zoneMetaByNumericId: Readonly<Record<number, V5DTFXZoneMeta>>;
+    readonly historicalDemandBreakCount: number;
+    readonly historicalSupplyBreakCount: number;
+}
+
+export type V5DTFXStrictCBCMultiState = Readonly<Record<V5ZoneTimeframe, V5DTFXStrictCBCState>>;
+
+export const V5_DTFX_STRICTCBC_TIMEFRAMES: readonly V5ZoneTimeframe[] = Object.freeze(['1m', '3m', '5m']);
+
+export function createDefaultV5DTFXStrictCBCMultiConfigs(
+    symbol: string,
+    baseTimeframe: string,
+    baseIntervalMs: number,
+    timeframes: readonly V5ZoneTimeframe[] = V5_DTFX_STRICTCBC_TIMEFRAMES,
+    options?: { maxActiveZones?: number }
+): DTFXStrictCBCConfig[] {
+    if (!Array.isArray(timeframes) || timeframes.length === 0) {
+        throw new Error('V5 DTFX Config Error: timeframes must be a non-empty array of 1m/3m/5m.');
+    }
+    const allowed = new Set<string>(V5_DTFX_STRICTCBC_TIMEFRAMES);
+    const seen = new Set<string>();
+    for (const tf of timeframes) {
+        if (!allowed.has(tf)) {
+            throw new Error(`V5 DTFX Config Error: unsupported timeframe '${String(tf)}'.`);
+        }
+        if (seen.has(tf)) {
+            throw new Error(`V5 DTFX Config Error: duplicate timeframe '${tf}'.`);
+        }
+        seen.add(tf);
+    }
+    const maxActiveZones = options?.maxActiveZones ?? 100;
+    if (!Number.isSafeInteger(maxActiveZones) || maxActiveZones < 1) {
+        throw new Error(`V5 DTFX Config Error: maxActiveZones must be >= 1, got ${maxActiveZones}.`);
+    }
+    // Unlimited retest episode counting (never silently stops after 3)
+    return createDefaultDTFXStrictCBCMultiConfigs(symbol, baseTimeframe, baseIntervalMs, timeframes, {
+        maxActiveZones,
+        maxRetestsPerZone: Number.MAX_SAFE_INTEGER,
+        emitRetests: true
+    });
+}
+
+export function createInitialV5DTFXStrictCBCState(): V5DTFXStrictCBCState {
+    return Object.freeze({
+        cbcState: createInitialDTFXStrictCBCState(),
+        zoneMetaByNumericId: Object.freeze({}),
+        historicalDemandBreakCount: 0,
+        historicalSupplyBreakCount: 0
+    });
+}
+
+export function createInitialV5DTFXStrictCBCMultiState(): V5DTFXStrictCBCMultiState {
+    return Object.freeze({
+        '1m': createInitialV5DTFXStrictCBCState(),
+        '3m': createInitialV5DTFXStrictCBCState(),
+        '5m': createInitialV5DTFXStrictCBCState()
+    });
+}
+
+export function assertV5DTFXStrictCBCStateConsistency(
+    state: V5DTFXStrictCBCState,
+    config: DTFXStrictCBCConfig
+): void {
+    const activeZones = state.cbcState.activeZones;
+    const metaKeys = Object.keys(state.zoneMetaByNumericId);
+    if (metaKeys.length !== activeZones.length) {
+        throw new Error(
+            `V5 DTFX Consistency Error: metadata count (${metaKeys.length}) !== activeZones count (${activeZones.length}).`
+        );
+    }
+    const seenV5Ids = new Set<string>();
+    for (const z of activeZones) {
+        const meta = state.zoneMetaByNumericId[z.zoneId];
+        if (!meta) {
+            throw new Error(`V5 DTFX Consistency Error: active zoneId ${z.zoneId} missing metadata.`);
+        }
+        if (meta.symbol !== config.symbol || meta.zoneTimeframe !== config.zoneTimeframe) {
+            throw new Error(`V5 DTFX Consistency Error: zone ${meta.v5ZoneId} symbol/tf mismatch.`);
+        }
+        if (!Number.isFinite(meta.zoneTop) || !Number.isFinite(meta.zoneBot) || meta.zoneTop <= meta.zoneBot ||
+            meta.zoneTop !== z.zoneTop || meta.zoneBot !== z.zoneBot) {
+            throw new Error(`V5 DTFX Consistency Error: zone ${meta.v5ZoneId} bounds mismatch.`);
+        }
+        if (!Number.isSafeInteger(meta.v5RetestCount) || meta.v5RetestCount < z.retestCount) {
+            throw new Error(`V5 DTFX Consistency Error: zone ${meta.v5ZoneId} v5RetestCount (${meta.v5RetestCount}) < canonical (${z.retestCount}).`);
+        }
+        if (seenV5Ids.has(meta.v5ZoneId)) {
+            throw new Error(`V5 DTFX Consistency Error: duplicate v5ZoneId '${meta.v5ZoneId}'.`);
+        }
+        seenV5Ids.add(meta.v5ZoneId);
+    }
+}
+
+function buildV5DTFXLifecycleEvent(params: {
+    readonly meta: V5DTFXZoneMeta;
+    readonly eventType: V5DTFXLifecycleEventType;
+    readonly zoneActivity: V5ZoneActivityState;
+    readonly eventDirection: V5Direction | null;
+    readonly retestCount: number;
+    readonly barIndex: number;
+    readonly completedNativeCount: number;
+    readonly candle: ML1Candle;
+    readonly atr14: number | null;
+    readonly touchExtremePrice: number | null;
+}): V5DTFXLifecycleEvent {
+    const {
+        meta, eventType, zoneActivity, eventDirection, retestCount,
+        barIndex, completedNativeCount, candle, atr14, touchExtremePrice
+    } = params;
+
+    const atr14Valid = atr14 !== null && Number.isFinite(atr14) && atr14 > 0;
+    const zoneWidthAtr = atr14Valid ? (meta.zoneTop - meta.zoneBot) / atr14! : null;
+
+    const closeDepth = computeV5DepthMetrics(meta.zoneTop, meta.zoneBot, candle.close, meta.zoneDirection);
+    const touchDepth = touchExtremePrice !== null
+        ? computeV5DepthMetrics(meta.zoneTop, meta.zoneBot, touchExtremePrice, meta.zoneDirection)
+        : null;
+
+    const confirmationNativeBarIndex = Math.max(meta.createdNativeBarIndex, completedNativeCount - 1);
+    const retestEpisodeId = eventType === 'RETESTED'
+        ? buildV5DtfxRetestEpisodeId(meta.v5ZoneId, retestCount, candle.time)
+        : null;
+    const lifecycleSuffix = eventType === 'RETESTED' ? `RETESTED:R${retestCount}` : eventType;
+    const lifecycleId = `${meta.v5ZoneId}:${lifecycleSuffix}:${barIndex}`;
+
+    const record: V5DTFXLifecycleEvent = Object.freeze({
+        lifecycleId,
+        zoneId: meta.v5ZoneId,
+        symbol: meta.symbol,
+        source: 'DTFX_STRICTCBC' as const,
+        zoneTimeframe: meta.zoneTimeframe,
+        zoneSide: meta.zoneSide,
+        zoneDirection: meta.zoneDirection,
+        eventType,
+        eventDirection,
+        zoneActivity,
+        eventRole: 'ZONE_LIFECYCLE' as const,
+        outcomeEligible: false as const,
+        retestCount,
+        retestEpisodeId,
+        zoneTop: meta.zoneTop,
+        zoneBot: meta.zoneBot,
+        createdSourceTimestamp: meta.createdSourceTimestamp,
+        createdConfirmationTimestamp: meta.createdConfirmationTimestamp,
+        confirmationTimestamp: candle.time,
+        createdBaseBarIndex: meta.createdBaseBarIndex,
+        confirmationBaseBarIndex: barIndex,
+        createdNativeBarIndex: meta.createdNativeBarIndex,
+        confirmationNativeBarIndex,
+        zoneAgeBaseBars: barIndex - meta.createdBaseBarIndex,
+        zoneAgeNativeBars: confirmationNativeBarIndex - meta.createdNativeBarIndex,
+        touchDepthNormRaw: touchDepth ? touchDepth.raw : null,
+        touchDepthNormClamped: touchDepth ? touchDepth.clamped : null,
+        closeDepthNormRaw: closeDepth.raw,
+        closeDepthNormClamped: closeDepth.clamped,
+        atr14Valid,
+        zoneWidthAtr,
+        supersededByZoneId: null,
+        isChoch: meta.isChoch,
+        fib03: meta.fib03,
+        fib05: meta.fib05,
+        fib07: meta.fib07,
+        createdSourceBarIndex: meta.createdSourceBarIndex,
+        touchExtremePrice,
+        eventClosePrice: candle.close
+    });
+
+    validateV5ZoneLifecycleRecord(record);
+    return record;
+}
+
+export function stepDTFXStrictCBCV5(
+    candle: ML1Candle,
+    barIndex: number,
+    state: V5DTFXStrictCBCState,
+    config: DTFXStrictCBCConfig,
+    isDiscontinuity: boolean,
+    atr14: number | null
+): {
+    readonly nextState: V5DTFXStrictCBCState;
+    readonly lifecycleEvents: readonly V5DTFXLifecycleEvent[];
+} {
+    if (config.zoneTimeframe === '15m') {
+        throw new Error('V5 DTFX Error: 15m timeframe is excluded in V5.');
+    }
+    if (!config.emitRetests) {
+        throw new Error('V5 DTFX Error: config.emitRetests must be true in V5.');
+    }
+    const zoneTf = config.zoneTimeframe as V5ZoneTimeframe;
+    const prevCbc = state.cbcState;
+    assertV5DTFXStrictCBCStateConsistency(state, config);
+
+    // 1. Compute inferred discontinuity safely before canonical step (canonical step still validates candle & chronology first)
+    const validTs = Number.isSafeInteger(candle?.time) && candle.time > 0 && candle.time % config.baseIntervalMs === 0;
+    const bucketStart = validTs ? Math.floor(candle.time / config.zoneIntervalMs) * config.zoneIntervalMs : 0;
+    const hasMissingBaseCandle =
+        validTs &&
+        prevCbc.lastProcessedTimestamp !== null &&
+        candle.time > prevCbc.lastProcessedTimestamp &&
+        candle.time !== prevCbc.lastProcessedTimestamp + config.baseIntervalMs;
+    const isGenuineIncompleteBucket =
+        validTs &&
+        prevCbc.formingBucket !== null &&
+        bucketStart > prevCbc.formingBucket.bucketStart &&
+        prevCbc.formingBucket.lastCandleTime <
+            prevCbc.formingBucket.bucketStart + config.zoneIntervalMs - config.baseIntervalMs;
+    const effectiveDiscontinuity = isDiscontinuity || hasMissingBaseCandle || isGenuineIncompleteBucket;
+
+    // 2. Pass effectiveDiscontinuity INTO canonical step so canonical activeZones & V5 metadata reset together
+    const stepRes = stepDTFXStrictCBC(candle, barIndex, prevCbc, config, effectiveDiscontinuity, atr14);
+    const nextCbc = stepRes.nextState;
+
+    const lifecycleEvents: V5DTFXLifecycleEvent[] = [];
+    let demandBreaks = state.historicalDemandBreakCount;
+    let supplyBreaks = state.historicalSupplyBreakCount;
+
+    // 3. Discontinuity / gap reset: confirm canonical activeZones cleared, emit GAP_RESET (eventDirection: null)
+    if (effectiveDiscontinuity) {
+        if (nextCbc.activeZones.length !== 0) {
+            throw new Error(
+                `V5 DTFX Gap Reset Error: canonical state failed to clear ${nextCbc.activeZones.length} activeZones on discontinuity.`
+            );
+        }
+        for (const prevZ of prevCbc.activeZones) {
+            const meta = state.zoneMetaByNumericId[prevZ.zoneId];
+            lifecycleEvents.push(buildV5DTFXLifecycleEvent({
+                meta,
+                eventType: 'GAP_RESET',
+                zoneActivity: 'GAP_RESET',
+                eventDirection: null,
+                retestCount: meta.v5RetestCount,
+                barIndex,
+                completedNativeCount: prevCbc.htfBarIndex,
+                candle,
+                atr14,
+                touchExtremePrice: null
+            }));
+        }
+        const resetState: V5DTFXStrictCBCState = Object.freeze({
+            cbcState: nextCbc,
+            zoneMetaByNumericId: Object.freeze({}),
+            historicalDemandBreakCount: demandBreaks,
+            historicalSupplyBreakCount: supplyBreaks
+        });
+        assertV5DTFXStrictCBCStateConsistency(resetState, config);
+        return {
+            nextState: resetState,
+            lifecycleEvents: Object.freeze(lifecycleEvents)
+        };
+    }
+
+    // 4. Explicit canonical event classification without overwriting
+    const retestsByZoneId = new Map<number, DTFXStrictCBCTeacherEvent[]>();
+    const createdEvents: DTFXStrictCBCTeacherEvent[] = [];
+    for (const ev of stepRes.events) {
+        const zId = ev.structuralContext.zoneId;
+        if (ev.eventType === 'DTFX_CBC_DEMAND_CREATED' || ev.eventType === 'DTFX_CBC_SUPPLY_CREATED') {
+            if (ev.structuralContext.zoneStatus !== 'CREATED') {
+                throw new Error(`V5 DTFX Event Error: '${ev.eventType}' disagrees with zoneStatus.`);
+            }
+            createdEvents.push(ev);
+        } else if (ev.eventType === 'DTFX_CBC_DEMAND_RETEST' || ev.eventType === 'DTFX_CBC_SUPPLY_RETEST') {
+            if (ev.structuralContext.zoneStatus !== 'RETESTED') {
+                throw new Error(`V5 DTFX Event Error: '${ev.eventType}' disagrees with zoneStatus.`);
+            }
+            const bucket = retestsByZoneId.get(zId) ?? [];
+            bucket.push(ev);
+            if (bucket.length > 1) {
+                throw new Error(`V5 DTFX Event Error: multiple retests emitted for zoneId ${zId} on bar ${barIndex}.`);
+            }
+            retestsByZoneId.set(zId, bucket);
+        } else {
+            throw new Error(`V5 DTFX Event Error: unexpected canonical eventType '${String(ev.eventType)}'.`);
+        }
+    }
+
+    const nextActiveById = new Map<number, DTFXStrictCBCActiveZone>();
+    for (const nz of nextCbc.activeZones) {
+        nextActiveById.set(nz.zoneId, nz);
+    }
+
+    const nextMetaMutable: Record<number, V5DTFXZoneMeta> = {};
+
+    // 5. Process BROKEN, EVICTED, and uncapped RETESTED on prior active zones
+    for (const prevZ of prevCbc.activeZones) {
+        const meta = state.zoneMetaByNumericId[prevZ.zoneId];
+
+        const brokeOnBar = prevZ.direction === 'bull'
+            ? candle.close < prevZ.zoneBot
+            : candle.close > prevZ.zoneTop;
+
+        if (brokeOnBar) {
+            if (retestsByZoneId.has(prevZ.zoneId)) {
+                throw new Error(`V5 DTFX Event Error: broken zone ${prevZ.zoneId} also emitted a retest on bar ${barIndex}.`);
+            }
+            if (prevZ.direction === 'bull') demandBreaks++;
+            else supplyBreaks++;
+
+            lifecycleEvents.push(buildV5DTFXLifecycleEvent({
+                meta,
+                eventType: 'BROKEN',
+                zoneActivity: 'BROKEN',
+                eventDirection: prevZ.direction === 'bull' ? 'bear' : 'bull',
+                retestCount: meta.v5RetestCount,
+                barIndex,
+                completedNativeCount: nextCbc.htfBarIndex,
+                candle,
+                atr14,
+                touchExtremePrice: null
+            }));
+            continue;
+        }
+
+        const surviving = nextActiveById.get(prevZ.zoneId);
+        if (!surviving) {
+            lifecycleEvents.push(buildV5DTFXLifecycleEvent({
+                meta,
+                eventType: 'EVICTED',
+                zoneActivity: 'EVICTED',
+                eventDirection: null,
+                retestCount: meta.v5RetestCount,
+                barIndex,
+                completedNativeCount: nextCbc.htfBarIndex,
+                candle,
+                atr14,
+                touchExtremePrice: null
+            }));
+            continue;
+        }
+
+        // Independent uncapped V5 retest episode tracker with explicit range-intersection check
+        const touchedZone = candle.high >= meta.zoneBot && candle.low <= meta.zoneTop;
+        const outsideNow = meta.zoneDirection === 'bull'
+            ? candle.low > meta.zoneTop
+            : candle.high < meta.zoneBot;
+        const v5RetestTriggered =
+            touchedZone &&
+            meta.v5WasOutsideSinceLastEvent &&
+            barIndex > meta.createdBaseBarIndex &&
+            barIndex > meta.v5LastRetestBaseBarIndex;
+
+        const canonicalRetestTriggered = retestsByZoneId.has(prevZ.zoneId);
+        if (meta.v5RetestCount < config.maxRetestsPerZone && canonicalRetestTriggered !== v5RetestTriggered) {
+            throw new Error(
+                `V5 DTFX Parity Error: canonical retest (${canonicalRetestTriggered}) != V5 episode (${v5RetestTriggered}) on zone ${meta.v5ZoneId} bar ${barIndex}.`
+            );
+        }
+
+        if (v5RetestTriggered) {
+            const nextCount = meta.v5RetestCount + 1;
+            const updatedMeta: V5DTFXZoneMeta = Object.freeze({
+                ...meta,
+                v5RetestCount: nextCount,
+                v5WasOutsideSinceLastEvent: false,
+                v5LastRetestBaseBarIndex: barIndex
+            });
+            nextMetaMutable[prevZ.zoneId] = updatedMeta;
+
+            const touchExtreme = meta.zoneDirection === 'bull' ? candle.low : candle.high;
+            lifecycleEvents.push(buildV5DTFXLifecycleEvent({
+                meta: updatedMeta,
+                eventType: 'RETESTED',
+                zoneActivity: 'ACTIVE',
+                eventDirection: updatedMeta.zoneDirection,
+                retestCount: nextCount,
+                barIndex,
+                completedNativeCount: nextCbc.htfBarIndex,
+                candle,
+                atr14,
+                touchExtremePrice: touchExtreme
+            }));
+        } else {
+            nextMetaMutable[prevZ.zoneId] = Object.freeze({
+                ...meta,
+                v5WasOutsideSinceLastEvent: meta.v5WasOutsideSinceLastEvent || outsideNow
+            });
+        }
+    }
+
+    // 6. Register newly CREATED zones (handles immediate same-bar eviction if capacity reached)
+    for (const ev of createdEvents) {
+        const ctx = ev.structuralContext;
+        const zId = ctx.zoneId;
+        const zoneDirection = ev.eventDirection;
+        const zoneSide: 'DEMAND' | 'SUPPLY' = zoneDirection === 'bull' ? 'DEMAND' : 'SUPPLY';
+        const v5ZoneId = buildV5ZoneId({
+            symbol: config.symbol,
+            source: 'DTFX_STRICTCBC',
+            timeframe: zoneTf,
+            side: zoneSide,
+            createdSourceTimestamp: ev.sourceTimestamp,
+            createdConfirmationTimestamp: ev.confirmationTimestamp
+        });
+
+        const newMeta: V5DTFXZoneMeta = Object.freeze({
+            v5ZoneId,
+            numericZoneId: zId,
+            symbol: config.symbol,
+            zoneTimeframe: zoneTf,
+            zoneSide,
+            zoneDirection,
+            isChoch: ctx.isChoch,
+            zoneTop: ctx.zoneTop,
+            zoneBot: ctx.zoneBot,
+            fib03: ctx.fib03,
+            fib05: ctx.fib05,
+            fib07: ctx.fib07,
+            createdSourceBarIndex: ctx.zoneCreatedSourceBarIndex,
+            createdSourceTimestamp: ev.sourceTimestamp,
+            createdBaseBarIndex: ctx.zoneCreatedConfirmationBarIndex,
+            createdConfirmationTimestamp: ev.confirmationTimestamp,
+            createdNativeBarIndex: Math.max(0, nextCbc.htfBarIndex - 1),
+            v5RetestCount: 0,
+            v5WasOutsideSinceLastEvent: zoneDirection === 'bull'
+                ? candle.close > ctx.zoneTop
+                : candle.close < ctx.zoneBot,
+            v5LastRetestBaseBarIndex: -1
+        });
+
+        lifecycleEvents.push(buildV5DTFXLifecycleEvent({
+            meta: newMeta,
+            eventType: 'CREATED',
+            zoneActivity: 'ACTIVE',
+            eventDirection: newMeta.zoneDirection,
+            retestCount: 0,
+            barIndex,
+            completedNativeCount: nextCbc.htfBarIndex,
+            candle,
+            atr14,
+            touchExtremePrice: null
+        }));
+
+        if (nextActiveById.has(zId)) {
+            nextMetaMutable[zId] = newMeta;
+        } else {
+            lifecycleEvents.push(buildV5DTFXLifecycleEvent({
+                meta: newMeta,
+                eventType: 'EVICTED',
+                zoneActivity: 'EVICTED',
+                eventDirection: null,
+                retestCount: 0,
+                barIndex,
+                completedNativeCount: nextCbc.htfBarIndex,
+                candle,
+                atr14,
+                touchExtremePrice: null
+            }));
+        }
+    }
+
+    const nextState: V5DTFXStrictCBCState = Object.freeze({
+        cbcState: nextCbc,
+        zoneMetaByNumericId: Object.freeze(nextMetaMutable),
+        historicalDemandBreakCount: demandBreaks,
+        historicalSupplyBreakCount: supplyBreaks
+    });
+    assertV5DTFXStrictCBCStateConsistency(nextState, config);
+
+    return {
+        nextState,
+        lifecycleEvents: Object.freeze(lifecycleEvents)
+    };
+}
+
+export function stepDTFXStrictCBCV5Multi(
+    candle: ML1Candle,
+    barIndex: number,
+    state: V5DTFXStrictCBCMultiState,
+    configs: readonly DTFXStrictCBCConfig[],
+    isDiscontinuity: boolean,
+    atr14: number | null
+): {
+    readonly nextState: V5DTFXStrictCBCMultiState;
+    readonly lifecycleEvents: readonly V5DTFXLifecycleEvent[];
+} {
+    if (!Array.isArray(configs as unknown) || configs.length === 0) {
+        throw new Error('V5 DTFX Multi Error: configs must be non-empty.');
+    }
+    const baseSymbol = configs[0].symbol;
+    const seenTfs = new Set<V5ZoneTimeframe>();
+    const mutableState: Record<V5ZoneTimeframe, V5DTFXStrictCBCState> = { ...state };
+    const allEvents: V5DTFXLifecycleEvent[] = [];
+
+    for (const cfg of configs) {
+        if (cfg.zoneTimeframe === '15m') {
+            throw new Error('V5 DTFX Multi Error: 15m timeframe is excluded in V5.');
+        }
+        if (cfg.symbol !== baseSymbol) {
+            throw new Error(`V5 DTFX Multi Error: mixed symbols '${cfg.symbol}' vs '${baseSymbol}'.`);
+        }
+        const tf = cfg.zoneTimeframe as V5ZoneTimeframe;
+        if (seenTfs.has(tf)) {
+            throw new Error(`V5 DTFX Multi Error: duplicate timeframe '${tf}'.`);
+        }
+        seenTfs.add(tf);
+        const res = stepDTFXStrictCBCV5(candle, barIndex, mutableState[tf], cfg, isDiscontinuity, atr14);
+        mutableState[tf] = res.nextState;
+        allEvents.push(...res.lifecycleEvents);
+    }
+
+    allEvents.sort((a, b) =>
+        a.confirmationBaseBarIndex - b.confirmationBaseBarIndex ||
+        a.zoneTimeframe.localeCompare(b.zoneTimeframe) ||
+        a.eventType.localeCompare(b.eventType) ||
+        a.lifecycleId.localeCompare(b.lifecycleId)
+    );
+
+    return {
+        nextState: Object.freeze(mutableState),
+        lifecycleEvents: Object.freeze(allEvents)
+    };
+}
+
+export function getV5DTFXActiveZoneViews(
+    multiState: V5DTFXStrictCBCMultiState,
+    currentBarIndex: number,
+    timeframes: readonly V5ZoneTimeframe[] = V5_DTFX_STRICTCBC_TIMEFRAMES
+): readonly V5DTFXActiveZoneView[] {
+    const views: V5DTFXActiveZoneView[] = [];
+    for (const tf of timeframes) {
+        const tfState = multiState[tf];
+        const currentNativeIdx = Math.max(0, tfState.cbcState.htfBarIndex - 1);
+        for (const z of tfState.cbcState.activeZones) {
+            const meta = tfState.zoneMetaByNumericId[z.zoneId];
+            if (!meta) {
+                throw new Error(`V5 DTFX View Error: missing metadata for active zoneId ${z.zoneId} on ${tf}.`);
+            }
+            views.push(Object.freeze({
+                meta,
+                retestCount: meta.v5RetestCount,
+                wasOutsideSinceLastEvent: meta.v5WasOutsideSinceLastEvent,
+                zoneAgeBaseBars: currentBarIndex - meta.createdBaseBarIndex,
+                zoneAgeHtfBars: currentNativeIdx - meta.createdNativeBarIndex
+            }));
+        }
+    }
+    return Object.freeze(views);
 }

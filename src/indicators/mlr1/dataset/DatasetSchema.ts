@@ -124,3 +124,13 @@ export const TIER_A_V4_CONTINUOUS_MTF_COLUMNS = [
 ] as const;
 
 export const TIER_C_V4_QUARANTINE_LIST = TIER_C_V3_QUARANTINE_LIST;
+
+// =========================================================================
+// V5 Multi-Teacher Schema Constants (PHL Entry Zones + DTFX D/S Context)
+// =========================================================================
+
+export const MLR1_V5_REPRESENTATION_SCHEMA_VERSION = 'MLR1_REPRESENTATION_V5';
+export const MLR1_V5_MODEL_INPUT_SCHEMA_VERSION = 'MLR1_MODEL_INPUT_V5';
+
+export const TIER_A_V5_CONTINUOUS_MTF_COLUMNS = TIER_A_V4_CONTINUOUS_MTF_COLUMNS;
+export const TIER_C_V5_QUARANTINE_LIST = TIER_C_V4_QUARANTINE_LIST;

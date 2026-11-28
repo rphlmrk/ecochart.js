@@ -95,4 +95,17 @@ export interface DatasetManifest {
         readonly excludedUnwarmedAtr: number;
         readonly excludedIncompleteHorizon: number;
     };
+    readonly zoneLifecycleAccounting?: {
+        readonly dtfxCreatedCount: number;
+        readonly dtfxRetestedCount: number;
+        readonly dtfxBrokenCount: number;
+        readonly dtfxEvictedCount: number;
+        readonly dtfxGapResetCount: number;
+        readonly phlCreatedCount: number;
+        readonly phlRetestedCount: number;
+        readonly phlBrokenCount: number;
+        readonly phlEvictedCount: number;
+        readonly phlSupersededCount: number;
+        readonly phlGapResetCount: number;
+    };
 }

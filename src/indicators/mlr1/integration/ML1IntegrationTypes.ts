@@ -4,7 +4,9 @@ import {
     MLR1_V3_MODEL_INPUT_SCHEMA_VERSION,
     MLR1_V3_REPRESENTATION_SCHEMA_VERSION,
     MLR1_V4_MODEL_INPUT_SCHEMA_VERSION,
-    MLR1_V4_REPRESENTATION_SCHEMA_VERSION
+    MLR1_V4_REPRESENTATION_SCHEMA_VERSION,
+    MLR1_V5_MODEL_INPUT_SCHEMA_VERSION,
+    MLR1_V5_REPRESENTATION_SCHEMA_VERSION
 } from '../dataset/DatasetSchema';
 
 /**
@@ -109,7 +111,7 @@ const DATASET_REFERENCE_KEYS = [
     'integrityStatus'
 ] as const;
 const DATE_RANGE_KEYS = ['startTimestamp', 'endTimestamp'] as const;
-const PROFILE_SCHEMA_VERSIONS_BY_DATASET_VERSION: Readonly<Record<3 | 4, Readonly<Record<ML1ExportProfile, string>>>> = {
+const PROFILE_SCHEMA_VERSIONS_BY_DATASET_VERSION: Readonly<Record<3 | 4 | 5, Readonly<Record<ML1ExportProfile, string>>>> = {
     3: {
         MODEL_INPUTS: MLR1_V3_MODEL_INPUT_SCHEMA_VERSION,
         STRUCTURAL_TEACHER: MLR1_V3_REPRESENTATION_SCHEMA_VERSION,
@@ -119,6 +121,11 @@ const PROFILE_SCHEMA_VERSIONS_BY_DATASET_VERSION: Readonly<Record<3 | 4, Readonl
         MODEL_INPUTS: MLR1_V4_MODEL_INPUT_SCHEMA_VERSION,
         STRUCTURAL_TEACHER: MLR1_V4_REPRESENTATION_SCHEMA_VERSION,
         FORWARD_OUTCOMES: MLR1_V4_REPRESENTATION_SCHEMA_VERSION
+    },
+    5: {
+        MODEL_INPUTS: MLR1_V5_MODEL_INPUT_SCHEMA_VERSION,
+        STRUCTURAL_TEACHER: MLR1_V5_REPRESENTATION_SCHEMA_VERSION,
+        FORWARD_OUTCOMES: MLR1_V5_REPRESENTATION_SCHEMA_VERSION
     }
 };
 
@@ -180,8 +187,8 @@ function validateDatasetReference(datasetRef: unknown): asserts datasetRef is ML
     ] as const) {
         assertNonEmptyString(datasetRef[key], `datasetRef.${key}`);
     }
-    if (datasetRef.datasetVersion !== 3 && datasetRef.datasetVersion !== 4) {
-        throw new Error('ML1 Export Request Error: datasetRef.datasetVersion must be 3 or 4.');
+    if (datasetRef.datasetVersion !== 3 && datasetRef.datasetVersion !== 4 && datasetRef.datasetVersion !== 5) {
+        throw new Error('ML1 Export Request Error: datasetRef.datasetVersion must be 3, 4, or 5.');
     }
     if (datasetRef.integrityStatus !== 'VALIDATED') {
         throw new Error("ML1 Export Request Error: datasetRef.integrityStatus must be 'VALIDATED'.");
@@ -227,7 +234,7 @@ export function validateML1ExportRequest(request: unknown): asserts request is M
         throw new Error(`ML1 Export Request Error: Unknown export profile '${String(request.exportProfile)}'.`);
     }
     const expectedSchema =
-        PROFILE_SCHEMA_VERSIONS_BY_DATASET_VERSION[request.datasetRef.datasetVersion as 3 | 4]?.[
+        PROFILE_SCHEMA_VERSIONS_BY_DATASET_VERSION[request.datasetRef.datasetVersion as 3 | 4 | 5]?.[
             request.exportProfile as ML1ExportProfile
         ];
     if (!expectedSchema ||
@@ -298,7 +305,7 @@ export function createML1ZipExportRequest(manifest: DatasetManifest): ML1ExportR
         !manifest.auditResults.inputOutcomeSeparationValid) {
         throw new Error('ML1 Export Request Error: Cannot reference a dataset that has not passed its integrity audit.');
     }
-    if ((manifest.datasetVersion !== 3 && manifest.datasetVersion !== 4) ||
+    if ((manifest.datasetVersion !== 3 && manifest.datasetVersion !== 4 && manifest.datasetVersion !== 5) ||
         manifest.datasetVersion !== manifest.buildConfig.datasetVersion ||
         manifest.representationSchemaVersion !== manifest.buildConfig.representationSchemaVersion ||
         manifest.modelInputSchemaVersion !== manifest.buildConfig.modelInputSchemaVersion ||
