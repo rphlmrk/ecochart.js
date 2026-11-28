@@ -44,6 +44,22 @@ import {
     MTFV4SerializerCache
 } from '../indicators/mlr1/pipeline/V4CsvSerializer';
 import { V4ArtifactAuditor } from '../indicators/mlr1/pipeline/V4ArtifactAuditor';
+import { ML1_CONFIG_D } from '../indicators/mlr1/ML1FeatureConfigs';
+import { createInitialML1FeatureStateV6, stepML1FeaturesV6, validateML1ConfigV6 } from '../indicators/mlr1/ML1FeatureEngine';
+import type { ML1Candle, ML1Observation } from '../indicators/mlr1/ML1FeatureTypes';
+import {
+    createDefaultV5DTFXStrictCBCMultiConfigs,
+    createInitialV5DTFXStrictCBCMultiState,
+    stepDTFXStrictCBCV5Multi,
+    V5_DTFX_STRICTCBC_TIMEFRAMES,
+    type V5DTFXLifecycleEvent
+} from '../indicators/mlr1/teachers/DTFXStrictCBCTeacher';
+import {
+    auditV5LifecycleArtifacts,
+    buildV5LifecycleDatasetManifest,
+    getV5LifecycleFileNames,
+    serializeV5ZoneLifecycleCsv
+} from '../indicators/mlr1/pipeline/V5LifecycleArtifact';
 
 export class SourceIntegrityError extends Error {
     public readonly sourceReport: RawSourceAccountingReport;
@@ -702,3 +718,118 @@ export async function createVerifiedV4DatasetArchive(
     }
     return bytes;
 }
+
+export async function buildV5DtfxLifecycleExportArtifacts(params: {
+    readonly rawCandleBuffer: Float64Array;
+    readonly symbol: string;
+    readonly interval: string;
+    readonly intervalMs: number;
+    readonly timeframes?: readonly ('1m' | '3m' | '5m')[];
+    readonly buildTimestamp?: number;
+}) {
+    const { rawCandleBuffer, symbol, interval, intervalMs } = params;
+    if (interval !== '1m' || intervalMs !== 60_000) {
+        throw new Error(`V5 Lifecycle Export Error: requires 1m (60000ms) base interval, got '${interval}' (${intervalMs}ms).`);
+    }
+    if (!(rawCandleBuffer instanceof Float64Array) || rawCandleBuffer.length === 0 || rawCandleBuffer.length % 6 !== 0) {
+        throw new Error('V5 Lifecycle Export Error: malformed or empty candle buffer.');
+    }
+
+    const totalCandles = rawCandleBuffer.length / 6;
+    const featCfg = validateML1ConfigV6({
+        ...ML1_CONFIG_D,
+        symbol,
+        timeframe: interval,
+        expectedIntervalMs: intervalMs,
+        gapDiscontinuityThresholdMs: Math.max(ML1_CONFIG_D.gapDiscontinuityThresholdMs, intervalMs * 5),
+        emaPeriods: [...ML1_CONFIG_D.emaPeriods],
+        atrPeriods: [...ML1_CONFIG_D.atrPeriods],
+        rollingRangePeriods: [...ML1_CONFIG_D.rollingRangePeriods],
+        momentumPeriods: [...ML1_CONFIG_D.momentumPeriods],
+        volumeSmaPeriods: [...ML1_CONFIG_D.volumeSmaPeriods],
+        cciPeriods: [...ML1_CONFIG_D.cciPeriods],
+        volumeCandleSizePeriods: [...ML1_CONFIG_D.volumeCandleSizePeriods],
+        smaPeriods: [...ML1_CONFIG_D.smaPeriods]
+    });
+    let featState = createInitialML1FeatureStateV6(featCfg);
+
+    const dtfxConfigs = createDefaultV5DTFXStrictCBCMultiConfigs(
+        symbol,
+        interval,
+        intervalMs,
+        params.timeframes ?? V5_DTFX_STRICTCBC_TIMEFRAMES
+    );
+    let dtfxState = createInitialV5DTFXStrictCBCMultiState();
+
+    const candles: ML1Candle[] = [];
+    const observations: ML1Observation[] = [];
+    const timeline: number[] = [];
+    const lifecycleRecords: V5DTFXLifecycleEvent[] = [];
+
+    for (let i = 0; i < totalCandles; i++) {
+        const off = i * 6;
+        const candle: ML1Candle = {
+            time: rawCandleBuffer[off],
+            open: rawCandleBuffer[off + 1],
+            high: rawCandleBuffer[off + 2],
+            low: rawCandleBuffer[off + 3],
+            close: rawCandleBuffer[off + 4],
+            volume: rawCandleBuffer[off + 5],
+            isSynthetic: false
+        };
+        candles.push(candle);
+        timeline.push(candle.time);
+
+        const featStep = stepML1FeaturesV6(candle, i, featState, featCfg);
+        featState = featStep.nextState;
+        observations.push(featStep.observation);
+
+        const isDisc = featStep.observation.features['IsDiscontinuity'] === 1;
+        const atr = featStep.observation.validity['ATR_14'] && featStep.observation.features['ATR_14'] > 0
+            ? featStep.observation.features['ATR_14']
+            : null;
+
+        const dtfxStep = stepDTFXStrictCBCV5Multi(candle, i, dtfxState, dtfxConfigs, isDisc, atr);
+        dtfxState = dtfxStep.nextState;
+        lifecycleRecords.push(...dtfxStep.lifecycleEvents);
+    }
+
+    const lifecycleCsv = serializeV5ZoneLifecycleCsv(lifecycleRecords);
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(lifecycleCsv));
+    const lifecycleSha256 = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+    const manifest = buildV5LifecycleDatasetManifest({
+        symbol,
+        timeframe: interval,
+        intervalMs,
+        candles,
+        observations,
+        lifecycleRecords,
+        lifecycleSha256,
+        buildTimestamp: params.buildTimestamp
+    });
+    const manifestJson = JSON.stringify(manifest, null, 2);
+    const fileNames = getV5LifecycleFileNames(symbol, interval);
+
+    const auditResult = await auditV5LifecycleArtifacts({
+        lifecycleCsv,
+        manifestJson,
+        continuousBaseTimestamps: timeline
+    });
+    if (!auditResult.passed) {
+        throw new Error(`V5 Lifecycle Export Audit Failed: ${auditResult.remarks.join('; ')}`);
+    }
+
+    return {
+        manifest,
+        manifestJson,
+        lifecycleCsv,
+        lifecycleFileName: fileNames.lifecycleFileName,
+        manifestFileName: fileNames.manifestFileName,
+        lifecycleRecords,
+        timeline,
+        auditResult,
+        lifecycleSha256
+    };
+}
+

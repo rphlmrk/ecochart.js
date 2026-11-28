@@ -95,6 +95,7 @@ export interface DatasetManifest {
         readonly excludedUnwarmedAtr: number;
         readonly excludedIncompleteHorizon: number;
     };
+    readonly fileChecksums?: Readonly<Record<string, string>>;
     readonly zoneLifecycleAccounting?: {
         readonly dtfxCreatedCount: number;
         readonly dtfxRetestedCount: number;

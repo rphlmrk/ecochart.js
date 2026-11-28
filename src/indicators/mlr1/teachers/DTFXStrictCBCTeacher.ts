@@ -1202,6 +1202,43 @@ function buildV5DTFXLifecycleEvent(params: {
     return record;
 }
 
+/**
+ * Classifies explicit and inferred discontinuities before stepping canonical state.
+ * Note: confirmationNativeBarIndex always represents the 0-based index of the most
+ * recently COMPLETED native-timeframe candle (it never advances mid-bucket).
+ */
+export function classifyV5DTFXDiscontinuity(
+    candle: ML1Candle,
+    prevCbc: DTFXStrictCBCState,
+    config: DTFXStrictCBCConfig,
+    isDiscontinuity: boolean
+): {
+    readonly effectiveDiscontinuity: boolean;
+    readonly explicitDiscontinuity: boolean;
+    readonly hasMissingBaseCandle: boolean;
+    readonly isGenuineIncompleteBucket: boolean;
+} {
+    const validTs = Number.isSafeInteger(candle?.time) && candle.time > 0 && candle.time % config.baseIntervalMs === 0;
+    const bucketStart = validTs ? Math.floor(candle.time / config.zoneIntervalMs) * config.zoneIntervalMs : 0;
+    const hasMissingBaseCandle =
+        validTs &&
+        prevCbc.lastProcessedTimestamp !== null &&
+        candle.time > prevCbc.lastProcessedTimestamp &&
+        candle.time !== prevCbc.lastProcessedTimestamp + config.baseIntervalMs;
+    const isGenuineIncompleteBucket =
+        validTs &&
+        prevCbc.formingBucket !== null &&
+        bucketStart > prevCbc.formingBucket.bucketStart &&
+        prevCbc.formingBucket.lastCandleTime <
+            prevCbc.formingBucket.bucketStart + config.zoneIntervalMs - config.baseIntervalMs;
+    return Object.freeze({
+        effectiveDiscontinuity: isDiscontinuity || hasMissingBaseCandle || isGenuineIncompleteBucket,
+        explicitDiscontinuity: isDiscontinuity,
+        hasMissingBaseCandle,
+        isGenuineIncompleteBucket
+    });
+}
+
 export function stepDTFXStrictCBCV5(
     candle: ML1Candle,
     barIndex: number,
@@ -1223,21 +1260,8 @@ export function stepDTFXStrictCBCV5(
     const prevCbc = state.cbcState;
     assertV5DTFXStrictCBCStateConsistency(state, config);
 
-    // 1. Compute inferred discontinuity safely before canonical step (canonical step still validates candle & chronology first)
-    const validTs = Number.isSafeInteger(candle?.time) && candle.time > 0 && candle.time % config.baseIntervalMs === 0;
-    const bucketStart = validTs ? Math.floor(candle.time / config.zoneIntervalMs) * config.zoneIntervalMs : 0;
-    const hasMissingBaseCandle =
-        validTs &&
-        prevCbc.lastProcessedTimestamp !== null &&
-        candle.time > prevCbc.lastProcessedTimestamp &&
-        candle.time !== prevCbc.lastProcessedTimestamp + config.baseIntervalMs;
-    const isGenuineIncompleteBucket =
-        validTs &&
-        prevCbc.formingBucket !== null &&
-        bucketStart > prevCbc.formingBucket.bucketStart &&
-        prevCbc.formingBucket.lastCandleTime <
-            prevCbc.formingBucket.bucketStart + config.zoneIntervalMs - config.baseIntervalMs;
-    const effectiveDiscontinuity = isDiscontinuity || hasMissingBaseCandle || isGenuineIncompleteBucket;
+    // 1. Classify explicit and inferred discontinuities safely before canonical step
+    const { effectiveDiscontinuity } = classifyV5DTFXDiscontinuity(candle, prevCbc, config, isDiscontinuity);
 
     // 2. Pass effectiveDiscontinuity INTO canonical step so canonical activeZones & V5 metadata reset together
     const stepRes = stepDTFXStrictCBC(candle, barIndex, prevCbc, config, effectiveDiscontinuity, atr14);
