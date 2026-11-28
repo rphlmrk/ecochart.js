@@ -137,10 +137,10 @@ export async function runPhase4V4ExportAcceptanceTests(): Promise<boolean> {
                 document.querySelector('#ai-export-schema-version') === null &&
                 document.querySelector('#check-ai-v3-15m-mtf') === null &&
                 document.querySelector('#check-ai-v4-3m5m-mtf') !== null &&
-                document.querySelectorAll('.ai-v4-teacher-tf').length === 3 &&
-                document.querySelectorAll('.ai-v4-teacher-tf[value="15m"]').length === 0 &&
+                document.querySelectorAll('.ai-v4-dtfx-tf').length === 3 &&
+                document.querySelectorAll('.ai-v4-dtfx-tf[value="15m"]').length === 0 &&
                 document.querySelectorAll('.ai-pack-card[data-pack="stream_folder"]').length === 1,
-                'Live V4 export modal must expose 3m/5m MTF and 1m/3m/5m teacher TFs without 15m or V2/V3 selectors'
+                'Live V4 export modal must expose 3m/5m MTF and 1m/3m/5m DTFX checkboxes without 15m or retired V2/V3 controls'
             );
             const infoBody = document.querySelector('#ai-export-info-body')?.textContent || '';
             assert(infoBody.includes('ML1_CONFIG_D_v1') && !infoBody.includes('ML1_CONFIG_C_v1'),
