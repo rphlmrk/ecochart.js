@@ -113,12 +113,14 @@ import { runPhase2V4MTFAcceptanceTests } from './test/phase2-v4-mtf-acceptance';
 import { runPhase3V4TeachersAcceptanceTests } from './test/phase3-v4-teachers-acceptance';
 import { runPhase4V4ExportAcceptanceTests } from './test/phase4-v4-export-acceptance';
 import { runPhaseAV5DtfxAcceptanceTests } from './test/phaseA-v5-dtfx-acceptance';
+import { runPhaseBV5PhlAcceptanceTests } from './test/phaseB-v5-phl-acceptance';
 export {
     runPhase1V6AcceptanceTests,
     runPhase2V4MTFAcceptanceTests,
     runPhase3V4TeachersAcceptanceTests,
     runPhase4V4ExportAcceptanceTests,
-    runPhaseAV5DtfxAcceptanceTests
+    runPhaseAV5DtfxAcceptanceTests,
+    runPhaseBV5PhlAcceptanceTests
 };
 
 const auditBoundButtons = new WeakSet<HTMLElement>();
@@ -6174,5 +6176,6 @@ export class WorkspaceManager {
         (window as any).runPhase3V4TeachersAcceptanceTests = runPhase3V4TeachersAcceptanceTests;
         (window as any).runPhase4V4ExportAcceptanceTests = runPhase4V4ExportAcceptanceTests;
         (window as any).runPhaseAV5DtfxAcceptanceTests = runPhaseAV5DtfxAcceptanceTests;
+        (window as any).runPhaseBV5PhlAcceptanceTests = runPhaseBV5PhlAcceptanceTests;
     }
 }

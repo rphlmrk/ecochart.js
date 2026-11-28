@@ -254,21 +254,21 @@ export async function runPhaseAV5DtfxAcceptanceTests(): Promise<boolean> {
         assert(Math.abs(computeV5PhlDsOverlapRatio(110, 100, 105, 95) - 0.5) < 1e-12, 'Overlap ratio');
     });
 
-    await runTest('4. Single-zone 4-retest geometry (retains v5RetestCount=4 into BROKEN) & maxActiveZones=1 eviction', () => {
+    await runTest('4. Single-zone 4-retest geometry (valid OHLCV, retains v5RetestCount=4 into BROKEN) & maxActiveZones=1 eviction', () => {
         const seq: Array<[number, number, number, number]> = [
             [100, 102, 99, 101], [101, 105, 100, 104], [104, 105, 102, 103], [103, 104, 98, 99],
             [99, 106, 98.5, 105.5],               // Bar 4: Creates 1 DEMAND zone [98, 105]
             [105.5, 107, 105.2, 106.2],           // Bar 5: Outside above 105
             [106.2, 106.2, 103, 104],             // Bar 6: R1
             [104, 104.8, 103.5, 104.5],           // Bar 7: Stays inside (0 events)
-            [105.5, 106.5, 105.3, 106.0],         // Bar 8: Exits
-            [106.0, 106.0, 103.2, 104.0],         // Bar 9: R2 (canonical cap=2 reached)
-            [105.5, 106.5, 105.4, 106.0],         // Bar 10: Exits
-            [106.0, 106.0, 103.2, 104.0],         // Bar 11: R3 (V5=3, canonical=2)
+            [105.5, 106.5, 105.3, 106.0],         // Bar 8: Exits (valid OHLCV: 105.3 <= 105.5 <= 106.5)
+            [105.8, 106.0, 103.2, 104.0],         // Bar 9: R2 (canonical cap=2 reached)
+            [105.5, 106.5, 105.4, 106.0],         // Bar 10: Exits (valid OHLCV: 105.4 <= 105.5 <= 106.5)
+            [105.8, 106.0, 103.2, 104.0],         // Bar 11: R3 (V5=3, canonical=2)
             [105.5, 106.5, 105.4, 106.0],         // Bar 12: Exits
-            [106.0, 106.0, 103.2, 104.0],         // Bar 13: R4 (V5=4, canonical=2)
-            [105.5, 106.5, 105.4, 106.0],         // Bar 14: Exits (meta still retains v5RetestCount === 4)
-            [97.0, 97.5, 95.0, 96.0]              // Bar 15: Gaps completely below zoneBot=98 -> BROKEN (retestCount === 4)
+            [105.8, 106.0, 103.2, 104.0],         // Bar 13: R4 (V5=4, canonical=2)
+            [105.5, 106.5, 105.4, 106.0],         // Bar 14: Exits (meta retains v5RetestCount === 4)
+            [97.0, 97.5, 95.0, 96.0]              // Bar 15: Gaps below zoneBot=98 -> BROKEN (retestCount === 4)
         ];
         const cappedCfg = createDefaultDTFXStrictCBCConfig('SOLUSDT', '1m', dt, '1m', { maxActiveZones: 10, maxRetestsPerZone: 2, emitRetests: true });
         let stRet = createInitialV5DTFXStrictCBCState();
@@ -276,11 +276,13 @@ export async function runPhaseAV5DtfxAcceptanceTests(): Promise<boolean> {
         let targetNumericId = -1;
         const expectedCanonicalAtBar = new Map<number, number>([[6, 1], [7, 1], [9, 2], [11, 2], [13, 2], [14, 2]]);
         const expectedV5AtBar = new Map<number, number>([[6, 1], [7, 1], [9, 2], [11, 3], [13, 4], [14, 4]]);
+        const episodeIds = new Set<string>();
         const retests = [];
-        const broken = [];
+        let bar15Events: readonly any[] = [];
 
         for (let i = 0; i < seq.length; i++) {
             const [o, h, l, c] = seq[i];
+            assert(l <= o && o <= h && l <= c && c <= h, `Invalid fixture OHLCV at bar ${i}`);
             const res = stepDTFXStrictCBCV5({ time: t0 + i * dt, open: o, high: h, low: l, close: c, volume: 100, isSynthetic: false }, i, stRet, cappedCfg, false, 1.5);
             stRet = res.nextState;
 
@@ -291,26 +293,43 @@ export async function runPhaseAV5DtfxAcceptanceTests(): Promise<boolean> {
                 assert(res.lifecycleEvents[0].zoneTop === 105 && res.lifecycleEvents[0].zoneBot === 98, 'Expected bounds [98, 105]');
             }
             if (i >= 5 && i <= 14) {
+                assert(!res.lifecycleEvents.some(e => e.eventType === 'CREATED' || e.eventType === 'EVICTED' || e.eventType === 'BROKEN'),
+                    `Unexpected zone creation/removal at bar ${i}`);
                 const canonZone = stRet.cbcState.activeZones.find(z => z.zoneId === targetNumericId);
-                assert(canonZone !== undefined, `Canonical zone missing at bar ${i}`);
+                assert(canonZone !== undefined, `Canonical target zone missing at bar ${i}`);
                 const meta = stRet.zoneMetaByNumericId[targetNumericId];
-                assert(meta.v5ZoneId === targetV5ZoneId, `Metadata zoneId drifted at bar ${i}`);
+                assert(meta !== undefined && meta.v5ZoneId === targetV5ZoneId && meta.zoneTop === 105 && meta.zoneBot === 98,
+                    `Metadata mismatch at bar ${i}`);
                 if (expectedCanonicalAtBar.has(i)) {
                     assert(canonZone.retestCount === expectedCanonicalAtBar.get(i), `Bar ${i} canonical retestCount mismatch`);
                     assert(meta.v5RetestCount === expectedV5AtBar.get(i), `Bar ${i} V5 retestCount mismatch`);
                 }
                 if (i === 7 || i === 14) assert(res.lifecycleEvents.length === 0, `Bar ${i} must emit 0 events`);
             }
+            if (i === 15) {
+                bar15Events = res.lifecycleEvents;
+            }
             for (const le of res.lifecycleEvents) {
-                if (le.eventType === 'RETESTED') retests.push(le);
-                if (le.eventType === 'BROKEN') broken.push(le);
+                if (le.eventType === 'RETESTED') {
+                    assert(le.retestEpisodeId !== null && !episodeIds.has(le.retestEpisodeId), 'Duplicate episodeId');
+                    episodeIds.add(le.retestEpisodeId);
+                    retests.push(le);
+                }
             }
         }
-        assert(retests.length === 4 && retests.every(r => r.zoneId === targetV5ZoneId), 'All 4 retests must match target zone');
+        assert(retests.length === 4 && retests.every(r => r.zoneId === targetV5ZoneId) && episodeIds.size === 4,
+            'All 4 retests must belong to target zone with 4 distinct episodeIds');
         assert(retests.map(r => r.retestCount).join(',') === '1,2,3,4', 'Exact counts 1,2,3,4 required');
-        assert(broken.length === 1 && broken[0].zoneId === targetV5ZoneId && broken[0].retestCount === 4 &&
-            broken[0].eventDirection === 'bear' && !stRet.cbcState.activeZones.some(z => z.zoneId === targetNumericId),
-            'Bar 15 must emit BROKEN (bear, retestCount=4) and clear active zone');
+
+        const targetBroken = bar15Events.filter(e => e.eventType === 'BROKEN' && e.zoneId === targetV5ZoneId);
+        assert(targetBroken.length === 1 &&
+            targetBroken[0].eventDirection === 'bear' &&
+            targetBroken[0].zoneActivity === 'BROKEN' &&
+            targetBroken[0].retestCount === 4 &&
+            !stRet.cbcState.activeZones.some(z => z.zoneId === targetNumericId) &&
+            stRet.zoneMetaByNumericId[targetNumericId] === undefined &&
+            !getV5DTFXActiveZoneViews({ '1m': stRet, '3m': stRet, '5m': stRet }, 15, ['1m']).some(v => v.meta.v5ZoneId === targetV5ZoneId),
+            'Bar 15 must emit BROKEN (bear, retestCount=4) for target zone and remove it from active state');
 
         // Capacity eviction with maxActiveZones = 1
         const evictCfgs = createDefaultV5DTFXStrictCBCMultiConfigs('SOLUSDT', '1m', dt, ['1m'], { maxActiveZones: 1 });
@@ -513,6 +532,7 @@ export async function runPhaseAV5DtfxAcceptanceTests(): Promise<boolean> {
             })),
             lifecycleRecords: gRecords,
             lifecycleSha256: gSha,
+            allowGaps: true,
             buildTimestamp: 1_700_000_000_000
         }), null, 2);
 

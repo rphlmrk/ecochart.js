@@ -1,6 +1,19 @@
 import type { ATRPeriodState, ML1Candle } from '../ML1FeatureTypes';
 import { updateWilderATR } from '../volatility/ATR';
 import { createStrategyEvent, type StrategyEvent } from './StrategyEventTypes';
+import {
+    buildV5CandidateEventId,
+    buildV5PhlRetestEpisodeId,
+    buildV5ZoneId,
+    computeV5DepthMetrics,
+    validateV5ZoneLifecycleRecord,
+    type V5Direction,
+    type V5PhlRetestCandidateRecord,
+    type V5ZoneActivityState,
+    type V5ZoneLifecycleEvent,
+    type V5ZoneLifecycleRecord,
+    type V5ZoneTimeframe
+} from '../pipeline/V5OutcomeContracts';
 
 export const PHL_TEACHER_VERSION = 'PHL_BOS_MSS_v1';
 
@@ -1518,4 +1531,626 @@ export function stepPHLV4Multi(
     );
 
     return { nextState: Object.freeze(mutableState), events: Object.freeze(allEvents) };
+}
+
+// =========================================================================
+// V5 PHL Directional Entry Zones (Preserves Frozen Phase 2 stepPHL & V4)
+// =========================================================================
+
+export const V5_PHL_TIMEFRAMES: readonly V5ZoneTimeframe[] = Object.freeze(['1m', '3m', '5m']);
+
+export interface V5PHLActiveZone {
+    readonly zoneId: string;
+    readonly symbol: string;
+    readonly zoneTimeframe: V5ZoneTimeframe;
+    readonly zoneSide: 'PHL_BUY_ZONE' | 'PHL_SELL_ZONE';
+    readonly zoneDirection: V5Direction;
+    readonly breakType: 'BOS' | 'MSS';
+    readonly zoneTop: number;
+    readonly zoneBot: number;
+    readonly previousLevelPrice: number;
+    readonly previousLevelBaseBarIndex: number;
+    readonly previousLevelTimestamp: number;
+    readonly protectedLevelPrice: number;
+    readonly protectedLevelBaseBarIndex: number;
+    readonly protectedLevelTimestamp: number;
+    readonly createdBaseBarIndex: number;
+    readonly createdSourceTimestamp: number;
+    readonly createdConfirmationTimestamp: number;
+    readonly createdNativeBarIndex: number;
+    readonly retestCount: number;
+    readonly wasOutsideSinceLastEvent: boolean;
+    readonly lastRetestBaseBarIndex: number;
+}
+
+export interface V5PHLLifecycleEvent extends V5ZoneLifecycleRecord {
+    readonly source: 'PHL';
+    readonly zoneSide: 'PHL_BUY_ZONE' | 'PHL_SELL_ZONE';
+    readonly breakType: 'BOS' | 'MSS';
+    readonly previousLevelPrice: number;
+    readonly previousLevelBaseBarIndex: number;
+    readonly previousLevelTimestamp: number;
+    readonly protectedLevelPrice: number;
+    readonly protectedLevelBaseBarIndex: number;
+    readonly protectedLevelTimestamp: number;
+    readonly touchExtremePrice: number | null;
+    readonly eventClosePrice: number;
+}
+
+export interface V5PHLActiveZoneView {
+    readonly zone: V5PHLActiveZone;
+    readonly zoneAgeBaseBars: number;
+    readonly zoneAgeHtfBars: number;
+}
+
+export interface V5PHLState {
+    readonly phlV4State: PHLV4State;
+    readonly activeZones: readonly V5PHLActiveZone[];
+    readonly historicalBrokenBuyCount: number;
+    readonly historicalBrokenSellCount: number;
+    readonly historicalSupersededCount: number;
+}
+
+export type V5PHLMultiState = Readonly<Record<V5ZoneTimeframe, V5PHLState>>;
+
+export function createDefaultV5PHLMultiConfigs(
+    symbol: string,
+    baseTimeframe: string,
+    baseIntervalMs: number,
+    timeframes: readonly V5ZoneTimeframe[] = V5_PHL_TIMEFRAMES,
+    options?: { pivotStrength?: number; useValidPullbacks?: boolean; extraValidPullbacks?: boolean }
+): PHLV4Config[] {
+    return createDefaultPHLV4MultiConfigs(symbol, baseTimeframe, baseIntervalMs, timeframes, {
+        pivotStrength: options?.pivotStrength ?? 8,
+        useValidPullbacks: options?.useValidPullbacks ?? true,
+        extraValidPullbacks: options?.extraValidPullbacks ?? false
+    });
+}
+
+export function createInitialV5PHLState(): V5PHLState {
+    return Object.freeze({
+        phlV4State: createInitialPHLV4State(),
+        activeZones: Object.freeze([]),
+        historicalBrokenBuyCount: 0,
+        historicalBrokenSellCount: 0,
+        historicalSupersededCount: 0
+    });
+}
+
+export function createInitialV5PHLMultiState(): V5PHLMultiState {
+    return Object.freeze({
+        '1m': createInitialV5PHLState(),
+        '3m': createInitialV5PHLState(),
+        '5m': createInitialV5PHLState()
+    });
+}
+
+export function classifyV5PHLDiscontinuity(
+    candle: ML1Candle,
+    prevPhl: PHLV4State,
+    config: PHLV4Config,
+    isDiscontinuity: boolean
+): {
+    readonly effectiveDiscontinuity: boolean;
+    readonly explicitDiscontinuity: boolean;
+    readonly hasMissingBaseCandle: boolean;
+    readonly isGenuineIncompleteBucket: boolean;
+} {
+    const validTs = Number.isSafeInteger(candle?.time) && candle.time > 0 && candle.time % config.baseIntervalMs === 0;
+    const bucketStart = validTs ? Math.floor(candle.time / config.phlIntervalMs) * config.phlIntervalMs : 0;
+    const hasMissingBaseCandle =
+        validTs &&
+        prevPhl.lastProcessedTimestamp !== null &&
+        candle.time > prevPhl.lastProcessedTimestamp &&
+        candle.time !== prevPhl.lastProcessedTimestamp + config.baseIntervalMs;
+    const isGenuineIncompleteBucket =
+        validTs &&
+        prevPhl.formingBucket !== null &&
+        bucketStart > prevPhl.formingBucket.bucketStart &&
+        prevPhl.formingBucket.lastCandleTime <
+        prevPhl.formingBucket.bucketStart + config.phlIntervalMs - config.baseIntervalMs;
+    return Object.freeze({
+        effectiveDiscontinuity: isDiscontinuity || hasMissingBaseCandle || isGenuineIncompleteBucket,
+        explicitDiscontinuity: isDiscontinuity,
+        hasMissingBaseCandle,
+        isGenuineIncompleteBucket
+    });
+}
+
+export function assertV5PHLStateConsistency(state: V5PHLState, config: PHLV4Config): void {
+    validatePHLV4State(state.phlV4State, config);
+    const seenIds = new Set<string>();
+    for (const z of state.activeZones) {
+        if (z.symbol !== config.symbol || z.zoneTimeframe !== config.phlTimeframe) {
+            throw new Error(`V5 PHL Consistency Error: zone ${z.zoneId} symbol/tf mismatch.`);
+        }
+        if (!Number.isFinite(z.zoneTop) || !Number.isFinite(z.zoneBot) || z.zoneTop <= z.zoneBot) {
+            throw new Error(`V5 PHL Consistency Error: zone ${z.zoneId} invalid bounds.`);
+        }
+        if (!Number.isSafeInteger(z.retestCount) || z.retestCount < 0) {
+            throw new Error(`V5 PHL Consistency Error: zone ${z.zoneId} invalid retestCount ${z.retestCount}.`);
+        }
+        if (seenIds.has(z.zoneId)) {
+            throw new Error(`V5 PHL Consistency Error: duplicate active zoneId '${z.zoneId}'.`);
+        }
+        seenIds.add(z.zoneId);
+    }
+}
+
+function buildV5PHLLifecycleEvent(params: {
+    readonly zone: V5PHLActiveZone;
+    readonly eventType: V5ZoneLifecycleEvent;
+    readonly zoneActivity: V5ZoneActivityState;
+    readonly eventDirection: V5Direction | null;
+    readonly retestCount: number;
+    readonly retestEpisodeId: string | null;
+    readonly barIndex: number;
+    readonly completedNativeCount: number;
+    readonly candle: ML1Candle;
+    readonly effectiveAtr14: number | null;
+    readonly touchExtremePrice: number | null;
+    readonly eventClosePrice: number;
+    readonly supersededByZoneId: string | null;
+}): V5PHLLifecycleEvent {
+    const {
+        zone, eventType, zoneActivity, eventDirection, retestCount, retestEpisodeId,
+        barIndex, completedNativeCount, candle, effectiveAtr14, touchExtremePrice,
+        eventClosePrice, supersededByZoneId
+    } = params;
+
+    const atr14Valid = effectiveAtr14 !== null && Number.isFinite(effectiveAtr14) && effectiveAtr14 > 0;
+    const zoneWidthAtr = atr14Valid ? (zone.zoneTop - zone.zoneBot) / effectiveAtr14! : null;
+
+    const closeDepth = computeV5DepthMetrics(zone.zoneTop, zone.zoneBot, eventClosePrice, zone.zoneDirection);
+    const touchDepth = touchExtremePrice !== null
+        ? computeV5DepthMetrics(zone.zoneTop, zone.zoneBot, touchExtremePrice, zone.zoneDirection)
+        : null;
+
+    const confirmationNativeBarIndex = Math.max(zone.createdNativeBarIndex, completedNativeCount - 1);
+    const suffix = eventType === 'RETESTED' ? `RETESTED:R${retestCount}` : eventType;
+    const lifecycleId = `${zone.zoneId}:${suffix}:${barIndex}`;
+
+    const record: V5PHLLifecycleEvent = Object.freeze({
+        lifecycleId,
+        zoneId: zone.zoneId,
+        symbol: zone.symbol,
+        source: 'PHL' as const,
+        zoneTimeframe: zone.zoneTimeframe,
+        zoneSide: zone.zoneSide,
+        zoneDirection: zone.zoneDirection,
+        eventType,
+        eventDirection,
+        zoneActivity,
+        eventRole: 'ZONE_LIFECYCLE' as const,
+        outcomeEligible: false as const,
+        retestCount,
+        retestEpisodeId,
+        zoneTop: zone.zoneTop,
+        zoneBot: zone.zoneBot,
+        createdSourceTimestamp: zone.createdSourceTimestamp,
+        createdConfirmationTimestamp: zone.createdConfirmationTimestamp,
+        confirmationTimestamp: candle.time,
+        createdBaseBarIndex: zone.createdBaseBarIndex,
+        confirmationBaseBarIndex: barIndex,
+        createdNativeBarIndex: zone.createdNativeBarIndex,
+        confirmationNativeBarIndex,
+        zoneAgeBaseBars: barIndex - zone.createdBaseBarIndex,
+        zoneAgeNativeBars: confirmationNativeBarIndex - zone.createdNativeBarIndex,
+        touchDepthNormRaw: touchDepth ? touchDepth.raw : null,
+        touchDepthNormClamped: touchDepth ? touchDepth.clamped : null,
+        closeDepthNormRaw: closeDepth.raw,
+        closeDepthNormClamped: closeDepth.clamped,
+        atr14Valid,
+        zoneWidthAtr,
+        supersededByZoneId,
+        breakType: zone.breakType,
+        previousLevelPrice: zone.previousLevelPrice,
+        previousLevelBaseBarIndex: zone.previousLevelBaseBarIndex,
+        previousLevelTimestamp: zone.previousLevelTimestamp,
+        protectedLevelPrice: zone.protectedLevelPrice,
+        protectedLevelBaseBarIndex: zone.protectedLevelBaseBarIndex,
+        protectedLevelTimestamp: zone.protectedLevelTimestamp,
+        touchExtremePrice,
+        eventClosePrice
+    });
+
+    validateV5ZoneLifecycleRecord(record);
+    return record;
+}
+
+function computeV5BarReactionScore(candle: ML1Candle, direction: V5Direction, z: V5PHLActiveZone): {
+    readonly confirmed: boolean;
+    readonly score: number;
+} {
+    const range = Math.max(candle.high - candle.low, 1e-12);
+    const body = Math.abs(candle.close - candle.open);
+    const bodyRatio = Math.min(1, body / range);
+
+    if (direction === 'bull') {
+        const confirmed = candle.close > candle.open && candle.close >= z.zoneBot;
+        if (!confirmed) return { confirmed: false, score: 0 };
+        const lowerWick = Math.max(0, Math.min(candle.open, candle.close) - candle.low);
+        const wickRatio = Math.min(1, lowerWick / range);
+        return { confirmed: true, score: Math.min(1, Math.max(0, 0.5 * bodyRatio + 0.5 * wickRatio)) };
+    }
+    const confirmed = candle.close < candle.open && candle.close <= z.zoneTop;
+    if (!confirmed) return { confirmed: false, score: 0 };
+    const upperWick = Math.max(0, candle.high - Math.max(candle.open, candle.close));
+    const wickRatio = Math.min(1, upperWick / range);
+    return { confirmed: true, score: Math.min(1, Math.max(0, 0.5 * bodyRatio + 0.5 * wickRatio)) };
+}
+
+export function stepPHLV5(
+    candle: ML1Candle,
+    barIndex: number,
+    state: V5PHLState,
+    config: PHLV4Config,
+    isDiscontinuity: boolean,
+    atr14_1m: number | null
+): {
+    readonly nextState: V5PHLState;
+    readonly lifecycleEvents: readonly V5PHLLifecycleEvent[];
+    readonly retestCandidates: readonly V5PhlRetestCandidateRecord[];
+} {
+    assertV5PHLStateConsistency(state, config);
+    const prevPhl = state.phlV4State;
+    const { effectiveDiscontinuity } = classifyV5PHLDiscontinuity(candle, prevPhl, config, isDiscontinuity);
+
+    // 1. Step canonical V4 PHL teacher (passes effectiveDiscontinuity so canonical state resets cleanly)
+    const stepRes = stepPHLV4(candle, barIndex, prevPhl, config, effectiveDiscontinuity, atr14_1m);
+    const nextPhl = stepRes.nextState;
+
+    const effectiveAtr14 = config.expectedBarsPerBucket === 1
+        ? atr14_1m
+        : (nextPhl.htfAtrState?.isSeeded && nextPhl.htfAtrState.atr !== null && nextPhl.htfAtrState.atr > 0
+            ? nextPhl.htfAtrState.atr
+            : null);
+
+    const lifecycleEvents: V5PHLLifecycleEvent[] = [];
+    const retestCandidates: V5PhlRetestCandidateRecord[] = [];
+    let brokenBuyCount = state.historicalBrokenBuyCount;
+    let brokenSellCount = state.historicalBrokenSellCount;
+    let supersededCount = state.historicalSupersededCount;
+
+    // 2. Discontinuity: emit GAP_RESET (eventDirection: null) for all active PHL zones and clear
+    if (effectiveDiscontinuity) {
+        if (nextPhl.phlState.ph !== null || nextPhl.phlState.pl !== null) {
+            throw new Error('V5 PHL Gap Reset Error: canonical PHL state retained active levels after discontinuity.');
+        }
+        const preGapAtr = config.expectedBarsPerBucket === 1
+            ? atr14_1m
+            : (prevPhl.htfAtrState?.isSeeded && prevPhl.htfAtrState.atr !== null && prevPhl.htfAtrState.atr > 0
+                ? prevPhl.htfAtrState.atr
+                : null);
+
+        for (const prevZ of state.activeZones) {
+            lifecycleEvents.push(buildV5PHLLifecycleEvent({
+                zone: prevZ,
+                eventType: 'GAP_RESET',
+                zoneActivity: 'GAP_RESET',
+                eventDirection: null,
+                retestCount: prevZ.retestCount,
+                retestEpisodeId: null,
+                barIndex,
+                completedNativeCount: prevPhl.htfBarIndex,
+                candle,
+                effectiveAtr14: preGapAtr,
+                touchExtremePrice: null,
+                eventClosePrice: candle.close,
+                supersededByZoneId: null
+            }));
+        }
+        const resetState: V5PHLState = Object.freeze({
+            phlV4State: nextPhl,
+            activeZones: Object.freeze([]),
+            historicalBrokenBuyCount: brokenBuyCount,
+            historicalBrokenSellCount: brokenSellCount,
+            historicalSupersededCount: supersededCount
+        });
+        assertV5PHLStateConsistency(resetState, config);
+        return {
+            nextState: resetState,
+            lifecycleEvents: Object.freeze(lifecycleEvents),
+            retestCandidates: Object.freeze([])
+        };
+    }
+
+    const nativeBucketCompleted = nextPhl.htfBarIndex > prevPhl.htfBarIndex;
+    const completedNativeClose = nativeBucketCompleted && nextPhl.phlState.window.length > 0
+        ? nextPhl.phlState.window[nextPhl.phlState.window.length - 1].close
+        : null;
+
+    let survivingZones: V5PHLActiveZone[] = [...state.activeZones];
+
+    // 3. Structural invalidation (BROKEN) & creation/supersession ONLY on completed native-timeframe candles
+    if (nativeBucketCompleted && completedNativeClose !== null) {
+        // 3a. Evaluate BROKEN FIRST (close past protected boundary always produces BROKEN, never SUPERSEDED)
+        const notBroken: V5PHLActiveZone[] = [];
+        for (const z of survivingZones) {
+            const brokeStructurally = z.zoneDirection === 'bull'
+                ? completedNativeClose < z.zoneBot
+                : completedNativeClose > z.zoneTop;
+
+            if (brokeStructurally) {
+                if (z.zoneDirection === 'bull') brokenBuyCount++;
+                else brokenSellCount++;
+
+                lifecycleEvents.push(buildV5PHLLifecycleEvent({
+                    zone: z,
+                    eventType: 'BROKEN',
+                    zoneActivity: 'BROKEN',
+                    eventDirection: z.zoneDirection === 'bull' ? 'bear' : 'bull',
+                    retestCount: z.retestCount,
+                    retestEpisodeId: null,
+                    barIndex,
+                    completedNativeCount: nextPhl.htfBarIndex,
+                    candle,
+                    effectiveAtr14,
+                    touchExtremePrice: null,
+                    eventClosePrice: completedNativeClose,
+                    supersededByZoneId: null
+                }));
+            } else {
+                notBroken.push(z);
+            }
+        }
+        survivingZones = notBroken;
+
+        // 3b. Evaluate newly created PHL directional entry zone from canonical BOS/MSS
+        for (const ev of stepRes.events) {
+            const ctx = ev.structuralContext;
+            if (!ctx.hasProtectedLevel ||
+                ctx.protectedLevelPrice === null ||
+                ctx.protectedLevelBarIndex === null ||
+                ctx.protectedLevelTimestamp === null) {
+                continue;
+            }
+
+            const zoneDirection: V5Direction = ev.eventDirection;
+            const zoneSide: 'PHL_BUY_ZONE' | 'PHL_SELL_ZONE' =
+                zoneDirection === 'bull' ? 'PHL_BUY_ZONE' : 'PHL_SELL_ZONE';
+
+            const zoneTop = zoneDirection === 'bull' ? ctx.brokenLevelPrice : ctx.protectedLevelPrice;
+            const zoneBot = zoneDirection === 'bull' ? ctx.protectedLevelPrice : ctx.brokenLevelPrice;
+            if (!Number.isFinite(zoneTop) || !Number.isFinite(zoneBot) || zoneTop <= zoneBot) {
+                continue;
+            }
+
+            const newZoneId = buildV5ZoneId({
+                symbol: config.symbol,
+                source: 'PHL',
+                timeframe: config.phlTimeframe,
+                side: zoneSide,
+                createdSourceTimestamp: ev.sourceTimestamp,
+                createdConfirmationTimestamp: ev.confirmationTimestamp
+            });
+
+            // Any non-broken prior zone on this same timeframe is SUPERSEDED by the new zone
+            for (const oldZ of survivingZones) {
+                supersededCount++;
+                lifecycleEvents.push(buildV5PHLLifecycleEvent({
+                    zone: oldZ,
+                    eventType: 'SUPERSEDED',
+                    zoneActivity: 'SUPERSEDED',
+                    eventDirection: null,
+                    retestCount: oldZ.retestCount,
+                    retestEpisodeId: null,
+                    barIndex,
+                    completedNativeCount: nextPhl.htfBarIndex,
+                    candle,
+                    effectiveAtr14,
+                    touchExtremePrice: null,
+                    eventClosePrice: completedNativeClose,
+                    supersededByZoneId: newZoneId
+                }));
+            }
+
+            const newZone: V5PHLActiveZone = Object.freeze({
+                zoneId: newZoneId,
+                symbol: config.symbol,
+                zoneTimeframe: config.phlTimeframe,
+                zoneSide,
+                zoneDirection,
+                breakType: ctx.breakType,
+                zoneTop,
+                zoneBot,
+                previousLevelPrice: ctx.brokenLevelPrice,
+                previousLevelBaseBarIndex: ev.sourceBarIndex,
+                previousLevelTimestamp: ev.sourceTimestamp,
+                protectedLevelPrice: ctx.protectedLevelPrice,
+                protectedLevelBaseBarIndex: ctx.protectedLevelBarIndex,
+                protectedLevelTimestamp: ctx.protectedLevelTimestamp,
+                createdBaseBarIndex: barIndex,
+                createdSourceTimestamp: ev.sourceTimestamp,
+                createdConfirmationTimestamp: ev.confirmationTimestamp,
+                createdNativeBarIndex: Math.max(0, nextPhl.htfBarIndex - 1),
+                retestCount: 0,
+                wasOutsideSinceLastEvent: zoneDirection === 'bull'
+                    ? completedNativeClose > zoneTop
+                    : completedNativeClose < zoneBot,
+                lastRetestBaseBarIndex: -1
+            });
+
+            survivingZones = [newZone];
+            lifecycleEvents.push(buildV5PHLLifecycleEvent({
+                zone: newZone,
+                eventType: 'CREATED',
+                zoneActivity: 'ACTIVE',
+                eventDirection: newZone.zoneDirection,
+                retestCount: 0,
+                retestEpisodeId: null,
+                barIndex,
+                completedNativeCount: nextPhl.htfBarIndex,
+                candle,
+                effectiveAtr14,
+                touchExtremePrice: null,
+                eventClosePrice: completedNativeClose,
+                supersededByZoneId: null
+            }));
+        }
+    }
+
+    // 4. Evaluate 1m retest episodes & trade candidates on pre-existing surviving zones (never on creation/terminal bars)
+    const nextActiveZones: V5PHLActiveZone[] = [];
+    for (const z of survivingZones) {
+        if (z.createdBaseBarIndex === barIndex) {
+            nextActiveZones.push(z);
+            continue;
+        }
+
+        const touchedZone = candle.high >= z.zoneBot && candle.low <= z.zoneTop;
+        const outsideNow = z.zoneDirection === 'bull'
+            ? candle.low > z.zoneTop
+            : candle.high < z.zoneBot;
+
+        if (touchedZone && z.wasOutsideSinceLastEvent && barIndex > z.lastRetestBaseBarIndex) {
+            const nextCount = z.retestCount + 1;
+            const touchExtreme = z.zoneDirection === 'bull' ? candle.low : candle.high;
+            const episodeId = buildV5PhlRetestEpisodeId(z.zoneId, nextCount, candle.time);
+            const candidateId = buildV5CandidateEventId(episodeId, z.zoneDirection);
+
+            const updatedZ: V5PHLActiveZone = Object.freeze({
+                ...z,
+                retestCount: nextCount,
+                wasOutsideSinceLastEvent: false,
+                lastRetestBaseBarIndex: barIndex
+            });
+            nextActiveZones.push(updatedZ);
+
+            lifecycleEvents.push(buildV5PHLLifecycleEvent({
+                zone: updatedZ,
+                eventType: 'RETESTED',
+                zoneActivity: 'ACTIVE',
+                eventDirection: updatedZ.zoneDirection,
+                retestCount: nextCount,
+                retestEpisodeId: episodeId,
+                barIndex,
+                completedNativeCount: nextPhl.htfBarIndex,
+                candle,
+                effectiveAtr14,
+                touchExtremePrice: touchExtreme,
+                eventClosePrice: candle.close,
+                supersededByZoneId: null
+            }));
+
+            const touchDepth = computeV5DepthMetrics(updatedZ.zoneTop, updatedZ.zoneBot, touchExtreme, updatedZ.zoneDirection);
+            const closeDepth = computeV5DepthMetrics(updatedZ.zoneTop, updatedZ.zoneBot, candle.close, updatedZ.zoneDirection);
+            const reaction = computeV5BarReactionScore(candle, updatedZ.zoneDirection, updatedZ);
+
+            retestCandidates.push(Object.freeze({
+                eventId: candidateId,
+                phlZoneId: updatedZ.zoneId,
+                phlRetestEpisodeId: episodeId,
+                zoneTimeframe: updatedZ.zoneTimeframe,
+                zoneSide: updatedZ.zoneSide,
+                direction: updatedZ.zoneDirection,
+                eventRole: 'TRADE_CANDIDATE' as const,
+                outcomeEligible: true as const,
+                retestCount: nextCount,
+                confirmationBarIndex: barIndex,
+                confirmationTimestamp: candle.time,
+                touchDepthNormRaw: touchDepth.raw,
+                touchDepthNormClamped: touchDepth.clamped,
+                closeDepthNormRaw: closeDepth.raw,
+                closeDepthNormClamped: closeDepth.clamped,
+                entryConfirmation: reaction.confirmed,
+                entryConfirmationScore: reaction.score,
+                entryConfirmationTimestamp: reaction.confirmed ? candle.time : null
+            }));
+        } else {
+            nextActiveZones.push(Object.freeze({
+                ...z,
+                wasOutsideSinceLastEvent: z.wasOutsideSinceLastEvent || outsideNow
+            }));
+        }
+    }
+
+    const nextState: V5PHLState = Object.freeze({
+        phlV4State: nextPhl,
+        activeZones: Object.freeze(nextActiveZones),
+        historicalBrokenBuyCount: brokenBuyCount,
+        historicalBrokenSellCount: brokenSellCount,
+        historicalSupersededCount: supersededCount
+    });
+    assertV5PHLStateConsistency(nextState, config);
+
+    return {
+        nextState,
+        lifecycleEvents: Object.freeze(lifecycleEvents),
+        retestCandidates: Object.freeze(retestCandidates)
+    };
+}
+
+export function stepPHLV5Multi(
+    candle: ML1Candle,
+    barIndex: number,
+    state: V5PHLMultiState,
+    configs: readonly PHLV4Config[],
+    isDiscontinuity: boolean,
+    atr14_1m: number | null
+): {
+    readonly nextState: V5PHLMultiState;
+    readonly lifecycleEvents: readonly V5PHLLifecycleEvent[];
+    readonly retestCandidates: readonly V5PhlRetestCandidateRecord[];
+} {
+    if (!Array.isArray(configs as unknown) || configs.length === 0) {
+        throw new Error('V5 PHL Multi Error: configs must be non-empty.');
+    }
+    const baseSymbol = configs[0].symbol;
+    const seenTfs = new Set<V5ZoneTimeframe>();
+    const mutableState: Record<V5ZoneTimeframe, V5PHLState> = { ...state };
+    const allLifecycle: V5PHLLifecycleEvent[] = [];
+    const allCandidates: V5PhlRetestCandidateRecord[] = [];
+
+    for (const cfg of configs) {
+        if (cfg.symbol !== baseSymbol) {
+            throw new Error(`V5 PHL Multi Error: mixed symbols '${cfg.symbol}' vs '${baseSymbol}'.`);
+        }
+        if (seenTfs.has(cfg.phlTimeframe)) {
+            throw new Error(`V5 PHL Multi Error: duplicate timeframe '${cfg.phlTimeframe}'.`);
+        }
+        seenTfs.add(cfg.phlTimeframe);
+        const res = stepPHLV5(candle, barIndex, mutableState[cfg.phlTimeframe], cfg, isDiscontinuity, atr14_1m);
+        mutableState[cfg.phlTimeframe] = res.nextState;
+        allLifecycle.push(...res.lifecycleEvents);
+        allCandidates.push(...res.retestCandidates);
+    }
+
+    allLifecycle.sort((a, b) =>
+        a.confirmationBaseBarIndex - b.confirmationBaseBarIndex ||
+        a.zoneTimeframe.localeCompare(b.zoneTimeframe) ||
+        a.eventType.localeCompare(b.eventType) ||
+        a.lifecycleId.localeCompare(b.lifecycleId)
+    );
+    allCandidates.sort((a, b) =>
+        a.confirmationBarIndex - b.confirmationBarIndex ||
+        a.zoneTimeframe.localeCompare(b.zoneTimeframe) ||
+        a.eventId.localeCompare(b.eventId)
+    );
+
+    return {
+        nextState: Object.freeze(mutableState),
+        lifecycleEvents: Object.freeze(allLifecycle),
+        retestCandidates: Object.freeze(allCandidates)
+    };
+}
+
+export function getV5PHLActiveZoneViews(
+    multiState: V5PHLMultiState,
+    currentBarIndex: number,
+    timeframes: readonly V5ZoneTimeframe[] = V5_PHL_TIMEFRAMES
+): readonly V5PHLActiveZoneView[] {
+    const views: V5PHLActiveZoneView[] = [];
+    for (const tf of timeframes) {
+        const tfState = multiState[tf];
+        const currentNativeIdx = Math.max(0, tfState.phlV4State.htfBarIndex - 1);
+        for (const z of tfState.activeZones) {
+            views.push(Object.freeze({
+                zone: z,
+                zoneAgeBaseBars: currentBarIndex - z.createdBaseBarIndex,
+                zoneAgeHtfBars: currentNativeIdx - z.createdNativeBarIndex
+            }));
+        }
+    }
+    return Object.freeze(views);
 }

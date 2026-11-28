@@ -97,9 +97,11 @@ export function buildV5LifecycleDatasetManifest(params: {
     readonly observations: readonly ML1Observation[];
     readonly lifecycleRecords: readonly V5ZoneLifecycleRecord[];
     readonly lifecycleSha256: string;
+    readonly allowGaps?: boolean;
     readonly buildTimestamp?: number;
 }): DatasetManifest {
     const { symbol, timeframe, intervalMs, candles, observations, lifecycleRecords } = params;
+    const allowGaps = params.allowGaps ?? false;
     if (!/^[0-9a-f]{64}$/.test(params.lifecycleSha256)) {
         throw new Error(`V5 Manifest Error: invalid lifecycleSha256 '${params.lifecycleSha256}'.`);
     }
@@ -109,7 +111,7 @@ export function buildV5LifecycleDatasetManifest(params: {
         rejectInvalidOhlcv: true,
         rejectDuplicateTimestamp: true,
         rejectOutOfOrder: true,
-        requireMinimumUptimeFraction: 1.0
+        requireMinimumUptimeFraction: allowGaps ? undefined : 1.0
     });
 
     let stats = createInitialBackboneStats();
@@ -134,6 +136,11 @@ export function buildV5LifecycleDatasetManifest(params: {
     const startTimestamp = candles[0].time;
     const endTimestamp = candles[candles.length - 1].time;
     const uptime = evaluateDatasetUptime(stats, policy, intervalMs, { startTimestamp, endTimestamp });
+    if (!allowGaps && (!uptime.isUptimeValid || stats.missingIntervalCount > 0)) {
+        throw new Error(
+            `V5 Manifest Error: continuous lifecycle export rejected gapped stream (uptime=${uptime.usableObservationFraction}, missingIntervals=${stats.missingIntervalCount}).`
+        );
+    }
     const fileNames = getV5LifecycleFileNames(symbol, timeframe);
     const zoneLifecycleAccounting = summarizeV5ZoneLifecycleAccounting(lifecycleRecords);
 
@@ -241,6 +248,12 @@ export function validateBaseTimeline(
     baseIntervalMs = 60_000,
     allowGaps = false
 ): void {
+    if (typeof allowGaps !== 'boolean') {
+        throw new Error(`V5 Timeline Error: allowGaps must be a boolean, got ${typeof allowGaps}.`);
+    }
+    if (!Number.isSafeInteger(baseIntervalMs) || baseIntervalMs <= 0) {
+        throw new Error(`V5 Timeline Error: baseIntervalMs must be a positive safe integer, got ${String(baseIntervalMs)}.`);
+    }
     if (!Array.isArray(continuousBaseTimestamps as unknown) || continuousBaseTimestamps.length === 0) {
         throw new Error('V5 Timeline Error: continuousBaseTimestamps must be a non-empty array.');
     }
@@ -275,6 +288,12 @@ export function buildCompletedNativeIndexTimeline(
     baseIntervalMs = 60_000,
     allowGaps = false
 ): number[] {
+    if (!Number.isSafeInteger(baseIntervalMs) || baseIntervalMs <= 0) {
+        throw new Error(`V5 Timeline Error: baseIntervalMs must be a positive safe integer, got ${String(baseIntervalMs)}.`);
+    }
+    if (!Number.isSafeInteger(tfMs) || tfMs <= 0 || tfMs % baseIntervalMs !== 0) {
+        throw new Error(`V5 Timeline Error: tfMs (${String(tfMs)}) must be a positive integer multiple of baseIntervalMs (${baseIntervalMs}).`);
+    }
     validateBaseTimeline(continuousBaseTimestamps, baseIntervalMs, allowGaps);
     const barsPerBucket = tfMs / baseIntervalMs;
     const out = new Array<number>(continuousBaseTimestamps.length).fill(-1);
